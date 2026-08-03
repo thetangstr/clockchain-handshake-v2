@@ -81,6 +81,7 @@ export const SNAPSHOT_KEYS = Object.freeze([
   "currentStage",
   "funding",
   "heartbeat",
+  "identities",
   "paymentMoved",
   "reasonCode",
   "schema",
@@ -105,6 +106,11 @@ export const STAGE_HISTORY_ENTRY_KEYS = Object.freeze(["atMs", "status"]);
 export const HEARTBEAT_ENTRY_KEYS = Object.freeze(["lastSeenMs"]);
 
 export const FUNDING_KEYS = Object.freeze(["atMs", "funded"]);
+
+// The two sides that hold keys. Distinct from ROLE_NAMES, which includes the
+// verifier: the verifier signs a verdict but never registers an identity.
+export const PARTY_ROLE_NAMES = Object.freeze(["payer", "payee"]);
+export const IDENTITY_KEYS = Object.freeze(["address", "agentId"]);
 
 export const SUBJECT_RUNS = Object.freeze(["rehearsal", "stakeholder"]);
 
@@ -253,6 +259,30 @@ function validateFunding(funding) {
   }
 }
 
+// The two ERC-8004 registrations, once each side has one. The agent id is what
+// the registry itself returned, so an audience can look either party up on a
+// public explorer while the run is still going. Narration only, like the rest
+// of this shape: nothing here is consulted when deciding an outcome.
+function validateIdentities(identities) {
+  if (identities === null) return;
+  if (!hasExactKeys(identities, PARTY_ROLE_NAMES)) {
+    invalid("identities must have exactly the two party-role keys");
+  }
+  for (const role of PARTY_ROLE_NAMES) {
+    const party = identities[role];
+    if (party === null) continue;
+    if (!hasExactKeys(party, IDENTITY_KEYS)) {
+      invalid(`identities.${role} has the wrong shape`);
+    }
+    if (!/^[0-9]{1,20}$/.test(String(party.agentId))) {
+      invalid(`identities.${role}.agentId must be a decimal integer string`);
+    }
+    if (!/^0x[0-9a-f]{40}$/.test(String(party.address))) {
+      invalid(`identities.${role}.address must be a lowercase 0x address`);
+    }
+  }
+}
+
 function validateVerdict(verdict) {
   if (verdict === null) return;
   if (typeof verdict !== "object" || Array.isArray(verdict)) {
@@ -312,6 +342,7 @@ export function validateSnapshot(snapshot) {
   }
 
   validateFunding(snapshot.funding);
+  validateIdentities(snapshot.identities);
   validateHeartbeat(snapshot.heartbeat);
 
   if (snapshot.paymentMoved !== false) {
@@ -344,6 +375,7 @@ export function buildSnapshot(input) {
     currentStage: input.currentStage,
     funding: input.funding ?? null,
     heartbeat: Object.freeze({ ...input.heartbeat }),
+    identities: input.identities ?? null,
     paymentMoved: false,
     reasonCode:
       input.currentStage === FAILED_STAGE ? input.reasonCode ?? null : null,

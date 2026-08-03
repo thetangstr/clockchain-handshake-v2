@@ -68,6 +68,7 @@ function createMonitorState(sid) {
   return {
     anchors: { acceptance: null, acknowledgment: null, proposal: null },
     funding: null,
+    identities: null,
     heartbeat: { payee: null, payer: null, verifier: null },
     sessionId: sid,
     stageHistory: [],
@@ -123,6 +124,7 @@ async function publishSnapshot(stage, { reasonCode = null } = {}) {
       currentStage: stage,
       funding: monitorState.funding,
       heartbeat: monitorState.heartbeat,
+      identities: monitorState.identities,
       reasonCode: safeReasonCode,
       sessionId: monitorState.sessionId,
       stageHistory: monitorState.stageHistory,
@@ -307,6 +309,14 @@ async function main() {
 
   const ready = await awaitKind(sessionId, "party_ready", WAIT_FOR_REQUESTOR_MS);
   const requestorAgentId = String(ready.body.agentId);
+  // Both sides now hold an ERC-8004 registration, so the board can show what
+  // the registry itself returned while the run is still going.
+  if (monitorState) {
+    monitorState.identities = {
+      payer: { address: payerAccount.address.toLowerCase(), agentId: String(payerAgentId) },
+      payee: { address: requestorAddress.toLowerCase(), agentId: String(requestorAgentId) },
+    };
+  }
   await say("IDENTITY_REGISTERED", `The requestor registered on-chain identity #${requestorAgentId}.`);
 
   // The payer signs the mandate. It cannot sign the payment request — that
