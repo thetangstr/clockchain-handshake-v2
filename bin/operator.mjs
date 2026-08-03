@@ -149,7 +149,7 @@ async function main() {
     relayUrl: RELAY_URL, sessionId,
     envelope: relay.signEnvelope({
       sessionId, seq: "2", role: "payer", kind: "funding_record",
-      body: { funded: requestorAddress, paymentMoved: false },
+      body: { funded: requestorAddress.toLowerCase(), paymentMoved: false },
       senderKey: opKp.senderKey, privateKeyPem: opKp.privateKeyPem,
     }),
   });

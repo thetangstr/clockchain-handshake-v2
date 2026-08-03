@@ -71,7 +71,7 @@ async function main() {
     relayUrl: RELAY_URL, sessionId: SESSION_ID,
     envelope: relay.signEnvelope({
       sessionId: SESSION_ID, seq: "1", role: "requestor", kind: "identity_ready",
-      body: { address: account.address, paymentMoved: false },
+      body: { address: account.address.toLowerCase(), paymentMoved: false },
       senderKey: kp.senderKey, privateKeyPem: kp.privateKeyPem,
     }),
   });
@@ -103,7 +103,7 @@ async function main() {
     relayUrl: RELAY_URL, sessionId: SESSION_ID,
     envelope: relay.signEnvelope({
       sessionId: SESSION_ID, seq: "2", role: "requestor", kind: "party_ready",
-      body: { address: account.address, agentId, paymentMoved: false },
+      body: { address: account.address.toLowerCase(), agentId, paymentMoved: false },
       senderKey: kp.senderKey, privateKeyPem: kp.privateKeyPem,
     }),
   });
