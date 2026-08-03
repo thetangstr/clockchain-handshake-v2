@@ -633,12 +633,29 @@ function handleGetEvidence(sessions, sessionId, role) {
 // the projector are guaranteed to be the same run. The alias resolves only the
 // first fetch -- every signed artifact still binds to the real session id, which
 // the requestor reads out of the discovery document and uses from then on.
+// When a session opened, tolerating sessions journalled before publishedAtMs
+// was recorded: those restore as 0, and ordering every one of them equally
+// makes "newest" whichever the map happens to yield first. Their snapshot still
+// knows when the run began, so it is used as the fallback. Shared with the run
+// list so both agree on which run is the current one.
+function sessionStartedAtMs(session) {
+  return (
+    session.publishedAtMs ||
+    session.monitorSnapshot?.stageHistory?.[0]?.atMs ||
+    session.monitorSnapshot?.updatedAtMs ||
+    0
+  );
+}
+
 function newestPublishedSession(sessions) {
   let newest = null;
+  let newestAtMs = -1;
   for (const candidate of sessions.values()) {
     if (candidate.discovery === undefined) continue;
-    if (newest === null || candidate.publishedAtMs > newest.publishedAtMs) {
+    const startedAtMs = sessionStartedAtMs(candidate);
+    if (startedAtMs > newestAtMs) {
       newest = candidate;
+      newestAtMs = startedAtMs;
     }
   }
   return newest;
@@ -661,14 +678,7 @@ function handleRuns(sessions) {
     const anchors = snapshot?.anchors ?? null;
     runs.push({
       sessionId: session.sessionId,
-      // Sessions journalled before publishedAtMs was recorded restore as 0.
-      // Their snapshot still knows when the run opened, so the list stays in a
-      // sensible order rather than collapsing every old run to the epoch.
-      startedAtMs:
-        session.publishedAtMs ||
-        snapshot?.stageHistory?.[0]?.atMs ||
-        snapshot?.updatedAtMs ||
-        0,
+      startedAtMs: sessionStartedAtMs(session),
       stage: snapshot?.currentStage ?? null,
       outcome: snapshot?.verdict?.outcome ?? null,
       reasonCode: snapshot?.reasonCode ?? null,

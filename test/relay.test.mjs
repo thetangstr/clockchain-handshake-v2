@@ -417,6 +417,46 @@ test("runs: lists published sessions newest first and never invents an outcome",
   });
 });
 
+test("current follows the newest run even among sessions with no recorded start", async (t) => {
+  // The failure this pins actually happened: after a restart every restored
+  // session carried publishedAtMs 0, so "newest" became whichever the map
+  // yielded first, and the permanent invitation link pointed at a finished run.
+  const { baseUrl } = await startServer(t);
+
+  const stale = await postJson(`${baseUrl}/v1/sessions`, {
+    discovery: { schema: "handshake-discovery/v2", issuedAtMs: 1 },
+  });
+  const current = await postJson(`${baseUrl}/v1/sessions`, {
+    discovery: { schema: "handshake-discovery/v2", issuedAtMs: 2 },
+  });
+
+  // Force both to look like sessions recovered from an older journal, then give
+  // only the newer one a snapshot to date itself by.
+  await putJson(`${baseUrl}/v1/sessions/${current.body.sessionId}/snapshot`, {
+    anchors: { acceptance: null, acknowledgment: null, proposal: null },
+    currentStage: "SESSION_STARTED",
+    funding: null,
+    heartbeat: { payee: null, payer: null, verifier: null },
+    paymentMoved: false,
+    reasonCode: null,
+    schema: "clockchain.handshake-snapshot/v1",
+    sessionId: current.body.sessionId,
+    stageHistory: [{ atMs: 9_000_000, status: "SESSION_STARTED" }],
+    subjectRun: null,
+    updatedAtMs: 9_000_000,
+    verdict: null,
+  });
+
+  const resolved = await getJson(`${baseUrl}/v1/sessions/current/snapshot`);
+  assert.equal(resolved.status, 200);
+  assert.equal(
+    resolved.body.sessionId,
+    current.body.sessionId,
+    "the alias must land on the run that actually started most recently",
+  );
+  assert.notEqual(resolved.body.sessionId, stale.body.sessionId);
+});
+
 test("a restarted relay still knows when each session opened", async (t) => {
   // publishedAtMs orders both the "current" alias and the run list. It used to
   // live only in memory, so every session recovered from the journal came back

@@ -19,7 +19,7 @@
   },
   "build": {
     "buildCommand": "R=/private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research; cd \"$R\" && node -e '\nconst fs=require(\"fs\");\nconst p=\"src/components/ClaudeV6Runbook.tsx\";\nlet t=fs.readFileSync(p,\"utf8\");\nt=t.replace(`import PromptCopyButton from \"./PromptCopyButton\";`,\n            `import ClaudeV6RunLog from \"./ClaudeV6RunLog\";\\nimport PromptCopyButton from \"./PromptCopyButton\";`);\nconst anchor=`      <section className=\"mt-16 border-t border-[var(--md-sys-color-outline-variant)] pt-8\">`;\nconst section=`      <Section title=\"Every run so far\">\n        <ClaudeV6RunLog />\n      </Section>\n\n`;\nconst n=t.split(anchor).length-1;\nif(n!==1){console.error(\"MISS \"+n);process.exit(1)}\nt=t.replace(anchor, section+anchor);\nfs.writeFileSync(p,t);\nconsole.log(\"run log mounted above the presenter notes\");\n' && npm run build 2>&1 | grep -E \"error|Error|Failed|Compiled successfully|api/handshake/runs\" | head -6",
-    "testCommand": "echo \"════ 1. HANDSHAKE REPO ════\"; git status --short --branch | head -3; echo \"tests:\"; npm test 2>&1 | grep -E \"^# (tests|pass|fail)\"; echo \"invariants:\"; bash scripts/check-invariants.sh 2>&1 | tail -2; echo; echo \"════ 2. PROMPT INTEGRITY ════\"; echo \"repo requestor.md == published copy (modulo URL):\"; diff <(sed 's|<DISCOVERY_URL>|http://44.249.47.220:8080/v1/discovery/current|g' prompts/requestor.md) /private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research/public/handshake/claude-v6/requestor-prompt.md >/dev/null && echo \"  IDENTICAL\" || echo \"  *** DRIFT ***\"; echo \"payer.md == published:\"; diff prompts/payer.md /private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research/public/handshake/claude-v6/payer-prompt.md >/dev/null && echo \"  IDENTICAL\" || echo \"  *** DRIFT ***\"",
+    "testCommand": "npm test 2>&1 | grep -E \"^# (tests|pass|fail)|^not ok\" | head -8",
     "lintCommand": null,
     "devCommand": null,
     "scripts": {
@@ -151,8 +151,8 @@
   "hotPaths": [
     {
       "path": "src/relay/server.mjs",
-      "accessCount": 14,
-      "lastAccessed": 1785789782919,
+      "accessCount": 16,
+      "lastAccessed": 1785790020348,
       "type": "file"
     },
     {
@@ -168,6 +168,12 @@
       "type": "file"
     },
     {
+      "path": "test/relay.test.mjs",
+      "accessCount": 4,
+      "lastAccessed": 1785790032655,
+      "type": "file"
+    },
+    {
       "path": "bin/operator.mjs",
       "accessCount": 3,
       "lastAccessed": 1785785771542,
@@ -177,12 +183,6 @@
       "path": "prompts/requestor.md",
       "accessCount": 3,
       "lastAccessed": 1785788709041,
-      "type": "file"
-    },
-    {
-      "path": "test/relay.test.mjs",
-      "accessCount": 3,
-      "lastAccessed": 1785789792316,
       "type": "file"
     },
     {
