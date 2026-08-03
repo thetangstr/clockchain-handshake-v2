@@ -88,6 +88,19 @@ async function main() {
   await resolveRendezvous();
   say("SESSION_STARTED", "Asking to be paid. This is a verification exercise: no money will move.");
 
+  // One requestor per session. The relay is an untrusted mailbox and
+  // deliberately does not adjudicate who holds a role, so the check belongs
+  // here: look before claiming, and stop plainly if the seat is taken. Without
+  // it a second agent joined silently, waited for a funding record addressed to
+  // somebody else, and then failed on an opaque out-of-gas error.
+  const seated = await relay.pollMessages({
+    relayUrl: RELAY_URL, sessionId: SESSION_ID, after: "0", waitMs: 0,
+  });
+  if ((seated.messages ?? []).some((message) => message.kind === "identity_ready")) {
+    stop("ROLE_ALREADY_BOUND",
+      "Another requestor already joined this session. Only one can be paid per session — ask the payer to open a fresh one.");
+  }
+
   // Our own key, generated here. The operator never sees it and cannot produce it.
   const privateKey = generatePrivateKey();
   const account = privateKeyToAccount(privateKey);
@@ -98,7 +111,16 @@ async function main() {
   say("HANDSHAKE_REQUIRED",
     "The payer will not consider a payment without a verified handshake first. Following its instructions.");
 
-  await awaitKind("funding_record", WAIT_MS);
+  const funding = await awaitKind("funding_record", WAIT_MS);
+  // The record names the address the payer actually funded. Two requestors can
+  // still both pass the check above if they claim in the same instant, and the
+  // payer serves whichever arrived first -- so this is where that race is
+  // caught. Ours is the only address we can register from; if the payer funded
+  // someone else, registering would spend gas we do not have.
+  if (String(funding.body?.funded ?? "").toLowerCase() !== account.address.toLowerCase()) {
+    stop("ROLE_ALREADY_BOUND",
+      "The payer funded a different requestor: another agent claimed this session first. Nothing was spent.");
+  }
   say("FUNDED", "The operator covered our registration gas. Registering an on-chain identity.");
 
   const wallet = createWalletClient({ account, chain: sepolia, transport: http(RPC_URL) });

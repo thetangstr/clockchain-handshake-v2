@@ -18,8 +18,8 @@
     "runtime": "Node.js 22"
   },
   "build": {
-    "buildCommand": "git add -A && git commit -q -m \"$(cat <<'EOF'\nprompts: state the bare-machine prerequisites, and guard skimmability directly\n\nA fresh agent was told to run git and npm without ever being told it needed\nthem. The requestor prompt now opens with an explicitly skippable list of what\na bare machine requires: git, Node 22+, the five hosts it must reach, and\npermission to leave a command running. Worth saying plainly that the dependency\nsurface is one package, viem, and nothing global.\n\nThe line cap went 40, then 60, and would now go to 75 -- a number I keep\nraising is a number that was never measuring the right thing. What it defended\nagainst was a wall of text nobody reads to the end, so that is asserted\ndirectly now: no unbroken run over 12 lines, and headings must exist. The cap\nstays as a backstop.\n\nThat new check immediately failed payer.md, which had no headings at all. It\nhas them now -- and its staged narration sentences are gone too, replaced with\n\"describe what is on the screen\". Those were the same scripted lines a cautious\nagent objected to in the requestor prompt; the objection did not stop being\nvalid because this side runs on our own machine.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nEOF\n)\" && git branch -f claude/handshake-v6 main && git push -q origin main && git push -q --force-with-lease origin claude/handshake-v6 && echo \"handshake pushed\"; R=/private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research; cd \"$R\" && npm run build 2>&1 | grep -E \"error|Compiled successfully\" | head -2 && git add -A && git commit -q -m \"handshake/claude-v6: publish the prompts with bare-machine prerequisites\" && (git push -q origin main 2>/dev/null || (git pull --rebase -q origin main && git push -q origin main)) && echo \"site pushed\"",
-    "testCommand": "wc -l prompts/requestor.md && npm test 2>&1 | grep -E \"^# (tests|pass|fail)|^not ok\" | head -4; echo; echo \"=== page: does it repeat the 'no account' claim? ===\"; R=/private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research; grep -n \"no account\\|no key, no password\" \"$R/src/components/ClaudeV6Runbook.tsx\" | head -3",
+    "buildCommand": "R=/private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research; U=\"http://44.249.47.220:8080/v1/discovery/current\"; sed \"s|<DISCOVERY_URL>|$U|g\" prompts/requestor.md > \"$R/public/handshake/claude-v6/requestor-prompt.md\" && node -e '\nconst fs=require(\"fs\");\nconst [page,promptFile,url]=process.argv.slice(1);\nconst body=fs.readFileSync(promptFile,\"utf8\").replace(/<DISCOVERY_URL>/g,url).replace(/`/g,\"\\\\`\").replace(/\\$\\{/g,\"\\\\${\").trimEnd();\nlet t=fs.readFileSync(page,\"utf8\");\nconst s=t.indexOf(\"const requestorPrompt = `\"), e=t.indexOf(\"`;\", s);\nfs.writeFileSync(page, t.slice(0,s)+\"const requestorPrompt = `\"+body+\"`;\"+t.slice(e+2));\nconsole.log(\"page prompt synced\");\n' \"$R/src/components/ClaudeV6Runbook.tsx\" prompts/requestor.md \"$U\" && git add -A && git commit -q -m \"$(cat <<'EOF'\nprompts: describe the program accurately — an auditing agent caught two false claims\n\nA requestor agent audited the code before running it, which is exactly what the\nprompt invites, and found the prompt describing itself wrongly in two places.\nBoth were real.\n\n\"The whole requestor is one short file\" — bin/requestor.mjs is 187 lines, but\ntracing its imports gives 20 files and 13,132 lines. Reading the entry point\nalone is not an audit, and telling an auditor otherwise steers them away from\nmost of what they should read. The prompt now states the entry point size, the\nreachable size, and which of the two is the audit surface.\n\n\"There is no payment instrument, account or transfer anywhere in it\" — false as\nwritten. The program creates an Ethereum account, receives Sepolia gas from the\npayer, and broadcasts a register transaction. The substance held (testnet\ncurrency has no value and cannot leave the network) but the sentence did not,\nand the agent was right to flag it before proceeding. It now says plainly what\nthe program does with money, then bounds it: no bank, no card, no real account,\nnothing of value can move.\n\nA demonstration whose subject is verifiable claims cannot afford unverifiable\nclaims about itself, least of all in the document it hands to the party asked\nto trust it.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nEOF\n)\" && git branch -f claude/handshake-v6 main && git push -q origin main && git push -q --force-with-lease origin claude/handshake-v6 && echo \"handshake pushed\"; cd \"$R\" && npm run build 2>&1 | grep -E \"error|Compiled successfully\" | head -2 && git add -A && git commit -q -m \"handshake/claude-v6: publish the corrected prompt and tighten the parallel claim on the page\" && (git push -q origin main 2>/dev/null || (git pull --rebase -q origin main && git push -q origin main)) && echo \"site pushed\"",
+    "testCommand": "npm test 2>&1 | grep -E \"^# (tests|pass|fail)|^not ok\" | head -5; echo; bash scripts/check-invariants.sh 2>&1 | grep -E \"reason code|RESULT\"",
     "lintCommand": null,
     "devCommand": null,
     "scripts": {
@@ -204,6 +204,12 @@
       "type": "file"
     },
     {
+      "path": "bin/requestor.mjs",
+      "accessCount": 2,
+      "lastAccessed": 1785799631317,
+      "type": "file"
+    },
+    {
       "path": "src/monitor/stakeholder/app.mjs",
       "accessCount": 1,
       "lastAccessed": 1785782944000,
@@ -225,6 +231,12 @@
       "path": "test/request-window.test.mjs",
       "accessCount": 1,
       "lastAccessed": 1785794171777,
+      "type": "file"
+    },
+    {
+      "path": "registry-rate.tmp.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1785799338866,
       "type": "file"
     }
   ],
