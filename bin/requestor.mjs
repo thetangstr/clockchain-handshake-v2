@@ -135,7 +135,7 @@ async function main() {
     readFile(join(directory, ".party-result.complete.json"), "utf8"),
   ]);
   await relay.putEvidence({
-    relayUrl: RELAY_URL, sessionId: SESSION_ID, role: "requestor",
+    relayUrl: RELAY_URL, sessionId: SESSION_ID, role: "payee",
     evidence: { json, markdown, marker },
   });
   say("ACCEPTED", "Our acceptance is recorded on Clockchain and our evidence is delivered.");

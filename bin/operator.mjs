@@ -202,8 +202,20 @@ async function main() {
   const payeeDirectory = join(root, "payee");
   await mkdir(payeeDirectory, { mode: 0o700, recursive: true });
   await chmod(payeeDirectory, 0o700);
-  const pulled = await relay.getEvidence({ relayUrl: RELAY_URL, sessionId, role: "requestor" });
-  const parts = pulled.evidence ?? pulled;
+  // The requestor uploads its package as it finishes; we may arrive first. Poll
+  // rather than assume — but stay well inside the anchor window.
+  let parts = null;
+  const evidenceDeadline = Date.now() + 4 * 60_000;
+  while (Date.now() < evidenceDeadline) {
+    try {
+      const pulled = await relay.getEvidence({ relayUrl: RELAY_URL, sessionId, role: "payee" });
+      parts = pulled.evidence ?? pulled;
+      if (parts?.json) break;
+    } catch { /* not uploaded yet */ }
+    say("EVIDENCE_RECEIVED", "Waiting for the requestor's evidence to arrive.");
+    await new Promise((resolve) => setTimeout(resolve, 5_000));
+  }
+  if (!parts?.json) stop("MISSING", "The requestor's evidence did not arrive in time.");
   await writeFile(join(payeeDirectory, "party-result.json"), parts.json);
   await writeFile(join(payeeDirectory, "PARTY-RESULT.md"), parts.markdown);
   await writeFile(join(payeeDirectory, ".party-result.complete.json"), parts.marker);
