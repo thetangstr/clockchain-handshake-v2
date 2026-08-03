@@ -23,8 +23,8 @@ added afterwards.
 > "Payer's agent — wants proof before paying", one on the right labelled "Requestor's
 > agent — wants to be paid". Each sits above a small laptop icon with a caption
 > underneath: "runs on one machine" and "runs on a different machine". Between them, a
-> smaller dashed-outline rectangle labelled "Mailbox — passes sealed messages, cannot
-> read or change them", with thin arrows running both ways between the three boxes.
+> smaller dashed-outline rectangle labelled "Payment service — passes sealed messages,
+> cannot read or change them", with thin arrows running both ways between the three boxes.
 > A small padlock icon sits on each arrow.
 >
 > Band 2, the middle: three numbered cards left to right, evenly spaced, each with a
@@ -34,9 +34,10 @@ added afterwards.
 > 3. "The acknowledgement" — "Agreed. On the record."
 > A thin arrow flows from card 1 to 2 to 3 to show the order matters.
 >
-> Band 3: a wide horizontal bar labelled "Public ledger", with three small green
-> circular check marks sitting on it, one under each card above, connected by short
-> vertical lines. Caption inside the bar: "Each step written down as it happens, in
+> Band 3: a wide horizontal bar labelled "Public ledger — three smart receipts", with
+> three small green circular check marks sitting on it, one under each card above,
+> connected by short vertical lines. Label them "Receipt 1 — The offer", "Receipt 2 —
+> The acceptance", "Receipt 3 — The acknowledgement". Caption inside the bar: "Each step written down as it happens, in
 > order, where anyone can look it up."
 >
 > Band 4, the bottom: a single wide rounded rectangle outlined in the emerald accent,
@@ -69,7 +70,7 @@ if a draft makes it look like a payment pipeline, the design is fighting the mes
 and the layout should change rather than the caption.
 
 Two labels worth keeping verbatim, because they are doing real work:
-- **"cannot read or change them"** on the mailbox — this is what makes the untrusted
+- **"cannot read or change them"** on the payment service — this is what makes the untrusted
   middle acceptable, and it is the first thing a technical person in the room will
   probe.
 - **"It took no part in the conversation"** on the checker — this is the difference

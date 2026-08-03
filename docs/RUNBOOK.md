@@ -18,7 +18,7 @@ Run these three checks. If any fails, fix it before the audience is in the room.
 cd ~/Documents/Projects/handshake
 ```
 
-**Check 1 — the relay is alive.** This is the mailbox the two agents talk through.
+**Check 1 — the payment service is alive.** This is what the two agents talk through.
 
 ```bash
 curl -s http://44.249.47.220:8080/healthz
@@ -130,7 +130,7 @@ loud — it is also roughly what the screen prints, so you can just read along.
 | *The requestor submitted a signed payment request* | "The other side signs its own request against those exact terms. We can't forge that — we don't have its key." |
 | *Opening the authorization window* | "Now the clock starts. Everything from here is machine-speed." |
 | *All three steps are recorded* | "Proposed, accepted, acknowledged — three receipts on the ledger, in order." |
-| *The requestor's evidence has arrived* | "Each side sends its own evidence. The mailbox in between can't read or change it." |
+| *The requestor's evidence has arrived* | "Each side sends its own evidence. The service in between can't read or change it." |
 | *An independent verifier is re-checking* | "Now a separate process re-reads everything from scratch. It trusts nothing that came before." |
 | **Verifier outcome: AUTHORIZED** | "Authorized. And note what that means: permission was established and proven — no payment was made." |
 
@@ -247,7 +247,8 @@ It stops and says why, in plain language, with a named reason. It never guesses 
 never reports success it cannot prove. You saw the vocabulary in section 5.
 
 **"Why is there a server in the middle if they don't trust each other?"**
-It's a mailbox, nothing more. It never checks a signature and holds no authority —
+It carries sealed messages, nothing more. It never checks a signature and holds no
+authority —
 it just moves sealed envelopes so neither machine has to accept incoming
 connections. Tampering would be detected immediately, because everything that
 matters is signed and anchored.

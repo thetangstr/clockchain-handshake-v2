@@ -39,7 +39,7 @@ await check("Node is new enough to run this", async () => {
   return `Node ${process.versions.node}`;
 });
 
-await check("The mailbox both sides talk through is awake", async () => {
+await check("The payment service both sides talk through is awake", async () => {
   const res = await fetch(`${RELAY}/healthz`, { signal: AbortSignal.timeout(10_000) });
   if (!res.ok) throw new Error(`relay answered ${res.status}`);
   const body = await res.json();
