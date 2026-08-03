@@ -1,0 +1,20 @@
+{
+  "schema": "handshake-run-summary/v1",
+  "runId": "first-live-20260803T100115",
+  "completedAt": "2026-08-03T17:01:15Z",
+  "outcome": "AUTHORIZED",
+  "paymentMoved": false,
+  "network": { "clockchain": "mcp.clockchain.network", "chain": "ethereum-sepolia", "chainId": 11155111 },
+  "identities": { "payerAgentId": "9327", "requestorAgentId": "9328", "registry": "0x8004A818BFB912233c491871b3d84c89A494BD9e" },
+  "anchors": [
+    { "kind": "proposal",       "blockHeight": 2702368, "ledgerId": "f90333a5-f09a-416b-9804-0a5c590cd747" },
+    { "kind": "acceptance",     "blockHeight": 2702389, "ledgerId": "6e1f3a39-556c-4a88-9d9f-73e63bb04e9a" },
+    { "kind": "acknowledgment", "blockHeight": 2702427, "ledgerId": "35d9c682-f6c0-41cf-ac06-e30211c03d1e" }
+  ],
+  "howToReVerifyThisYourself": [
+    "The three block heights are strictly increasing and the ledger ids are distinct: that ordering is the protocol claim.",
+    "Each anchor is independently readable on Clockchain by its ledger id.",
+    "Both agent identities are readable on Sepolia via ownerOf on the ERC-8004 registry.",
+    "No transfer of value appears anywhere: paymentMoved is false on every artifact."
+  ]
+}
