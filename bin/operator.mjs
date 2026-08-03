@@ -50,9 +50,119 @@ const HEARTBEAT_MS = 20_000;
 
 const publicClient = createPublicClient({ chain: sepolia, transport: http(RPC_URL) });
 
+// --- Monitor snapshot publication -------------------------------------
+//
+// Best-effort narration for the stakeholder audience page (see
+// src/monitor/snapshot.mjs and src/monitor/stakeholder/*). "Best-effort"
+// means exactly what it says: a relay hiccup here degrades what an audience
+// can see, never whether the protocol itself completes or how it reports a
+// failure. The verdict field is set ONLY in one place below, from the
+// verifier's own return value -- nothing here may guess it earlier.
+const SNAPSHOT_PUBLISH_BUDGET_MS = 5_000;
+
+let monitorState = null;
+let lastPublishedStage = null;
+
+function createMonitorState(sid) {
+  return {
+    anchors: { acceptance: null, acknowledgment: null, proposal: null },
+    funding: null,
+    heartbeat: { payee: null, payer: null, verifier: null },
+    sessionId: sid,
+    stageHistory: [],
+    verdict: null,
+  };
+}
+
+function bumpHeartbeat(...roles) {
+  if (!monitorState) return;
+  const lastSeenMs = Date.now();
+  for (const role of roles) monitorState.heartbeat[role] = { lastSeenMs };
+}
+
+function transitionToAnchor(kind, transition) {
+  return {
+    blockHeight: transition.onChain.blockHeight,
+    blockTime: Number(transition.blockTimeMs),
+    explorerUrl: `${MCP_BASE_URL}/explorer/${kind}/${transition.onChain.ledgerId}`,
+    kind,
+    ledgerId: transition.onChain.ledgerId,
+    receipt: {
+      anchoredHash: transition.onChain.anchoredHash,
+      blockTimeRaw: transition.blockTimeRaw,
+      digest: transition.digest,
+    },
+  };
+}
+
+async function publishSnapshot(stage, { reasonCode = null } = {}) {
+  if (!monitorState) return;
+  const nowMs = Date.now();
+  if (stage !== lastPublishedStage) {
+    monitorState.stageHistory = [
+      ...monitorState.stageHistory,
+      { atMs: nowMs, status: stage },
+    ];
+    lastPublishedStage = stage;
+  }
+  const safeReasonCode =
+    stage === FAILED_STAGE
+      ? (REASON_CODES.includes(reasonCode) ? reasonCode : "FAILED")
+      : null;
+  let snapshot;
+  try {
+    snapshot = buildSnapshot({
+      anchors: monitorState.anchors,
+      currentStage: stage,
+      funding: monitorState.funding,
+      heartbeat: monitorState.heartbeat,
+      reasonCode: safeReasonCode,
+      sessionId: monitorState.sessionId,
+      stageHistory: monitorState.stageHistory,
+      subjectRun: "stakeholder",
+      updatedAtMs: nowMs,
+      verdict: monitorState.verdict,
+    });
+  } catch {
+    // A local snapshot-shape bug must never take down the run it only
+    // narrates.
+    return;
+  }
+  try {
+    await relay.putSnapshot({
+      relayUrl: RELAY_URL,
+      sessionId: monitorState.sessionId,
+      snapshot,
+      retryBudgetMs: SNAPSHOT_PUBLISH_BUDGET_MS,
+    });
+  } catch {
+    // Same: audience visibility is best-effort, never a run-blocking
+    // dependency.
+  }
+}
+
+/** Narrate to the CLI (unchanged behaviour) and, once a session exists,
+ * publish the matching monitor snapshot. Shadows the imported `say` so every
+ * existing call site gets this for free. */
+async function say(stage, sentence, extra = {}) {
+  logSay(stage, sentence, extra);
+  if (STATUSES.includes(stage)) {
+    bumpHeartbeat("payer");
+    await publishSnapshot(stage);
+  }
+}
+
+/** Publish a final FAILED snapshot with the named public reason, then close
+ * exactly as the imported stop() always has. Shadows the imported `stop` so
+ * every existing call site gets this for free. */
+async function stop(reason, sentence) {
+  await publishSnapshot(FAILED_STAGE, { reasonCode: reason });
+  stopSession(reason, sentence);
+}
+
 async function registerIdentity(account, treasuryAccount, label) {
   const treasuryWallet = createWalletClient({ account: treasuryAccount, chain: sepolia, transport: http(RPC_URL) });
-  say("FUNDED", `Covering testnet gas so the ${label} can register an identity.`, { address: account.address });
+  await say("FUNDED", `Covering testnet gas so the ${label} can register an identity.`, { address: account.address });
   const fundTx = await treasuryWallet.sendTransaction({ to: account.address, value: FUND });
   await publicClient.waitForTransactionReceipt({ hash: fundTx, timeout: 180_000 });
 
@@ -71,8 +181,8 @@ async function registerIdentity(account, treasuryAccount, label) {
     if (log.topics.length !== 4 || log.topics[1] !== ZERO) continue;
     agentId = BigInt(log.topics[3]).toString();
   }
-  if (!agentId) stop("FAILED", `Could not read the ${label} identity id from the registry.`);
-  say("IDENTITY_REGISTERED", `The ${label} now holds on-chain identity #${agentId}.`, {
+  if (!agentId) await stop("FAILED", `Could not read the ${label} identity id from the registry.`);
+  await say("IDENTITY_REGISTERED", `The ${label} now holds on-chain identity #${agentId}.`, {
     address: account.address, agentId,
   });
   return agentId;
@@ -87,19 +197,23 @@ async function awaitKind(sessionId, kind, budgetMs) {
     const got = await relay.pollMessages({ relayUrl: RELAY_URL, sessionId, after, waitMs: 20_000 });
     for (const message of got.messages ?? []) {
       after = message.seq;
+      // Any traffic on this session from the counterparty is a real liveness
+      // signal for the payee -- distinct from our own heartbeat narration
+      // below, which only proves the operator process is still polling.
+      bumpHeartbeat("payee");
       if (message.kind === kind) return message;
     }
     if (Date.now() - lastBeat > HEARTBEAT_MS) {
       lastBeat = Date.now();
       const mins = Math.round((deadline - Date.now()) / 60_000);
-      say("REQUEST_SUBMITTED", `Still waiting for the requestor. ${mins} minutes remain in the window.`);
+      await say("REQUEST_SUBMITTED", `Still waiting for the requestor. ${mins} minutes remain in the window.`);
     }
   }
-  stop("EXPIRED", "No requestor appeared before the session window closed.");
+  await stop("EXPIRED", "No requestor appeared before the session window closed.");
 }
 
 async function main() {
-  say("SESSION_STARTED", "Starting a payment-authorization session. No money will move at any point.");
+  logSay("SESSION_STARTED", "Starting a payment-authorization session. No money will move at any point.");
 
   const treasury = await openFundingWallet({ keystorePath: KEYSTORE });
   const token = (await readFile(TOKEN_PATH, "utf8")).trim();
@@ -133,26 +247,33 @@ async function main() {
     paymentMoved: false,
   };
   const selfCheck = readDiscovery(discovery, { now: publishedAtMs });
-  if (!selfCheck.ok) stop(selfCheck.reason, `Refusing to publish an invitation the kit would reject: ${selfCheck.sentence}`);
+  if (!selfCheck.ok) await stop(selfCheck.reason, `Refusing to publish an invitation the kit would reject: ${selfCheck.sentence}`);
 
   await relay.createSession({ relayUrl: RELAY_URL, sessionId, discovery });
+  // The session now exists on the relay -- from here on a monitor snapshot
+  // has somewhere to live, so every subsequent say() also publishes one.
+  monitorState = createMonitorState(sessionId);
+  await publishSnapshot("SESSION_STARTED");
   await writeFile(join(process.cwd(), "runs", `discovery-${sessionId}.json`), JSON.stringify(discovery, null, 2)).catch(() => {});
 
   // Read it back through the same URL the stakeholder will use. Handing over a
   // link that does not resolve is the one failure they cannot diagnose.
   const discoveryUrl = discoveryUrlFor({ relayUrl: RELAY_URL, sessionId });
   const served = await fetchDiscovery({ discoveryUrl, budgetMs: 60_000 });
-  if (!served.ok) stop(served.reason, `The invitation link did not read back cleanly: ${served.sentence}`);
+  if (!served.ok) await stop(served.reason, `The invitation link did not read back cleanly: ${served.sentence}`);
 
   process.stdout.write(
     `\n${"=".repeat(64)}\nGive the stakeholder this one line, and nothing else:\n\n` +
     `${discoveryUrl}\n\n${"=".repeat(64)}\n\n`,
   );
-  say("TERMS_PUBLISHED", "Session published. Waiting for the requestor to appear.");
+  process.stdout.write(
+    `Watch the run here:\n\n  ${RELAY_URL.replace(/\/+$/, "")}/monitor/${encodeURIComponent(sessionId)}\n\n`,
+  );
+  await say("TERMS_PUBLISHED", "Session published. Waiting for the requestor to appear.");
 
   const claim = await awaitKind(sessionId, "identity_ready", WAIT_FOR_REQUESTOR_MS);
   const requestorAddress = claim.body.address;
-  say("REQUEST_SUBMITTED", "A requestor appeared and asked to be paid.", { address: requestorAddress });
+  await say("REQUEST_SUBMITTED", "A requestor appeared and asked to be paid.", { address: requestorAddress });
 
   // The requestor holds its own key, so it must sign its own registration. We
   // only pay for the gas — that is the entire extent of the operator's power over
@@ -160,17 +281,18 @@ async function main() {
   const payerAgentId = await registerIdentity(payerAccount, treasury.account, "payer");
 
   const treasuryWallet = createWalletClient({ account: treasury.account, chain: sepolia, transport: http(RPC_URL) });
-  say("FUNDED", "Covering the requestor's registration gas.", { address: requestorAddress });
+  await say("FUNDED", "Covering the requestor's registration gas.", { address: requestorAddress });
   const fundTx = await treasuryWallet.sendTransaction({ to: requestorAddress, value: FUND });
   await publicClient.waitForTransactionReceipt({ hash: fundTx, timeout: 180_000 });
 
   const opKp = relay.generateEnvelopeKeyPair();
   await postNext(relay, { relayUrl: RELAY_URL, sessionId, role: "payer", kind: "funding_record", body: { funded: requestorAddress.toLowerCase(), paymentMoved: false }, keyPair: opKp });
-  say("FUNDED", "The requestor is funded and is registering its own identity.");
+  monitorState.funding = { atMs: Date.now(), funded: true };
+  await say("FUNDED", "The requestor is funded and is registering its own identity.");
 
   const ready = await awaitKind(sessionId, "party_ready", WAIT_FOR_REQUESTOR_MS);
   const requestorAgentId = String(ready.body.agentId);
-  say("IDENTITY_REGISTERED", `The requestor registered on-chain identity #${requestorAgentId}.`);
+  await say("IDENTITY_REGISTERED", `The requestor registered on-chain identity #${requestorAgentId}.`);
 
   // The payer signs the mandate. It cannot sign the payment request — that
   // signature must come from the requestor's own key, which lives on the
@@ -183,11 +305,11 @@ async function main() {
     body: { common, expiresAtMs: String(expiresAtMs), issuedAtMs: String(issuedAtMs), mandateEnvelope, sessionUuid, paymentMoved: false },
     keyPair: opKp,
   });
-  say("TERMS_PUBLISHED", "Signed payment terms published. Waiting for the requestor to submit its request.");
+  await say("TERMS_PUBLISHED", "Signed payment terms published. Waiting for the requestor to submit its request.");
 
   const submitted = await awaitKind(sessionId, "payment_request", WAIT_FOR_REQUESTOR_MS);
   const requestEnvelope = submitted.body.requestEnvelope;
-  say("REQUEST_SUBMITTED", "The requestor submitted a signed payment request against those terms.");
+  await say("REQUEST_SUBMITTED", "The requestor submitted a signed payment request against those terms.");
 
   const descriptor = buildDescriptor({ common, mandateEnvelope, requestEnvelope, repositorySha: REPO_SHA, sessionUuid });
   const envelope = createSignedEnvelope(descriptor, {
@@ -200,18 +322,23 @@ async function main() {
     body: { descriptorEnvelope: envelope, repositoryPublicKey, paymentMoved: false },
     keyPair: opKp,
   });
-  say("HANDSHAKE_REQUIRED", "The payer requires a verified handshake before any payment is considered.");
+  await say("HANDSHAKE_REQUIRED", "The payer requires a verified handshake before any payment is considered.");
 
   await awaitKind(sessionId, "watching", WAIT_FOR_REQUESTOR_MS);
-  say("REQUEST_SUBMITTED", "The requestor is watching the ledger. Opening the window now.");
+  await say("REQUEST_SUBMITTED", "The requestor is watching the ledger. Opening the window now.");
 
   const root = await mkdtemp(join(tmpdir(), "handshake-op-"));
   const payerDirectory = join(root, "payer");
   await mkdir(payerDirectory, { mode: 0o700, recursive: true });
   await chmod(payerDirectory, 0o700);
 
-  say("PROPOSED", "Opening the authorization window and recording the proposed terms.");
-  await runPayerRole({
+  await say("PROPOSED", "Opening the authorization window and recording the proposed terms.");
+  // runPayerRole blocks until all three transitions (proposal, acceptance,
+  // acknowledgment) are anchored -- there is no mid-poll hook to narrate
+  // ACCEPTED the instant it lands on-chain, so it is narrated immediately
+  // after, using the real anchors this call already produced rather than a
+  // guess made before they existed.
+  const payerResult = await runPayerRole({
     client: createMcpClient({ token }),
     descriptorEnvelope: envelope,
     outputDirectory: payerDirectory,
@@ -220,7 +347,19 @@ async function main() {
     repositoryPublicKey,
     signMessage: (bytes) => payerAccount.signMessage({ message: { raw: bytes } }),
   });
-  say("ACKNOWLEDGED", "All three steps are recorded on Clockchain in order.");
+  const [proposedTransition, acceptedTransition, acknowledgedTransition] = payerResult.transitions;
+  monitorState.anchors = {
+    ...monitorState.anchors,
+    acceptance: transitionToAnchor("acceptance", acceptedTransition),
+    proposal: transitionToAnchor("proposal", proposedTransition),
+  };
+  bumpHeartbeat("payee");
+  await say("ACCEPTED", "The requestor accepted the exact terms, and that acceptance is recorded.");
+  monitorState.anchors = {
+    ...monitorState.anchors,
+    acknowledgment: transitionToAnchor("acknowledgment", acknowledgedTransition),
+  };
+  await say("ACKNOWLEDGED", "All three steps are recorded on Clockchain in order.");
 
   const payeeDirectory = join(root, "payee");
   await mkdir(payeeDirectory, { mode: 0o700, recursive: true });
@@ -234,16 +373,18 @@ async function main() {
       parts = await relay.getEvidence({ relayUrl: RELAY_URL, sessionId, role: "payee" });
       if (parts?.json) break;
     } catch { /* not uploaded yet */ }
-    say("EVIDENCE_RECEIVED", "Waiting for the requestor's evidence to arrive.");
+    await say("EVIDENCE_RECEIVED", "Waiting for the requestor's evidence to arrive.");
     await new Promise((resolve) => setTimeout(resolve, 5_000));
   }
-  if (!parts?.json) stop("MISSING", "The requestor's evidence did not arrive in time.");
+  if (!parts?.json) await stop("MISSING", "The requestor's evidence did not arrive in time.");
+  bumpHeartbeat("payee");
   await writeFile(join(payeeDirectory, "party-result.json"), parts.json);
   await writeFile(join(payeeDirectory, "PARTY-RESULT.md"), parts.markdown);
   await writeFile(join(payeeDirectory, ".party-result.complete.json"), parts.marker);
-  say("EVIDENCE_RECEIVED", "The requestor's evidence has arrived. Verifying now, while the window is open.");
+  await say("EVIDENCE_RECEIVED", "The requestor's evidence has arrived. Verifying now, while the window is open.");
 
-  say("VERIFYING", "An independent verifier is re-checking every piece of evidence from scratch.");
+  await say("VERIFYING", "An independent verifier is re-checking every piece of evidence from scratch.");
+  bumpHeartbeat("verifier");
   const verdict = await verifyBilateralAuthorization({
     clockchain: createMcpClient({ token }),
     descriptorEnvelope: envelope,
@@ -255,6 +396,12 @@ async function main() {
     requestEnvelope,
     repositoryPublicKeyResolver: async () => repositoryPublicKey,
   });
+  // The single most important line in this file: the monitor's verdict field
+  // is set HERE and ONLY here, from the independent verifier's own return
+  // value, after it has actually run -- never before, never guessed.
+  bumpHeartbeat("verifier");
+  monitorState.verdict = { outcome: verdict.outcome, paymentMoved: verdict.paymentMoved };
+  await publishSnapshot("VERIFYING");
   process.stdout.write(`\nVerifier outcome: ${verdict.outcome}\nNo money moved: ${verdict.paymentMoved === false}\n`);
   for (const t of verdict.transitions ?? []) {
     process.stdout.write(`  ${t.kind}  block ${t.blockHeight}  ledger ${t.ledgerId}\n`);
@@ -266,7 +413,7 @@ async function main() {
   process.stdout.write(`  Payer evidence: ${payerDirectory}\n`);
 }
 
-main().catch((error) => {
+main().catch(async (error) => {
   if (process.env.HANDSHAKE_DEBUG) process.stderr.write(`${error?.stack}\n`);
-  stop(error?.terminalCode ?? error?.code ?? "FAILED", error?.message ?? "The session stopped.");
+  await stop(error?.terminalCode ?? error?.code ?? "FAILED", error?.message ?? "The session stopped.");
 });
