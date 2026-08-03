@@ -105,9 +105,9 @@ loud — it is also roughly what the screen prints, so you can just read along.
 Then point at the last three lines:
 
 ```
-  proposal        block 2705263  ledger eb1d798f-...
-  acceptance      block 2705284  ledger 257dc1c5-...
-  acknowledgment  block 2705287  ledger 0e7806f3-...
+  proposal        block 2705531  ledger 5b46121a-...
+  acceptance      block 2705552  ledger 9a8b271c-...
+  acknowledgment  block 2705574  ledger d958486c-...
 ```
 
 **"Anyone can check these. Watch."** — and run the next section live.
@@ -124,7 +124,7 @@ const { createMcpClient } = await import("./src/core/clockchain.mjs");
 const { readFile } = await import("node:fs/promises");
 const token = (await readFile("keys/clockchain.token","utf8")).trim();
 const c = createMcpClient({ token });
-for (const h of [2705263, 2705284, 2705287]) {
+for (const h of [2705531, 2705552, 2705574]) {
   const b = await c.getBlock({ height: h });
   console.log("block", b.blockHeight, "recorded at", b.blockTime);
 }'

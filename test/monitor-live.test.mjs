@@ -26,7 +26,6 @@ import {
 import {
   buildFailureView,
   buildStakeholderView,
-  buildVerdictView,
   NO_MONEY_MOVED_SENTENCE,
 } from "../src/monitor/stakeholder/messages.mjs";
 

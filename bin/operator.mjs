@@ -409,8 +409,11 @@ async function main() {
 
   await writeFile(join(process.cwd(), "runs", `session-${sessionId}.json`),
     JSON.stringify({ descriptorEnvelope: envelope, mandateEnvelope, requestEnvelope, repositoryPublicKey, payerDirectory, payeeDirectory, outcome: verdict.outcome, anchors: verdict.transitions, paymentMoved: false }, null, 2));
-  process.stdout.write("\nThe payer side is complete. Run the verifier to get the independent verdict.\n");
-  process.stdout.write(`  Payer evidence: ${payerDirectory}\n`);
+  process.stdout.write(
+    `\nThe run is complete and the verdict above came from the independent verifier.\n` +
+    `Anyone can re-check those three blocks themselves; no money moved at any point.\n` +
+    `  Evidence: ${payerDirectory}\n`,
+  );
 }
 
 main().catch(async (error) => {
