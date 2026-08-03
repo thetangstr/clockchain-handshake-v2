@@ -68,6 +68,17 @@ http://44.249.47.220:8080/v1/discovery/58eab963-a290-48ce-aea8-e9215354a8d6
 **That URL is the only thing the stakeholder gets.** Not a key, not a password,
 not a session id, not a commit hash. One link.
 
+**Put the audience page on the projector.** Same session id, different path:
+
+```
+http://44.249.47.220:8080/monitor/<SESSION_ID>
+```
+
+It updates itself as the run proceeds: a plain-English timeline, "no money has
+moved" in every state, and the three receipts as they land. The verdict box stays
+empty until the independent verifier has actually decided — it cannot show an
+outcome early, by construction.
+
 ### Terminal 2 — the stakeholder
 
 On *their* machine, they paste the prompt from `prompts/requestor.md` into a fresh
