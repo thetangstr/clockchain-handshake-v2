@@ -150,8 +150,16 @@ const FILE_SYSTEM_KEYS = new Set([
   "rm",
   "writeFile",
 ]);
+// The only injectable transport. core/ never imports relay/: the
+// publish path receives the uploader from its caller, so the relay
+// stays outside the evidence trust boundary. The relay validates
+// nothing; authority remains in the signature and the marker digests.
+const DEPENDENCY_KEYS = new Set([
+  "uploadPartyPackage",
+]);
 const WRITE_OPTION_KEYS = new Set([
   "canaries",
+  "dependencies",
   "directory",
   "directoryPin",
   "fileSystem",
@@ -229,6 +237,17 @@ export class BilateralEvidenceAmbiguousPublicationError
     this.category = "publication";
     this.code =
       "BILATERAL_EVIDENCE_PUBLICATION_AMBIGUOUS";
+  }
+}
+
+export class BilateralEvidenceUploadError extends Error {
+  constructor() {
+    super(
+      "Bilateral evidence upload failed after the local party package was published; retry the upload.",
+    );
+    this.name = new.target.name;
+    this.category = "publication";
+    this.code = "BILATERAL_EVIDENCE_UPLOAD_FAILED";
   }
 }
 
@@ -1028,6 +1047,11 @@ function validateWriteOptions(options) {
     undefined,
   );
   const fileSystem = readDataOption(options, "fileSystem", {});
+  const dependencies = readDataOption(
+    options,
+    "dependencies",
+    {},
+  );
   if (
     typeof directory !== "string" ||
     directory.length === 0 ||
@@ -1052,6 +1076,7 @@ function validateWriteOptions(options) {
     }
   }
   return {
+    activeDependencies: mergeDependencies(dependencies),
     activeFileSystem: mergeFileSystem(fileSystem),
     canaries: validateCanaries(canaries),
     directory,
@@ -1132,6 +1157,55 @@ function mergeFileSystem(fileSystem) {
     active[key] = property.value;
   }
   return Object.freeze(active);
+}
+
+function mergeDependencies(dependencies) {
+  if (
+    dependencies === null ||
+    typeof dependencies !== "object" ||
+    types.isProxy(dependencies) ||
+    (
+      Object.getPrototypeOf(dependencies) !== Object.prototype &&
+      Object.getPrototypeOf(dependencies) !== null
+    )
+  ) {
+    throw new BilateralEvidenceConfigurationError();
+  }
+  // Null-prototype: an absent uploader must read as undefined even if
+  // Object.prototype is polluted, so egress is never inherited.
+  const active = Object.create(null);
+  for (const key of Reflect.ownKeys(dependencies)) {
+    const property = Object.getOwnPropertyDescriptor(
+      dependencies,
+      key,
+    );
+    if (
+      typeof key !== "string" ||
+      !DEPENDENCY_KEYS.has(key) ||
+      property?.enumerable !== true ||
+      !Object.hasOwn(property, "value") ||
+      typeof property.value !== "function"
+    ) {
+      throw new BilateralEvidenceConfigurationError();
+    }
+    active[key] = property.value;
+  }
+  return Object.freeze(active);
+}
+
+// Runs only after the completion marker is on disk, so a rejection
+// leaves a complete, re-uploadable local package. The underlying
+// rejection value is never propagated or embedded: a transport error
+// may echo package bytes, and evidence errors stay text-free.
+async function uploadCompletedPackage(upload, payload) {
+  if (upload === undefined) {
+    return;
+  }
+  try {
+    await upload(payload);
+  } catch {
+    throw new BilateralEvidenceUploadError();
+  }
 }
 
 async function pinnedOperation(directoryPin, operation) {
@@ -1216,6 +1290,7 @@ async function cleanupTemporaryFiles(
 
 export async function writePartyResult(options) {
   const {
+    activeDependencies,
     activeFileSystem,
     canaries,
     directory,
@@ -1389,8 +1464,20 @@ export async function writePartyResult(options) {
     if (directoryPin !== undefined) {
       await directoryPin.sync();
     }
+    await uploadCompletedPackage(
+      activeDependencies.uploadPartyPackage,
+      Object.freeze({
+        json: finalJson,
+        markdown: finalMarkdown,
+        marker,
+        role: snapshot.role,
+      }),
+    );
     return { jsonPath, markdownPath, markerPath };
   } catch (error) {
+    if (error instanceof BilateralEvidenceUploadError) {
+      throw error;
+    }
     await cleanupTemporaryFiles(
       activeFileSystem,
       temporaryPaths,
