@@ -22,6 +22,7 @@ import { sepolia } from "viem/chains";
 import * as relay from "../src/relay/client.mjs";
 import {
   buildDescriptor, buildMandate, discoveryUrlFor, fetchDiscovery, postNext, readDiscovery,
+  requestorPromptFor,
   say as logSay, stop as stopSession, DISCOVERY_SCHEMA,
 } from "../src/roles/session.mjs";
 import { createMcpClient } from "../src/core/clockchain.mjs";
@@ -263,8 +264,12 @@ async function main() {
   if (!served.ok) await stop(served.reason, `The invitation link did not read back cleanly: ${served.sentence}`);
 
   process.stdout.write(
-    `\n${"=".repeat(64)}\nGive the stakeholder this one line, and nothing else:\n\n` +
-    `${discoveryUrl}\n\n${"=".repeat(64)}\n\n`,
+    `\n${"=".repeat(70)}\n` +
+    `SEND THIS WHOLE BLOCK TO THE STAKEHOLDER. They paste it as-is —\n` +
+    `there is nothing for them to fill in or edit.\n` +
+    `${"=".repeat(70)}\n\n` +
+    `${requestorPromptFor(discoveryUrl)}\n\n` +
+    `${"=".repeat(70)}\n\n`,
   );
   process.stdout.write(
     `Watch the run here:\n\n  ${RELAY_URL.replace(/\/+$/, "")}/monitor/${encodeURIComponent(sessionId)}\n\n`,

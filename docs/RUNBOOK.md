@@ -51,7 +51,15 @@ see *Cannot get a ledger token* in Troubleshooting.
 
 ## 2. The run (about 4 minutes)
 
-### Terminal 1 — you (the operator)
+**You do not need to type any of this.** Ask Claude Code (in the session you're
+already in) to "start the operator" and it runs the command and watches the output.
+The commands are written out only so you can see what is happening, and so someone
+else could run it without me.
+
+Your actual job during the demo is three things: hand the stakeholder one block,
+read the narration in section 3, and run the live check in section 5.
+
+### Terminal 1 — the operator
 
 ```bash
 cd ~/Documents/Projects/handshake
@@ -59,14 +67,27 @@ CLOCKCHAIN_FUNDING_PASSWORD_FILE="$PWD/keys/funding.password" \
   node bin/operator.mjs --relay-url http://44.249.47.220:8080
 ```
 
-It prints a single line like:
+It prints a **complete, ready-to-send block**: the stakeholder's prompt with this
+run's URL already filled in. It looks like this:
 
 ```
-http://44.249.47.220:8080/v1/discovery/58eab963-a290-48ce-aea8-e9215354a8d6
+======================================================================
+SEND THIS WHOLE BLOCK TO THE STAKEHOLDER. They paste it as-is —
+there is nothing for them to fill in or edit.
+======================================================================
+
+# Ask to be paid
+...
+    http://44.249.47.220:8080/v1/discovery/1d943555-...
+...
 ```
 
-**That URL is the only thing the stakeholder gets.** Not a key, not a password,
-not a session id, not a commit hash. One link.
+**Copy that whole block and send it however you like** — Slack, email, chat. The
+stakeholder pastes it into a fresh agent session and does nothing else. They never
+type a URL, substitute a placeholder, or receive a key, password, or session id.
+
+(If you'd rather send just the link, it's the URL inside the block — but sending
+the whole block is one less thing to go wrong in front of an audience.)
 
 **Put the audience page on the projector.** Same session id, different path:
 
@@ -81,8 +102,8 @@ outcome early, by construction.
 
 ### Terminal 2 — the stakeholder
 
-On *their* machine, they paste the prompt from `prompts/requestor.md` into a fresh
-Claude Code / Codex / Hermes session, and give it that URL when asked.
+On *their* machine: paste the block you sent into a fresh Claude Code / Codex /
+Hermes session. That is their entire involvement.
 
 To drive it yourself in a dry run, the same thing by hand:
 

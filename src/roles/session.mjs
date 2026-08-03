@@ -9,6 +9,7 @@
  * receipts, so an untrusted mailbox in the middle is fine by construction.
  */
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 import { payerMandateDigest, signPayerMandate } from "../core/payer-mandate.mjs";
 import { paymentRequestDigest, signPaymentRequest } from "../core/payment-request.mjs";
@@ -420,4 +421,20 @@ export async function postNext(relay, { relayUrl, sessionId, role, kind, body, k
     }
   }
   stop("FAILED", "Could not find a free position in the session log.");
+}
+
+/**
+ * The stakeholder's prompt, with this run's URL already substituted.
+ *
+ * The prompt file ships with a <DISCOVERY_URL> placeholder, which means a human
+ * has to find it and replace it correctly under time pressure in front of an
+ * audience. Emitting the finished text removes that step: the operator sends one
+ * block, the stakeholder pastes one block, and there is nothing to edit.
+ */
+export function requestorPromptFor(discoveryUrl) {
+  const source = readFileSync(
+    new URL("../../prompts/requestor.md", import.meta.url),
+    "utf8",
+  );
+  return source.replaceAll("<DISCOVERY_URL>", discoveryUrl).trim();
 }
