@@ -489,6 +489,11 @@ async function handleCreateSession(req, sessions, stateDir) {
     type: "session-created",
     sessionId,
     discovery: discovery ?? null,
+    // Journalled because the restore path reads it back, and without it every
+    // session recovered after a restart carried publishedAtMs 0 -- which is
+    // what "current" and the run list both order by. The alias survived only
+    // because a live run always outranks a zero.
+    publishedAtMs: session.publishedAtMs,
   });
 
   return { sessionId, paymentMoved: false };
@@ -637,6 +642,49 @@ function newestPublishedSession(sessions) {
     }
   }
   return newest;
+}
+
+// GET /v1/runs -- every run this relay has held, newest first, as a flat list.
+//
+// Read-only bookkeeping over what is already public: session id, when it
+// opened, how far it got, the three block heights, and the verdict if one was
+// published. The verdict is echoed from the snapshot the operator set from the
+// verifier's own return value; nothing here derives an outcome, and paymentMoved
+// is a constant because there is no code path that could make it anything else.
+const RUN_HISTORY_LIMIT = 50;
+
+function handleRuns(sessions) {
+  const runs = [];
+  for (const session of sessions.values()) {
+    if (session.discovery === undefined) continue;
+    const snapshot = session.monitorSnapshot;
+    const anchors = snapshot?.anchors ?? null;
+    runs.push({
+      sessionId: session.sessionId,
+      // Sessions journalled before publishedAtMs was recorded restore as 0.
+      // Their snapshot still knows when the run opened, so the list stays in a
+      // sensible order rather than collapsing every old run to the epoch.
+      startedAtMs:
+        session.publishedAtMs ||
+        snapshot?.stageHistory?.[0]?.atMs ||
+        snapshot?.updatedAtMs ||
+        0,
+      stage: snapshot?.currentStage ?? null,
+      outcome: snapshot?.verdict?.outcome ?? null,
+      reasonCode: snapshot?.reasonCode ?? null,
+      anchors: {
+        proposal: anchors?.proposal?.blockHeight ?? null,
+        acceptance: anchors?.acceptance?.blockHeight ?? null,
+        acknowledgment: anchors?.acknowledgment?.blockHeight ?? null,
+      },
+    });
+  }
+  runs.sort((a, b) => b.startedAtMs - a.startedAtMs);
+  return {
+    ok: true,
+    paymentMoved: false,
+    runs: runs.slice(0, RUN_HISTORY_LIMIT),
+  };
 }
 
 function handleDiscovery(sessions, sessionId) {
@@ -903,6 +951,11 @@ async function dispatch(req, res, sessions, stateDir) {
   if (method === "POST" && segments.length === 2 && segments[1] === "sessions") {
     const result = await handleCreateSession(req, sessions, stateDir);
     writeJson(res, 201, { ok: true, ...result });
+    return;
+  }
+
+  if (method === "GET" && segments.length === 2 && segments[1] === "runs") {
+    writeJson(res, 200, handleRuns(sessions));
     return;
   }
 
