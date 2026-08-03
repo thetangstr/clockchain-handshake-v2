@@ -662,6 +662,108 @@ function handleDiscovery(sessions, sessionId) {
   return session.discovery;
 }
 
+// GET /v1/blocks/{height} re-reads one Clockchain block and returns what the
+// ledger itself says about it.
+//
+// This exists because Clockchain's own explorer is token-gated -- every path on
+// mcp.clockchain.network except /health answers 401 -- so "go and check this
+// block yourself" has nowhere public to point. Relaying the read is the honest
+// second best: the answer is the ledger's, fetched fresh, and the page that
+// shows it says plainly that it came through this server.
+//
+// Two limits keep this from becoming something it should not be. It serves only
+// a height that already appears as an anchor in a session this relay holds, so
+// the demo's token cannot be used to scrape the ledger at large; and results are
+// cached, because a block is immutable once written. The relay still checks no
+// signature and still holds no authority over any handshake: this is a read.
+const blockCache = new Map();
+
+// Held for the life of the process. Minting is rate-limited per IP (10/hour) and
+// that quota is also the documented fallback when the operator's own laptop runs
+// dry, so this mints at most once per relay restart and reuses it. A token file
+// wins if one is ever placed here.
+let cachedLedgerToken = null;
+
+async function ledgerToken(mintDemoToken) {
+  if (cachedLedgerToken !== null) return cachedLedgerToken;
+  try {
+    const fromFile = (await readFile(join(process.cwd(), "keys/clockchain.token"), "utf8")).trim();
+    if (fromFile !== "") {
+      cachedLedgerToken = fromFile;
+      return cachedLedgerToken;
+    }
+  } catch {
+    // No token file on this host; mint one instead.
+  }
+  cachedLedgerToken = (await mintDemoToken({})).trim();
+  return cachedLedgerToken;
+}
+
+function findAnchoredBlock(sessions, height) {
+  for (const session of sessions.values()) {
+    const anchors = session.monitorSnapshot?.anchors;
+    if (!anchors) continue;
+    for (const anchor of Object.values(anchors)) {
+      if (anchor !== null && anchor?.blockHeight === height) return anchor;
+    }
+  }
+  return null;
+}
+
+async function handleBlock(sessions, height) {
+  if (!/^[0-9]{1,12}$/.test(height)) {
+    throw new RelayError("Block height must be a decimal integer.", "MALFORMED_HEIGHT", {
+      status: 400,
+    });
+  }
+  const cached = blockCache.get(height);
+  if (cached !== undefined) return cached;
+
+  const anchor = findAnchoredBlock(sessions, height);
+  if (anchor === null) {
+    throw new RelayError(
+      "No run held by this relay anchored that block.",
+      "UNKNOWN_BLOCK",
+      { status: 404 },
+    );
+  }
+
+  // Imported here rather than at module scope so that a problem reaching the
+  // ledger client can never stop the relay from booting. The mailbox has to come
+  // up even when Clockchain does not.
+  const { createMcpClient, mintDemoToken } = await import("../core/clockchain.mjs");
+
+  let block;
+  try {
+    const token = await ledgerToken(mintDemoToken);
+    block = await createMcpClient({ token }).getBlock({ height: Number(height) });
+  } catch (error) {
+    // Named, because "it failed" is useless at a podium. Token minting is
+    // rate-limited per IP, and that is the one failure likely to be seen here.
+    throw new RelayError(
+      `Could not re-read that block from the ledger: ${error?.message ?? error}`,
+      "LEDGER_READ_FAILED",
+      { status: 502 },
+    );
+  }
+
+  const body = {
+    ok: true,
+    paymentMoved: false,
+    blockHeight: block.blockHeight,
+    blockTime: block.blockTime,
+    proposerAddress: block.proposerAddress,
+    anchor: {
+      kind: anchor.kind,
+      ledgerId: anchor.ledgerId,
+      digest: anchor.receipt?.digest ?? null,
+    },
+    source: "Read from Clockchain by the demo relay. The ledger's own endpoint requires a token.",
+  };
+  blockCache.set(height, body);
+  return body;
+}
+
 // GET returns the published monitor snapshot verbatim once one exists (see
 // src/monitor/snapshot.mjs for the shape the stakeholder page expects at
 // this exact URL) -- otherwise it falls back to the relay's own bookkeeping
@@ -801,6 +903,12 @@ async function dispatch(req, res, sessions, stateDir) {
   if (method === "POST" && segments.length === 2 && segments[1] === "sessions") {
     const result = await handleCreateSession(req, sessions, stateDir);
     writeJson(res, 201, { ok: true, ...result });
+    return;
+  }
+
+  if (method === "GET" && segments.length === 3 && segments[1] === "blocks") {
+    const block = await handleBlock(sessions, segments[2]);
+    writeJson(res, 200, block);
     return;
   }
 
