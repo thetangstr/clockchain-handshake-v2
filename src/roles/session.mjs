@@ -135,3 +135,41 @@ export const BUSINESS_STAGE = Object.freeze({
   TERMS_PUBLISHED: "The signed terms are published and the session is open.",
   VERIFYING: "An independent verifier is re-checking every piece of evidence.",
 });
+
+/**
+ * Post a message using the next free sequence number.
+ *
+ * Sequence is per-SESSION and strictly monotonic, not per-role — the relay
+ * enforces that so the message order is unambiguous. Two parties therefore share
+ * one counter and cannot pick their own numbers independently: read the current
+ * high-water mark, take the next one, and retry if the peer beat us to it.
+ */
+export async function postNext(relay, { relayUrl, sessionId, role, kind, body, keyPair }) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const seen = await relay.pollMessages({ relayUrl, sessionId, after: "0", waitMs: 0 });
+    const highest = (seen.messages ?? []).reduce(
+      (max, message) => Math.max(max, Number(message.seq)),
+      0,
+    );
+    try {
+      return await relay.postMessage({
+        relayUrl,
+        sessionId,
+        envelope: relay.signEnvelope({
+          sessionId,
+          seq: String(highest + 1),
+          role,
+          kind,
+          body,
+          senderKey: keyPair.senderKey,
+          privateKeyPem: keyPair.privateKeyPem,
+        }),
+      });
+    } catch (error) {
+      // The peer claimed that number between our read and our write. Re-read and
+      // take the next one; this is ordinary contention, not a failure.
+      if (error?.code !== "SEQ_CONFLICT") throw error;
+    }
+  }
+  stop("FAILED", "Could not find a free position in the session log.");
+}

@@ -17,7 +17,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { sepolia } from "viem/chains";
 
 import * as relay from "../src/relay/client.mjs";
-import { say, stop } from "../src/roles/session.mjs";
+import { postNext, say, stop } from "../src/roles/session.mjs";
 import { createMcpClient, mintDemoToken } from "../src/core/clockchain.mjs";
 import { ERC8004_ABI } from "../src/core/registration.mjs";
 import { runPayeeRole } from "../src/core/roles-core.mjs";
@@ -67,14 +67,7 @@ async function main() {
   const kp = relay.generateEnvelopeKeyPair();
   say("REQUEST_SUBMITTED", "Generated a fresh identity key for this run.", { address: account.address });
 
-  await relay.postMessage({
-    relayUrl: RELAY_URL, sessionId: SESSION_ID,
-    envelope: relay.signEnvelope({
-      sessionId: SESSION_ID, seq: "1", role: "requestor", kind: "identity_ready",
-      body: { address: account.address.toLowerCase(), paymentMoved: false },
-      senderKey: kp.senderKey, privateKeyPem: kp.privateKeyPem,
-    }),
-  });
+  await postNext(relay, { relayUrl: RELAY_URL, sessionId: SESSION_ID, role: "requestor", kind: "identity_ready", body: { address: account.address.toLowerCase(), paymentMoved: false }, keyPair: kp });
   say("HANDSHAKE_REQUIRED",
     "The payer will not consider a payment without a verified handshake first. Following its instructions.");
 
@@ -99,14 +92,7 @@ async function main() {
   if (!agentId) stop("FAILED", "Could not read our identity id back from the registry.");
   say("IDENTITY_REGISTERED", `Registered on-chain identity #${agentId}.`, { agentId });
 
-  await relay.postMessage({
-    relayUrl: RELAY_URL, sessionId: SESSION_ID,
-    envelope: relay.signEnvelope({
-      sessionId: SESSION_ID, seq: "2", role: "requestor", kind: "party_ready",
-      body: { address: account.address.toLowerCase(), agentId, paymentMoved: false },
-      senderKey: kp.senderKey, privateKeyPem: kp.privateKeyPem,
-    }),
-  });
+  await postNext(relay, { relayUrl: RELAY_URL, sessionId: SESSION_ID, role: "requestor", kind: "party_ready", body: { address: account.address.toLowerCase(), agentId, paymentMoved: false }, keyPair: kp });
 
   const handshake = await awaitKind("handshake_required", WAIT_MS);
   const { descriptorEnvelope, repositoryPublicKey } = handshake.body;

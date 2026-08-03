@@ -20,7 +20,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { sepolia } from "viem/chains";
 
 import * as relay from "../src/relay/client.mjs";
-import { buildSession, say, stop, DISCOVERY_SCHEMA } from "../src/roles/session.mjs";
+import { buildSession, postNext, say, stop, DISCOVERY_SCHEMA } from "../src/roles/session.mjs";
 import { createMcpClient } from "../src/core/clockchain.mjs";
 import { createSignedEnvelope } from "../src/core/descriptor.mjs";
 import { openFundingWallet } from "../src/core/funding/wallet.mjs";
@@ -145,14 +145,7 @@ async function main() {
   await publicClient.waitForTransactionReceipt({ hash: fundTx, timeout: 180_000 });
 
   const opKp = relay.generateEnvelopeKeyPair();
-  await relay.postMessage({
-    relayUrl: RELAY_URL, sessionId,
-    envelope: relay.signEnvelope({
-      sessionId, seq: "2", role: "payer", kind: "funding_record",
-      body: { funded: requestorAddress.toLowerCase(), paymentMoved: false },
-      senderKey: opKp.senderKey, privateKeyPem: opKp.privateKeyPem,
-    }),
-  });
+  await postNext(relay, { relayUrl: RELAY_URL, sessionId, role: "payer", kind: "funding_record", body: { funded: requestorAddress.toLowerCase(), paymentMoved: false }, keyPair: opKp });
   say("FUNDED", "The requestor is funded and is registering its own identity.");
 
   const ready = await awaitKind(sessionId, "party_ready", WAIT_FOR_REQUESTOR_MS);
@@ -170,14 +163,7 @@ async function main() {
     privateKeyPem: operatorPrivateKeyPem,
   });
 
-  await relay.postMessage({
-    relayUrl: RELAY_URL, sessionId,
-    envelope: relay.signEnvelope({
-      sessionId, seq: "3", role: "payer", kind: "handshake_required",
-      body: { descriptorEnvelope: envelope, repositoryPublicKey, paymentMoved: false },
-      senderKey: opKp.senderKey, privateKeyPem: opKp.privateKeyPem,
-    }),
-  });
+  await postNext(relay, { relayUrl: RELAY_URL, sessionId, role: "payer", kind: "handshake_required", body: { descriptorEnvelope: envelope, repositoryPublicKey, paymentMoved: false }, keyPair: opKp });
   say("HANDSHAKE_REQUIRED", "The payer requires a verified handshake before any payment is considered.");
 
   const root = await mkdtemp(join(tmpdir(), "handshake-op-"));
