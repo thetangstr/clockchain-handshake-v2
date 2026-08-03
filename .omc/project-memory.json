@@ -18,8 +18,8 @@
     "runtime": "Node.js 22"
   },
   "build": {
-    "buildCommand": "R=/private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research; cd \"$R\" && npm run build 2>&1 | grep -E \"error|Error|Compiled successfully\" | head -8",
-    "testCommand": "npm test 2>&1 | grep -E \"^# (tests|pass|fail)|^not ok\" | head -8 && rsync -az -e \"ssh -o BatchMode=yes -i ~/.ssh/handshake-relay.pem\" src/relay/server.mjs ubuntu@44.249.47.220:/opt/handshake/app/src/relay/server.mjs && ssh -o BatchMode=yes -i ~/.ssh/handshake-relay.pem ubuntu@44.249.47.220 \"sudo systemctl restart handshake-relay && sleep 2 && curl -s localhost:8080/healthz\" && echo && echo \"=== anchored block (should be 200) ===\" && curl -s http://44.249.47.220:8080/v1/blocks/2709634 && echo && echo \"=== non-anchored (should be 404) ===\" && curl -s http://44.249.47.220:8080/v1/blocks/1 && echo && echo \"=== malformed (should be 400) ===\" && curl -s http://44.249.47.220:8080/v1/blocks/abc",
+    "buildCommand": "R=/private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research; cd \"$R\" && npm run build 2>&1 | grep -E \"error|Error|Compiled successfully\" | head -6",
+    "testCommand": "grep -n \"MCP_BASE_URL\" bin/operator.mjs | head; echo \"=== tests ===\"; npm test 2>&1 | grep -E \"^# (tests|pass|fail)|^not ok\" | head -6",
     "lintCommand": null,
     "devCommand": null,
     "scripts": {
@@ -168,6 +168,12 @@
       "type": "file"
     },
     {
+      "path": "bin/operator.mjs",
+      "accessCount": 3,
+      "lastAccessed": 1785785771542,
+      "type": "file"
+    },
+    {
       "path": "package.json",
       "accessCount": 2,
       "lastAccessed": 1785783049995,
@@ -183,12 +189,6 @@
       "path": "src/monitor/stakeholder/app.mjs",
       "accessCount": 1,
       "lastAccessed": 1785782944000,
-      "type": "file"
-    },
-    {
-      "path": "bin/operator.mjs",
-      "accessCount": 1,
-      "lastAccessed": 1785782952474,
       "type": "file"
     },
     {

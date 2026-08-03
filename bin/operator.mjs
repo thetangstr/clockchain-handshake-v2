@@ -31,7 +31,7 @@ import { openFundingWallet } from "../src/core/funding/wallet.mjs";
 import { ERC8004_ABI } from "../src/core/registration.mjs";
 import { runPayerRole } from "../src/core/roles-core.mjs";
 import { verifyBilateralAuthorization } from "../src/core/verdict.mjs";
-import { MCP_BASE_URL, REGISTRY_ADDRESS, RPC_URL } from "../src/core/constants.mjs";
+import { REGISTRY_ADDRESS, RPC_URL } from "../src/core/constants.mjs";
 import { buildSnapshot, FAILED_STAGE, REASON_CODES, STATUSES } from "../src/monitor/snapshot.mjs";
 
 const args = new Map();
@@ -85,7 +85,13 @@ function transitionToAnchor(kind, transition) {
   return {
     blockHeight: transition.onChain.blockHeight,
     blockTime: Number(transition.blockTimeMs),
-    explorerUrl: `${MCP_BASE_URL}/explorer/${kind}/${transition.onChain.ledgerId}`,
+    // Clockchain has no public explorer: mcp.clockchain.network answers 401 on
+    // every path except /health, and it advertises only a token endpoint. The
+    // URL this used to build -- MCP_BASE_URL/explorer/{kind}/{ledgerId} -- was
+    // our own invention for a route that has never existed, and the audience
+    // page linked it, so every "check this receipt" link on the projector led
+    // to an auth error. Point at the relay's own re-read, which resolves.
+    explorerUrl: `${RELAY_URL.replace(/\/+$/, "")}/v1/blocks/${transition.onChain.blockHeight}`,
     kind,
     ledgerId: transition.onChain.ledgerId,
     receipt: {
