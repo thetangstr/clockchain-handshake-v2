@@ -1,0 +1,151 @@
+{
+  "descriptorEnvelope": {
+    "descriptor": {
+      "amountOptions": [
+        {
+          "currency": "USD",
+          "value": "100"
+        }
+      ],
+      "chainId": "11155111",
+      "expirySeconds": "600",
+      "mandateDigest": "50b49ea53e79bbaaf45b24e7e347ade89bebac51b263441b1aa6549f2d634e0f",
+      "namespace": "cbv1",
+      "payee": {
+        "address": "0xa932e6c9f80cdfb22aad5c998f4ea046033eddd9",
+        "agentId": "9384",
+        "displayName": "Requestor",
+        "role": "payee"
+      },
+      "payer": {
+        "address": "0xf67941d25382d7d831958c8c232d7cb3fd180408",
+        "agentId": "9383",
+        "displayName": "Payer",
+        "role": "payer"
+      },
+      "paymentMoved": false,
+      "promptSha256": "f389b1c68166d9bf166f9a28ab8dde67c647fa64a2d243e067769b2a50f90823",
+      "protocol": "clockchain.bilateral-authorization/v1",
+      "protocolVersion": "1",
+      "registry": "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+      "repositorySha": "0000000000000000000000000000000000000000",
+      "requestDigest": "19a02b3548289f34fb4655e82129897e8b8015dc26965b51e3c01df8a64fa601",
+      "schema": "clockchain.bilateral-session-descriptor/v2",
+      "sessionId": "e138718a5a0148dea5982c4f964db94a",
+      "settlement": "not-executed"
+    },
+    "operator": {
+      "algorithm": "ed25519",
+      "keyId": "bilateral-demo-2026-07-28",
+      "publicKey": "sDOLan0aL5tHoTtXXj2GLKD2DaGXtqlNUTLrT724jkg=",
+      "signature": "efdneQeauOwXahUCKvAlnF5lC8c7VPErxQGL7Jym5gPmQRjXof4B02ZUOp4NMoh4CxHWuCd39ur8qREXkGzuAg=="
+    }
+  },
+  "mandateEnvelope": {
+    "mandate": {
+      "amount": {
+        "currency": "USD",
+        "value": "100"
+      },
+      "expiresAtMs": "1785791547533",
+      "intakeDigest": "6eed8be0ea4dda71df4ded7d92c1d233833efdff1705601d54ffae11749b0b90",
+      "intakeRequestId": "9b43434c-fe21-4db1-b18b-23aac954037a",
+      "invoiceReferencePrefix": "INV-",
+      "issuedAtMs": "1785788847533",
+      "payee": {
+        "address": "0xa932e6c9f80cdfb22aad5c998f4ea046033eddd9",
+        "agentId": "9384"
+      },
+      "payer": {
+        "address": "0xf67941d25382d7d831958c8c232d7cb3fd180408",
+        "agentId": "9383"
+      },
+      "paymentMoved": false,
+      "protocol": "clockchain.bilateral-authorization/v1",
+      "purpose": "Invoice settlement",
+      "releaseId": "handshake-v6",
+      "repositorySha": "0000000000000000000000000000000000000000",
+      "requestEndpoint": "/v1/sessions/e138718a-5a01-48de-a598-2c4f964db94a/payment-requests",
+      "schema": "clockchain.bilateral-payer-mandate/v1",
+      "sessionId": "e138718a-5a01-48de-a598-2c4f964db94a",
+      "subjectRun": "stakeholder"
+    },
+    "schema": "clockchain.bilateral-payer-mandate-envelope/v1",
+    "signature": {
+      "address": "0xf67941d25382d7d831958c8c232d7cb3fd180408",
+      "algorithm": "eip191",
+      "value": "0x3c29f377342c381663793498402d84849e3dbfcb9203111b0796e288bb4c0ee6111f9e45cf62ea5ddd8b0cdb6983a89e1dada9af6f86677d2deebce3d6edca3a1c"
+    }
+  },
+  "requestEnvelope": {
+    "request": {
+      "amount": {
+        "currency": "USD",
+        "value": "100"
+      },
+      "createdAtMs": "1785788848533",
+      "expiresAtMs": "1785791547533",
+      "intakeDigest": "6eed8be0ea4dda71df4ded7d92c1d233833efdff1705601d54ffae11749b0b90",
+      "intakeRequestId": "9b43434c-fe21-4db1-b18b-23aac954037a",
+      "invoiceReference": "INV-0001",
+      "mandateDigest": "50b49ea53e79bbaaf45b24e7e347ade89bebac51b263441b1aa6549f2d634e0f",
+      "payee": {
+        "address": "0xa932e6c9f80cdfb22aad5c998f4ea046033eddd9",
+        "agentId": "9384"
+      },
+      "payer": {
+        "address": "0xf67941d25382d7d831958c8c232d7cb3fd180408",
+        "agentId": "9383"
+      },
+      "paymentMoved": false,
+      "protocol": "clockchain.bilateral-authorization/v1",
+      "purpose": "Invoice settlement",
+      "releaseId": "handshake-v6",
+      "repositorySha": "0000000000000000000000000000000000000000",
+      "requestId": "00109cdc-5fcb-4189-aee6-031c84055ed6",
+      "schema": "clockchain.bilateral-payment-request/v1",
+      "sessionId": "e138718a-5a01-48de-a598-2c4f964db94a",
+      "subjectRun": "stakeholder"
+    },
+    "schema": "clockchain.bilateral-payment-request-envelope/v1",
+    "signature": {
+      "address": "0xa932e6c9f80cdfb22aad5c998f4ea046033eddd9",
+      "algorithm": "eip191",
+      "value": "0x7f4f410056c67e8d559c2c79428d0754e889e53c3159cfc616ebd1914f7f7d486409eaaadc0709c1cd085af867173c569ce02cc10d953a6f1e028ac4a139aab41b"
+    }
+  },
+  "repositoryPublicKey": "sDOLan0aL5tHoTtXXj2GLKD2DaGXtqlNUTLrT724jkg=",
+  "payerDirectory": "/var/folders/sn/6l8ydbhs2zz4tq9906g3f3d40000gn/T/handshake-op-u1Gnzo/payer",
+  "payeeDirectory": "/var/folders/sn/6l8ydbhs2zz4tq9906g3f3d40000gn/T/handshake-op-u1Gnzo/payee",
+  "outcome": "AUTHORIZED",
+  "anchors": [
+    {
+      "anchoredHash": "de0bd0f5a1dfe0bf10b7cf14b634d8f422e3751393d669a00c2847a6da7716bd",
+      "blockHeight": "2714594",
+      "blockTimeRaw": "2026-08-03T20:27:28.932806347Z",
+      "digest": "de0bd0f5a1dfe0bf10b7cf14b634d8f422e3751393d669a00c2847a6da7716bd",
+      "kind": "proposal",
+      "ledgerId": "badaf31f-c409-4098-944f-4ce5a559fbd4",
+      "upperBoundMs": null
+    },
+    {
+      "anchoredHash": "b3a8960d2e724c2d8800a6a89186feeb19001a3f1f606884df8f16d341719b59",
+      "blockHeight": "2714615",
+      "blockTimeRaw": "2026-08-03T20:27:50.431410205Z",
+      "digest": "b3a8960d2e724c2d8800a6a89186feeb19001a3f1f606884df8f16d341719b59",
+      "kind": "acceptance",
+      "ledgerId": "46c3bf15-fefc-489a-82f6-dadac8faeedb",
+      "upperBoundMs": "1785788871454"
+    },
+    {
+      "anchoredHash": "507154669f6fc3b2875406f37b52b98ea5bddbbde58b0089620a7940dbff2c68",
+      "blockHeight": "2714617",
+      "blockTimeRaw": "2026-08-03T20:27:52.475979457Z",
+      "digest": "507154669f6fc3b2875406f37b52b98ea5bddbbde58b0089620a7940dbff2c68",
+      "kind": "acknowledgment",
+      "ledgerId": "b0cc9bcd-bb4b-448b-89d3-3e4018ed6a73",
+      "upperBoundMs": "1785788873499"
+    }
+  ],
+  "paymentMoved": false
+}

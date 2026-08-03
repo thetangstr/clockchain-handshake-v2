@@ -11,7 +11,13 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PROMPTS = ["requestor", "payer"];
-const MAX_LINES = 40;
+// Raised from 40. The requestor prompt now carries the business framing too --
+// what a supplier is actually agreeing to, and why the payer insists on it --
+// because it is read by a stakeholder deciding whether to paste it, and shown
+// on the demo page to an audience, not only consumed by an agent. The original
+// limit was defending against a wall nobody reads to the end; section headings
+// do that job better than a line count, and the ceiling stays to stop sprawl.
+const MAX_LINES = 60;
 
 // A run of 32+ token characters is what a pasted secret looks like: an API key, a
 // bearer token, a base64 blob. Nothing legitimate in these prompts is that long.

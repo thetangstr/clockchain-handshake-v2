@@ -18,8 +18,8 @@
     "runtime": "Node.js 22"
   },
   "build": {
-    "buildCommand": "R=/private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research; cd \"$R\" && npm run build 2>&1 | grep -E \"error|Error|Compiled successfully\" | head -5; (npm run dev -- --port 3114 > /private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/dev4.log 2>&1 &) ; for i in $(seq 1 20); do C=$(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3114/handshake/claude-v6); if [ \"$C\" = \"200\" ]; then echo ready; break; fi; sleep 3; done",
-    "testCommand": "wc -l prompts/requestor.md && npm test 2>&1 | grep -E \"^# (tests|pass|fail)|^not ok\" | head -6",
+    "buildCommand": "R=/private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research; U=\"http://44.249.47.220:8080/v1/discovery/current\"; sed \"s|<DISCOVERY_URL>|$U|g\" prompts/requestor.md > \"$R/public/handshake/claude-v6/requestor-prompt.md\" && node -e '\nconst fs=require(\"fs\");\nconst page=process.argv[1], promptFile=process.argv[2], url=process.argv[3];\nconst body=fs.readFileSync(promptFile,\"utf8\").replace(/<DISCOVERY_URL>/g,url).replace(/`/g,\"\\\\`\").replace(/\\$\\{/g,\"\\\\${\").trimEnd();\nlet t=fs.readFileSync(page,\"utf8\");\nconst start=t.indexOf(\"const requestorPrompt = `\");\nconst end=t.indexOf(\"`;\", start);\nif(start===-1||end===-1){console.error(\"anchor not found\");process.exit(1)}\nfs.writeFileSync(page, t.slice(0,start)+\"const requestorPrompt = `\"+body+\"`;\"+t.slice(end+2));\nconsole.log(\"page prompt regenerated\");\n' \"$R/src/components/ClaudeV6Runbook.tsx\" prompts/requestor.md \"$U\" && cd \"$R\" && npm run build 2>&1 | grep -E \"error|Error|Failed|Compiled successfully\" | head -8",
+    "testCommand": "npm test 2>&1 | grep -E \"^# (tests|pass|fail)|^not ok\" | head -6",
     "lintCommand": null,
     "devCommand": null,
     "scripts": {
@@ -163,14 +163,20 @@
     },
     {
       "path": "test/prompts.test.mjs",
-      "accessCount": 4,
-      "lastAccessed": 1785786202033,
+      "accessCount": 5,
+      "lastAccessed": 1785788727610,
       "type": "file"
     },
     {
       "path": "bin/operator.mjs",
       "accessCount": 3,
       "lastAccessed": 1785785771542,
+      "type": "file"
+    },
+    {
+      "path": "prompts/requestor.md",
+      "accessCount": 3,
+      "lastAccessed": 1785788709041,
       "type": "file"
     },
     {
@@ -183,12 +189,6 @@
       "path": "scripts/preflight.mjs",
       "accessCount": 2,
       "lastAccessed": 1785783065238,
-      "type": "file"
-    },
-    {
-      "path": "prompts/requestor.md",
-      "accessCount": 2,
-      "lastAccessed": 1785787218862,
       "type": "file"
     },
     {
