@@ -22,10 +22,12 @@ import {
   readFile,
   readdir,
 } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 
 import { PARTY_ROLES } from "../core/evidence.mjs";
+import { validateSnapshot } from "../monitor/snapshot.mjs";
 import { RelayError } from "./errors.mjs";
 
 export const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -58,8 +60,46 @@ export const EVIDENCE_PART_LIMITS = Object.freeze({
   markdown: 2 * 1024 * 1024,
   marker: 2048,
 });
+// A monitor snapshot (see src/monitor/snapshot.mjs) is a handful of small
+// fields plus three anchor receipts -- same order of magnitude as one
+// message envelope, so it shares that bound.
+export const MAX_SNAPSHOT_BODY_BYTES = 262_144; // 256 KiB
 const DEFAULT_WAIT_MS = 25_000;
 const MAX_WAIT_MS = 25_000;
+
+// Static serving for the stakeholder audience page (see
+// src/monitor/stakeholder/*). This relay is the only thing already reachable
+// by an audience member, so it is the simplest place to serve a read-only
+// page from -- GET only, files copied verbatim, nothing here can mutate a
+// run. The URL shape mirrors the page's own relative imports:
+//   GET /monitor/{sid}        -> stakeholder/index.html (any second segment
+//                                 that isn't a known asset name is treated as
+//                                 a session id -- the page itself is what
+//                                 validates whether that session exists)
+//   GET /monitor/app.mjs      -> stakeholder/app.mjs
+//   GET /monitor/messages.mjs -> stakeholder/messages.mjs
+//   GET /monitor/styles.css   -> stakeholder/styles.css
+//   GET /snapshot.mjs         -> monitor/snapshot.mjs (app.mjs's own
+//                                 "../snapshot.mjs" import, resolved from
+//                                 wherever app.mjs is served)
+const MONITOR_DIR = dirname(fileURLToPath(import.meta.url));
+const STAKEHOLDER_DIR = join(MONITOR_DIR, "..", "monitor", "stakeholder");
+const SNAPSHOT_MODULE_PATH = join(MONITOR_DIR, "..", "monitor", "snapshot.mjs");
+const STAKEHOLDER_INDEX_FILE = join(STAKEHOLDER_DIR, "index.html");
+const STAKEHOLDER_STATIC_FILES = Object.freeze({
+  "app.mjs": {
+    contentType: "text/javascript; charset=utf-8",
+    file: join(STAKEHOLDER_DIR, "app.mjs"),
+  },
+  "messages.mjs": {
+    contentType: "text/javascript; charset=utf-8",
+    file: join(STAKEHOLDER_DIR, "messages.mjs"),
+  },
+  "styles.css": {
+    contentType: "text/css; charset=utf-8",
+    file: join(STAKEHOLDER_DIR, "styles.css"),
+  },
+});
 
 function isPlainObject(value) {
   return (
@@ -221,6 +261,7 @@ function createSessionState(sessionId, journalPath) {
     lastSeq: 0,
     evidence: {},
     discovery: undefined,
+    monitorSnapshot: null,
     waiters: new Set(),
     writeLock: Promise.resolve(),
   };
@@ -257,6 +298,12 @@ function applyJournalRecord(session, record) {
       // A malformed evidence journal record is tolerated the same way a
       // malformed line is: it is dropped rather than crashing the relay.
     }
+    return;
+  }
+  if (record.type === "monitor-snapshot" && isPlainObject(record.snapshot)) {
+    // Already validated at write time (handlePutSnapshot); replay trusts it
+    // rather than re-validating, the same way "message" records above do.
+    session.monitorSnapshot = record.snapshot;
   }
 }
 
@@ -582,8 +629,18 @@ function handleDiscovery(sessions, sessionId) {
   return session.discovery;
 }
 
+// GET returns the published monitor snapshot verbatim once one exists (see
+// src/monitor/snapshot.mjs for the shape the stakeholder page expects at
+// this exact URL) -- otherwise it falls back to the relay's own bookkeeping
+// summary, which predates the monitor and is kept for whatever already reads
+// it. The two shapes are distinguishable by their keys; a caller doing
+// validateSnapshot() on the fallback shape will simply reject it, which is
+// correct: there is nothing to render yet.
 function handleSnapshot(sessions, sessionId) {
   const session = requireSession(sessions, sessionId);
+  if (session.monitorSnapshot !== null) {
+    return session.monitorSnapshot;
+  }
   return {
     ok: true,
     sessionId,
@@ -603,6 +660,62 @@ function handleSnapshot(sessions, sessionId) {
   };
 }
 
+// PUT publishes a monitor snapshot for a session -- the operator process is
+// the only expected caller. Like evidence PUT, the relay does not
+// authenticate this: it is an untrusted mailbox by design (see file header),
+// and a snapshot is a narration of a run, not an authority over it -- a bad
+// actor publishing a false snapshot cannot move the literal AUTHORIZED word
+// (that only ever comes from the verifier's signed publication, rendered
+// from the verdict field this endpoint merely carries) and cannot make
+// paymentMoved anything but false (validateSnapshot rejects that outright).
+async function handlePutSnapshot(req, sessions, sessionId) {
+  const session = requireSession(sessions, sessionId);
+  const bodyBuf = await readBoundedBody(
+    req,
+    MAX_SNAPSHOT_BODY_BYTES,
+    "BODY_TOO_LARGE",
+  );
+  const body = parseJsonBody(bodyBuf);
+  if (!isPlainObject(body) || body.sessionId !== sessionId) {
+    throw new RelayError(
+      "Snapshot body must be a monitor snapshot for this session.",
+      "MALFORMED_SNAPSHOT",
+      { status: 400 },
+    );
+  }
+  try {
+    validateSnapshot(body);
+  } catch {
+    throw new RelayError(
+      "Snapshot does not match the required shape.",
+      "MALFORMED_SNAPSHOT",
+      { status: 400 },
+    );
+  }
+
+  session.monitorSnapshot = body;
+  await appendJournalLine(session, { type: "monitor-snapshot", snapshot: body });
+
+  return { sessionId };
+}
+
+async function serveStaticFile(res, filePath, contentType) {
+  let body;
+  try {
+    body = await readFile(filePath);
+  } catch {
+    throw new RelayError("Static asset not found.", "NOT_FOUND", {
+      status: 404,
+    });
+  }
+  res.writeHead(200, {
+    "content-type": contentType,
+    "content-length": String(body.length),
+    "cache-control": "no-store",
+  });
+  res.end(body);
+}
+
 async function dispatch(req, res, sessions, stateDir) {
   const url = new URL(req.url, "http://relay.local");
   const segments = url.pathname.split("/").filter(Boolean);
@@ -614,6 +727,24 @@ async function dispatch(req, res, sessions, stateDir) {
       paymentMoved: false,
       sessions: sessions.size,
     });
+    return;
+  }
+
+  if (method === "GET" && segments.length === 1 && segments[0] === "snapshot.mjs") {
+    await serveStaticFile(res, SNAPSHOT_MODULE_PATH, "text/javascript; charset=utf-8");
+    return;
+  }
+
+  if (method === "GET" && segments.length === 2 && segments[0] === "monitor") {
+    const asset = STAKEHOLDER_STATIC_FILES[segments[1]];
+    if (asset) {
+      await serveStaticFile(res, asset.file, asset.contentType);
+    } else {
+      // Any other second segment is treated as a session id, not a missing
+      // asset -- the page itself is what decides whether that session
+      // exists, by polling the snapshot endpoint after it loads.
+      await serveStaticFile(res, STAKEHOLDER_INDEX_FILE, "text/html; charset=utf-8");
+    }
     return;
   }
 
@@ -668,6 +799,12 @@ async function dispatch(req, res, sessions, stateDir) {
 
     if (method === "GET" && segments.length === 4 && segments[3] === "snapshot") {
       writeJson(res, 200, handleSnapshot(sessions, sessionId));
+      return;
+    }
+
+    if (method === "PUT" && segments.length === 4 && segments[3] === "snapshot") {
+      const result = await handlePutSnapshot(req, sessions, sessionId);
+      writeJson(res, 200, { ok: true, ...result });
       return;
     }
   }

@@ -145,6 +145,12 @@ async function main() {
   await mkdir(directory, { mode: 0o700, recursive: true });
   await chmod(directory, 0o700);
 
+  await postNext(relay, {
+    relayUrl: RELAY_URL, sessionId: SESSION_ID, role: "requestor", kind: "watching",
+    body: { paymentMoved: false }, keyPair: kp,
+  });
+  say("PROPOSED", "Watching the ledger for the payer's proposal.");
+
   const token = await mintDemoToken({});
   await runPayeeRole({
     client: createMcpClient({ token }),

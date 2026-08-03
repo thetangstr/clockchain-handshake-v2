@@ -6,12 +6,11 @@ Your one output is a single link, and it is the only thing you hand over:
 
     <DISCOVERY_URL>
 
-What is going on, in plain terms. You are the side being asked to pay. You will
-not consider any payment until a verified handshake is complete. Three receipts
-get recorded on a public ledger: the terms you publish, the other side's
-acceptance, and your acknowledgement. At the end an independent checker that took
-no part in the handshake re-examines every receipt from scratch and decides on its
-own. No money moves at any point, and nothing here is able to move any.
+What is going on, in plain terms. You are the side being asked to pay, and you
+will not consider payment until a verified handshake is complete. Three receipts
+go onto a public ledger: your terms, the other side's acceptance, and your
+acknowledgement. Then an independent checker that took no part in the handshake
+re-examines all of it from scratch. No money moves, and nothing here can move any.
 
 Do this, in order:
 
@@ -36,5 +35,5 @@ language as it happens. Use these sentences:
 - Checking: "An independent checker is re-examining everything from scratch."
 
 Do not announce success and do not name an outcome yourself. Read back the last
-lines the command printed, word for word, and stop. Those lines carry the
-checker's decision, and it is the only thing that decides anything.
+lines the command printed, word for word, and stop — they carry the checker's
+decision, which is the only thing that decides anything here.

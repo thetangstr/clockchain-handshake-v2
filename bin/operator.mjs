@@ -22,7 +22,7 @@ import { sepolia } from "viem/chains";
 import * as relay from "../src/relay/client.mjs";
 import {
   buildDescriptor, buildMandate, discoveryUrlFor, fetchDiscovery, postNext, readDiscovery,
-  say, stop, DISCOVERY_SCHEMA,
+  say as logSay, stop as stopSession, DISCOVERY_SCHEMA,
 } from "../src/roles/session.mjs";
 import { createMcpClient } from "../src/core/clockchain.mjs";
 import { createSignedEnvelope } from "../src/core/descriptor.mjs";
@@ -30,7 +30,8 @@ import { openFundingWallet } from "../src/core/funding/wallet.mjs";
 import { ERC8004_ABI } from "../src/core/registration.mjs";
 import { runPayerRole } from "../src/core/roles-core.mjs";
 import { verifyBilateralAuthorization } from "../src/core/verdict.mjs";
-import { REGISTRY_ADDRESS, RPC_URL } from "../src/core/constants.mjs";
+import { MCP_BASE_URL, REGISTRY_ADDRESS, RPC_URL } from "../src/core/constants.mjs";
+import { buildSnapshot, FAILED_STAGE, REASON_CODES, STATUSES } from "../src/monitor/snapshot.mjs";
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) args.set(process.argv[i], process.argv[i + 1]);
@@ -200,6 +201,9 @@ async function main() {
     keyPair: opKp,
   });
   say("HANDSHAKE_REQUIRED", "The payer requires a verified handshake before any payment is considered.");
+
+  await awaitKind(sessionId, "watching", WAIT_FOR_REQUESTOR_MS);
+  say("REQUEST_SUBMITTED", "The requestor is watching the ledger. Opening the window now.");
 
   const root = await mkdtemp(join(tmpdir(), "handshake-op-"));
   const payerDirectory = join(root, "payer");
