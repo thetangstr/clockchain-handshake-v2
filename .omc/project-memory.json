@@ -18,8 +18,8 @@
     "runtime": "Node.js 22"
   },
   "build": {
-    "buildCommand": "cd /private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research && npm run build 2>&1 | grep -E \"error|Error|✓ Compiled|Compiled successfully|api/handshake\" | head -10",
-    "testCommand": "npm test 2>&1 | grep -E \"^# (tests|pass|fail)|^not ok\" | head -10",
+    "buildCommand": "R=/private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research; cd \"$R\" && npm run build 2>&1 | grep -E \"error|Error|Compiled successfully\" | head -5",
+    "testCommand": "npm test 2>&1 | grep -E \"^# (tests|pass|fail)|^not ok\" | head -12",
     "lintCommand": null,
     "devCommand": null,
     "scripts": {
@@ -195,6 +195,18 @@
       "path": "test/relay.test.mjs",
       "accessCount": 1,
       "lastAccessed": 1785783125699,
+      "type": "file"
+    },
+    {
+      "path": "src/monitor/stakeholder/messages.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1785784106174,
+      "type": "file"
+    },
+    {
+      "path": "test/monitor-timeline.test.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1785784123720,
       "type": "file"
     }
   ],
