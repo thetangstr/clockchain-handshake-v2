@@ -140,14 +140,40 @@ export function buildTimelineView(snapshot) {
   const reached = lastProgressStatus(snapshot);
   const reachedIndex = reached === null ? -1 : stepIndexForStatus(reached);
   const failed = snapshot.currentStage === FAILED_STAGE;
+  const decided = snapshot.verdict !== null && snapshot.verdict !== undefined;
+
+  // A step finishes only once its LAST status is reached. Grouping several
+  // statuses under one row means the earlier ones are that row still in
+  // progress: SESSION_STARTED is not "the payer published the terms", and a run
+  // that has only just opened must show nothing finished at all -- a green row
+  // for something that has not happened is the one thing an evidence demo
+  // cannot afford on a projector.
+  //
+  // The last step is the exception, in the other direction: VERIFYING is where
+  // a snapshot rests while the checker works, so that row finishes on the
+  // verdict and never before it.
+  const lastStepIndex = TIMELINE_STEPS.length - 1;
+  const finishedItsStep =
+    reachedIndex !== -1 &&
+    reachedIndex !== lastStepIndex &&
+    reached === TIMELINE_STEPS[reachedIndex].statuses[
+      TIMELINE_STEPS[reachedIndex].statuses.length - 1
+    ];
+  const activeIndex = finishedItsStep
+    ? reachedIndex + 1
+    : reachedIndex === -1
+      ? 0
+      : reachedIndex;
 
   return TIMELINE_STEPS.map((step, index) => {
     let state;
-    if (index < reachedIndex) {
+    if (decided) {
       state = "done";
-    } else if (index === reachedIndex) {
-      state = failed ? "failed" : "done";
-    } else if (index === reachedIndex + 1 && !failed) {
+    } else if (failed) {
+      state = index < reachedIndex ? "done" : index === reachedIndex ? "failed" : "pending";
+    } else if (index < activeIndex) {
+      state = "done";
+    } else if (index === activeIndex) {
       state = "active";
     } else {
       state = "pending";

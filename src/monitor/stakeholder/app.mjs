@@ -23,8 +23,17 @@ const POLL_INTERVAL_MS = 2000;
 const REQUEST_TIMEOUT_MS = 5000;
 const STALE_SNAPSHOT_MS = 30000;
 
+// The link that goes on the projector is a path -- /monitor/current, or
+// /monitor/<sessionId> for a specific run -- so the path is the primary source
+// and ?sid= remains supported for anything that already builds that form.
+// Reading only the query string meant every path-style link, including the one
+// the operator prints, rendered "no session id given".
 const params = new URLSearchParams(window.location.search);
-const sessionId = params.get("sid") ?? "";
+const pathSegments = window.location.pathname.split("/").filter(Boolean);
+const pathSid = pathSegments[0] === "monitor" && pathSegments.length > 1
+  ? decodeURIComponent(pathSegments[1])
+  : "";
+const sessionId = params.get("sid") ?? pathSid;
 const relayBase = (params.get("relay") ?? "").replace(/\/+$/, "");
 
 function snapshotUrl() {

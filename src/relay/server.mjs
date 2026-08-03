@@ -22,10 +22,12 @@ import {
   readFile,
   readdir,
 } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 
 import { PARTY_ROLES } from "../core/evidence.mjs";
+import { validateSnapshot } from "../monitor/snapshot.mjs";
 import { RelayError } from "./errors.mjs";
 
 export const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -58,8 +60,46 @@ export const EVIDENCE_PART_LIMITS = Object.freeze({
   markdown: 2 * 1024 * 1024,
   marker: 2048,
 });
+// A monitor snapshot (see src/monitor/snapshot.mjs) is a handful of small
+// fields plus three anchor receipts -- same order of magnitude as one
+// message envelope, so it shares that bound.
+export const MAX_SNAPSHOT_BODY_BYTES = 262_144; // 256 KiB
 const DEFAULT_WAIT_MS = 25_000;
 const MAX_WAIT_MS = 25_000;
+
+// Static serving for the stakeholder audience page (see
+// src/monitor/stakeholder/*). This relay is the only thing already reachable
+// by an audience member, so it is the simplest place to serve a read-only
+// page from -- GET only, files copied verbatim, nothing here can mutate a
+// run. The URL shape mirrors the page's own relative imports:
+//   GET /monitor/{sid}        -> stakeholder/index.html (any second segment
+//                                 that isn't a known asset name is treated as
+//                                 a session id -- the page itself is what
+//                                 validates whether that session exists)
+//   GET /monitor/app.mjs      -> stakeholder/app.mjs
+//   GET /monitor/messages.mjs -> stakeholder/messages.mjs
+//   GET /monitor/styles.css   -> stakeholder/styles.css
+//   GET /snapshot.mjs         -> monitor/snapshot.mjs (app.mjs's own
+//                                 "../snapshot.mjs" import, resolved from
+//                                 wherever app.mjs is served)
+const MONITOR_DIR = dirname(fileURLToPath(import.meta.url));
+const STAKEHOLDER_DIR = join(MONITOR_DIR, "..", "monitor", "stakeholder");
+const SNAPSHOT_MODULE_PATH = join(MONITOR_DIR, "..", "monitor", "snapshot.mjs");
+const STAKEHOLDER_INDEX_FILE = join(STAKEHOLDER_DIR, "index.html");
+const STAKEHOLDER_STATIC_FILES = Object.freeze({
+  "app.mjs": {
+    contentType: "text/javascript; charset=utf-8",
+    file: join(STAKEHOLDER_DIR, "app.mjs"),
+  },
+  "messages.mjs": {
+    contentType: "text/javascript; charset=utf-8",
+    file: join(STAKEHOLDER_DIR, "messages.mjs"),
+  },
+  "styles.css": {
+    contentType: "text/css; charset=utf-8",
+    file: join(STAKEHOLDER_DIR, "styles.css"),
+  },
+});
 
 function isPlainObject(value) {
   return (
@@ -221,6 +261,8 @@ function createSessionState(sessionId, journalPath) {
     lastSeq: 0,
     evidence: {},
     discovery: undefined,
+    publishedAtMs: 0,
+    monitorSnapshot: null,
     waiters: new Set(),
     writeLock: Promise.resolve(),
   };
@@ -232,6 +274,9 @@ function applyJournalRecord(session, record) {
   }
   if (record.type === "session-created") {
     session.discovery = record.discovery ?? undefined;
+    if (record.discovery !== undefined) {
+      session.publishedAtMs = record.publishedAtMs ?? 0;
+    }
     return;
   }
   if (record.type === "message" && isPlainObject(record.envelope)) {
@@ -257,6 +302,12 @@ function applyJournalRecord(session, record) {
       // A malformed evidence journal record is tolerated the same way a
       // malformed line is: it is dropped rather than crashing the relay.
     }
+    return;
+  }
+  if (record.type === "monitor-snapshot" && isPlainObject(record.snapshot)) {
+    // Already validated at write time (handlePutSnapshot); replay trusts it
+    // rather than re-validating, the same way "message" records above do.
+    session.monitorSnapshot = record.snapshot;
   }
 }
 
@@ -430,6 +481,7 @@ async function handleCreateSession(req, sessions, stateDir) {
     join(stateDir, `${sessionId}${JOURNAL_SUFFIX}`),
   );
   session.discovery = discovery;
+  session.publishedAtMs = Date.now();
   // Reserve the id before the first await so two concurrent registrations
   // for the same id cannot both observe an empty map.
   sessions.set(sessionId, session);
@@ -437,6 +489,11 @@ async function handleCreateSession(req, sessions, stateDir) {
     type: "session-created",
     sessionId,
     discovery: discovery ?? null,
+    // Journalled because the restore path reads it back, and without it every
+    // session recovered after a restart carried publishedAtMs 0 -- which is
+    // what "current" and the run list both order by. The alias survived only
+    // because a live run always outranks a zero.
+    publishedAtMs: session.publishedAtMs,
   });
 
   return { sessionId, paymentMoved: false };
@@ -570,7 +627,88 @@ function handleGetEvidence(sessions, sessionId, role) {
   };
 }
 
+// "current" is a permanent alias for the newest session that has published a
+// discovery document. One rule serves both the invitation link and the monitor
+// link, which is the point: whatever a stakeholder was sent and whatever is on
+// the projector are guaranteed to be the same run. The alias resolves only the
+// first fetch -- every signed artifact still binds to the real session id, which
+// the requestor reads out of the discovery document and uses from then on.
+// When a session opened, tolerating sessions journalled before publishedAtMs
+// was recorded: those restore as 0, and ordering every one of them equally
+// makes "newest" whichever the map happens to yield first. Their snapshot still
+// knows when the run began, so it is used as the fallback. Shared with the run
+// list so both agree on which run is the current one.
+function sessionStartedAtMs(session) {
+  return (
+    session.publishedAtMs ||
+    session.monitorSnapshot?.stageHistory?.[0]?.atMs ||
+    session.monitorSnapshot?.updatedAtMs ||
+    0
+  );
+}
+
+function newestPublishedSession(sessions) {
+  let newest = null;
+  let newestAtMs = -1;
+  for (const candidate of sessions.values()) {
+    if (candidate.discovery === undefined) continue;
+    const startedAtMs = sessionStartedAtMs(candidate);
+    if (startedAtMs > newestAtMs) {
+      newest = candidate;
+      newestAtMs = startedAtMs;
+    }
+  }
+  return newest;
+}
+
+// GET /v1/runs -- every run this relay has held, newest first, as a flat list.
+//
+// Read-only bookkeeping over what is already public: session id, when it
+// opened, how far it got, the three block heights, and the verdict if one was
+// published. The verdict is echoed from the snapshot the operator set from the
+// verifier's own return value; nothing here derives an outcome, and paymentMoved
+// is a constant because there is no code path that could make it anything else.
+const RUN_HISTORY_LIMIT = 50;
+
+function handleRuns(sessions) {
+  const runs = [];
+  for (const session of sessions.values()) {
+    if (session.discovery === undefined) continue;
+    const snapshot = session.monitorSnapshot;
+    const anchors = snapshot?.anchors ?? null;
+    runs.push({
+      sessionId: session.sessionId,
+      startedAtMs: sessionStartedAtMs(session),
+      stage: snapshot?.currentStage ?? null,
+      outcome: snapshot?.verdict?.outcome ?? null,
+      reasonCode: snapshot?.reasonCode ?? null,
+      anchors: {
+        proposal: anchors?.proposal?.blockHeight ?? null,
+        acceptance: anchors?.acceptance?.blockHeight ?? null,
+        acknowledgment: anchors?.acknowledgment?.blockHeight ?? null,
+      },
+    });
+  }
+  runs.sort((a, b) => b.startedAtMs - a.startedAtMs);
+  return {
+    ok: true,
+    paymentMoved: false,
+    runs: runs.slice(0, RUN_HISTORY_LIMIT),
+  };
+}
+
 function handleDiscovery(sessions, sessionId) {
+  if (sessionId === "current") {
+    const newest = newestPublishedSession(sessions);
+    if (newest === null) {
+      throw new RelayError(
+        "No session is currently open.",
+        "DISCOVERY_NOT_SET",
+        { status: 404 },
+      );
+    }
+    return newest.discovery;
+  }
   const session = requireSession(sessions, sessionId);
   if (session.discovery === undefined) {
     throw new RelayError(
@@ -582,11 +720,136 @@ function handleDiscovery(sessions, sessionId) {
   return session.discovery;
 }
 
+// GET /v1/blocks/{height} re-reads one Clockchain block and returns what the
+// ledger itself says about it.
+//
+// This exists because Clockchain's own explorer is token-gated -- every path on
+// mcp.clockchain.network except /health answers 401 -- so "go and check this
+// block yourself" has nowhere public to point. Relaying the read is the honest
+// second best: the answer is the ledger's, fetched fresh, and the page that
+// shows it says plainly that it came through this server.
+//
+// Two limits keep this from becoming something it should not be. It serves only
+// a height that already appears as an anchor in a session this relay holds, so
+// the demo's token cannot be used to scrape the ledger at large; and results are
+// cached, because a block is immutable once written. The relay still checks no
+// signature and still holds no authority over any handshake: this is a read.
+const blockCache = new Map();
+
+// Held for the life of the process. Minting is rate-limited per IP (10/hour) and
+// that quota is also the documented fallback when the operator's own laptop runs
+// dry, so this mints at most once per relay restart and reuses it. A token file
+// wins if one is ever placed here.
+let cachedLedgerToken = null;
+
+async function ledgerToken(mintDemoToken) {
+  if (cachedLedgerToken !== null) return cachedLedgerToken;
+  try {
+    const fromFile = (await readFile(join(process.cwd(), "keys/clockchain.token"), "utf8")).trim();
+    if (fromFile !== "") {
+      cachedLedgerToken = fromFile;
+      return cachedLedgerToken;
+    }
+  } catch {
+    // No token file on this host; mint one instead.
+  }
+  cachedLedgerToken = (await mintDemoToken({})).trim();
+  return cachedLedgerToken;
+}
+
+function findAnchoredBlock(sessions, height) {
+  for (const session of sessions.values()) {
+    const anchors = session.monitorSnapshot?.anchors;
+    if (!anchors) continue;
+    for (const anchor of Object.values(anchors)) {
+      if (anchor !== null && anchor?.blockHeight === height) return anchor;
+    }
+  }
+  return null;
+}
+
+async function handleBlock(sessions, height) {
+  if (!/^[0-9]{1,12}$/.test(height)) {
+    throw new RelayError("Block height must be a decimal integer.", "MALFORMED_HEIGHT", {
+      status: 400,
+    });
+  }
+  const cached = blockCache.get(height);
+  if (cached !== undefined) return cached;
+
+  const anchor = findAnchoredBlock(sessions, height);
+  if (anchor === null) {
+    throw new RelayError(
+      "No run held by this relay anchored that block.",
+      "UNKNOWN_BLOCK",
+      { status: 404 },
+    );
+  }
+
+  // Imported here rather than at module scope so that a problem reaching the
+  // ledger client can never stop the relay from booting. The mailbox has to come
+  // up even when Clockchain does not.
+  const { createMcpClient, mintDemoToken } = await import("../core/clockchain.mjs");
+
+  let block;
+  try {
+    const token = await ledgerToken(mintDemoToken);
+    block = await createMcpClient({ token }).getBlock({ height: Number(height) });
+  } catch (error) {
+    // Named, because "it failed" is useless at a podium. Token minting is
+    // rate-limited per IP, and that is the one failure likely to be seen here.
+    throw new RelayError(
+      `Could not re-read that block from the ledger: ${error?.message ?? error}`,
+      "LEDGER_READ_FAILED",
+      { status: 502 },
+    );
+  }
+
+  const body = {
+    ok: true,
+    paymentMoved: false,
+    blockHeight: block.blockHeight,
+    blockTime: block.blockTime,
+    proposerAddress: block.proposerAddress,
+    anchor: {
+      kind: anchor.kind,
+      ledgerId: anchor.ledgerId,
+      digest: anchor.receipt?.digest ?? null,
+    },
+    source: "Read from Clockchain by the demo relay. The ledger's own endpoint requires a token.",
+  };
+  blockCache.set(height, body);
+  return body;
+}
+
+// GET returns the published monitor snapshot verbatim once one exists (see
+// src/monitor/snapshot.mjs for the shape the stakeholder page expects at
+// this exact URL) -- otherwise it falls back to the relay's own bookkeeping
+// summary, which predates the monitor and is kept for whatever already reads
+// it. The two shapes are distinguishable by their keys; a caller doing
+// validateSnapshot() on the fallback shape will simply reject it, which is
+// correct: there is nothing to render yet.
 function handleSnapshot(sessions, sessionId) {
-  const session = requireSession(sessions, sessionId);
+  // The monitor page polls this with whatever id is in its own URL, so the
+  // "current" alias has to be understood here too or the permanent projector
+  // link would render an empty page.
+  let session;
+  if (sessionId === "current") {
+    session = newestPublishedSession(sessions);
+    if (session === null) {
+      throw new RelayError("No session is currently open.", "UNKNOWN_SESSION", {
+        status: 404,
+      });
+    }
+  } else {
+    session = requireSession(sessions, sessionId);
+  }
+  if (session.monitorSnapshot !== null) {
+    return session.monitorSnapshot;
+  }
   return {
     ok: true,
-    sessionId,
+    sessionId: session.sessionId,
     paymentMoved: false,
     lastSeq: String(session.lastSeq),
     messageCount: session.messages.length,
@@ -603,6 +866,62 @@ function handleSnapshot(sessions, sessionId) {
   };
 }
 
+// PUT publishes a monitor snapshot for a session -- the operator process is
+// the only expected caller. Like evidence PUT, the relay does not
+// authenticate this: it is an untrusted mailbox by design (see file header),
+// and a snapshot is a narration of a run, not an authority over it -- a bad
+// actor publishing a false snapshot cannot move the literal verdict word
+// (that only ever comes from the verifier's signed publication, rendered
+// from the verdict field this endpoint merely carries) and cannot make
+// paymentMoved anything but false (validateSnapshot rejects that outright).
+async function handlePutSnapshot(req, sessions, sessionId) {
+  const session = requireSession(sessions, sessionId);
+  const bodyBuf = await readBoundedBody(
+    req,
+    MAX_SNAPSHOT_BODY_BYTES,
+    "BODY_TOO_LARGE",
+  );
+  const body = parseJsonBody(bodyBuf);
+  if (!isPlainObject(body) || body.sessionId !== sessionId) {
+    throw new RelayError(
+      "Snapshot body must be a monitor snapshot for this session.",
+      "MALFORMED_SNAPSHOT",
+      { status: 400 },
+    );
+  }
+  try {
+    validateSnapshot(body);
+  } catch {
+    throw new RelayError(
+      "Snapshot does not match the required shape.",
+      "MALFORMED_SNAPSHOT",
+      { status: 400 },
+    );
+  }
+
+  session.monitorSnapshot = body;
+  await appendJournalLine(session, { type: "monitor-snapshot", snapshot: body });
+
+  return { sessionId };
+}
+
+async function serveStaticFile(res, filePath, contentType) {
+  let body;
+  try {
+    body = await readFile(filePath);
+  } catch {
+    throw new RelayError("Static asset not found.", "NOT_FOUND", {
+      status: 404,
+    });
+  }
+  res.writeHead(200, {
+    "content-type": contentType,
+    "content-length": String(body.length),
+    "cache-control": "no-store",
+  });
+  res.end(body);
+}
+
 async function dispatch(req, res, sessions, stateDir) {
   const url = new URL(req.url, "http://relay.local");
   const segments = url.pathname.split("/").filter(Boolean);
@@ -617,6 +936,24 @@ async function dispatch(req, res, sessions, stateDir) {
     return;
   }
 
+  if (method === "GET" && segments.length === 1 && segments[0] === "snapshot.mjs") {
+    await serveStaticFile(res, SNAPSHOT_MODULE_PATH, "text/javascript; charset=utf-8");
+    return;
+  }
+
+  if (method === "GET" && segments.length === 2 && segments[0] === "monitor") {
+    const asset = STAKEHOLDER_STATIC_FILES[segments[1]];
+    if (asset) {
+      await serveStaticFile(res, asset.file, asset.contentType);
+    } else {
+      // Any other second segment is treated as a session id, not a missing
+      // asset -- the page itself is what decides whether that session
+      // exists, by polling the snapshot endpoint after it loads.
+      await serveStaticFile(res, STAKEHOLDER_INDEX_FILE, "text/html; charset=utf-8");
+    }
+    return;
+  }
+
   if (segments[0] !== "v1") {
     throw new RelayError("Unknown route.", "NOT_FOUND", { status: 404 });
   }
@@ -624,6 +961,17 @@ async function dispatch(req, res, sessions, stateDir) {
   if (method === "POST" && segments.length === 2 && segments[1] === "sessions") {
     const result = await handleCreateSession(req, sessions, stateDir);
     writeJson(res, 201, { ok: true, ...result });
+    return;
+  }
+
+  if (method === "GET" && segments.length === 2 && segments[1] === "runs") {
+    writeJson(res, 200, handleRuns(sessions));
+    return;
+  }
+
+  if (method === "GET" && segments.length === 3 && segments[1] === "blocks") {
+    const block = await handleBlock(sessions, segments[2]);
+    writeJson(res, 200, block);
     return;
   }
 
@@ -668,6 +1016,12 @@ async function dispatch(req, res, sessions, stateDir) {
 
     if (method === "GET" && segments.length === 4 && segments[3] === "snapshot") {
       writeJson(res, 200, handleSnapshot(sessions, sessionId));
+      return;
+    }
+
+    if (method === "PUT" && segments.length === 4 && segments[3] === "snapshot") {
+      const result = await handlePutSnapshot(req, sessions, sessionId);
+      writeJson(res, 200, { ok: true, ...result });
       return;
     }
   }

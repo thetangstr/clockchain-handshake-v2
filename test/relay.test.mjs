@@ -343,6 +343,145 @@ test("discovery: unset session returns a named reason, set discovery round-trips
   assert.equal(unknown.body.error, "UNKNOWN_SESSION");
 });
 
+// One alias serves the invitation link and the projector link, so a demo hands
+// out URLs that never change. Both endpoints must resolve it, and to the same
+// run -- a monitor pointing at a different session than the stakeholder was sent
+// would narrate the wrong handshake to an audience.
+test("current: discovery and snapshot both resolve the alias, to the newest published session", async (t) => {
+  const { baseUrl } = await startServer(t);
+
+  const empty = await getJson(`${baseUrl}/v1/discovery/current`);
+  assert.equal(empty.status, 404);
+  assert.equal(empty.body.error, "DISCOVERY_NOT_SET");
+  const emptySnapshot = await getJson(`${baseUrl}/v1/sessions/current/snapshot`);
+  assert.equal(emptySnapshot.status, 404);
+  assert.equal(emptySnapshot.body.error, "UNKNOWN_SESSION");
+
+  // A session with no discovery must never win the alias, however recent.
+  await postJson(`${baseUrl}/v1/sessions`, {});
+
+  const older = { schema: "handshake-discovery/v2", issuedAtMs: 1 };
+  const olderSession = await postJson(`${baseUrl}/v1/sessions`, { discovery: older });
+  const newer = { schema: "handshake-discovery/v2", issuedAtMs: 2 };
+  const newerSession = await postJson(`${baseUrl}/v1/sessions`, { discovery: newer });
+
+  const resolved = await getJson(`${baseUrl}/v1/discovery/current`);
+  assert.equal(resolved.status, 200);
+  assert.deepEqual(resolved.body, newer, "the alias must follow the newest published session");
+
+  const snapshot = await getJson(`${baseUrl}/v1/sessions/current/snapshot`);
+  assert.equal(snapshot.status, 200);
+  assert.equal(
+    snapshot.body.sessionId,
+    newerSession.body.sessionId,
+    "the monitor must land on the same run the invitation points at",
+  );
+  assert.notEqual(snapshot.body.sessionId, olderSession.body.sessionId);
+  assert.equal(snapshot.body.paymentMoved, false);
+});
+
+test("runs: lists published sessions newest first and never invents an outcome", async (t) => {
+  const { baseUrl } = await startServer(t);
+
+  const empty = await getJson(`${baseUrl}/v1/runs`);
+  assert.equal(empty.status, 200);
+  assert.deepEqual(empty.body.runs, []);
+  assert.equal(empty.body.paymentMoved, false);
+
+  // A session with no discovery is not a run anyone was invited to.
+  await postJson(`${baseUrl}/v1/sessions`, {});
+
+  const older = await postJson(`${baseUrl}/v1/sessions`, {
+    discovery: { schema: "handshake-discovery/v2", issuedAtMs: 1 },
+  });
+  const newer = await postJson(`${baseUrl}/v1/sessions`, {
+    discovery: { schema: "handshake-discovery/v2", issuedAtMs: 2 },
+  });
+
+  const listed = await getJson(`${baseUrl}/v1/runs`);
+  assert.equal(listed.body.runs.length, 2, "only sessions with a discovery are runs");
+  assert.deepEqual(
+    listed.body.runs.map((run) => run.sessionId),
+    [newer.body.sessionId, older.body.sessionId],
+    "newest first",
+  );
+  // No snapshot has been published, so there is nothing to report but the fact
+  // of the run. An outcome appearing here without a verifier would be the one
+  // failure this endpoint must never have.
+  assert.equal(listed.body.runs[0].outcome, null);
+  assert.equal(listed.body.runs[0].stage, null);
+  assert.deepEqual(listed.body.runs[0].anchors, {
+    proposal: null,
+    acceptance: null,
+    acknowledgment: null,
+  });
+});
+
+test("current follows the newest run even among sessions with no recorded start", async (t) => {
+  // The failure this pins actually happened: after a restart every restored
+  // session carried publishedAtMs 0, so "newest" became whichever the map
+  // yielded first, and the permanent invitation link pointed at a finished run.
+  const { baseUrl } = await startServer(t);
+
+  const stale = await postJson(`${baseUrl}/v1/sessions`, {
+    discovery: { schema: "handshake-discovery/v2", issuedAtMs: 1 },
+  });
+  const current = await postJson(`${baseUrl}/v1/sessions`, {
+    discovery: { schema: "handshake-discovery/v2", issuedAtMs: 2 },
+  });
+
+  // Force both to look like sessions recovered from an older journal, then give
+  // only the newer one a snapshot to date itself by.
+  await putJson(`${baseUrl}/v1/sessions/${current.body.sessionId}/snapshot`, {
+    anchors: { acceptance: null, acknowledgment: null, proposal: null },
+    currentStage: "SESSION_STARTED",
+    funding: null,
+    heartbeat: { payee: null, payer: null, verifier: null },
+    paymentMoved: false,
+    reasonCode: null,
+    schema: "clockchain.handshake-snapshot/v1",
+    sessionId: current.body.sessionId,
+    stageHistory: [{ atMs: 9_000_000, status: "SESSION_STARTED" }],
+    subjectRun: null,
+    updatedAtMs: 9_000_000,
+    verdict: null,
+  });
+
+  const resolved = await getJson(`${baseUrl}/v1/sessions/current/snapshot`);
+  assert.equal(resolved.status, 200);
+  assert.equal(
+    resolved.body.sessionId,
+    current.body.sessionId,
+    "the alias must land on the run that actually started most recently",
+  );
+  assert.notEqual(resolved.body.sessionId, stale.body.sessionId);
+});
+
+test("a restarted relay still knows when each session opened", async (t) => {
+  // publishedAtMs orders both the "current" alias and the run list. It used to
+  // live only in memory, so every session recovered from the journal came back
+  // at the epoch and the ordering silently collapsed.
+  const stateDir = await temporaryDirectory(t);
+  const first = await startServer(t, stateDir);
+  const created = await postJson(`${first.baseUrl}/v1/sessions`, {
+    discovery: { schema: "handshake-discovery/v2", issuedAtMs: 1 },
+  });
+  const before = await getJson(`${first.baseUrl}/v1/runs`);
+  const startedBefore = before.body.runs[0].startedAtMs;
+  assert.ok(startedBefore > 0, "a live session knows when it opened");
+  await new Promise((resolve) => first.server.close(resolve));
+
+  const second = await startServer(t, stateDir);
+  const after = await getJson(`${second.baseUrl}/v1/runs`);
+  assert.equal(after.body.runs.length, 1);
+  assert.equal(after.body.runs[0].sessionId, created.body.sessionId);
+  assert.equal(
+    after.body.runs[0].startedAtMs,
+    startedBefore,
+    "the recovered session keeps its original start time",
+  );
+});
+
 test("snapshot summarizes message and evidence bookkeeping without inventing authority", async (t) => {
   const { baseUrl } = await startServer(t);
   const created = await postJson(`${baseUrl}/v1/sessions`, {});

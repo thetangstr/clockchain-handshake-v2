@@ -539,6 +539,31 @@ export async function getSnapshot({
   );
 }
 
+/**
+ * Publish the monitor's handshake snapshot for a session (see
+ * src/monitor/snapshot.mjs for the shape). The relay stores whatever it is
+ * given, keyed by sessionId -- it does not validate the snapshot shape
+ * itself; the caller (an operator process) is expected to have built it with
+ * buildSnapshot() so it is already valid.
+ */
+export async function putSnapshot({
+  relayUrl,
+  sessionId,
+  snapshot,
+  timeoutMs,
+  ...retryOpts
+} = {}) {
+  return withRetry(
+    () =>
+      requestJson(
+        "PUT",
+        `${relayUrl}/v1/sessions/${encodeURIComponent(sessionId)}/snapshot`,
+        { body: snapshot, timeoutMs },
+      ),
+    retryOptionsFrom(retryOpts),
+  );
+}
+
 export async function health({ relayUrl, timeoutMs, ...retryOpts } = {}) {
   return withRetry(
     () => requestJson("GET", `${relayUrl}/healthz`, { timeoutMs }),
