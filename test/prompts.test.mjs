@@ -84,7 +84,16 @@ for (const name of PROMPTS) {
 
 test("prompts/requestor.md installs from a clean clone and takes exactly one input", async () => {
   const text = await load("requestor");
-  assert.match(text, /git clone https:\/\/github\.com\/thetangstr\/clockchain-handshake-v2\.git/);
+  // The branch has to be explicit. The kit repository's default branch does not
+  // carry bin/requestor.mjs -- a plain clone lands a tree with no requestor in
+  // it, and the failure surfaces on the stakeholder's machine, at the one
+  // moment nobody can debug it. This assertion used to demand the exact
+  // unbranched command, which is how that shipped.
+  assert.match(
+    text,
+    /git clone -b claude\/handshake-v6 https:\/\/github\.com\/thetangstr\/clockchain-handshake-v2\.git/,
+    "the clone must pin the branch that actually contains the requestor",
+  );
   assert.match(text, /npm ci/);
   assert.match(text, /node bin\/requestor\.mjs --discovery-url <DISCOVERY_URL>/);
   const distinct = new Set(text.match(PLACEHOLDER) ?? []);

@@ -15,7 +15,7 @@ own. No money moves at any point, and nothing here is able to move any.
 
 Do this, in order:
 
-1. Run: git clone https://github.com/thetangstr/clockchain-handshake-v2.git
+1. Run: git clone -b claude/handshake-v6 https://github.com/thetangstr/clockchain-handshake-v2.git
    then move into the clockchain-handshake-v2 folder it creates.
 2. Run: node --version
    It must report 22 or higher. If not, install Node 22 and stop until it does.

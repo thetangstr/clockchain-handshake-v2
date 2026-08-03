@@ -18,8 +18,8 @@
     "runtime": "Node.js 22"
   },
   "build": {
-    "buildCommand": "R=/private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research; cd \"$R\" && npm run build 2>&1 | grep -E \"error|Error|Compiled successfully\" | head -6",
-    "testCommand": "grep -n \"MCP_BASE_URL\" bin/operator.mjs | head; echo \"=== tests ===\"; npm test 2>&1 | grep -E \"^# (tests|pass|fail)|^not ok\" | head -6",
+    "buildCommand": "lsof -ti :3113 | xargs kill 2>/dev/null; R=/private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research; cd \"$R\" && npm run build 2>&1 | grep -E \"error|Error|Compiled successfully\" | head -3 && git add -A && git commit -q -m \"$(cat <<'EOF'\nhandshake/claude-v6: add a reset for the board, and speak to the room rather than the presenter\n\nReset board clears a finished run off the panel without touching anything real\n— it remembers the dismissed session in this browser and shows a clean board\nuntil a session with a different id appears, which is what the next run\nproduces. The ledger cannot be reset, which is the point of it; the view can.\n\nLanguage turned outward. \"Your job is one copy-paste\" and the npm commands\nwere written for whoever drives the demo, on a page now shown to the people\nwatching it. The operational steps moved into a presenter drawer, and the main\npage describes what is about to happen instead: what D4D states, what BuzzHive\nsigns from its own machine, what gets recorded, and who decides.\n\nThe prompt section is reframed as what the other side receives — worth reading\nfor what is absent from it, since no key, token or session id ever reaches\nBuzzHive, and the agent is explicitly forbidden from claiming success.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nEOF\n)\" && (git push -q origin main 2>/dev/null || (git pull --rebase -q origin main && git push -q origin main)) && git log --oneline -1",
+    "testCommand": "R=/private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research; node -e '\nconst fs=require(\"fs\");\nconst p=process.argv[1];\nlet t=fs.readFileSync(p,\"utf8\");\nconst from=\"1. Run: git clone ${REPO}.git\";\nconst to=\"1. Run: git clone -b claude/handshake-v6 ${REPO}.git\";\nconst n=t.split(from).length-1;\nif(n!==1){console.error(\"MISS \"+n);process.exit(1)}\nfs.writeFileSync(p,t.replace(from,to));\nconsole.log(\"page prompt updated\");\n' \"$R/src/components/ClaudeV6Runbook.tsx\" && sed 's|<DISCOVERY_URL>|http://44.249.47.220:8080/v1/discovery/current|g' prompts/requestor.md > \"$R/public/handshake/claude-v6/requestor-prompt.md\" && echo \"published copy synced\" && npm test 2>&1 | grep -E \"^# (tests|pass|fail)|^not ok\" | head -4",
     "lintCommand": null,
     "devCommand": null,
     "scripts": {
@@ -163,8 +163,8 @@
     },
     {
       "path": "test/prompts.test.mjs",
-      "accessCount": 3,
-      "lastAccessed": 1785783102912,
+      "accessCount": 4,
+      "lastAccessed": 1785786202033,
       "type": "file"
     },
     {
@@ -207,6 +207,12 @@
       "path": "test/monitor-timeline.test.mjs",
       "accessCount": 1,
       "lastAccessed": 1785784123720,
+      "type": "file"
+    },
+    {
+      "path": "prompts/requestor.md",
+      "accessCount": 1,
+      "lastAccessed": 1785786177861,
       "type": "file"
     }
   ],
