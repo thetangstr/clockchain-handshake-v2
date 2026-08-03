@@ -27,7 +27,7 @@ printf '\n== 1. AUTHORIZED containment ==\n'
 UNEXPECTED=$(grep -rl 'AUTHORIZED' src bin scripts 2>/dev/null \
   | grep -v '^src/core/verdict.mjs$' \
   | grep -v '^src/core/evidence.mjs$' \
-  | grep -v '^src/monitor/' \
+  | grep -vE '^src/monitor/(stakeholder|control-plane)/messages\\.mjs$' \
   | grep -v '^scripts/check-invariants.sh$' || true)
 info "scanned: src/ bin/ scripts/"
 if [ -n "$UNEXPECTED" ]; then
@@ -87,8 +87,11 @@ else
 fi
 
 printf '\n== 4. Reason-code emission sites ==\n'
-# Every frozen public code must be emittable somewhere, or a documented failure
-# mode cannot actually be reported.
+# Bidirectional. Forward: every frozen code must have a site, or a documented
+# failure mode cannot be reported. Reverse: no code OUTSIDE the frozen set may be
+# emitted, or the public vocabulary quietly grows and a stakeholder sees a reason
+# nobody wrote down. The reverse direction was added after an audit found two
+# unregistered codes shipping.
 PENDING=0
 for CODE in RENDEZVOUS_UNAVAILABLE EXPIRED MISSING DUPLICATE REORDERED MALFORMED \
             AMBIGUOUS_WRITE BINDING_MISMATCH ANCHOR_UNVERIFIED ROLE_ALREADY_BOUND \
@@ -111,6 +114,27 @@ for CODE in RENDEZVOUS_UNAVAILABLE EXPIRED MISSING DUPLICATE REORDERED MALFORMED
     esac
   fi
 done
+# Reverse: enumerate what is actually emitted and diff against the frozen set.
+FROZEN='RENDEZVOUS_UNAVAILABLE|EXPIRED|MISSING|DUPLICATE|REORDERED|MALFORMED|AMBIGUOUS_WRITE|BINDING_MISMATCH|ANCHOR_UNVERIFIED|ROLE_ALREADY_BOUND|RATE_BLOCKED|AMOUNT_UNRESOLVED|FUNDING_REPLAYED|FAILED|REHEARSAL_NOT_AUTHORIZABLE|REHEARSAL_SUBJECT_MISMATCH'
+# Scoped to the surfaces that speak the RUN's public vocabulary. Modules keep
+# their own prefixed internal namespaces (e.g. BILATERAL_FUNDING_* in the pure-
+# ported funding journal); those are not reasons a stakeholder is shown, and the
+# funding module is a pure port we must not edit anyway. As src/relay, src/roles
+# and src/verifier land in M1a they are added to this list.
+PUBLIC_SURFACES="src/core/verdict.mjs src/core/protocol.mjs src/core/window.mjs"
+for EXTRA in src/relay src/roles src/verifier; do
+  [ -d "$EXTRA" ] && PUBLIC_SURFACES="$PUBLIC_SURFACES $EXTRA"
+done
+UNREGISTERED=$(grep -rhoE '(fail|reason:)\s*\(?\s*"[A-Z_]+"' $PUBLIC_SURFACES 2>/dev/null \
+  | grep -oE '"[A-Z_]+"' | tr -d '"' | sort -u \
+  | grep -vE "^($FROZEN)$" || true)
+if [ -n "$UNREGISTERED" ]; then
+  fail "a reason code is emitted that is not in the frozen public set:"
+  printf '        %s\n' $UNREGISTERED
+else
+  pass "no unregistered reason code is emitted"
+fi
+
 if [ "$PENDING" -gt 0 ]; then
   if [ "$STRICT" = "1" ]; then
     fail "$PENDING reason code(s) still pending (--strict)"
@@ -154,7 +178,7 @@ if [ -d /Users/Kailor/conductor/workspaces/clockchain-handshake/riyadh-v3 ]; the
     sed 's/^/        /' /tmp/port-check.txt
   fi
 else
-  info "donor not present on this machine; skipping byte-fidelity check"
+  fail "donor not present: byte-fidelity is UNVERIFIED on this machine (run where the donor exists, or accept the gap explicitly)"
 fi
 
 printf '\n'

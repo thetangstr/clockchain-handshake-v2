@@ -724,7 +724,11 @@ function parseMarker(bytes, canaries) {
  * function rather than two call sites that could drift apart.
  */
 function verifyPartyTriple(triple, canaries) {
-  const marker = parseMarker(triple.marker, canaries);
+  // Bounds FIRST, before any parsing. The directory form gets this for free from
+  // its bounded reads; the in-memory form arrives from the relay, which is
+  // untrusted transport, so parsing before bounding would let a peer hand the
+  // verifier an arbitrarily large document to canonicalize and JSON.parse. It
+  // also keeps the two surfaces reporting the same code for the same violation.
   if (
     triple.json.byteLength > MAX_JSON_BYTES ||
     triple.markdown.byteLength > MAX_MARKDOWN_BYTES ||
@@ -732,6 +736,7 @@ function verifyPartyTriple(triple, canaries) {
   ) {
     fail();
   }
+  const marker = parseMarker(triple.marker, canaries);
   if (
     sha256(triple.json) !== marker.jsonSha256 ||
     sha256(triple.markdown) !== marker.markdownSha256

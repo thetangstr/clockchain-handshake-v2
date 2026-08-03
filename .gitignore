@@ -10,3 +10,10 @@ state/
 **/funding-journal/
 **/.env
 **/run-state/
+
+# Operator-local material. Extension patterns alone missed obvious names like
+# keys/treasury.txt, so the whole directory is ignored.
+keys/
+config/secrets.json
+.context/
+*.secret.json

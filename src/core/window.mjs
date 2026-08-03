@@ -29,6 +29,16 @@ export const ACK_WRITE_BUDGET_MS = 223_500;
 export const MIN_USABLE_POLL_MS = 20_000;
 
 /**
+ * Mirrors runner.mjs MAX_POLL_DURATION_MS. Duplicated rather than imported to
+ * keep this module dependency-free; the deadline-coherence test asserts the two
+ * stay equal, so a drift is caught rather than silently tolerated.
+ */
+export const RUNNER_MAX_POLL_DURATION_MS = 30 * 60_000;
+
+/** The signed protocol window (blocktime.mjs EXPIRY_WINDOW_MS), asserted equal in test. */
+export const EXPIRY_WINDOW_MS = 600_000;
+
+/**
  * Compute the bound for the in-window ACCEPTED watch.
  *
  * Returns either {ok:true, pollDurationMs} or {ok:false, reason} — never a bound
@@ -44,8 +54,7 @@ export function computeAcceptedPollBound({
   if (
     !Number.isSafeInteger(nowMs) ||
     !Number.isSafeInteger(proposalDeadlineMs) ||
-    !Number.isSafeInteger(ackWriteBudgetMs) ||
-    ackWriteBudgetMs < 0
+    !Number.isSafeInteger(ackWriteBudgetMs)
   ) {
     return Object.freeze({
       detail: "Timing inputs were not whole millisecond values.",
@@ -54,8 +63,24 @@ export function computeAcceptedPollBound({
     });
   }
 
-  const remainingMs = proposalDeadlineMs - nowMs;
-  const usableMs = remainingMs - ackWriteBudgetMs;
+  // The reservation is a floor, not a suggestion. A caller passing 0 (or any
+  // value below the observed single-write ceiling) would otherwise be handed the
+  // entire window and reach the deadline with nothing left to acknowledge —
+  // the exact failure this module exists to prevent, reintroduced through an
+  // argument. Callers may reserve MORE, never less.
+  const reservedMs = Math.max(ackWriteBudgetMs, ACK_WRITE_BUDGET_MS);
+
+  // The window can never legitimately exceed the signed expiry. A larger value
+  // means a bad PROPOSED block time or clock skew; trusting it would produce a
+  // bound the runner rejects with a generic terminal code.
+  const remainingMs = Math.min(
+    proposalDeadlineMs - nowMs,
+    EXPIRY_WINDOW_MS,
+  );
+  const usableMs = Math.min(
+    remainingMs - reservedMs,
+    RUNNER_MAX_POLL_DURATION_MS,
+  );
 
   if (usableMs < MIN_USABLE_POLL_MS) {
     return Object.freeze({

@@ -10,7 +10,9 @@ import { readFile } from "node:fs/promises";
 
 import {
   ACK_WRITE_BUDGET_MS,
+  EXPIRY_WINDOW_MS as WINDOW_MIRROR,
   MIN_USABLE_POLL_MS,
+  RUNNER_MAX_POLL_DURATION_MS,
   computeAcceptedPollBound,
 } from "../src/core/window.mjs";
 import { EXPIRY_WINDOW_MS, deadlineMs } from "../src/core/blocktime.mjs";
@@ -131,4 +133,62 @@ test("no human-paced wait is configured inside the window", () => {
     "the anchor window must stay strictly machine-paced",
   );
   assert.equal(MAX_POLL_DURATION_MS, HUMAN_PACED_MINIMUM_MS);
+});
+
+
+// --- Added after independent verification found the cases below reachable. ---
+// The original tests held ackWriteBudgetMs and proposalDeadlineMs fixed, so they
+// could not see either violation. These vary both.
+
+test("a caller cannot shrink the reservation to claim the whole window", () => {
+  // Found by audit: ackWriteBudgetMs was caller-overridable and guarded only
+  // against negatives, so 0 yielded a 600000ms bound with nothing left to
+  // acknowledge — the original failure, reintroduced through an argument.
+  for (const attempt of [0, 1, 1_000, ACK_WRITE_BUDGET_MS - 1]) {
+    const result = computeAcceptedPollBound({
+      ackWriteBudgetMs: attempt,
+      nowMs: BLOCK_TIME,
+      proposalDeadlineMs: DEADLINE,
+    });
+    assert.equal(result.ok, true);
+    assert.ok(
+      result.pollDurationMs <= EXPIRY_WINDOW_MS - ACK_WRITE_BUDGET_MS,
+      `reservation shrunk to ${attempt} produced ${result.pollDurationMs}`,
+    );
+  }
+});
+
+test("a caller may reserve MORE than the default", () => {
+  const generous = computeAcceptedPollBound({
+    ackWriteBudgetMs: ACK_WRITE_BUDGET_MS * 2,
+    nowMs: BLOCK_TIME,
+    proposalDeadlineMs: DEADLINE,
+  });
+  assert.equal(generous.ok, true);
+  assert.equal(generous.pollDurationMs, EXPIRY_WINDOW_MS - ACK_WRITE_BUDGET_MS * 2);
+});
+
+test("an implausible deadline cannot produce a bound the runner rejects", () => {
+  // Found by audit: a deadline 50 minutes out (clock skew, or a wrong PROPOSED
+  // block time) produced 2_776_500ms, above the runner ceiling — so pollDuration()
+  // would throw the generic FAILED this module exists to avoid.
+  for (const minutes of [11, 30, 50, 600]) {
+    const result = computeAcceptedPollBound({
+      nowMs: BLOCK_TIME,
+      proposalDeadlineMs: BLOCK_TIME + minutes * 60_000,
+    });
+    if (!result.ok) continue;
+    assert.ok(
+      result.pollDurationMs <= RUNNER_MAX_POLL_DURATION_MS,
+      `${minutes}min deadline produced ${result.pollDurationMs}`,
+    );
+    assert.ok(result.pollDurationMs <= EXPIRY_WINDOW_MS - ACK_WRITE_BUDGET_MS);
+  }
+});
+
+test("the mirrored constants match their sources", () => {
+  // window.mjs duplicates two runner/blocktime constants to stay dependency-free.
+  assert.equal(WINDOW_MIRROR, EXPIRY_WINDOW_MS);
+  assert.equal(RUNNER_MAX_POLL_DURATION_MS, MAX_POLL_DURATION_MS);
+  assert.equal(MIN_USABLE_POLL_MS, MIN_POLL_INTERVAL_MS);
 });

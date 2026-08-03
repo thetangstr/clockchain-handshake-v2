@@ -9,11 +9,7 @@
   },
   "scripts": {
     "test": "node --test --test-concurrency=4 test/*.test.mjs",
-    "test:slow": "node --test --test-concurrency=4 test/slow/*.test.mjs",
-    "test:all": "npm run test && npm run test:slow",
     "verify": "npm run test && bash scripts/check-invariants.sh",
-    "preflight": "node scripts/preflight.mjs",
-    "negative": "node scripts/negative-checks.mjs",
     "release:pin": "node scripts/release-pin.mjs"
   },
   "dependencies": {

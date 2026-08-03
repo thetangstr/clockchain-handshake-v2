@@ -88,6 +88,10 @@ const manifest = git("ls-files", "-s")
     return `${blob} ${path}`;
   })
   .filter((entry) => !entry.endsWith(" release.json"))
+  // Planning and session artifacts are not part of the kit a requestor runs.
+  // Including them meant editing a plan document invalidated the digest that
+  // the kit verifies, which would fail a live run for a documentation change.
+  .filter((entry) => !/ \.omc\//.test(entry))
   .sort()
   .join("\n");
 

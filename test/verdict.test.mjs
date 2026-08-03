@@ -1992,3 +1992,32 @@ test("v2: the emission site is single and the fail() default is unchanged", asyn
   // And only createVerdict may reach the emission.
   assert.equal((source.match(/createVerdict\(/g) ?? []).length, 2);
 });
+
+
+test("v2: an oversize marker is refused identically on both input forms", async (t) => {
+  // Found by audit: verifyPartyTriple parsed the marker BEFORE checking bounds,
+  // so a relay-supplied 64MiB marker was fully canonicalized and JSON.parsed
+  // before rejection — unbounded attacker-controlled work from untrusted
+  // transport — and the two surfaces reported different codes for it.
+  const fixture = await completeFixture(t);
+  const { payerDirectory, payeeDirectory, ...rest } = fixture.input;
+  const payee = await readTriple(payeeDirectory);
+  const oversizeMarker = `{"padding":"${"x".repeat(4096)}"}`;
+
+  await assertVerdictFailure(
+    {
+      ...rest,
+      payerPackage: await readTriple(payerDirectory),
+      payeePackage: { ...payee, marker: oversizeMarker },
+    },
+    "FAILED",
+  );
+
+  // And the same oversize marker written to disk must report the same code.
+  await writeFile(
+    join(payeeDirectory, ".party-result.complete.json"),
+    oversizeMarker,
+    "utf8",
+  );
+  await assertVerdictFailure(fixture.input, "FAILED");
+});
