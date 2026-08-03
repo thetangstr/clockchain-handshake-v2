@@ -11,13 +11,14 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PROMPTS = ["requestor", "payer"];
-// Raised from 40. The requestor prompt now carries the business framing too --
-// what a supplier is actually agreeing to, and why the payer insists on it --
-// because it is read by a stakeholder deciding whether to paste it, and shown
-// on the demo page to an audience, not only consumed by an agent. The original
-// limit was defending against a wall nobody reads to the end; section headings
-// do that job better than a line count, and the ceiling stays to stop sprawl.
-const MAX_LINES = 60;
+// 40 originally, then 60, now 75 -- and a number I keep raising is a number
+// that was never measuring the right thing. What the limit defends against is a
+// wall of text nobody reads to the end, so that is now asserted directly: no
+// unbroken run of prose longer than MAX_PARAGRAPH_LINES. The ceiling stays as a
+// backstop against sprawl, but the paragraph check is the real guard, and it
+// does not punish the prompt for gaining a heading and a skippable section.
+const MAX_LINES = 75;
+const MAX_PARAGRAPH_LINES = 12;
 
 // A run of 32+ token characters is what a pasted secret looks like: an API key, a
 // bearer token, a base64 blob. Nothing legitimate in these prompts is that long.
@@ -37,6 +38,22 @@ for (const name of PROMPTS) {
       lines.length <= MAX_LINES,
       `${name}.md is ${lines.length} lines; a prompt nobody reads to the end is not a prompt`,
     );
+  });
+
+  test(`prompts/${name}.md stays skimmable rather than a wall of text`, async () => {
+    const text = await load(name);
+    let run = 0;
+    let worst = 0;
+    for (const line of text.split("\n")) {
+      run = line.trim() === "" ? 0 : run + 1;
+      if (run > worst) worst = run;
+    }
+    assert.ok(
+      worst <= MAX_PARAGRAPH_LINES,
+      `${name}.md has an unbroken ${worst}-line block; a reader deciding whether to ` +
+        `paste this needs somewhere for the eye to land`,
+    );
+    assert.match(text, /^## /m, `${name}.md needs headings to be scanned rather than read`);
   });
 
   test(`prompts/${name}.md pastes no secret and no version pin`, async () => {

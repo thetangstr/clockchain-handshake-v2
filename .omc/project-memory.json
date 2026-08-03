@@ -18,8 +18,8 @@
     "runtime": "Node.js 22"
   },
   "build": {
-    "buildCommand": "R=/private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research; cd \"$R\" && node -e '\nconst fs=require(\"fs\");\nlet p=\"src/components/ClaudeV6LiveMonitor.tsx\", t=fs.readFileSync(p,\"utf8\");\nconst from = `                          <dd>\n                            <a\n                              className=\"font-mono text-[10.5px] text-[var(--md-sys-color-primary)] underline underline-offset-2\"\n                              href={\\`https://sepolia.etherscan.io/nft/0x8004A818BFB912233c491871b3d84c89A494BD9e/\\${party.agentId}\\`}\n                              rel=\"noopener noreferrer\"\n                              target=\"_blank\"\n                            >\n                              agent #{party.agentId} ↗\n                            </a>\n                          </dd>`;\nconst to = `                          <dd className=\"font-mono text-[10.5px] text-[var(--md-sys-color-on-surface)]\">\n                            agent #{party.agentId}\n                          </dd>`;\nif(t.split(from).length-1!==1){console.error(\"MISS dd\");process.exit(1)}\nt=t.replace(from,to);\n\nconst f2 = `                    <p className=\"pt-0.5 text-[10px] leading-snug text-[var(--md-sys-color-on-surface-muted)]\">\n                      Straight from the ERC-8004 registry. Opens on Etherscan — no login.\n                    </p>`;\nconst t2 = `                    <p className=\"pt-0.5 text-[10px] leading-snug text-[var(--md-sys-color-on-surface-muted)]\">\n                      Returned by the ERC-8004 registry itself.{\" \"}\n                      <a\n                        className=\"text-[var(--md-sys-color-primary)] underline underline-offset-2\"\n                        href=\"https://sepolia.etherscan.io/address/0x8004A818BFB912233c491871b3d84c89A494BD9e\"\n                        rel=\"noopener noreferrer\"\n                        target=\"_blank\"\n                      >\n                        Look them up on Etherscan ↗\n                      </a>{\" \"}\n                      — no login needed.\n                    </p>`;\nif(t.split(f2).length-1!==1){console.error(\"MISS caption\");process.exit(1)}\nfs.writeFileSync(p, t.replace(f2,t2));\nconsole.log(\"agent ids shown as text; one verified registry link\");\n' && npm run build 2>&1 | grep -E \"error|Error|Failed|Compiled successfully\" | head -4",
-    "testCommand": "npm test 2>&1 | grep -E \"^# (tests|pass|fail)|^not ok\" | head -8",
+    "buildCommand": "R=/private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research; U=\"http://44.249.47.220:8080/v1/discovery/current\"; sed \"s|<DISCOVERY_URL>|$U|g\" prompts/requestor.md > \"$R/public/handshake/claude-v6/requestor-prompt.md\" && node -e '\nconst fs=require(\"fs\");\nconst [page,promptFile,url]=process.argv.slice(1);\nconst body=fs.readFileSync(promptFile,\"utf8\").replace(/<DISCOVERY_URL>/g,url).replace(/`/g,\"\\\\`\").replace(/\\$\\{/g,\"\\\\${\").trimEnd();\nlet t=fs.readFileSync(page,\"utf8\");\nconst s=t.indexOf(\"const requestorPrompt = `\"), e=t.indexOf(\"`;\", s);\nfs.writeFileSync(page, t.slice(0,s)+\"const requestorPrompt = `\"+body+\"`;\"+t.slice(e+2));\nconsole.log(\"page prompt synced\");\n' \"$R/src/components/ClaudeV6Runbook.tsx\" prompts/requestor.md \"$U\" && npm test 2>&1 | grep -E \"^# (pass|fail)\" && git add -A && git commit -q -m \"$(cat <<'EOF'\nprompts: correct the reason setup comes first\n\nI had written that the authorization window starts when the payer opens the\nsession. It does not, and the run I attributed to that had a different cause\nentirely -- a request stamped a second into the future, now fixed. The payer\nwaits up to 45 minutes; the ordering is just good sequencing, not a deadline.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nEOF\n)\" && git branch -f claude/handshake-v6 main && git push -q origin main && git push -q --force-with-lease origin claude/handshake-v6 && echo \"handshake pushed\"; cd \"$R\" && npm run build 2>&1 | grep -E \"error|Compiled successfully\" | head -2 && git add -A && git commit -q -m \"handshake/claude-v6: sync the corrected requestor prompt\" && (git push -q origin main 2>/dev/null || (git pull --rebase -q origin main && git push -q origin main)) && echo \"site pushed\"",
+    "testCommand": "npm test 2>&1 | grep -E \"^# (tests|pass|fail)|^not ok\" | head -5; echo; echo \"line counts: requestor=$(wc -l < prompts/requestor.md) payer=$(wc -l < prompts/payer.md)\"; bash scripts/check-invariants.sh 2>&1 | tail -1",
     "lintCommand": null,
     "devCommand": null,
     "scripts": {
@@ -157,20 +157,20 @@
     },
     {
       "path": "prompts/requestor.md",
-      "accessCount": 9,
-      "lastAccessed": 1785794375183,
+      "accessCount": 10,
+      "lastAccessed": 1785794999880,
       "type": "file"
     },
     {
       "path": "prompts/payer.md",
-      "accessCount": 6,
-      "lastAccessed": 1785783172836,
+      "accessCount": 8,
+      "lastAccessed": 1785795079637,
       "type": "file"
     },
     {
       "path": "test/prompts.test.mjs",
-      "accessCount": 5,
-      "lastAccessed": 1785788727610,
+      "accessCount": 7,
+      "lastAccessed": 1785795037193,
       "type": "file"
     },
     {
