@@ -19,7 +19,7 @@
   },
   "build": {
     "buildCommand": "R=/private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research; cd \"$R\" && node -e '\nconst fs=require(\"fs\");\nconst p=\"src/components/ClaudeV6Runbook.tsx\";\nlet t=fs.readFileSync(p,\"utf8\");\nt=t.replace(`import PromptCopyButton from \"./PromptCopyButton\";`,\n            `import ClaudeV6RunLog from \"./ClaudeV6RunLog\";\\nimport PromptCopyButton from \"./PromptCopyButton\";`);\nconst anchor=`      <section className=\"mt-16 border-t border-[var(--md-sys-color-outline-variant)] pt-8\">`;\nconst section=`      <Section title=\"Every run so far\">\n        <ClaudeV6RunLog />\n      </Section>\n\n`;\nconst n=t.split(anchor).length-1;\nif(n!==1){console.error(\"MISS \"+n);process.exit(1)}\nt=t.replace(anchor, section+anchor);\nfs.writeFileSync(p,t);\nconsole.log(\"run log mounted above the presenter notes\");\n' && npm run build 2>&1 | grep -E \"error|Error|Failed|Compiled successfully|api/handshake/runs\" | head -6",
-    "testCommand": "npm test 2>&1 | grep -E \"^# (tests|pass|fail)|^not ok\" | head -8",
+    "testCommand": "wc -l prompts/requestor.md && npm test 2>&1 | grep -E \"^# (tests|pass|fail)|^not ok\" | head -4",
     "lintCommand": null,
     "devCommand": null,
     "scripts": {
@@ -156,6 +156,12 @@
       "type": "file"
     },
     {
+      "path": "prompts/requestor.md",
+      "accessCount": 8,
+      "lastAccessed": 1785790897461,
+      "type": "file"
+    },
+    {
       "path": "prompts/payer.md",
       "accessCount": 6,
       "lastAccessed": 1785783172836,
@@ -177,12 +183,6 @@
       "path": "bin/operator.mjs",
       "accessCount": 3,
       "lastAccessed": 1785785771542,
-      "type": "file"
-    },
-    {
-      "path": "prompts/requestor.md",
-      "accessCount": 3,
-      "lastAccessed": 1785788709041,
       "type": "file"
     },
     {
