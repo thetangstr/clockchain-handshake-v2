@@ -271,8 +271,12 @@ async function main() {
     `${requestorPromptFor(stableDiscoveryUrl(RELAY_URL))}\n\n` +
     `${"=".repeat(70)}\n\n`,
   );
+  const relayBase = RELAY_URL.replace(/\/+$/, "");
   process.stdout.write(
-    `Watch the run here:\n\n  ${RELAY_URL.replace(/\/+$/, "")}/monitor/${encodeURIComponent(sessionId)}\n\n`,
+    `Put this on the projector. The link is permanent — it always follows the\n` +
+    `newest run, so it can be opened before the audience arrives:\n\n` +
+    `  ${relayBase}/monitor/current\n\n` +
+    `  (this run specifically: ${relayBase}/monitor/${encodeURIComponent(sessionId)})\n\n`,
   );
   await say("TERMS_PUBLISHED", "Session published. Waiting for the requestor to appear.");
 

@@ -622,15 +622,26 @@ function handleGetEvidence(sessions, sessionId, role) {
   };
 }
 
+// "current" is a permanent alias for the newest session that has published a
+// discovery document. One rule serves both the invitation link and the monitor
+// link, which is the point: whatever a stakeholder was sent and whatever is on
+// the projector are guaranteed to be the same run. The alias resolves only the
+// first fetch -- every signed artifact still binds to the real session id, which
+// the requestor reads out of the discovery document and uses from then on.
+function newestPublishedSession(sessions) {
+  let newest = null;
+  for (const candidate of sessions.values()) {
+    if (candidate.discovery === undefined) continue;
+    if (newest === null || candidate.publishedAtMs > newest.publishedAtMs) {
+      newest = candidate;
+    }
+  }
+  return newest;
+}
+
 function handleDiscovery(sessions, sessionId) {
   if (sessionId === "current") {
-    let newest = null;
-    for (const candidate of sessions.values()) {
-      if (candidate.discovery === undefined) continue;
-      if (newest === null || candidate.publishedAtMs > newest.publishedAtMs) {
-        newest = candidate;
-      }
-    }
+    const newest = newestPublishedSession(sessions);
     if (newest === null) {
       throw new RelayError(
         "No session is currently open.",
@@ -659,13 +670,26 @@ function handleDiscovery(sessions, sessionId) {
 // validateSnapshot() on the fallback shape will simply reject it, which is
 // correct: there is nothing to render yet.
 function handleSnapshot(sessions, sessionId) {
-  const session = requireSession(sessions, sessionId);
+  // The monitor page polls this with whatever id is in its own URL, so the
+  // "current" alias has to be understood here too or the permanent projector
+  // link would render an empty page.
+  let session;
+  if (sessionId === "current") {
+    session = newestPublishedSession(sessions);
+    if (session === null) {
+      throw new RelayError("No session is currently open.", "UNKNOWN_SESSION", {
+        status: 404,
+      });
+    }
+  } else {
+    session = requireSession(sessions, sessionId);
+  }
   if (session.monitorSnapshot !== null) {
     return session.monitorSnapshot;
   }
   return {
     ok: true,
-    sessionId,
+    sessionId: session.sessionId,
     paymentMoved: false,
     lastSeq: String(session.lastSeq),
     messageCount: session.messages.length,

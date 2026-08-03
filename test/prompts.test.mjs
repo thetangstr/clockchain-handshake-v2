@@ -41,16 +41,10 @@ for (const name of PROMPTS) {
     assert.equal(token, null, `${name}.md contains a token-shaped literal: ${token?.[0]}`);
   });
 
-  test(`prompts/${name}.md names exactly one input`, async () => {
+  test(`prompts/${name}.md asks for nothing a person must assemble`, async () => {
     const text = await load(name);
-    const distinct = new Set(text.match(PLACEHOLDER) ?? []);
-    assert.deepEqual(
-      [...distinct],
-      ["<DISCOVERY_URL>"],
-      `${name}.md must have exactly one placeholder, and it must be the discovery URL`,
-    );
     // The two flags the discovery URL replaced. If either reappears in a prompt,
-    // the stakeholder is back to assembling a rendezvous by hand.
+    // the reader is back to assembling a rendezvous by hand.
     assert.ok(!text.includes("--relay-url"), `${name}.md still asks for a relay URL`);
     assert.ok(!text.includes("--session"), `${name}.md still asks for a session id`);
   });
@@ -74,22 +68,45 @@ for (const name of PROMPTS) {
     assert.match(text, /independent checker/, `${name}.md must say who actually decides`);
   });
 
-  test(`prompts/${name}.md carries the whole install path`, async () => {
+  test(`prompts/${name}.md checks the Node version before anything else`, async () => {
     const text = await load(name);
-    assert.match(text, /git clone https:\/\/github\.com\/thetangstr\/clockchain-handshake-v2\.git/);
     assert.match(text, /node --version/);
     assert.match(text, /22 or higher/);
-    assert.match(text, /npm ci/);
   });
 }
 
-test("prompts/requestor.md runs the requestor kit from the discovery URL alone", async () => {
+// The two prompts diverge past this point, and the divergence is the interesting
+// part. The requestor arrives with nothing: it clones a public repository and is
+// handed one URL. The payer cannot do that -- keys/ is gitignored, so a clean
+// clone has no funding wallet, no password and no ledger token, and would die at
+// wallet-unlock. Asserting a shared install path across both, as this file once
+// did, encoded a payer setup that could never have worked.
+
+test("prompts/requestor.md installs from a clean clone and takes exactly one input", async () => {
   const text = await load("requestor");
+  assert.match(text, /git clone https:\/\/github\.com\/thetangstr\/clockchain-handshake-v2\.git/);
+  assert.match(text, /npm ci/);
   assert.match(text, /node bin\/requestor\.mjs --discovery-url <DISCOVERY_URL>/);
+  const distinct = new Set(text.match(PLACEHOLDER) ?? []);
+  assert.deepEqual(
+    [...distinct],
+    ["<DISCOVERY_URL>"],
+    "requestor.md must have exactly one placeholder, and it must be the discovery URL",
+  );
 });
 
-test("prompts/payer.md hands the discovery URL over and nothing else", async () => {
+test("prompts/payer.md runs on the operator's own machine, with nothing to fill in", async () => {
   const text = await load("payer");
-  assert.match(text, /node bin\/operator\.mjs/);
+  assert.ok(
+    !/git clone/.test(text),
+    "payer.md tells the reader to clone, but keys/ is gitignored: that path cannot run",
+  );
+  assert.match(text, /npm run preflight/);
+  assert.match(text, /npm run demo/);
+  // The discovery URL is stable now, so this prompt substitutes nothing. A
+  // placeholder here would reach the reader as literal angle brackets, which is
+  // exactly what happened before.
+  const distinct = new Set(text.match(PLACEHOLDER) ?? []);
+  assert.deepEqual([...distinct], [], "payer.md must have no placeholder left to fill in");
   assert.match(text, /nothing else/);
 });

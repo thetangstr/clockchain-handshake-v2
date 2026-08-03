@@ -343,6 +343,43 @@ test("discovery: unset session returns a named reason, set discovery round-trips
   assert.equal(unknown.body.error, "UNKNOWN_SESSION");
 });
 
+// One alias serves the invitation link and the projector link, so a demo hands
+// out URLs that never change. Both endpoints must resolve it, and to the same
+// run -- a monitor pointing at a different session than the stakeholder was sent
+// would narrate the wrong handshake to an audience.
+test("current: discovery and snapshot both resolve the alias, to the newest published session", async (t) => {
+  const { baseUrl } = await startServer(t);
+
+  const empty = await getJson(`${baseUrl}/v1/discovery/current`);
+  assert.equal(empty.status, 404);
+  assert.equal(empty.body.error, "DISCOVERY_NOT_SET");
+  const emptySnapshot = await getJson(`${baseUrl}/v1/sessions/current/snapshot`);
+  assert.equal(emptySnapshot.status, 404);
+  assert.equal(emptySnapshot.body.error, "UNKNOWN_SESSION");
+
+  // A session with no discovery must never win the alias, however recent.
+  await postJson(`${baseUrl}/v1/sessions`, {});
+
+  const older = { schema: "handshake-discovery/v2", issuedAtMs: 1 };
+  const olderSession = await postJson(`${baseUrl}/v1/sessions`, { discovery: older });
+  const newer = { schema: "handshake-discovery/v2", issuedAtMs: 2 };
+  const newerSession = await postJson(`${baseUrl}/v1/sessions`, { discovery: newer });
+
+  const resolved = await getJson(`${baseUrl}/v1/discovery/current`);
+  assert.equal(resolved.status, 200);
+  assert.deepEqual(resolved.body, newer, "the alias must follow the newest published session");
+
+  const snapshot = await getJson(`${baseUrl}/v1/sessions/current/snapshot`);
+  assert.equal(snapshot.status, 200);
+  assert.equal(
+    snapshot.body.sessionId,
+    newerSession.body.sessionId,
+    "the monitor must land on the same run the invitation points at",
+  );
+  assert.notEqual(snapshot.body.sessionId, olderSession.body.sessionId);
+  assert.equal(snapshot.body.paymentMoved, false);
+});
+
 test("snapshot summarizes message and evidence bookkeeping without inventing authority", async (t) => {
   const { baseUrl } = await startServer(t);
   const created = await postJson(`${baseUrl}/v1/sessions`, {});

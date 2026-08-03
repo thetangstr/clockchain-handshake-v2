@@ -1,0 +1,202 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1785782257409,
+  "projectRoot": "/Users/Kailor/Documents/Projects/handshake",
+  "techStack": {
+    "languages": [
+      {
+        "name": "JavaScript/TypeScript",
+        "version": ">=22",
+        "confidence": "high",
+        "markers": [
+          "package.json"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "npm",
+    "runtime": "Node.js 22"
+  },
+  "build": {
+    "buildCommand": "cd /private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research && npm run build 2>&1 | grep -E \"error|Error|✓ Compiled|Compiled successfully|api/handshake\" | head -10",
+    "testCommand": "npm test 2>&1 | grep -E \"^# (tests|pass|fail)|^not ok\" | head -10",
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {
+      "negative": "node scripts/negative-checks.mjs",
+      "test": "node --test --test-concurrency=4 test/*.test.mjs",
+      "verify": "npm run test && bash scripts/check-invariants.sh",
+      "release:pin": "node scripts/release-pin.mjs"
+    }
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "bin",
+      "docs",
+      "scripts",
+      "src",
+      "test"
+    ],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "bin": {
+      "path": "bin",
+      "purpose": "Executable scripts",
+      "fileCount": 3,
+      "lastAccessed": 1785782257396,
+      "keyFiles": [
+        "operator.mjs",
+        "relay.mjs",
+        "requestor.mjs"
+      ]
+    },
+    "config": {
+      "path": "config",
+      "purpose": "Configuration files",
+      "fileCount": 0,
+      "lastAccessed": 1785782257396,
+      "keyFiles": []
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 3,
+      "lastAccessed": 1785782257398,
+      "keyFiles": [
+        "RUNBOOK.md",
+        "deviations.md",
+        "infographic-prompt.md"
+      ]
+    },
+    "keys": {
+      "path": "keys",
+      "purpose": null,
+      "fileCount": 5,
+      "lastAccessed": 1785782257398,
+      "keyFiles": [
+        "clockchain.token",
+        "funding-wallet.json",
+        "funding-wallet.public.json",
+        "funding.password",
+        "operator.ed25519.pem"
+      ]
+    },
+    "prompts": {
+      "path": "prompts",
+      "purpose": null,
+      "fileCount": 2,
+      "lastAccessed": 1785782257399,
+      "keyFiles": [
+        "payer.md",
+        "requestor.md"
+      ]
+    },
+    "runs": {
+      "path": "runs",
+      "purpose": null,
+      "fileCount": 18,
+      "lastAccessed": 1785782257399,
+      "keyFiles": [
+        "discovery-15028a47-5c75-4b67-a525-cc06e74fd88d.json",
+        "discovery-1d943555-10fc-4ad3-92f6-1d1fca9e383b.json",
+        "discovery-43d1ef86-359f-4147-be83-179740a81803.json",
+        "discovery-58eab963-a290-48ce-aea8-e9215354a8d6.json",
+        "discovery-6a0b5a91-7342-4025-b770-8724715f23ed.json"
+      ]
+    },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 6,
+      "lastAccessed": 1785782257399,
+      "keyFiles": [
+        "check-invariants.sh",
+        "negative-checks.mjs",
+        "port-pure.mjs",
+        "release-pin.mjs",
+        "run-local-demo.mjs"
+      ]
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 0,
+      "lastAccessed": 1785782257399,
+      "keyFiles": []
+    },
+    "test": {
+      "path": "test",
+      "purpose": "Test files",
+      "fileCount": 35,
+      "lastAccessed": 1785782257399,
+      "keyFiles": [
+        "blocktime.test.mjs",
+        "canonical-v1.test.mjs",
+        "canonical.test.mjs",
+        "clockchain.test.mjs",
+        "deadline-coherence.test.mjs"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "src/relay/server.mjs",
+      "accessCount": 6,
+      "lastAccessed": 1785782937085,
+      "type": "file"
+    },
+    {
+      "path": "prompts/payer.md",
+      "accessCount": 6,
+      "lastAccessed": 1785783172836,
+      "type": "file"
+    },
+    {
+      "path": "test/prompts.test.mjs",
+      "accessCount": 3,
+      "lastAccessed": 1785783102912,
+      "type": "file"
+    },
+    {
+      "path": "package.json",
+      "accessCount": 2,
+      "lastAccessed": 1785783049995,
+      "type": "file"
+    },
+    {
+      "path": "scripts/preflight.mjs",
+      "accessCount": 2,
+      "lastAccessed": 1785783065238,
+      "type": "file"
+    },
+    {
+      "path": "src/monitor/stakeholder/app.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1785782944000,
+      "type": "file"
+    },
+    {
+      "path": "bin/operator.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1785782952474,
+      "type": "file"
+    },
+    {
+      "path": "test/relay.test.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1785783125699,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}
