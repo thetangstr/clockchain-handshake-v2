@@ -257,7 +257,17 @@ export async function buildRequest({ common, expiresAtMs, issuedAtMs, mandateEnv
   return signPaymentRequest({
     request: {
       ...common,
-      createdAtMs: String(issuedAtMs + 1000),
+      // Equal to the mandate, never after it. The verifier requires the
+      // proposal anchor to fall at or after requestCreatedAtMs, and that anchor
+      // is timestamped by Clockchain while this is timestamped locally. A
+      // +1000ms offset here made the request window strictly tighter than the
+      // mandate window it sits inside, so a proposal anchored less than a
+      // second after the mandate was issued -- which is normal, observed
+      // margins ran 745ms to 3.9s -- failed closed as EXPIRED. Eight runs, one
+      // loss. payment-request.mjs only requires createdAtMs >= issuedAtMs, so
+      // equality is legal and leaves the mandate window as the single
+      // constraint rather than two, one of them arbitrary.
+      createdAtMs: String(issuedAtMs),
       expiresAtMs: String(expiresAtMs),
       invoiceReference: "INV-0001",
       mandateDigest: payerMandateDigest(mandateEnvelope),
@@ -341,7 +351,17 @@ export async function buildSession({
   const requestEnvelope = await signPaymentRequest({
     request: {
       ...common,
-      createdAtMs: String(issuedAtMs + 1000),
+      // Equal to the mandate, never after it. The verifier requires the
+      // proposal anchor to fall at or after requestCreatedAtMs, and that anchor
+      // is timestamped by Clockchain while this is timestamped locally. A
+      // +1000ms offset here made the request window strictly tighter than the
+      // mandate window it sits inside, so a proposal anchored less than a
+      // second after the mandate was issued -- which is normal, observed
+      // margins ran 745ms to 3.9s -- failed closed as EXPIRED. Eight runs, one
+      // loss. payment-request.mjs only requires createdAtMs >= issuedAtMs, so
+      // equality is legal and leaves the mandate window as the single
+      // constraint rather than two, one of them arbitrary.
+      createdAtMs: String(issuedAtMs),
       expiresAtMs: String(expiresAtMs),
       invoiceReference: "INV-0001",
       mandateDigest: payerMandateDigest(mandateEnvelope),
