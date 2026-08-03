@@ -1,0 +1,348 @@
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --text: #14181f;
+  --muted: #565f6d;
+  --border: #dde1e7;
+  --accent: #1a5eff;
+  --good: #0a7a3d;
+  --bad: #b3251a;
+  --warn: #8a5a00;
+  --banner-bg: #fff4e5;
+  --banner-text: #6b3d00;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #10131a;
+    --surface: #1a1f29;
+    --text: #eef1f6;
+    --muted: #a3adbd;
+    --border: #2c3342;
+    --accent: #6fa1ff;
+    --good: #34c778;
+    --bad: #ff6b5e;
+    --warn: #ffcf6b;
+    --banner-bg: #3a2c0f;
+    --banner-text: #ffcf6b;
+  }
+}
+
+:root[data-theme="light"] {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --text: #14181f;
+  --muted: #565f6d;
+  --border: #dde1e7;
+  --accent: #1a5eff;
+  --good: #0a7a3d;
+  --bad: #b3251a;
+  --warn: #8a5a00;
+  --banner-bg: #fff4e5;
+  --banner-text: #6b3d00;
+}
+
+:root[data-theme="dark"] {
+  --bg: #10131a;
+  --surface: #1a1f29;
+  --text: #eef1f6;
+  --muted: #a3adbd;
+  --border: #2c3342;
+  --accent: #6fa1ff;
+  --good: #34c778;
+  --bad: #ff6b5e;
+  --warn: #ffcf6b;
+  --banner-bg: #3a2c0f;
+  --banner-text: #ffcf6b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+body {
+  font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  line-height: 1.45;
+}
+
+.page {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: clamp(1rem, 3vw, 2.5rem);
+}
+
+.header {
+  text-align: center;
+  margin-bottom: 1.5rem;
+}
+
+.header h1 {
+  font-size: clamp(1.5rem, 4vw, 2.4rem);
+  margin: 0 0 0.35rem;
+}
+
+.session-line {
+  color: var(--muted);
+  margin: 0 0 1rem;
+  font-size: 0.95rem;
+}
+
+.session-line code {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+
+.no-money-banner {
+  display: inline-block;
+  font-size: clamp(1.05rem, 2.2vw, 1.35rem);
+  font-weight: 700;
+  color: var(--good);
+  background: var(--surface);
+  border: 2px solid var(--good);
+  border-radius: 999px;
+  padding: 0.5rem 1.25rem;
+  margin: 0;
+}
+
+.connection-banner {
+  text-align: center;
+  background: var(--banner-bg);
+  color: var(--banner-text);
+  border-radius: 10px;
+  padding: 0.75rem 1rem;
+  font-weight: 600;
+  margin: 0 0 1.25rem;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1.25rem;
+}
+
+.card h2 {
+  font-size: 1.05rem;
+  margin: 0 0 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.timeline-step {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-size: clamp(1rem, 2.4vw, 1.25rem);
+  padding: 0.4rem 0.2rem;
+  border-radius: 8px;
+}
+
+.step-icon {
+  flex: 0 0 auto;
+  width: 1.6em;
+  height: 1.6em;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  font-weight: 700;
+  border: 2px solid var(--border);
+  color: var(--muted);
+}
+
+.timeline-step.state-done .step-icon {
+  background: var(--good);
+  border-color: var(--good);
+  color: #ffffff;
+}
+
+.timeline-step.state-done .step-label {
+  color: var(--text);
+}
+
+.timeline-step.state-active .step-icon {
+  border-color: var(--accent);
+  color: var(--accent);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.timeline-step.state-active .step-label {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.timeline-step.state-pending .step-label {
+  color: var(--muted);
+}
+
+.timeline-step.state-failed .step-icon {
+  background: var(--bad);
+  border-color: var(--bad);
+  color: #ffffff;
+}
+
+.timeline-step.state-failed .step-label {
+  color: var(--bad);
+  font-weight: 600;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+.freshness {
+  margin: 0.9rem 0 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+  font-style: italic;
+}
+
+.verdict-card {
+  text-align: center;
+  border-width: 2px;
+}
+
+.verdict-sentence {
+  font-size: clamp(1.1rem, 2.8vw, 1.5rem);
+  font-weight: 700;
+  margin: 0;
+}
+
+.verdict-card.verdict-published {
+  border-color: var(--good);
+}
+
+.verdict-card.verdict-published .verdict-sentence {
+  color: var(--good);
+}
+
+.failure-card {
+  border-color: var(--bad);
+}
+
+.failure-sentence {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--bad);
+  margin: 0 0 0.6rem;
+}
+
+.failure-no-money {
+  margin: 0;
+  font-weight: 700;
+  color: var(--good);
+}
+
+.receipts-sub,
+.technical-sub {
+  color: var(--muted);
+  margin: 0 0 1rem;
+  font-size: 0.92rem;
+}
+
+.receipts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+}
+
+.receipt-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem;
+  background: var(--bg);
+}
+
+.receipt-card h3 {
+  margin: 0 0 0.6rem;
+  font-size: 1rem;
+}
+
+.receipt-card-pending {
+  opacity: 0.6;
+}
+
+.receipt-line {
+  margin: 0 0 0.3rem;
+  font-size: 0.95rem;
+}
+
+.receipt-when {
+  color: var(--muted);
+}
+
+.receipt-pending {
+  color: var(--muted);
+  font-style: italic;
+  margin: 0;
+}
+
+.receipt-link {
+  display: inline-block;
+  margin-top: 0.4rem;
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.receipt-link:hover,
+.receipt-link:focus-visible {
+  text-decoration: underline;
+}
+
+.technical-card summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 1.05rem;
+}
+
+.technical-card[open] summary {
+  margin-bottom: 0.9rem;
+}
+
+#technical-json {
+  overflow-x: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem;
+  font-size: 0.82rem;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  white-space: pre;
+}
+
+.footer {
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-top: 0.5rem;
+}
+
+@media (max-width: 480px) {
+  .card {
+    padding: 1rem;
+  }
+}

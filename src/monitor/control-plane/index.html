@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Clockchain handshake -- operator control plane</title>
+    <!--
+      Loopback only. This page is served by the operator process bound to
+      127.0.0.1; see routes.mjs for the P2 rationale. It is the evidence
+      exhibit for the demo owner, not a public page -- do not put this behind
+      a public hostname or reverse proxy.
+
+      Framework-free, no build step: plain HTML/CSS and an ES module the
+      browser loads directly. See app.mjs for behavior and messages.mjs for
+      the only place this control plane may render the verdict outcome word.
+    -->
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="masthead">
+      <h1>Clockchain handshake -- operator control plane</h1>
+      <p class="subtitle">
+        Evidence exhibit. It shows what is anchored on Clockchain; it never
+        gates the run.
+      </p>
+    </header>
+    <main id="app" aria-live="polite"></main>
+    <script type="module" src="./app.mjs"></script>
+  </body>
+</html>

@@ -1,0 +1,412 @@
+/* src/monitor/control-plane/styles.css
+ *
+ * The operator control plane's stylesheet. Dense and information-rich is
+ * fine here (unlike the public stakeholder page), but it must still read
+ * from a few feet away when projected -- so type stays large, contrast
+ * stays high, and status color is never the only signal (every colored
+ * state also carries a text label).
+ */
+
+:root {
+  color-scheme: dark;
+  --bg: #0b0f14;
+  --panel-bg: #131a22;
+  --panel-border: #26313d;
+  --text: #e8eef4;
+  --text-dim: #9fb0bf;
+  --mono-bg: #0a1520;
+  --accent: #4da3ff;
+  --ok: #35c26a;
+  --warn: #e0a72d;
+  --bad: #e05555;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 17px;
+  line-height: 1.4;
+}
+
+.masthead {
+  padding: 20px 24px 12px;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.masthead h1 {
+  margin: 0 0 4px;
+  font-size: 1.5rem;
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: 0.95rem;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px 24px 48px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.panel {
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  padding: 16px 20px;
+}
+
+.panel h2 {
+  margin: 0 0 10px;
+  font-size: 1.05rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+
+.hint {
+  color: var(--text-dim);
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+}
+
+/* Header */
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 24px;
+}
+
+.run-id {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.run-id .label {
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.run-id .value {
+  font-size: 1rem;
+}
+
+.moved-banner {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  color: var(--ok);
+  border: 1px solid var(--ok);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+/* Controls: exactly two, deliberately unremarkable buttons */
+.control-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+button.control {
+  font-size: 1rem;
+  font-weight: 600;
+  padding: 10px 22px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+
+button.control.start {
+  background: var(--ok);
+  color: #06170d;
+}
+
+button.control.abort {
+  background: var(--bad);
+  color: #200606;
+}
+
+button.control:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.control-status {
+  color: var(--text-dim);
+  font-size: 0.9rem;
+}
+
+/* Verdict */
+.verdict-headline {
+  font-size: 1.6rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.verdict-detail {
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+.verdict-pending .verdict-headline {
+  color: var(--warn);
+}
+
+.verdict-authorized {
+  border-color: var(--ok);
+}
+.verdict-authorized .verdict-headline {
+  color: var(--ok);
+}
+
+.verdict-failed {
+  border-color: var(--bad);
+}
+.verdict-failed .verdict-headline {
+  color: var(--bad);
+}
+
+/* Preflight */
+.preflight-status {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  font-weight: 600;
+}
+
+.preflight-status.ok {
+  color: var(--ok);
+}
+
+.preflight-status.blocked {
+  color: var(--bad);
+}
+
+.preflight-status .timestamp {
+  font-family: var(--font-mono);
+  font-weight: 400;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+
+/* Anchors */
+.anchor-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  gap: 16px;
+}
+
+.anchor-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0 0 12px;
+}
+
+.anchor-facts dt {
+  color: var(--text-dim);
+}
+
+.anchor-facts dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.receipt-fold summary {
+  cursor: pointer;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+
+pre.receipt {
+  background: var(--mono-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  padding: 10px;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  overflow-x: auto;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.explorer-link {
+  display: inline-block;
+  margin-top: 8px;
+  color: var(--accent);
+}
+
+.reverify-row {
+  margin-top: 12px;
+}
+
+button.reverify {
+  font-size: 0.95rem;
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+button.reverify:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.reverify-result {
+  margin-top: 10px;
+  border-radius: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--panel-border);
+}
+
+.reverify-result.match {
+  border-color: var(--ok);
+}
+
+.reverify-result.mismatch {
+  border-color: var(--bad);
+}
+
+.reverify-headline {
+  font-weight: 600;
+}
+
+.reverify-timestamp {
+  color: var(--text-dim);
+  font-size: 0.82rem;
+  margin: 2px 0 8px;
+}
+
+.reverify-reason {
+  color: var(--bad);
+}
+
+/* Audit trail */
+.audit-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.audit-row {
+  display: grid;
+  grid-template-columns: 200px 1fr 220px;
+  gap: 12px;
+  align-items: baseline;
+  border-bottom: 1px solid var(--panel-border);
+  padding-bottom: 6px;
+}
+
+.audit-row .code {
+  color: var(--accent);
+}
+
+.audit-row .timestamp {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  text-align: right;
+}
+
+/* Funding */
+.journal-state {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin-bottom: 10px;
+}
+
+.journal-state .label {
+  color: var(--text-dim);
+}
+
+.funding-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.funding-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 16px;
+  border-bottom: 1px solid var(--panel-border);
+  padding-bottom: 6px;
+}
+
+/* Roles */
+.role-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.role-row {
+  display: grid;
+  grid-template-columns: 160px 1fr auto;
+  gap: 12px;
+  align-items: baseline;
+  border-bottom: 1px solid var(--panel-border);
+  padding-bottom: 6px;
+}
+
+.role-row .role-name {
+  text-transform: capitalize;
+  font-weight: 600;
+}
+
+.role-row .heartbeat {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+
+@media (prefers-color-scheme: light) {
+  /* This dashboard is intentionally dark-only: it is meant to be projected
+   * in a demo room, and a single committed palette avoids the
+   * light/dark contrast mismatches that would show up mid-presentation.
+   * The :root color-scheme + explicit dark palette above already wins over
+   * a light system preference in every tested browser; this block is a
+   * documented no-op kept so a future reader does not "fix" it by adding a
+   * light variant that then has to be kept in sync by hand. */
+}

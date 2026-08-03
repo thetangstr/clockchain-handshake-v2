@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Payment Authorization Handshake — Live Run</title>
+<link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+<div class="page">
+
+  <header class="header">
+    <h1>Payment Authorization Handshake</h1>
+    <p class="session-line">
+      Session <code id="session-id">—</code>
+    </p>
+    <p class="no-money-banner" id="no-money-banner">No money has moved.</p>
+  </header>
+
+  <p class="connection-banner" id="connection-banner" hidden>
+    Cannot reach the run right now. Retrying…
+  </p>
+
+  <main>
+    <section class="card timeline-card" aria-label="Progress">
+      <h2>What is happening</h2>
+      <ol class="timeline" id="timeline"></ol>
+      <p class="freshness" id="freshness" hidden></p>
+    </section>
+
+    <section class="card verdict-card" id="verdict-card" aria-label="Verdict">
+      <h2>Result</h2>
+      <p class="verdict-sentence" id="verdict-sentence">
+        Waiting for the independent verifier's signed decision.
+      </p>
+    </section>
+
+    <section class="card failure-card" id="failure-card" hidden aria-label="Failure reason">
+      <h2>Why the run stopped</h2>
+      <p class="failure-sentence" id="failure-sentence"></p>
+      <p class="failure-no-money" id="failure-no-money"></p>
+    </section>
+
+    <section class="card receipts-card" aria-label="Receipts">
+      <h2>Proof — anchored on Clockchain</h2>
+      <p class="receipts-sub">
+        Each receipt below can be checked independently by anyone, without
+        trusting this page.
+      </p>
+      <div class="receipts" id="receipts"></div>
+    </section>
+
+    <details class="card technical-card" id="technical-card">
+      <summary>Technical evidence</summary>
+      <p class="technical-sub">
+        Hashes, receipt payloads, and internal status/reason codes, for
+        engineers verifying the run.
+      </p>
+      <pre id="technical-json"></pre>
+    </details>
+  </main>
+
+  <footer class="footer">
+    <p>
+      <span class="disclaimer">Single-validator testnet: anchored and
+      independently re-verifiable; not mainnet, court-grade,
+      consensus-secure, or trustless.</span>
+    </p>
+  </footer>
+
+</div>
+<script type="module" src="./app.mjs"></script>
+</body>
+</html>

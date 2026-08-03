@@ -74,11 +74,21 @@ printf '\n== 3. Human-paced wait sweep ==\n'
 #   EXPIRY_WINDOW_MS — the signed 600s protocol constant (deliberately unchanged)
 #   MAX_COMPLETION_DEADLINE_MS — per-call completion poll; the 120s term inside the
 #     223.5s single-write ceiling that ACK_WRITE_BUDGET_MS reserves against
-ALLOW='DEFAULT_REQUEST_TIMEOUT_MS|MAX_CONFIGURED_TIMEOUT_MS|MAX_RETRY_AFTER_MS|MAX_BACKOFF_DELAY_MS|MAX_TOTAL_RETRY_WAIT_MS|RATE_LIMIT_FLOOR_WAIT_MS|MIN_POLL_INTERVAL_MS|MAX_POLL_DURATION_MS|WRITE_RETRY_BACKOFF_MS|ACK_WRITE_BUDGET_MS|MIN_USABLE_POLL_MS|EXPIRY_WINDOW_MS|HUMAN_PACED_MINIMUM_MS|MAX_COMPLETION_DEADLINE_MS'
+#   POLL_INTERVAL_MS (src/monitor/stakeholder/app.mjs) — the audience page's own
+#     snapshot-fetch cadence, machine-paced, not a step in the handshake itself
+#   REQUEST_TIMEOUT_MS (src/monitor/stakeholder/app.mjs) — per-fetch abort bound
+#     for that same polling loop, same class as DEFAULT_REQUEST_TIMEOUT_MS
+#   DEFAULT_TIMEOUT_MS (src/relay/client.mjs) — per-HTTP-call abort bound; the
+#     RETRYABLE budget that actually matters for a human-paced wait is the
+#     caller-supplied retryBudgetMs passed into withRetry, not this per-attempt bound
+#   DEFAULT_WAIT_MS / MAX_WAIT_MS (src/relay/server.mjs) — the relay's own
+#     long-poll hold, capped at the shared-contract's 25000ms; the relay moves
+#     bytes, it is not itself a step a human waits on
+ALLOW='DEFAULT_REQUEST_TIMEOUT_MS|MAX_CONFIGURED_TIMEOUT_MS|MAX_RETRY_AFTER_MS|MAX_BACKOFF_DELAY_MS|MAX_TOTAL_RETRY_WAIT_MS|RATE_LIMIT_FLOOR_WAIT_MS|MIN_POLL_INTERVAL_MS|MAX_POLL_DURATION_MS|WRITE_RETRY_BACKOFF_MS|ACK_WRITE_BUDGET_MS|MIN_USABLE_POLL_MS|EXPIRY_WINDOW_MS|HUMAN_PACED_MINIMUM_MS|MAX_COMPLETION_DEADLINE_MS|POLL_INTERVAL_MS|REQUEST_TIMEOUT_MS|DEFAULT_TIMEOUT_MS|DEFAULT_WAIT_MS|MAX_WAIT_MS'
 SHORT=$(grep -rnE '^(export )?const [A-Z_]*(TIMEOUT|DEADLINE|WINDOW|WAIT|POLL|EXPIR)[A-Z_]*_MS *=' src 2>/dev/null \
   | grep -vE "$ALLOW" || true)
 info "scanned: src/ for (TIMEOUT|DEADLINE|WINDOW|WAIT|POLL|EXPIR)*_MS constants"
-info "allowlisted machine-paced bounds: 14 names (see script comments for why)"
+info "allowlisted machine-paced bounds: 17 names (see script comments for why)"
 if [ -n "$SHORT" ]; then
   fail "unrecognised wait constant — classify it as human- or machine-paced:"
   printf '        %s\n' "$SHORT"
