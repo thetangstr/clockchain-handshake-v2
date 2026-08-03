@@ -3,7 +3,6 @@ import {
   createHash,
   scrypt as scryptCallback,
 } from "node:crypto";
-import { execFile as execFileCallback } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { promisify } from "node:util";
@@ -11,14 +10,11 @@ import { promisify } from "node:util";
 import { keccak256 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 
-const execFileAsync = promisify(execFileCallback);
 const scryptAsync = promisify(scryptCallback);
 
 export const FUNDING_PASSWORD_FILE_ENV =
   "CLOCKCHAIN_FUNDING_PASSWORD_FILE";
-export const FUNDING_KEYCHAIN_SERVICE =
-  "com.clockchain.handshake.sepolia-funding";
-export const FUNDING_KEYCHAIN_ACCOUNT = "riyadh-v3";
+export const FUNDING_PASSWORD_ENV = "CLOCKCHAIN_FUNDING_PASSWORD";
 
 const SEPOLIA_CHAIN_ID = 11155111;
 const MAX_KEYSTORE_BYTES = 65_536;
@@ -51,15 +47,12 @@ const OPTION_KEYS = Object.freeze([
   "dependencies",
 ]);
 const DEPENDENCY_KEYS = Object.freeze([
-  "readKeychainPassword",
-  "execFile",
   "fs",
   "scrypt",
   "stdout",
   "stderr",
 ]);
 const FILE_SYSTEM_KEYS = Object.freeze(["lstat", "open"]);
-const EXEC_FILE_RESULT_KEYS = Object.freeze(["stdout", "stderr"]);
 const ADDRESS_PATTERN = /^0x[0-9a-f]{40}$/u;
 const ADDRESS_NO_PREFIX_PATTERN = /^[0-9a-f]{40}$/u;
 const HEX_32_PATTERN = /^[0-9a-f]{64}$/u;
@@ -72,6 +65,32 @@ class FundingKeystoreError extends Error {
     super("Bilateral funding failed safely.");
     this.name = "FundingKeystoreError";
     this.code = "BILATERAL_FUNDING_KEYSTORE_INVALID";
+  }
+}
+
+// Named configuration errors. They subclass FundingKeystoreError so the
+// sanitize helpers pass them through unchanged, and they carry only
+// non-secret text: never the password, never any part of it.
+class FundingPasswordNotConfiguredError extends FundingKeystoreError {
+  constructor() {
+    super();
+    this.name = "FundingPasswordNotConfiguredError";
+    this.code = "BILATERAL_FUNDING_PASSWORD_NOT_CONFIGURED";
+    this.message =
+      `Bilateral funding password is not configured. Set ${FUNDING_PASSWORD_FILE_ENV} ` +
+      `to a 0600-permission password file, or set ${FUNDING_PASSWORD_ENV}.`;
+  }
+}
+
+class FundingPasswordFileError extends FundingKeystoreError {
+  constructor() {
+    super();
+    this.name = "FundingPasswordFileError";
+    this.code = "BILATERAL_FUNDING_PASSWORD_FILE_INVALID";
+    this.message =
+      `Bilateral funding password file is unreadable or not private. ` +
+      `${FUNDING_PASSWORD_FILE_ENV} must name a regular, non-empty file owned ` +
+      `by this user with 0600 permissions.`;
   }
 }
 
@@ -235,12 +254,8 @@ function snapshotOptions(options) {
 function snapshotDependencyBag(dependencies) {
   const snapshot = snapshotAllowedObject(dependencies, DEPENDENCY_KEYS);
   if (
-    (Object.hasOwn(snapshot, "readKeychainPassword") &&
-      typeof snapshot.readKeychainPassword !== "function") ||
-    (Object.hasOwn(snapshot, "execFile") &&
-      typeof snapshot.execFile !== "function") ||
-    (Object.hasOwn(snapshot, "scrypt") &&
-      typeof snapshot.scrypt !== "function")
+    Object.hasOwn(snapshot, "scrypt") &&
+    typeof snapshot.scrypt !== "function"
   ) {
     fail();
   }
@@ -260,20 +275,6 @@ function snapshotFileSystem(fileSystem) {
     fail();
   }
   return snapshot;
-}
-
-function snapshotExecFileResult(value) {
-  const snapshot = snapshotAllowedObject(value, EXEC_FILE_RESULT_KEYS);
-  if (
-    (Object.hasOwn(snapshot, "stdout") && typeof snapshot.stdout !== "string") ||
-    (Object.hasOwn(snapshot, "stderr") && typeof snapshot.stderr !== "string")
-  ) {
-    fail();
-  }
-  return Object.freeze({
-    stdout: snapshot.stdout ?? "",
-    stderr: snapshot.stderr ?? "",
-  });
 }
 
 function isHex(value, bytes) {
@@ -354,43 +355,33 @@ function validateKeystore(value) {
   });
 }
 
-async function defaultReadKeychainPassword(service, account, dependencies) {
-  const execFile = dependencies.execFile ?? execFileAsync;
-  const result = await sanitizeAsync(() =>
-    execFile(
-      "/usr/bin/security",
-      ["find-generic-password", "-s", service, "-a", account, "-w"],
-      { encoding: "utf8", maxBuffer: 4096 },
-    ),
-  );
-  return snapshotExecFileResult(result).stdout;
-}
-
 async function readPassword(dependencies) {
-  // Portable secret path: when CLOCKCHAIN_FUNDING_PASSWORD_FILE names a
-  // private password file, read it instead of the macOS keychain so the
-  // funding flow runs on any operating system. Explicit configuration fails
-  // closed; there is no silent fallback to the keychain.
+  // Portable secret path, and the only path: CLOCKCHAIN_FUNDING_PASSWORD_FILE
+  // names a private 0600 password file, or CLOCKCHAIN_FUNDING_PASSWORD carries
+  // the password directly, so the funding flow runs on any operating system
+  // with no OS credential-store dependency. Explicit configuration fails
+  // closed; there is no silent fallback.
   const passwordFile = process.env[FUNDING_PASSWORD_FILE_ENV];
   if (passwordFile !== undefined) {
     if (typeof passwordFile !== "string" || passwordFile.length === 0) fail();
     const fileSystem = Object.hasOwn(dependencies, "fs")
       ? snapshotFileSystem(dependencies.fs)
       : Object.freeze({ lstat, open });
-    const bytes = await sanitizeAsync(() =>
-      readPinnedFile(passwordFile, 4097, fileSystem),
-    );
+    let bytes;
+    try {
+      // readPinnedFile enforces the private-path rules used across this repo:
+      // regular file, single link, exactly 0600, stable dev/ino across the
+      // read. Anything looser (0644, symlink, swapped file) fails closed here.
+      bytes = await readPinnedFile(passwordFile, 4097, fileSystem);
+    } catch {
+      throw new FundingPasswordFileError();
+    }
     const password = bytes.toString("utf8").replace(/\r?\n$/u, "");
-    if (password.trim().length === 0) fail();
+    if (password.trim().length === 0) throw new FundingPasswordFileError();
     return password;
   }
-  const reader =
-    dependencies.readKeychainPassword ??
-    ((service, account) =>
-      defaultReadKeychainPassword(service, account, dependencies));
-  const password = await sanitizeAsync(() =>
-    reader(FUNDING_KEYCHAIN_SERVICE, FUNDING_KEYCHAIN_ACCOUNT),
-  );
+  const password = process.env[FUNDING_PASSWORD_ENV];
+  if (password === undefined) throw new FundingPasswordNotConfiguredError();
   if (
     typeof password !== "string" ||
     password.trim().length === 0 ||
