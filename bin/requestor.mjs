@@ -8,7 +8,7 @@
  * records its acceptance. It never claims the run succeeded — only the operator's
  * independent verifier can say that, and this says so out loud.
  */
-import { chmod, mkdir, mkdtemp } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -129,7 +129,16 @@ async function main() {
     signMessage: (bytes) => account.signMessage({ message: { raw: bytes } }),
   });
 
-  say("ACCEPTED", "Our acceptance of the exact terms is recorded on Clockchain.");
+  const [json, markdown, marker] = await Promise.all([
+    readFile(join(directory, "party-result.json"), "utf8"),
+    readFile(join(directory, "PARTY-RESULT.md"), "utf8"),
+    readFile(join(directory, ".party-result.complete.json"), "utf8"),
+  ]);
+  await relay.putEvidence({
+    relayUrl: RELAY_URL, sessionId: SESSION_ID, role: "requestor",
+    evidence: { json, markdown, marker },
+  });
+  say("ACCEPTED", "Our acceptance is recorded on Clockchain and our evidence is delivered.");
   process.stdout.write(
     "\nOur side is complete — and that is NOT authorization.\n" +
     "Only the operator's independent verifier decides the outcome, after re-checking\n" +

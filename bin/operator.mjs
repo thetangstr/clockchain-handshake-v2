@@ -199,8 +199,35 @@ async function main() {
   });
   say("ACKNOWLEDGED", "All three steps are recorded on Clockchain in order.");
 
+  const payeeDirectory = join(root, "payee");
+  await mkdir(payeeDirectory, { mode: 0o700, recursive: true });
+  await chmod(payeeDirectory, 0o700);
+  const pulled = await relay.getEvidence({ relayUrl: RELAY_URL, sessionId, role: "requestor" });
+  const parts = pulled.evidence ?? pulled;
+  await writeFile(join(payeeDirectory, "party-result.json"), parts.json);
+  await writeFile(join(payeeDirectory, "PARTY-RESULT.md"), parts.markdown);
+  await writeFile(join(payeeDirectory, ".party-result.complete.json"), parts.marker);
+  say("EVIDENCE_RECEIVED", "The requestor's evidence has arrived. Verifying now, while the window is open.");
+
+  say("VERIFYING", "An independent verifier is re-checking every piece of evidence from scratch.");
+  const verdict = await verifyBilateralAuthorization({
+    clockchain: createMcpClient({ token }),
+    descriptorEnvelope: envelope,
+    mandateEnvelope,
+    ownerOf: ({ agentId, registry }) =>
+      publicClient.readContract({ abi: ERC8004_ABI, address: registry, args: [BigInt(agentId)], functionName: "ownerOf" }),
+    payerDirectory,
+    payeeDirectory,
+    requestEnvelope,
+    repositoryPublicKeyResolver: async () => repositoryPublicKey,
+  });
+  process.stdout.write(`\nVerifier outcome: ${verdict.outcome}\nNo money moved: ${verdict.paymentMoved === false}\n`);
+  for (const t of verdict.transitions ?? []) {
+    process.stdout.write(`  ${t.kind}  block ${t.blockHeight}  ledger ${t.ledgerId}\n`);
+  }
+
   await writeFile(join(process.cwd(), "runs", `session-${sessionId}.json`),
-    JSON.stringify({ descriptorEnvelope: envelope, mandateEnvelope, requestEnvelope, repositoryPublicKey, payerDirectory, paymentMoved: false }, null, 2));
+    JSON.stringify({ descriptorEnvelope: envelope, mandateEnvelope, requestEnvelope, repositoryPublicKey, payerDirectory, payeeDirectory, outcome: verdict.outcome, anchors: verdict.transitions, paymentMoved: false }, null, 2));
   process.stdout.write("\nThe payer side is complete. Run the verifier to get the independent verdict.\n");
   process.stdout.write(`  Payer evidence: ${payerDirectory}\n`);
 }
