@@ -261,6 +261,7 @@ function createSessionState(sessionId, journalPath) {
     lastSeq: 0,
     evidence: {},
     discovery: undefined,
+    publishedAtMs: 0,
     monitorSnapshot: null,
     waiters: new Set(),
     writeLock: Promise.resolve(),
@@ -273,6 +274,9 @@ function applyJournalRecord(session, record) {
   }
   if (record.type === "session-created") {
     session.discovery = record.discovery ?? undefined;
+    if (record.discovery !== undefined) {
+      session.publishedAtMs = record.publishedAtMs ?? 0;
+    }
     return;
   }
   if (record.type === "message" && isPlainObject(record.envelope)) {
@@ -477,6 +481,7 @@ async function handleCreateSession(req, sessions, stateDir) {
     join(stateDir, `${sessionId}${JOURNAL_SUFFIX}`),
   );
   session.discovery = discovery;
+  session.publishedAtMs = Date.now();
   // Reserve the id before the first await so two concurrent registrations
   // for the same id cannot both observe an empty map.
   sessions.set(sessionId, session);
@@ -618,6 +623,23 @@ function handleGetEvidence(sessions, sessionId, role) {
 }
 
 function handleDiscovery(sessions, sessionId) {
+  if (sessionId === "current") {
+    let newest = null;
+    for (const candidate of sessions.values()) {
+      if (candidate.discovery === undefined) continue;
+      if (newest === null || candidate.publishedAtMs > newest.publishedAtMs) {
+        newest = candidate;
+      }
+    }
+    if (newest === null) {
+      throw new RelayError(
+        "No session is currently open.",
+        "DISCOVERY_NOT_SET",
+        { status: 404 },
+      );
+    }
+    return newest.discovery;
+  }
   const session = requireSession(sessions, sessionId);
   if (session.discovery === undefined) {
     throw new RelayError(

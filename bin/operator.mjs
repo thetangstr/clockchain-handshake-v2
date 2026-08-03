@@ -22,7 +22,7 @@ import { sepolia } from "viem/chains";
 import * as relay from "../src/relay/client.mjs";
 import {
   buildDescriptor, buildMandate, discoveryUrlFor, fetchDiscovery, postNext, readDiscovery,
-  requestorPromptFor,
+  requestorPromptFor, stableDiscoveryUrl,
   say as logSay, stop as stopSession, DISCOVERY_SCHEMA,
 } from "../src/roles/session.mjs";
 import { createMcpClient } from "../src/core/clockchain.mjs";
@@ -268,7 +268,7 @@ async function main() {
     `SEND THIS WHOLE BLOCK TO THE STAKEHOLDER. They paste it as-is —\n` +
     `there is nothing for them to fill in or edit.\n` +
     `${"=".repeat(70)}\n\n` +
-    `${requestorPromptFor(discoveryUrl)}\n\n` +
+    `${requestorPromptFor(stableDiscoveryUrl(RELAY_URL))}\n\n` +
     `${"=".repeat(70)}\n\n`,
   );
   process.stdout.write(

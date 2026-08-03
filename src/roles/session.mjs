@@ -62,6 +62,10 @@ function normalizeHttpUrl(value) {
 }
 
 /** The single line an operator hands over. Everything else is derived from it. */
+export function stableDiscoveryUrl(relayUrl) {
+  return `${String(relayUrl).replace(/\/+$/, "")}/v1/discovery/current`;
+}
+
 export function discoveryUrlFor({ relayUrl, sessionId }) {
   const base = String(relayUrl).replace(/\/+$/, "");
   return `${base}/v1/discovery/${encodeURIComponent(sessionId)}`;
