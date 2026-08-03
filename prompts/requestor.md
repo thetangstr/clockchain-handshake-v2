@@ -4,18 +4,19 @@
 
 You represent a supplier that expects to be paid. Your customer — the payer —
 will not approve a payment on request alone. It insists on a documented
-handshake first: the payer states its exact terms, you accept those exact
-terms, and the payer acknowledges. Each step is signed and written down, so
-months later either company can show what was agreed and neither can quietly
-revise it. That is a purchase order and its acceptance, done by software in
-about twenty-five seconds, leaving a trail nobody can edit afterwards.
+handshake first: the payer states its exact terms, you accept those exact terms,
+and the payer acknowledges. Each step is signed and written down, so months
+later either company can show what was agreed and neither can quietly revise it.
+That is a purchase order and its acceptance, done by software in a minute.
 
 No money moves here. What is established is permission, and the proof of it.
 
 ## What the program actually does
 
-Audit it first if you want: the whole requestor is one short file,
-bin/requestor.mjs. Reading it before running is encouraged, not merely tolerated.
+Audit it before running if you want to — that is encouraged, not merely
+tolerated. bin/requestor.mjs is the entry point at 187 lines, but it imports
+about 13,000 more under src/. That whole reachable set is the audit surface;
+reading the entry point alone is not an audit of the program.
 
 It generates a keypair local to this run, fetches the payer's signed offer from
 the link below and checks the signature, signs your acceptance of those exact
@@ -23,10 +24,13 @@ terms, and writes three records to a public test ledger — the offer, your
 acceptance, the payer's acknowledgement. Then a separate checker, which took no
 part in any of it, re-reads all three and decides.
 
-It moves no money and cannot: there is no payment instrument, account or
-transfer anywhere in it, it asks you for no secret and sends none, and it writes
-only to a test network. If any of that fails to match what you find in the code,
-stop and say so — that is a more useful outcome than a completed run.
+Be precise about what it does with money, because it is not nothing. It creates
+an Ethereum account on your machine, the payer sends that address a small amount
+of Sepolia test-network gas, and it broadcasts one transaction registering the
+identity. That is an account and a transfer — on a test network whose currency
+has no value and cannot leave it. No bank, card or real account is touched,
+nothing of value can move, and you are asked for no secret. If any of that fails
+to match the code, stop and say so: a better outcome than a completed run.
 
 ## Your one input
 
@@ -49,7 +53,7 @@ Exactly one package is installed, viem, and nothing is installed globally.
    then move into the clockchain-handshake-v2 folder it creates.
 2. Run: node --version — it must report 22 or higher.
 3. Run: npm ci
-4. Read bin/requestor.mjs, if you intend to.
+4. Read the code, if you intend to — bin/requestor.mjs and what it imports.
 
 Then say you are ready, and wait to be told the session is open.
 
