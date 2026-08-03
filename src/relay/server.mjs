@@ -664,7 +664,7 @@ function handleSnapshot(sessions, sessionId) {
 // the only expected caller. Like evidence PUT, the relay does not
 // authenticate this: it is an untrusted mailbox by design (see file header),
 // and a snapshot is a narration of a run, not an authority over it -- a bad
-// actor publishing a false snapshot cannot move the literal AUTHORIZED word
+// actor publishing a false snapshot cannot move the literal verdict word
 // (that only ever comes from the verifier's signed publication, rendered
 // from the verdict field this endpoint merely carries) and cannot make
 // paymentMoved anything but false (validateSnapshot rejects that outright).
