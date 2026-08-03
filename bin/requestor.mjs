@@ -17,7 +17,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { sepolia } from "viem/chains";
 
 import * as relay from "../src/relay/client.mjs";
-import { postNext, say, stop } from "../src/roles/session.mjs";
+import { buildRequest, postNext, say, stop } from "../src/roles/session.mjs";
 import { createMcpClient, mintDemoToken } from "../src/core/clockchain.mjs";
 import { ERC8004_ABI } from "../src/core/registration.mjs";
 import { runPayeeRole } from "../src/core/roles-core.mjs";
@@ -93,6 +93,21 @@ async function main() {
   say("IDENTITY_REGISTERED", `Registered on-chain identity #${agentId}.`, { agentId });
 
   await postNext(relay, { relayUrl: RELAY_URL, sessionId: SESSION_ID, role: "requestor", kind: "party_ready", body: { address: account.address.toLowerCase(), agentId, paymentMoved: false }, keyPair: kp });
+
+  const terms = await awaitKind("mandate", WAIT_MS);
+  say("HANDSHAKE_REQUIRED", "Received the payer's signed terms. Submitting a payment request against them.");
+  const requestEnvelope = await buildRequest({
+    common: terms.body.common,
+    expiresAtMs: Number(terms.body.expiresAtMs),
+    issuedAtMs: Number(terms.body.issuedAtMs),
+    mandateEnvelope: terms.body.mandateEnvelope,
+    requestorAccount: account,
+  });
+  await postNext(relay, {
+    relayUrl: RELAY_URL, sessionId: SESSION_ID, role: "requestor", kind: "payment_request",
+    body: { requestEnvelope, paymentMoved: false }, keyPair: kp,
+  });
+  say("REQUEST_SUBMITTED", "Our signed payment request is submitted. Waiting for the payer to open the window.");
 
   const handshake = await awaitKind("handshake_required", WAIT_MS);
   const { descriptorEnvelope, repositoryPublicKey } = handshake.body;

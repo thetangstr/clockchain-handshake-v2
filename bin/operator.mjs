@@ -20,7 +20,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { sepolia } from "viem/chains";
 
 import * as relay from "../src/relay/client.mjs";
-import { buildSession, postNext, say, stop, DISCOVERY_SCHEMA } from "../src/roles/session.mjs";
+import { buildDescriptor, buildMandate, postNext, say, stop, DISCOVERY_SCHEMA } from "../src/roles/session.mjs";
 import { createMcpClient } from "../src/core/clockchain.mjs";
 import { createSignedEnvelope } from "../src/core/descriptor.mjs";
 import { openFundingWallet } from "../src/core/funding/wallet.mjs";
@@ -152,18 +152,34 @@ async function main() {
   const requestorAgentId = String(ready.body.agentId);
   say("IDENTITY_REGISTERED", `The requestor registered on-chain identity #${requestorAgentId}.`);
 
-  const { descriptor, mandateEnvelope, requestEnvelope } = await buildSession({
-    payerAccount, payerAgentId,
-    requestorAccount: { address: requestorAddress },
-    requestorAgentId,
-    repositorySha: REPO_SHA,
+  // The payer signs the mandate. It cannot sign the payment request — that
+  // signature must come from the requestor's own key, which lives on the
+  // requestor's machine and never leaves it. So publish the terms and wait.
+  const { common, expiresAtMs, issuedAtMs, mandateEnvelope, sessionUuid } = await buildMandate({
+    payerAccount, payerAgentId, requestorAddress, requestorAgentId, repositorySha: REPO_SHA,
   });
+  await postNext(relay, {
+    relayUrl: RELAY_URL, sessionId, role: "payer", kind: "mandate",
+    body: { common, expiresAtMs: String(expiresAtMs), issuedAtMs: String(issuedAtMs), mandateEnvelope, sessionUuid, paymentMoved: false },
+    keyPair: opKp,
+  });
+  say("TERMS_PUBLISHED", "Signed payment terms published. Waiting for the requestor to submit its request.");
+
+  const submitted = await awaitKind(sessionId, "payment_request", WAIT_FOR_REQUESTOR_MS);
+  const requestEnvelope = submitted.body.requestEnvelope;
+  say("REQUEST_SUBMITTED", "The requestor submitted a signed payment request against those terms.");
+
+  const descriptor = buildDescriptor({ common, mandateEnvelope, requestEnvelope, repositorySha: REPO_SHA, sessionUuid });
   const envelope = createSignedEnvelope(descriptor, {
     keyId: "bilateral-demo-2026-07-28",
     privateKeyPem: operatorPrivateKeyPem,
   });
 
-  await postNext(relay, { relayUrl: RELAY_URL, sessionId, role: "payer", kind: "handshake_required", body: { descriptorEnvelope: envelope, repositoryPublicKey, paymentMoved: false }, keyPair: opKp });
+  await postNext(relay, {
+    relayUrl: RELAY_URL, sessionId, role: "payer", kind: "handshake_required",
+    body: { descriptorEnvelope: envelope, repositoryPublicKey, paymentMoved: false },
+    keyPair: opKp,
+  });
   say("HANDSHAKE_REQUIRED", "The payer requires a verified handshake before any payment is considered.");
 
   const root = await mkdtemp(join(tmpdir(), "handshake-op-"));
@@ -183,6 +199,8 @@ async function main() {
   });
   say("ACKNOWLEDGED", "All three steps are recorded on Clockchain in order.");
 
+  await writeFile(join(process.cwd(), "runs", `session-${sessionId}.json`),
+    JSON.stringify({ descriptorEnvelope: envelope, mandateEnvelope, requestEnvelope, repositoryPublicKey, payerDirectory, paymentMoved: false }, null, 2));
   process.stdout.write("\nThe payer side is complete. Run the verifier to get the independent verdict.\n");
   process.stdout.write(`  Payer evidence: ${payerDirectory}\n`);
 }

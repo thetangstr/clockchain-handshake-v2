@@ -38,6 +38,87 @@ export function stop(reason, sentence) {
  * recomputes both from scratch. Getting this backwards produces a descriptor that
  * validates locally and fails at the verifier, which is the worst place to learn.
  */
+export async function buildMandate({
+  payerAccount,
+  payerAgentId,
+  requestorAddress,
+  requestorAgentId,
+  repositorySha,
+  subjectRun = "stakeholder",
+}) {
+  const sessionUuid = randomUUID();
+  const intakeRequestId = randomUUID();
+  const issuedAtMs = Date.now();
+  const expiresAtMs = issuedAtMs + 45 * 60_000;
+  const amount = { currency: "USD", value: "100" };
+  const intakeDigest = createHash("sha256").update(intakeRequestId).digest("hex");
+  const common = {
+    amount,
+    intakeDigest,
+    intakeRequestId,
+    payee: { address: requestorAddress.toLowerCase(), agentId: requestorAgentId },
+    payer: { address: payerAccount.address.toLowerCase(), agentId: payerAgentId },
+    paymentMoved: false,
+    protocol: "clockchain.bilateral-authorization/v1",
+    purpose: "Invoice settlement",
+    releaseId: "handshake-v6",
+    repositorySha,
+    sessionId: sessionUuid,
+    subjectRun,
+  };
+  const mandateEnvelope = await signPayerMandate({
+    mandate: {
+      ...common,
+      expiresAtMs: String(expiresAtMs),
+      invoiceReferencePrefix: "INV-",
+      issuedAtMs: String(issuedAtMs),
+      requestEndpoint: `/v1/sessions/${sessionUuid}/payment-requests`,
+      schema: "clockchain.bilateral-payer-mandate/v1",
+    },
+    signMessage: (bytes) => payerAccount.signMessage({ message: { raw: bytes } }),
+  });
+  return { common, expiresAtMs, issuedAtMs, mandateEnvelope, sessionUuid };
+}
+
+/** The requestor signs its own payment request; only it holds that key. */
+export async function buildRequest({ common, expiresAtMs, issuedAtMs, mandateEnvelope, requestorAccount }) {
+  return signPaymentRequest({
+    request: {
+      ...common,
+      createdAtMs: String(issuedAtMs + 1000),
+      expiresAtMs: String(expiresAtMs),
+      invoiceReference: "INV-0001",
+      mandateDigest: payerMandateDigest(mandateEnvelope),
+      requestId: randomUUID(),
+      schema: "clockchain.bilateral-payment-request/v1",
+    },
+    signMessage: (bytes) => requestorAccount.signMessage({ message: { raw: bytes } }),
+  });
+}
+
+/** The operator assembles the descriptor once both signed artifacts exist. */
+export function buildDescriptor({ common, mandateEnvelope, requestEnvelope, repositorySha, sessionUuid }) {
+  return {
+    amountOptions: [common.amount],
+    chainId: String(CHAIN_ID),
+    expirySeconds: "600",
+    mandateDigest: payerMandateDigest(mandateEnvelope),
+    namespace: "cbv1",
+    payee: { ...common.payee, displayName: "Requestor", role: "payee" },
+    payer: { ...common.payer, displayName: "Payer", role: "payer" },
+    paymentMoved: false,
+    promptSha256: createHash("sha256").update("requestor-prompt").digest("hex"),
+    protocol: "clockchain.bilateral-authorization/v1",
+    protocolVersion: "1",
+    registry: REGISTRY_ADDRESS.toLowerCase(),
+    repositorySha,
+    requestDigest: paymentRequestDigest(requestEnvelope),
+    schema: "clockchain.bilateral-session-descriptor/v2",
+    sessionId: sessionUuid.replace(/-/g, ""),
+    settlement: "not-executed",
+  };
+}
+
 export async function buildSession({
   payerAccount,
   payerAgentId,
