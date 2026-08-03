@@ -376,3 +376,26 @@ test("openFundingWallet rejects digest mismatch, empty Keychain password, and de
   });
 });
 
+test("openFundingWallet decrypts a strict Web3 v3 treasury and returns only public data plus a viem account", async (t) => {
+  const fixture = await writeFixture(t);
+  const reader = passwordReader();
+
+  const result = await openFundingWallet({
+    keystorePath: fixture.keystorePath,
+    metadataPath: fixture.metadataPath,
+    dependencies: reader,
+  });
+
+  // v2: the donor also asserted here that the Keychain was consulted with a
+  // specific service/account pair. That path is deleted, so those two lines are
+  // dropped — every other assertion is retained behaviour, including the
+  // happy-path guarantees that no secret ever reaches the returned object.
+  assert.equal(result.account.address.toLowerCase(), ADDRESS);
+  assert.equal(typeof result.account.signTransaction, "function");
+  assert.deepEqual(Object.keys(result.metadata), PUBLIC_METADATA_KEYS);
+  assert.equal(result.metadata.fundingAddress, ADDRESS);
+  assert.doesNotMatch(JSON.stringify(result), new RegExp(PASSWORD_CANARY, "u"));
+  assert.doesNotMatch(JSON.stringify(result), new RegExp(PRIVATE_KEY_CANARY.slice(2), "u"));
+  assert.equal("privateKey" in result, false);
+  assert.equal("password" in result, false);
+});

@@ -27,7 +27,7 @@ printf '\n== 1. AUTHORIZED containment ==\n'
 UNEXPECTED=$(grep -rl 'AUTHORIZED' src bin scripts 2>/dev/null \
   | grep -v '^src/core/verdict.mjs$' \
   | grep -v '^src/core/evidence.mjs$' \
-  | grep -vE '^src/monitor/(stakeholder|control-plane)/messages\\.mjs$' \
+  | grep -vE '^src/monitor/(stakeholder|control-plane)/messages\.mjs$' \
   | grep -v '^scripts/check-invariants.sh$' || true)
 info "scanned: src/ bin/ scripts/"
 if [ -n "$UNEXPECTED" ]; then
@@ -121,11 +121,11 @@ FROZEN='RENDEZVOUS_UNAVAILABLE|EXPIRED|MISSING|DUPLICATE|REORDERED|MALFORMED|AMB
 # ported funding journal); those are not reasons a stakeholder is shown, and the
 # funding module is a pure port we must not edit anyway. As src/relay, src/roles
 # and src/verifier land in M1a they are added to this list.
-PUBLIC_SURFACES="src/core/verdict.mjs src/core/protocol.mjs src/core/window.mjs"
+PUBLIC_SURFACES="src/core/verdict.mjs src/core/protocol.mjs src/core/window.mjs src/core/roles-core.mjs src/core/runner.mjs"
 for EXTRA in src/relay src/roles src/verifier; do
   [ -d "$EXTRA" ] && PUBLIC_SURFACES="$PUBLIC_SURFACES $EXTRA"
 done
-UNREGISTERED=$(grep -rhoE '(fail|reason:)\s*\(?\s*"[A-Z_]+"' $PUBLIC_SURFACES 2>/dev/null \
+UNREGISTERED=$(grep -rhoE '(fail|terminal|reason:)\s*\(?\s*"[A-Z_]+"' $PUBLIC_SURFACES 2>/dev/null \
   | grep -oE '"[A-Z_]+"' | tr -d '"' | sort -u \
   | grep -vE "^($FROZEN)$" || true)
 if [ -n "$UNREGISTERED" ]; then

@@ -103,6 +103,14 @@ const PARTY_PACKAGE_KEYS = Object.freeze([
   "markdown",
   "marker",
 ]);
+// Per-part ceilings applied at the input boundary, before any copy or parse.
+// Same limits the bounded reads enforce on the directory form, so the two
+// surfaces refuse the same document for the same reason.
+const PART_BYTE_LIMITS = Object.freeze({
+  json: 1024 * 1024,
+  markdown: 2 * 1024 * 1024,
+  marker: 2048,
+});
 const REQUIRED_INPUT_KEYS = Object.freeze([
   "clockchain",
   "descriptorEnvelope",
@@ -354,9 +362,20 @@ function partySource(input, keys, role) {
   const triple = {};
   for (const part of ["json", "markdown", "marker"]) {
     const value = ownData(supplied, part);
+    // Bound BEFORE converting. These bytes arrive from the relay, which is
+    // untrusted transport: measuring first means an oversize document is refused
+    // without ever being copied. (A UTF-8 string is at most 3 bytes per UTF-16
+    // code unit, so length alone is a safe over-approximation to reject on.)
+    const limit = PART_BYTE_LIMITS[part];
     if (typeof value === "string") {
+      if (value.length > limit) {
+        fail();
+      }
       triple[part] = Buffer.from(value, "utf8");
     } else if (Buffer.isBuffer(value)) {
+      if (value.byteLength > limit) {
+        fail();
+      }
       triple[part] = value;
     } else {
       fail();
