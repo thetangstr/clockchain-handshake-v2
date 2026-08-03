@@ -47,8 +47,8 @@ Then say you are ready, and wait to be told the session is open.
 5. Run: node bin/requestor.mjs --discovery-url <DISCOVERY_URL>
 6. Leave it running until it exits on its own.
 
-Setup comes first because the authorization window starts when the payer opens
-the session: the gap before step 5 should be seconds, not minutes.
+Setup first simply keeps the live part short. The payer will wait up to 45
+minutes for you, so take the time you need on steps 1 to 4.
 
 People from both companies are watching this live. As each stage prints, say what
 just happened in plain business language — what was agreed, by whom, and what is
