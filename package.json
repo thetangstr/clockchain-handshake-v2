@@ -1,0 +1,21 @@
+{
+  "name": "clockchain-handshake",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Bilateral payment-authorization handshake demo: two agents, three Clockchain anchors, one fresh verifier.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/",
+    "test:slow": "node --test test/ test/slow/",
+    "verify": "npm run test && bash scripts/check-invariants.sh",
+    "preflight": "node scripts/preflight.mjs",
+    "negative": "node scripts/negative-checks.mjs",
+    "release:pin": "node scripts/release-pin.mjs"
+  },
+  "dependencies": {
+    "viem": "2.55.8"
+  }
+}
