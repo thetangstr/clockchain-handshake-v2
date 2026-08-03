@@ -27,6 +27,7 @@ import {
   verifyPaymentRequest,
 } from "./payment-request.mjs";
 import {
+  BilateralPartyResultValidationError,
   partySignatureBytes,
   renderPartyResultMarkdown,
   validatePartyResult,
@@ -51,6 +52,8 @@ import { assertSecretFree } from "./redact.mjs";
 
 export const VERDICT_SCHEMA =
   "clockchain.bilateral-authorization-verdict/v2";
+export const REHEARSAL_SCHEMA =
+  "clockchain.bilateral-rehearsal-result/v2";
 export const VERDICT_KEYS = Object.freeze([
   "mandateDigest",
   "outcome",
@@ -88,17 +91,23 @@ const INPUT_KEYS = new Set([
   "mandateEnvelope",
   "ownerOf",
   "payeeDirectory",
+  "payeePackage",
   "payerDirectory",
+  "payerPackage",
   "requestEnvelope",
   "repositoryPublicKeyResolver",
+]);
+// A party package as bytes, for the relay-delivered (cross-machine) input form.
+const PARTY_PACKAGE_KEYS = Object.freeze([
+  "json",
+  "markdown",
+  "marker",
 ]);
 const REQUIRED_INPUT_KEYS = Object.freeze([
   "clockchain",
   "descriptorEnvelope",
   "mandateEnvelope",
   "ownerOf",
-  "payeeDirectory",
-  "payerDirectory",
   "requestEnvelope",
   "repositoryPublicKeyResolver",
 ]);
@@ -311,6 +320,54 @@ function callableDataMethod(value, key) {
   return method;
 }
 
+/**
+ * Resolve one party's evidence source: a local directory, or an in-memory triple
+ * delivered over the relay. Exactly one form must be supplied per party. The
+ * in-memory form exists because in v2 the requestor runs on a different machine
+ * from the verifier, so its package cannot be read off a shared filesystem.
+ */
+function partySource(input, keys, role) {
+  const directoryKey = `${role}Directory`;
+  const packageKey = `${role}Package`;
+  const hasDirectory = keys.includes(directoryKey);
+  const hasPackage = keys.includes(packageKey);
+  if (hasDirectory === hasPackage) {
+    // Neither, or both: ambiguous evidence provenance is refused.
+    fail();
+  }
+  if (hasDirectory) {
+    const directory = ownData(input, directoryKey);
+    if (
+      typeof directory !== "string" ||
+      directory.length === 0 ||
+      directory.length > 4096 ||
+      directory.includes("\0")
+    ) {
+      fail();
+    }
+    return Object.freeze({ directory, kind: "directory" });
+  }
+  const supplied = ownData(input, packageKey);
+  if (!isPlainObject(supplied)) {
+    fail();
+  }
+  const triple = {};
+  for (const part of ["json", "markdown", "marker"]) {
+    const value = ownData(supplied, part);
+    if (typeof value === "string") {
+      triple[part] = Buffer.from(value, "utf8");
+    } else if (Buffer.isBuffer(value)) {
+      triple[part] = value;
+    } else {
+      fail();
+    }
+  }
+  if (!hasExactKeys(supplied, PARTY_PACKAGE_KEYS)) {
+    fail();
+  }
+  return Object.freeze({ kind: "package", triple: Object.freeze(triple) });
+}
+
 function validateInput(input) {
   if (!isPlainObject(input)) {
     fail();
@@ -345,18 +402,12 @@ function validateInput(input) {
   ) {
     fail();
   }
-  const payerDirectory = ownData(input, "payerDirectory");
-  const payeeDirectory = ownData(input, "payeeDirectory");
+  const payerSource = partySource(input, keys, "payer");
+  const payeeSource = partySource(input, keys, "payee");
   if (
-    typeof payerDirectory !== "string" ||
-    payerDirectory.length === 0 ||
-    payerDirectory.length > 4096 ||
-    payerDirectory.includes("\0") ||
-    typeof payeeDirectory !== "string" ||
-    payeeDirectory.length === 0 ||
-    payeeDirectory.length > 4096 ||
-    payeeDirectory.includes("\0") ||
-    payerDirectory === payeeDirectory
+    payerSource.kind === "directory" &&
+    payeeSource.kind === "directory" &&
+    payerSource.directory === payeeSource.directory
   ) {
     fail();
   }
@@ -381,8 +432,8 @@ function validateInput(input) {
       ownData(input, "mandateEnvelope"),
     ),
     ownerOf,
-    payeeDirectory,
-    payerDirectory,
+    payeeSource,
+    payerSource,
     requestEnvelope: detachedSnapshot(
       ownData(input, "requestEnvelope"),
     ),
@@ -649,82 +700,122 @@ function parseMarker(bytes, canaries) {
       !HASH_PATTERN.test(marker.markdownSha256) ||
       `${canonicalBytes(marker).toString("utf8")}\n` !== text
     ) {
-      fail();
+      // MALFORMED site family (a): party-package completion-marker shape.
+      fail("MALFORMED");
     }
     return marker;
   } catch (error) {
     if (error instanceof BilateralVerdictError) {
       throw error;
     }
+    // Unparseable marker bytes are malformed counterparty input, not an
+    // internal verifier failure — those keep the generic FAILED code.
+    fail("MALFORMED");
+  }
+}
+
+/**
+ * Verify one party package from its raw bytes.
+ *
+ * Both input surfaces funnel through here: the directory form reads the bytes off
+ * a local disk, the in-memory form receives them from the untrusted relay. The
+ * sha256-vs-marker comparison below is the only reason a relay can be allowed to
+ * carry evidence at all, so it must be byte-identical on both paths — hence one
+ * function rather than two call sites that could drift apart.
+ */
+function verifyPartyTriple(triple, canaries) {
+  const marker = parseMarker(triple.marker, canaries);
+  if (
+    triple.json.byteLength > MAX_JSON_BYTES ||
+    triple.markdown.byteLength > MAX_MARKDOWN_BYTES ||
+    triple.marker.byteLength > MAX_MARKER_BYTES
+  ) {
+    fail();
+  }
+  if (
+    sha256(triple.json) !== marker.jsonSha256 ||
+    sha256(triple.markdown) !== marker.markdownSha256
+  ) {
+    // A digest mismatch is tampering or a mismatched pair, not a shape problem:
+    // it keeps the generic terminal code rather than reporting MALFORMED.
+    fail();
+  }
+  try {
+    const jsonText = triple.json.toString("utf8");
+    const markdownText = triple.markdown.toString("utf8");
+    assertSecretFree(jsonText, canaries);
+    assertSecretFree(markdownText, canaries);
+    const party = JSON.parse(jsonText);
+    assertSecretFree(party, canaries);
+    validatePartyResult(party);
+    const canonical = JSON.parse(
+      canonicalBytes(party).toString("utf8"),
+    );
+    if (
+      `${JSON.stringify(canonical, null, 2)}\n` !== jsonText ||
+      renderPartyResultMarkdown(party) !== markdownText
+    ) {
+      // MALFORMED site family (a): party-result JSON shape / canonical form.
+      fail("MALFORMED");
+    }
+    return party;
+  } catch (error) {
+    if (error instanceof BilateralVerdictError) {
+      throw error;
+    }
+    // Parse and schema failures are malformed counterparty input. Anything else
+    // (notably a redaction canary hit, which is a security event) keeps FAILED.
+    if (
+      error instanceof SyntaxError ||
+      error instanceof BilateralPartyResultValidationError
+    ) {
+      fail("MALFORMED");
+    }
     fail();
   }
 }
 
-async function loadPartyPackages(
+async function readPartyTripleFromDirectory(
   fileSystem,
-  payerDirectory,
-  payeeDirectory,
-  canaries,
+  directory,
 ) {
-  const directories = [payerDirectory, payeeDirectory];
-  const markers = [];
-  for (const directory of directories) {
-    const bytes = await readBoundedRegularFile(
-      fileSystem,
-      join(directory, PARTY_RESULT_FILES.marker),
-      MAX_MARKER_BYTES,
-    );
-    markers.push(parseMarker(bytes, canaries));
-  }
-
-  const artifacts = [];
-  for (let index = 0; index < directories.length; index += 1) {
-    const directory = directories[index];
-    const json = await readBoundedRegularFile(
+  return {
+    json: await readBoundedRegularFile(
       fileSystem,
       join(directory, PARTY_RESULT_FILES.json),
       MAX_JSON_BYTES,
-    );
-    const markdown = await readBoundedRegularFile(
+    ),
+    markdown: await readBoundedRegularFile(
       fileSystem,
       join(directory, PARTY_RESULT_FILES.markdown),
       MAX_MARKDOWN_BYTES,
-    );
-    if (
-      sha256(json) !== markers[index].jsonSha256 ||
-      sha256(markdown) !== markers[index].markdownSha256
-    ) {
-      fail();
-    }
-    artifacts.push({ json, markdown });
-  }
+    ),
+    marker: await readBoundedRegularFile(
+      fileSystem,
+      join(directory, PARTY_RESULT_FILES.marker),
+      MAX_MARKER_BYTES,
+    ),
+  };
+}
 
-  return artifacts.map(({ json, markdown }) => {
-    try {
-      const jsonText = json.toString("utf8");
-      const markdownText = markdown.toString("utf8");
-      assertSecretFree(jsonText, canaries);
-      assertSecretFree(markdownText, canaries);
-      const party = JSON.parse(jsonText);
-      assertSecretFree(party, canaries);
-      validatePartyResult(party);
-      const canonical = JSON.parse(
-        canonicalBytes(party).toString("utf8"),
-      );
-      if (
-        `${JSON.stringify(canonical, null, 2)}\n` !== jsonText ||
-        renderPartyResultMarkdown(party) !== markdownText
-      ) {
-        fail();
-      }
-      return party;
-    } catch (error) {
-      if (error instanceof BilateralVerdictError) {
-        throw error;
-      }
-      fail();
-    }
-  });
+async function loadPartyPackages(
+  fileSystem,
+  payerSource,
+  payeeSource,
+  canaries,
+) {
+  const triples = [];
+  for (const source of [payerSource, payeeSource]) {
+    triples.push(
+      source.kind === "directory"
+        ? await readPartyTripleFromDirectory(
+            fileSystem,
+            source.directory,
+          )
+        : source.triple,
+    );
+  }
+  return triples.map((triple) => verifyPartyTriple(triple, canaries));
 }
 
 function plainField(value, key) {
@@ -739,7 +830,11 @@ function liveProposalDigest(searchResult) {
     fail();
   }
   if (searchResult.length === 0) {
-    fail("EXPIRED");
+    // A run that was never anchored is MISSING, not EXPIRED. The donor reported
+    // both as EXPIRED, which told a stakeholder "you were too slow" when in fact
+    // nothing had ever been written. EXPIRED remains for anchors found past the
+    // deadline (see the bounds checks below).
+    fail("MISSING");
   }
   if (searchResult.length !== 1) {
     fail("DUPLICATE");
@@ -1135,7 +1230,19 @@ function verifyCommercialIntentAtAnchor(policy, proposal, nowMs) {
   }
 }
 
-function createVerdict(descriptor, sessionDigest, live, bounds) {
+function createVerdict(
+  descriptor,
+  sessionDigest,
+  live,
+  bounds,
+  subjectRun,
+) {
+  // The emission gate. subjectRun is read from the SIGNED mandate, whose digest
+  // was already bound to the signed descriptor, so this cannot be overridden by a
+  // caller argument, CLI flag, or config. A rehearsal never yields AUTHORIZED.
+  if (subjectRun !== "stakeholder") {
+    fail("REHEARSAL_NOT_AUTHORIZABLE");
+  }
   const transitions = live.map(
     ({ message, verified }, index) =>
       Object.freeze({
@@ -1163,7 +1270,15 @@ function createVerdict(descriptor, sessionDigest, live, bounds) {
   });
 }
 
-export async function verifyBilateralAuthorization(input) {
+/**
+ * Run the full independent verification and return the verified materials.
+ *
+ * This function deliberately does NOT build a verdict. Only the exported
+ * verifyBilateralAuthorization below calls createVerdict, so the rehearsal entry
+ * point has no code path to the AUTHORIZED emission — the separation is
+ * structural, not a boolean that a later edit could flip.
+ */
+async function runVerification(input) {
   try {
     const snapshot = validateInput(input);
     const descriptor = snapshot.descriptorEnvelope.descriptor;
@@ -1207,8 +1322,8 @@ export async function verifyBilateralAuthorization(input) {
 
     const [payer, payee] = await loadPartyPackages(
       snapshot.fileSystem,
-      snapshot.payerDirectory,
-      snapshot.payeeDirectory,
+      snapshot.payerSource,
+      snapshot.payeeSource,
       snapshot.canaries,
     );
 
@@ -1281,18 +1396,53 @@ export async function verifyBilateralAuthorization(input) {
     if (payerOwner === payeeOwner) {
       fail();
     }
-    return createVerdict(
-      descriptor,
-      sessionDigest,
-      live,
+    return Object.freeze({
       bounds,
-    );
+      descriptor,
+      live,
+      sessionDigest,
+      subjectRun: snapshot.mandateEnvelope.mandate.subjectRun,
+    });
   } catch (error) {
     if (error instanceof BilateralVerdictError) {
       throw error;
     }
     fail();
   }
+}
+
+/**
+ * The ONLY path that can emit AUTHORIZED, and only for the stakeholder sub-run.
+ */
+export async function verifyBilateralAuthorization(input) {
+  const verified = await runVerification(input);
+  return createVerdict(
+    verified.descriptor,
+    verified.sessionDigest,
+    verified.live,
+    verified.bounds,
+    verified.subjectRun,
+  );
+}
+
+/**
+ * The rehearsal entry point. It runs the identical verification, but there is no
+ * reference to createVerdict in this function — a rehearsal cannot produce an
+ * authorization verdict even if the caller asks for one. Its result is a plain
+ * pass/fail signal used to gate stakeholder engagement.
+ */
+export async function verifyRehearsal(input) {
+  const verified = await runVerification(input);
+  if (verified.subjectRun !== "rehearsal") {
+    fail("REHEARSAL_SUBJECT_MISMATCH");
+  }
+  return Object.freeze({
+    outcome: "REHEARSAL_PASSED",
+    paymentMoved: false,
+    schema: REHEARSAL_SCHEMA,
+    sessionDigest: verified.sessionDigest,
+    transitionCount: verified.live.length,
+  });
 }
 
 function validateVerdict(verdict) {

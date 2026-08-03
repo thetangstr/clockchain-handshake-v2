@@ -72,6 +72,7 @@ import {
   renderBilateralVerdictMarkdown,
   validatePublishedBilateralVerdict,
   verifyBilateralAuthorization,
+  verifyRehearsal,
 } from "../src/core/verdict.mjs";
 import {
   createFakeBilateralClockchain,
@@ -334,7 +335,7 @@ function descriptorFixture({
   };
 }
 
-async function intentEnvelopes() {
+async function intentEnvelopes(subjectRun = "stakeholder") {
   const sessionId = "00112233-4455-6677-8899-aabbccddeeff";
   const mandate = {
     amount: { currency: "USD", value: "100" },
@@ -353,7 +354,7 @@ async function intentEnvelopes() {
     requestEndpoint: `/v1/sessions/${sessionId}/payment-requests`,
     schema: "clockchain.bilateral-payer-mandate/v1",
     sessionId,
-    subjectRun: "rehearsal",
+    subjectRun,
   };
   const mandateEnvelope = await signPayerMandate({
     mandate,
@@ -474,9 +475,9 @@ function partyResult({
   };
 }
 
-async function completeFixture(t) {
+async function completeFixture(t, { subjectRun = "stakeholder" } = {}) {
   const { mandateEnvelope, requestEnvelope } =
-    await intentEnvelopes();
+    await intentEnvelopes(subjectRun);
   const descriptor = descriptorFixture({
     mandateDigest: payerMandateDigest(mandateEnvelope),
     requestDigest: paymentRequestDigest(requestEnvelope),
@@ -1335,7 +1336,10 @@ test("rejects duplicated roles and payment/advisory field smuggling", async (t) 
     })}\n`,
     "utf8",
   );
-  await assertVerdictFailure(fixture.input, "FAILED");
+  // v2: a party result that violates its schema (here paymentMoved:true plus an
+  // extra status field) reports the distinct MALFORMED code. The donor collapsed
+  // every shape violation into the generic FAILED.
+  await assertVerdictFailure(fixture.input, "MALFORMED");
 });
 
 test("requires direct ownerOf, signature, descriptor, and resolveAgent owner agreement", async (t) => {
@@ -1435,7 +1439,10 @@ test("maps rate-limited and absent proposal discovery to fixed terminal outcomes
         },
       }),
     },
-    "EXPIRED",
+    // v2: searchActions returning [] means the run was never anchored at all,
+    // which is MISSING. EXPIRED is now reserved for anchors found past the
+    // deadline, so a stakeholder is not told "too slow" when nothing was written.
+    "MISSING",
   );
 });
 
@@ -1857,3 +1864,131 @@ function publicationFileSystem(trace, failAfter) {
 
 
 
+
+
+// ---------------------------------------------------------------------------
+// v2 additions: the four adapted-port edit families.
+// Everything above this line is the donor suite (the drift detector). Everything
+// below pins behaviour that v2 deliberately changed.
+// ---------------------------------------------------------------------------
+
+async function readTriple(directory) {
+  return {
+    json: await readFile(join(directory, "party-result.json"), "utf8"),
+    markdown: await readFile(join(directory, "PARTY-RESULT.md"), "utf8"),
+    marker: await readFile(
+      join(directory, ".party-result.complete.json"),
+      "utf8",
+    ),
+  };
+}
+
+test("v2: in-memory party packages produce the identical verdict to directories", async (t) => {
+  const fixture = await completeFixture(t);
+  const fromDirectories = await verifyBilateralAuthorization(fixture.input);
+
+  const { payerDirectory, payeeDirectory, ...rest } = fixture.input;
+  const fromPackages = await verifyBilateralAuthorization({
+    ...rest,
+    payerPackage: await readTriple(payerDirectory),
+    payeePackage: await readTriple(payeeDirectory),
+  });
+
+  // Byte-for-byte the same verdict: the relay-delivered path must not be a
+  // second, subtly different verification.
+  assert.deepEqual(fromPackages, fromDirectories);
+  assert.equal(fromPackages.outcome, "AUTHORIZED");
+  assert.equal(fromPackages.paymentMoved, false);
+});
+
+test("v2: the two input forms may be mixed per party", async (t) => {
+  const fixture = await completeFixture(t);
+  const { payeeDirectory, ...rest } = fixture.input;
+  const verdict = await verifyBilateralAuthorization({
+    ...rest,
+    payeePackage: await readTriple(payeeDirectory),
+  });
+  assert.equal(verdict.outcome, "AUTHORIZED");
+});
+
+test("v2: an in-memory package whose marker digest does not match is refused", async (t) => {
+  const fixture = await completeFixture(t);
+  const { payerDirectory, payeeDirectory, ...rest } = fixture.input;
+  const payee = await readTriple(payeeDirectory);
+  await assertVerdictFailure(
+    {
+      ...rest,
+      payerPackage: await readTriple(payerDirectory),
+      payeePackage: { ...payee, json: payee.json.replace("payee", "payer") },
+    },
+    "FAILED",
+  );
+});
+
+test("v2: supplying both a directory and a package for one party is refused", async (t) => {
+  const fixture = await completeFixture(t);
+  await assertVerdictFailure(
+    {
+      ...fixture.input,
+      payerPackage: await readTriple(fixture.input.payerDirectory),
+    },
+    "FAILED",
+  );
+});
+
+test("v2: an oversize in-memory package is refused", async (t) => {
+  const fixture = await completeFixture(t);
+  const { payerDirectory, payeeDirectory, ...rest } = fixture.input;
+  const payee = await readTriple(payeeDirectory);
+  await assertVerdictFailure(
+    {
+      ...rest,
+      payerPackage: await readTriple(payerDirectory),
+      payeePackage: { ...payee, markdown: "x".repeat(2 * 1024 * 1024 + 1) },
+    },
+    // Bound violations report the generic code on BOTH input forms: the
+    // directory path hits the same limit inside its bounded read. Equivalence
+    // between the two surfaces matters more than a prettier code here.
+    "FAILED",
+  );
+});
+
+test("v2: a rehearsal sub-run can never produce AUTHORIZED", async (t) => {
+  const fixture = await completeFixture(t, { subjectRun: "rehearsal" });
+  // Same evidence, same signatures, same anchors — only the signed mandate's
+  // subjectRun differs, and that alone must block the emission.
+  await assertVerdictFailure(fixture.input, "REHEARSAL_NOT_AUTHORIZABLE");
+});
+
+test("v2: verifyRehearsal passes a rehearsal run without authorizing it", async (t) => {
+  const fixture = await completeFixture(t, { subjectRun: "rehearsal" });
+  const result = await verifyRehearsal(fixture.input);
+  assert.equal(result.outcome, "REHEARSAL_PASSED");
+  assert.equal(result.paymentMoved, false);
+  assert.equal(result.transitionCount, 3);
+  assert.equal(Object.hasOwn(result, "transitions"), false);
+  assert.equal(JSON.stringify(result).includes("AUTHORIZED"), false);
+});
+
+test("v2: verifyRehearsal refuses a stakeholder run", async (t) => {
+  const fixture = await completeFixture(t);
+  await assert.rejects(
+    verifyRehearsal(fixture.input),
+    (error) => error.terminalCode === "REHEARSAL_SUBJECT_MISMATCH",
+  );
+});
+
+test("v2: the emission site is single and the fail() default is unchanged", async () => {
+  const source = await readFile(
+    new URL("../src/core/verdict.mjs", import.meta.url),
+    "utf8",
+  );
+  // Exactly one place may assign the verdict outcome.
+  const emissions = source.match(/outcome:\s*"AUTHORIZED"/g) ?? [];
+  assert.equal(emissions.length, 1, "AUTHORIZED must have exactly one emission site");
+  // The 57 bare fail() sites must keep reporting FAILED: retagging them would
+  // blame the counterparty for internal verifier errors.
+  assert.match(source, /function fail\(terminalCode = "FAILED"\)/);
+  // And only createVerdict may reach the emission.
+  assert.equal((source.match(/createVerdict\(/g) ?? []).length, 2);
+});
