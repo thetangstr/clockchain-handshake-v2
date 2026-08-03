@@ -20,7 +20,10 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { sepolia } from "viem/chains";
 
 import * as relay from "../src/relay/client.mjs";
-import { buildDescriptor, buildMandate, postNext, say, stop, DISCOVERY_SCHEMA } from "../src/roles/session.mjs";
+import {
+  buildDescriptor, buildMandate, discoveryUrlFor, fetchDiscovery, postNext, readDiscovery,
+  say, stop, DISCOVERY_SCHEMA,
+} from "../src/roles/session.mjs";
 import { createMcpClient } from "../src/core/clockchain.mjs";
 import { createSignedEnvelope } from "../src/core/descriptor.mjs";
 import { openFundingWallet } from "../src/core/funding/wallet.mjs";
@@ -35,6 +38,7 @@ const RELAY_URL = args.get("--relay-url") ?? process.env.HANDSHAKE_RELAY ?? "htt
 const KEYSTORE = args.get("--keystore") ?? join(process.cwd(), "keys/funding-wallet.json");
 const TOKEN_PATH = join(process.cwd(), "keys/clockchain.token");
 const REPO_SHA = process.env.HANDSHAKE_SHA ?? "0".repeat(40);
+const KIT_REPO_URL = process.env.HANDSHAKE_KIT_REPO ?? "https://github.com/thetangstr/clockchain-handshake-v2.git";
 const FUND = parseEther("0.01");
 
 // Human-paced: a stakeholder has to read a prompt, clone a repo and npm ci before
@@ -106,28 +110,43 @@ async function main() {
   const repositoryPublicKey = opPub.export({ format: "der", type: "spki" }).subarray(-32).toString("base64");
 
   const sessionId = crypto.randomUUID();
-  await relay.createSession({ relayUrl: RELAY_URL, sessionId });
 
-  // The discovery document is the ONLY thing a stakeholder receives. It is signed,
-  // so everything downstream can be checked against the operator key rather than
-  // trusted because the relay said so.
+  // The discovery document is the ONLY thing a stakeholder receives, so it has to
+  // be published in the same call that opens the session — the relay refuses a
+  // second registration for the same id, and a session without a discovery
+  // document is a session nobody can join from one pasted link.
+  const publishedAtMs = Date.now();
   const discovery = {
     schema: DISCOVERY_SCHEMA,
     sessionId,
     subjectRun: "stakeholder",
     protocolVersion: "1",
     relayUrl: RELAY_URL,
-    kitRepoUrl: "https://github.com/thetangstr/clockchain-handshake-v2.git",
+    kitRepoUrl: KIT_REPO_URL,
     repositorySha: REPO_SHA,
     operatorPublicKey: repositoryPublicKey,
-    issuedAtMs: String(Date.now()),
-    expiresAtMs: String(Date.now() + 45 * 60_000),
+    issuedAtMs: String(publishedAtMs),
+    // >= 30 minutes: a person has to read a prompt, clone and install before they
+    // can appear at all, and the kit refuses anything shorter as malformed.
+    expiresAtMs: String(publishedAtMs + 45 * 60_000),
     paymentMoved: false,
   };
-  await relay.createSession({ relayUrl: RELAY_URL, sessionId, discovery }).catch(() => {});
+  const selfCheck = readDiscovery(discovery, { now: publishedAtMs });
+  if (!selfCheck.ok) stop(selfCheck.reason, `Refusing to publish an invitation the kit would reject: ${selfCheck.sentence}`);
+
+  await relay.createSession({ relayUrl: RELAY_URL, sessionId, discovery });
   await writeFile(join(process.cwd(), "runs", `discovery-${sessionId}.json`), JSON.stringify(discovery, null, 2)).catch(() => {});
 
-  process.stdout.write(`\n${"=".repeat(64)}\nGive the stakeholder this, and nothing else:\n\n  Relay:   ${RELAY_URL}\n  Session: ${sessionId}\n\n${"=".repeat(64)}\n\n`);
+  // Read it back through the same URL the stakeholder will use. Handing over a
+  // link that does not resolve is the one failure they cannot diagnose.
+  const discoveryUrl = discoveryUrlFor({ relayUrl: RELAY_URL, sessionId });
+  const served = await fetchDiscovery({ discoveryUrl, budgetMs: 60_000 });
+  if (!served.ok) stop(served.reason, `The invitation link did not read back cleanly: ${served.sentence}`);
+
+  process.stdout.write(
+    `\n${"=".repeat(64)}\nGive the stakeholder this one line, and nothing else:\n\n` +
+    `${discoveryUrl}\n\n${"=".repeat(64)}\n\n`,
+  );
   say("TERMS_PUBLISHED", "Session published. Waiting for the requestor to appear.");
 
   const claim = await awaitKind(sessionId, "identity_ready", WAIT_FOR_REQUESTOR_MS);
@@ -208,8 +227,7 @@ async function main() {
   const evidenceDeadline = Date.now() + 4 * 60_000;
   while (Date.now() < evidenceDeadline) {
     try {
-      const pulled = await relay.getEvidence({ relayUrl: RELAY_URL, sessionId, role: "payee" });
-      parts = pulled.evidence ?? pulled;
+      parts = await relay.getEvidence({ relayUrl: RELAY_URL, sessionId, role: "payee" });
       if (parts?.json) break;
     } catch { /* not uploaded yet */ }
     say("EVIDENCE_RECEIVED", "Waiting for the requestor's evidence to arrive.");

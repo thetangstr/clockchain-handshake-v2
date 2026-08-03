@@ -2,11 +2,12 @@
 /**
  * The Requestor kit — the only thing a stakeholder runs.
  *
- * It receives a relay URL and a session id and nothing else: no key, no token, no
- * invitation. It generates its own keypair, asks to be paid, follows whatever the
- * payer's response tells it to do, registers its own on-chain identity, and
- * records its acceptance. It never claims the run succeeded — only the operator's
- * independent verifier can say that, and this says so out loud.
+ * It receives ONE URL and nothing else: no key, no token, no session id to copy by
+ * hand. It fetches the invitation behind that URL, checks it, generates its own
+ * keypair, asks to be paid, follows whatever the payer's response tells it to do,
+ * registers its own on-chain identity, and records its acceptance. It never claims
+ * the run succeeded — only the operator's independent verifier can say that, and
+ * this says so out loud.
  */
 import { chmod, mkdir, mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -17,7 +18,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { sepolia } from "viem/chains";
 
 import * as relay from "../src/relay/client.mjs";
-import { buildRequest, postNext, say, stop } from "../src/roles/session.mjs";
+import { buildRequest, fetchDiscovery, postNext, say, stop } from "../src/roles/session.mjs";
 import { createMcpClient, mintDemoToken } from "../src/core/clockchain.mjs";
 import { ERC8004_ABI } from "../src/core/registration.mjs";
 import { runPayeeRole } from "../src/core/roles-core.mjs";
@@ -25,10 +26,35 @@ import { REGISTRY_ADDRESS, RPC_URL } from "../src/core/constants.mjs";
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) args.set(process.argv[i], process.argv[i + 1]);
-const RELAY_URL = args.get("--relay-url") ?? process.env.HANDSHAKE_RELAY;
-const SESSION_ID = args.get("--session") ?? process.env.HANDSHAKE_SESSION;
-if (!RELAY_URL || !SESSION_ID) {
-  stop("MALFORMED", "This needs a relay URL and a session id, and nothing else.");
+const DISCOVERY_URL = args.get("--discovery-url") ?? process.env.HANDSHAKE_DISCOVERY ?? null;
+// Resolved either from the invitation (the stakeholder path) or from the explicit
+// pair (our own testing escape hatch). Nothing downstream cares which.
+let RELAY_URL = args.get("--relay-url") ?? process.env.HANDSHAKE_RELAY ?? null;
+let SESSION_ID = args.get("--session") ?? process.env.HANDSHAKE_SESSION ?? null;
+
+/**
+ * Turn the one thing a stakeholder was given into somewhere to dial out to.
+ *
+ * The relay is an untrusted mailbox, so the invitation it serves is checked before
+ * a single byte of it is used. This runs before any anchor exists, which makes it
+ * the one moment a refusal costs nothing.
+ */
+async function resolveRendezvous() {
+  if (RELAY_URL && SESSION_ID) return;
+  if (!DISCOVERY_URL) {
+    stop("MALFORMED", "This needs one thing: --discovery-url followed by the link the payer sent you.");
+  }
+  say("SESSION_STARTED", "Opening the payer's link.");
+  const found = await fetchDiscovery({
+    discoveryUrl: DISCOVERY_URL,
+    onHeartbeat: () => say("SESSION_STARTED", "Still trying the payer's link. No money has moved."),
+  });
+  if (!found.ok) stop(found.reason, found.sentence);
+  RELAY_URL = found.discovery.relayUrl;
+  SESSION_ID = found.discovery.sessionId;
+  say("SESSION_STARTED", "The link checks out. Joining the payer's session.", {
+    sessionId: SESSION_ID,
+  });
 }
 
 // Human-paced throughout: the operator has to fund us on a public testnet, which
@@ -59,6 +85,7 @@ async function awaitKind(kind, budgetMs, after = "0") {
 }
 
 async function main() {
+  await resolveRendezvous();
   say("SESSION_STARTED", "Asking to be paid. This is a verification exercise: no money will move.");
 
   // Our own key, generated here. The operator never sees it and cannot produce it.
@@ -136,7 +163,7 @@ async function main() {
   ]);
   await relay.putEvidence({
     relayUrl: RELAY_URL, sessionId: SESSION_ID, role: "payee",
-    evidence: { json, markdown, marker },
+    json, markdown, marker,
   });
   say("ACCEPTED", "Our acceptance is recorded on Clockchain and our evidence is delivered.");
   process.stdout.write(
