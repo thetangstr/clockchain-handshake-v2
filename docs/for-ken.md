@@ -8,7 +8,7 @@ The code is public. Your side is one file:
 
     https://github.com/thetangstr/clockchain-handshake-v2/blob/claude/handshake-v6/bin/requestor.mjs
 
-187 lines. It imports about 13,000 more under `src/`, so reading the entry
+209 lines. It imports about 13,000 more under `src/`, so reading the entry
 point is not a full audit — but it is enough to see the shape of what runs.
 
 **What it does.** Generates a keypair on your machine. Fetches our signed offer

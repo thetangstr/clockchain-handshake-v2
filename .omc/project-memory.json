@@ -18,8 +18,8 @@
     "runtime": "Node.js 22"
   },
   "build": {
-    "buildCommand": "node /private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/receipt-terms-ui.cjs && R=/private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research && cd \"$R\" && npm run build 2>&1 | grep -E \"error|Error|Failed|Compiled successfully|Type error\" | head -5",
-    "testCommand": "node -e '\nconst fs=require(\"fs\");\nconst p=\"/Users/Kailor/Documents/Projects/handshake/test/anchor-terms.test.mjs\";\nlet t=fs.readFileSync(p,\"utf8\");\nconst add = `\ntest(\"an object predecessor is refused, not stringified into the display\", () => {\n  // The bug this pins reached a live board. The predecessor on the wire is a\n  // triple -- {anchoredHash, blockHeight, kind, ledgerId} -- and the operator\n  // ran String() over it, so the receipt read \"Follows [object Object]\". Every\n  // test passed, because the fixtures carried a hash string: they encoded the\n  // same wrong assumption the code did. A real run caught it in one look.\n  const broken = anchor(\"acceptance\", \"200\");\n  broken.terms.predecessor = {\n    anchoredHash: \"4f112eef\",\n    blockHeight: \"2731906\",\n    kind: \"proposal\",\n    ledgerId: \"0db480de-744d-4c3a-bbd7-1f6b7627414f\",\n  };\n  assert.throws(\n    () => validateSnapshot(snapshotWith({ acceptance: broken, acknowledgment: null, proposal: null })),\n    /Handshake snapshot is invalid/,\n    \"a triple must be refused rather than rendered as [object Object]\",\n  );\n\n  const stringified = anchor(\"acceptance\", \"200\");\n  stringified.terms.predecessor = \"[object Object]\";\n  assert.throws(\n    () => validateSnapshot(snapshotWith({ acceptance: stringified, acknowledgment: null, proposal: null })),\n    /Handshake snapshot is invalid/,\n    \"the stringified form must be refused too — that is what actually shipped\",\n  );\n});\n`;\nfs.writeFileSync(p, t.trimEnd() + \"\\n\" + add);\nconsole.log(\"regression test added\");\n' && npm test 2>&1 | grep -E \"^# (tests|pass|fail)|^not ok\" | head -5 && bash scripts/check-invariants.sh 2>&1 | tail -1",
+    "buildCommand": "R=/private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research; node -e '\nconst fs=require(\"fs\");\nconst R=process.argv[1], ROOT=\"/Users/Kailor/Documents/Projects/handshake\";\nconst URL=\"http://44.249.47.220:8080/v1/discovery/current\";\nconst prompt=fs.readFileSync(ROOT+\"/prompts/requestor.md\",\"utf8\");\nfs.writeFileSync(R+\"/public/handshake/claude-v6/requestor-prompt.md\", prompt.replace(/<DISCOVERY_URL>/g,URL));\nconst page=R+\"/src/components/ClaudeV6Runbook.tsx\";\nlet pt=fs.readFileSync(page,\"utf8\");\nconst body=prompt.replace(/<DISCOVERY_URL>/g,URL).replace(/`/g,\"\\\\`\").replace(/\\$\\{/g,\"\\\\${\").trimEnd();\nconst s=pt.indexOf(\"const requestorPrompt = `\"), e=pt.indexOf(\"`;\", s);\nif(s===-1||e===-1) throw new Error(\"MISS anchor\");\nfs.writeFileSync(page, pt.slice(0,s)+\"const requestorPrompt = `\"+body+\"`;\"+pt.slice(e+2));\nconsole.log(\"published prompt + page copy resynced to 209 lines\");\n' \"$R\" && cd \"$R\" && npm install --silent 2>&1 | tail -1; npm run build 2>&1 | grep -E \"error|Compiled successfully\" | head -2",
+    "testCommand": "echo \"=== git ===\"; for r in main claude/handshake-v6 origin/main origin/claude/handshake-v6; do printf \"  %-28s %s\\n\" \"$r\" \"$(git rev-parse --short \"$r\" 2>/dev/null)\"; done; echo \"=== tests ===\"; npm test 2>&1 | grep -E \"^# (tests|pass|fail)\"; echo \"=== invariants ===\"; bash scripts/check-invariants.sh 2>&1 | tail -1; echo \"=== treasury + ledger ===\"; npm run preflight 2>&1 | grep -E \"treasury|ledger\" | sed 's/^OK *//'; echo \"=== runs recorded ===\"; curl -s http://44.249.47.220:8080/v1/runs | node -e 'let d=\"\";process.stdin.on(\"data\",c=>d+=c).on(\"end\",()=>{const r=JSON.parse(d).runs;console.log(\"  \"+r.length+\" runs, \"+r.filter(x=>x.outcome).length+\" reached a verdict, \"+r.filter(x=>x.stage===\"FAILED\").length+\" stopped\")})'",
     "lintCommand": null,
     "devCommand": null,
     "scripts": {
@@ -249,6 +249,18 @@
       "path": "test/anchor-terms.test.mjs",
       "accessCount": 1,
       "lastAccessed": 1785806383903,
+      "type": "file"
+    },
+    {
+      "path": "HANDOFF.md",
+      "accessCount": 1,
+      "lastAccessed": 1785859073384,
+      "type": "file"
+    },
+    {
+      "path": "reach.tmp.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1785859109523,
       "type": "file"
     }
   ],

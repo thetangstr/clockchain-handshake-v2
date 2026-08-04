@@ -14,7 +14,7 @@ No money moves here. What is established is permission, and the proof of it.
 ## What the program actually does
 
 Audit it before running if you want to — that is encouraged, not merely
-tolerated. bin/requestor.mjs is the entry point at 187 lines, but it imports
+tolerated. bin/requestor.mjs is the entry point at 209 lines, but it imports
 about 13,000 more under src/. That whole reachable set is the audit surface;
 reading the entry point alone is not an audit of the program.
 
