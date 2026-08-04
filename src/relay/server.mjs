@@ -768,7 +768,16 @@ function findAnchoredBlock(sessions, height) {
   return null;
 }
 
-async function handleBlock(sessions, height) {
+async function ledgerClientFor(injected) {
+  if (injected !== undefined && injected !== null) {
+    return injected;
+  }
+  const { createMcpClient, mintDemoToken } = await import("../core/clockchain.mjs");
+  const token = await ledgerToken(mintDemoToken);
+  return createMcpClient({ token });
+}
+
+async function handleBlock(sessions, height, injectedClient) {
   if (!/^[0-9]{1,12}$/.test(height)) {
     throw new RelayError("Block height must be a decimal integer.", "MALFORMED_HEIGHT", {
       status: 400,
@@ -786,15 +795,10 @@ async function handleBlock(sessions, height) {
     );
   }
 
-  // Imported here rather than at module scope so that a problem reaching the
-  // ledger client can never stop the relay from booting. The mailbox has to come
-  // up even when Clockchain does not.
-  const { createMcpClient, mintDemoToken } = await import("../core/clockchain.mjs");
-
   let block;
   try {
-    const token = await ledgerToken(mintDemoToken);
-    block = await createMcpClient({ token }).getBlock({ height: Number(height) });
+    const client = await ledgerClientFor(injectedClient);
+    block = await client.getBlock({ height: Number(height) });
   } catch (error) {
     // Named, because "it failed" is useless at a podium. Token minting is
     // rate-limited per IP, and that is the one failure likely to be seen here.
@@ -820,6 +824,95 @@ async function handleBlock(sessions, height) {
   };
   blockCache.set(height, body);
   return body;
+}
+
+
+function findAnchorByLedgerId(sessions, ledgerId) {
+  for (const session of sessions.values()) {
+    const anchors = session.monitorSnapshot?.anchors;
+    if (!anchors) continue;
+    for (const anchor of Object.values(anchors)) {
+      if (anchor !== null && anchor?.ledgerId === ledgerId) return anchor;
+    }
+  }
+  return null;
+}
+
+const LEDGER_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+async function handleVerify(sessions, ledgerId, injectedClient) {
+  if (!LEDGER_ID_PATTERN.test(ledgerId)) {
+    throw new RelayError("Ledger id must be a UUID.", "MALFORMED_LEDGER_ID", { status: 400 });
+  }
+  const cached = blockCache.get(`verify:${ledgerId}`);
+  if (cached !== undefined) return cached;
+
+  const anchor = findAnchorByLedgerId(sessions, ledgerId);
+  if (anchor === null) {
+    throw new RelayError(
+      "No run held by this relay anchored that ledger id.",
+      "UNKNOWN_LEDGER_ID",
+      { status: 404 },
+    );
+  }
+
+  let result;
+  try {
+    const client = await ledgerClientFor(injectedClient);
+    result = await client.verifyCrossParty({
+      ledgerId,
+      blockHeight: anchor.blockHeight,
+      hash: anchor.receipt?.anchoredHash ?? null,
+    });
+  } catch (error) {
+    throw new RelayError(
+      `Could not verify that receipt on the ledger: ${error?.message ?? error}`,
+      "LEDGER_VERIFY_FAILED",
+      { status: 502 },
+    );
+  }
+
+  const body = {
+    ok: true,
+    paymentMoved: false,
+    ledgerId,
+    blockHeight: anchor.blockHeight,
+    anchoredHash: anchor.receipt?.anchoredHash ?? null,
+    verified: result?.onChain?.verifiedAgainst === "on-chain block" && result?.onChain?.keyless === true,
+    source: "Verified on Clockchain by the demo relay. The ledger's own endpoint requires a token.",
+  };
+  blockCache.set(`verify:${ledgerId}`, body);
+  return body;
+}
+
+const AGENT_ID_PATTERN = /^(?:0|[1-9][0-9]*)$/;
+
+async function handleAgent(agentId, injectedClient) {
+  if (!AGENT_ID_PATTERN.test(agentId)) {
+    throw new RelayError("Agent id must be a decimal integer.", "MALFORMED_AGENT_ID", { status: 400 });
+  }
+
+  let result;
+  try {
+    const client = await ledgerClientFor(injectedClient);
+    result = await client.resolveAgent(agentId);
+  } catch (error) {
+    throw new RelayError(
+      `Could not resolve that agent on the ledger: ${error?.message ?? error}`,
+      "LEDGER_RESOLVE_FAILED",
+      { status: 502 },
+    );
+  }
+
+  return {
+    ok: true,
+    paymentMoved: false,
+    agentId,
+    status: result?.status ?? "unknown",
+    owner: result?.owner ?? null,
+    agentURI: result?.agentURI ?? null,
+    source: "Resolved on Clockchain by the demo relay. The ledger's own endpoint requires a token.",
+  };
 }
 
 // GET returns the published monitor snapshot verbatim once one exists (see
@@ -922,7 +1015,7 @@ async function serveStaticFile(res, filePath, contentType) {
   res.end(body);
 }
 
-async function dispatch(req, res, sessions, stateDir) {
+async function dispatch(req, res, sessions, stateDir, ledgerClient) {
   const url = new URL(req.url, "http://relay.local");
   const segments = url.pathname.split("/").filter(Boolean);
   const method = req.method;
@@ -970,8 +1063,20 @@ async function dispatch(req, res, sessions, stateDir) {
   }
 
   if (method === "GET" && segments.length === 3 && segments[1] === "blocks") {
-    const block = await handleBlock(sessions, segments[2]);
+    const block = await handleBlock(sessions, segments[2], ledgerClient);
     writeJson(res, 200, block);
+    return;
+  }
+
+  if (method === "GET" && segments.length === 3 && segments[1] === "verify") {
+    const verify = await handleVerify(sessions, segments[2], ledgerClient);
+    writeJson(res, 200, verify);
+    return;
+  }
+
+  if (method === "GET" && segments.length === 3 && segments[1] === "agents") {
+    const agent = await handleAgent(segments[2], ledgerClient);
+    writeJson(res, 200, agent);
     return;
   }
 
@@ -1036,7 +1141,7 @@ async function dispatch(req, res, sessions, stateDir) {
  * off. Does not call `.listen()` -- the caller decides host/port (bin/relay.mjs
  * for real use, ephemeral port 0 in tests).
  */
-export async function createRelayServer({ stateDir }) {
+export async function createRelayServer({ stateDir, ledgerClient }) {
   if (typeof stateDir !== "string" || stateDir.length === 0) {
     throw new RelayError(
       "A relay requires a state directory.",
@@ -1050,7 +1155,7 @@ export async function createRelayServer({ stateDir }) {
   await loadExistingSessions(stateDir, sessions);
 
   const server = createServer((req, res) => {
-    dispatch(req, res, sessions, stateDir).catch((error) => {
+    dispatch(req, res, sessions, stateDir, ledgerClient).catch((error) => {
       if (res.headersSent) {
         res.destroy();
         return;

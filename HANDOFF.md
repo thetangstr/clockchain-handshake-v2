@@ -53,6 +53,8 @@ The operator waits **45 minutes** for a requestor. Long pauses there are correct
 | Research site | separate repo `thetangstr/clockchain-research`, deploys on push to `main` |
 | Demo page | `/handshake/claude-v6` (public) |
 | PMF brief | `/research/agent-attestation-pmf` (**gated**, basic auth) |
+| Public receipt verify | `/v1/verify/{ledgerId}` on the relay — credential-free cross-party read |
+| Public agent resolve | `/v1/agents/{agentId}` on the relay — credential-free ERC-8004 lookup |
 
 Deploy to the relay is `rsync` of the changed file plus `systemctl restart
 handshake-relay`. `keys/` is gitignored and exists **only** on the operator's laptop —
