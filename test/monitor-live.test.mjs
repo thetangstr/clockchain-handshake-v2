@@ -96,7 +96,7 @@ function anchor(kind, ledgerId, blockHeight) {
     terms: {
       currency: "USD",
       expirySeconds: "600",
-      predecessor: kind === "proposal" ? null : "c".repeat(64),
+      predecessor: kind === "proposal" ? null : "2731906",
       sequence: kind === "proposal" ? "1" : kind === "acceptance" ? "2" : "3",
       sessionDigest: "d".repeat(64),
       value: "100",

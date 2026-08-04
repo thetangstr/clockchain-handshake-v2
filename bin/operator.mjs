@@ -122,9 +122,13 @@ function termsOf(message) {
   return {
     currency: String(message.amount.currency),
     expirySeconds: String(message.expirySeconds),
-    predecessor: message.predecessor === null || message.predecessor === undefined
-      ? null
-      : String(message.predecessor),
+    // The predecessor is a triple pointing at the previous receipt
+    // ({anchoredHash, blockHeight, kind, ledgerId}); its block height is the
+    // half a reader can act on. Stringifying the object gave "[object Object]",
+    // which reached a live board before a real run caught it.
+    predecessor: message.predecessor?.blockHeight
+      ? String(message.predecessor.blockHeight)
+      : null,
     sequence: String(message.sequence),
     sessionDigest: String(message.sessionDigest),
     value: String(message.amount.value),

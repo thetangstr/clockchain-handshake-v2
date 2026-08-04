@@ -241,10 +241,11 @@ function validateTerms(kind, terms) {
   if (!isNonEmptyString(terms.sessionDigest)) {
     invalid(`anchors.${kind}.terms.sessionDigest must be a non-empty string`);
   }
-  // The first transition has no predecessor; the other two must name one, which
-  // is what makes the order a property of the chain rather than of our logs.
-  if (terms.predecessor !== null && !isNonEmptyString(terms.predecessor)) {
-    invalid(`anchors.${kind}.terms.predecessor must be null or a digest string`);
+  // The first transition has no predecessor; the other two name the block of
+  // the receipt they follow, which is what makes the order a property of the
+  // chain rather than of our logs.
+  if (terms.predecessor !== null && !isDecimalIntegerString(String(terms.predecessor))) {
+    invalid(`anchors.${kind}.terms.predecessor must be null or a block height`);
   }
 }
 

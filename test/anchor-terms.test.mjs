@@ -21,7 +21,7 @@ import {
 } from "../src/monitor/snapshot.mjs";
 
 const SESSION_DIGEST = "d".repeat(64);
-const PREDECESSOR = "c".repeat(64);
+const PREDECESSOR = "2731906";
 
 function anchor(kind, blockHeight, overrides = {}) {
   return {
@@ -128,4 +128,32 @@ test("the first receipt has no predecessor and the later ones must", () => {
   for (const kind of ["acceptance", "acknowledgment"]) {
     assert.equal(anchor(kind, "200").terms.predecessor, PREDECESSOR);
   }
+});
+
+test("an object predecessor is refused, not stringified into the display", () => {
+  // The bug this pins reached a live board. The predecessor on the wire is a
+  // triple -- {anchoredHash, blockHeight, kind, ledgerId} -- and the operator
+  // ran String() over it, so the receipt read "Follows [object Object]". Every
+  // test passed, because the fixtures carried a hash string: they encoded the
+  // same wrong assumption the code did. A real run caught it in one look.
+  const broken = anchor("acceptance", "200");
+  broken.terms.predecessor = {
+    anchoredHash: "4f112eef",
+    blockHeight: "2731906",
+    kind: "proposal",
+    ledgerId: "0db480de-744d-4c3a-bbd7-1f6b7627414f",
+  };
+  assert.throws(
+    () => validateSnapshot(snapshotWith({ acceptance: broken, acknowledgment: null, proposal: null })),
+    /Handshake snapshot is invalid/,
+    "a triple must be refused rather than rendered as [object Object]",
+  );
+
+  const stringified = anchor("acceptance", "200");
+  stringified.terms.predecessor = "[object Object]";
+  assert.throws(
+    () => validateSnapshot(snapshotWith({ acceptance: stringified, acknowledgment: null, proposal: null })),
+    /Handshake snapshot is invalid/,
+    "the stringified form must be refused too — that is what actually shipped",
+  );
 });
