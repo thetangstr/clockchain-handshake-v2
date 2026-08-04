@@ -92,6 +92,15 @@ function anchor(kind, ledgerId, blockHeight) {
     kind,
     ledgerId,
     receipt: { anchoredHash: "a".repeat(64), digest: "a".repeat(64), kind },
+    signedBy: { address: "0x" + "b".repeat(40), agentId: "9001" },
+    terms: {
+      currency: "USD",
+      expirySeconds: "600",
+      predecessor: kind === "proposal" ? null : "c".repeat(64),
+      sequence: kind === "proposal" ? "1" : kind === "acceptance" ? "2" : "3",
+      sessionDigest: "d".repeat(64),
+      value: "100",
+    },
   };
 }
 

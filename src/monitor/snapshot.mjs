@@ -99,7 +99,24 @@ export const ANCHOR_KEYS = Object.freeze([
   "kind",
   "ledgerId",
   "receipt",
+  "signedBy",
+  "terms",
 ]);
+
+// What the signed transition actually said, carried through so a viewer can read
+// the receipt rather than take our word for what it contained. Every field here
+// is lifted verbatim out of the bytes that were signed and anchored -- none of
+// it is computed, and none of it may be added to by a display layer.
+export const TERMS_KEYS = Object.freeze([
+  "currency",
+  "expirySeconds",
+  "predecessor",
+  "sequence",
+  "sessionDigest",
+  "value",
+]);
+
+export const SIGNED_BY_KEYS = Object.freeze(["address", "agentId"]);
 
 export const STAGE_HISTORY_ENTRY_KEYS = Object.freeze(["atMs", "status"]);
 
@@ -203,6 +220,44 @@ function validateAnchor(kind, anchor) {
   }
   if (!isHttpUrl(anchor.explorerUrl)) {
     invalid(`anchors.${kind}.explorerUrl must be an http(s) URL`);
+  }
+  validateTerms(kind, anchor.terms);
+  validateSignedBy(kind, anchor.signedBy);
+}
+
+function validateTerms(kind, terms) {
+  if (terms === null) return;
+  if (!hasExactKeys(terms, TERMS_KEYS)) {
+    invalid(`anchors.${kind}.terms has the wrong shape`);
+  }
+  if (!isNonEmptyString(terms.currency)) {
+    invalid(`anchors.${kind}.terms.currency must be a non-empty string`);
+  }
+  for (const field of ["value", "expirySeconds", "sequence"]) {
+    if (!isDecimalIntegerString(String(terms[field]))) {
+      invalid(`anchors.${kind}.terms.${field} must be a decimal integer string`);
+    }
+  }
+  if (!isNonEmptyString(terms.sessionDigest)) {
+    invalid(`anchors.${kind}.terms.sessionDigest must be a non-empty string`);
+  }
+  // The first transition has no predecessor; the other two must name one, which
+  // is what makes the order a property of the chain rather than of our logs.
+  if (terms.predecessor !== null && !isNonEmptyString(terms.predecessor)) {
+    invalid(`anchors.${kind}.terms.predecessor must be null or a digest string`);
+  }
+}
+
+function validateSignedBy(kind, signedBy) {
+  if (signedBy === null) return;
+  if (!hasExactKeys(signedBy, SIGNED_BY_KEYS)) {
+    invalid(`anchors.${kind}.signedBy has the wrong shape`);
+  }
+  if (!/^0x[0-9a-f]{40}$/.test(String(signedBy.address))) {
+    invalid(`anchors.${kind}.signedBy.address must be a lowercase 0x address`);
+  }
+  if (!isDecimalIntegerString(String(signedBy.agentId))) {
+    invalid(`anchors.${kind}.signedBy.agentId must be a decimal integer string`);
   }
 }
 

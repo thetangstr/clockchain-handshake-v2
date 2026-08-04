@@ -100,6 +100,34 @@ function transitionToAnchor(kind, transition) {
       blockTimeRaw: transition.blockTimeRaw,
       digest: transition.digest,
     },
+    // Who signed this transition. The payer writes the proposal and the
+    // acknowledgement while watching for the acceptance; the payee does the
+    // inverse (src/core/roles-core.mjs).
+    signedBy: signerOf(kind, transition.message),
+    // The terms as signed. This was being thrown away: transitionToAnchor kept
+    // six fields and discarded the message, so the board could show that a
+    // receipt existed but not what it said.
+    terms: termsOf(transition.message),
+  };
+}
+
+function signerOf(kind, message) {
+  const party = kind === "acceptance" ? message?.payee : message?.payer;
+  if (!party?.address || !party?.agentId) return null;
+  return { address: String(party.address).toLowerCase(), agentId: String(party.agentId) };
+}
+
+function termsOf(message) {
+  if (!message?.amount) return null;
+  return {
+    currency: String(message.amount.currency),
+    expirySeconds: String(message.expirySeconds),
+    predecessor: message.predecessor === null || message.predecessor === undefined
+      ? null
+      : String(message.predecessor),
+    sequence: String(message.sequence),
+    sessionDigest: String(message.sessionDigest),
+    value: String(message.amount.value),
   };
 }
 

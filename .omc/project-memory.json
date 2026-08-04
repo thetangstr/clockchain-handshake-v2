@@ -18,8 +18,8 @@
     "runtime": "Node.js 22"
   },
   "build": {
-    "buildCommand": "node /private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/gate-brief.cjs && R=/private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research && cd \"$R\" && npm run build 2>&1 | grep -E \"error|Failed|Compiled successfully\" | head -3 && git add -A && git commit -q -m \"$(cat <<'EOF'\nresearch: actually gate the PMF brief\n\ngated:true in load-research.ts only removes a doc from the /research index. The\nbasic-auth gate is a separate matcher in middleware.ts that enumerates paths\none at a time, and the new brief was not in it — so it was invisible from the\nindex and fully readable to anyone with the link. Adding it, and recording the\ntrap above the config block so the next gated doc does not repeat it.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nEOF\n)\" && (git push -q origin main 2>/dev/null || (git pull --rebase -q origin main && git push -q origin main)) && echo pushed",
-    "testCommand": "npm test 2>&1 | grep -E \"^# (tests|pass|fail)|^not ok\" | head -5; echo; bash scripts/check-invariants.sh 2>&1 | grep -E \"reason code|RESULT\"",
+    "buildCommand": "node /private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/receipt-terms-ui.cjs && R=/private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research && cd \"$R\" && npm run build 2>&1 | grep -E \"error|Error|Failed|Compiled successfully|Type error\" | head -5",
+    "testCommand": "npm test 2>&1 | grep -E \"^# (tests|pass|fail)|^not ok\" | head -6; bash scripts/check-invariants.sh 2>&1 | tail -1",
     "lintCommand": null,
     "devCommand": null,
     "scripts": {
@@ -243,6 +243,12 @@
       "path": "registry-rate.tmp.mjs",
       "accessCount": 1,
       "lastAccessed": 1785799338866,
+      "type": "file"
+    },
+    {
+      "path": "test/anchor-terms.test.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1785806383903,
       "type": "file"
     }
   ],
