@@ -66,7 +66,7 @@ verdict provably emitted by the host process, not either kit.
 `bin/payer.mjs`, symmetric to `bin/requestor.mjs`: one URL in, fresh key, self-mint
 token, `identity_ready(role:"payer")`, await funding addressed to itself, register
 ERC-8004, **build and sign the mandate locally** — with `issuedAtMs` taken from
-Clockchain `get_timestamp`, not the local clock. That closes HANDOFF §4.3's residual
+Clockchain `get_timestamp`, not the local clock. That closes archived HANDOFF (docs/handoff-2026-08-04.md) §4.3's residual
 risk *before* arbitrary payer machines make clock skew worse, instead of after.
 
 Then `runPayerRole`, upload evidence, and stop **without naming an outcome** — the
@@ -74,7 +74,7 @@ same discipline as the requestor: neither party speaks the verdict; only the hos
 verifier does, and it appears on the monitor.
 
 Handoff doc in the `for-ken.md` pattern — addressed to the human, code linked before
-any ask to run it. **Do not iterate the prompt to satisfy refusing agents** (HANDOFF
+any ask to run it. **Do not iterate the prompt to satisfy refusing agents** (archived HANDOFF
 §6; three refusals prove the pattern).
 
 **Gate M1:** relay-hosted host + payer kit and requestor kit on two separate
