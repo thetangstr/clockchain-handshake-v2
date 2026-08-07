@@ -431,21 +431,26 @@ test("current follows the newest run even among sessions with no recorded start"
   });
 
   // Force both to look like sessions recovered from an older journal, then give
-  // only the newer one a snapshot to date itself by.
-  await putJson(`${baseUrl}/v1/sessions/${current.body.sessionId}/snapshot`, {
+  // only the newer one a snapshot to date itself by. The PUT's status is
+  // asserted because this exact snapshot once drifted out of schema (identities
+  // joined SNAPSHOT_KEYS) and 400ed silently — leaving the test green while it
+  // tested nothing.
+  const put = await putJson(`${baseUrl}/v1/sessions/${current.body.sessionId}/snapshot`, {
     anchors: { acceptance: null, acknowledgment: null, proposal: null },
     currentStage: "SESSION_STARTED",
     funding: null,
     heartbeat: { payee: null, payer: null, verifier: null },
+    identities: null,
     paymentMoved: false,
     reasonCode: null,
     schema: "clockchain.handshake-snapshot/v1",
     sessionId: current.body.sessionId,
     stageHistory: [{ atMs: 9_000_000, status: "SESSION_STARTED" }],
-    subjectRun: null,
+    subjectRun: "stakeholder",
     updatedAtMs: 9_000_000,
     verdict: null,
   });
+  assert.equal(put.status, 200, `snapshot setup must land: ${JSON.stringify(put.body)}`);
 
   const resolved = await getJson(`${baseUrl}/v1/sessions/current/snapshot`);
   assert.equal(resolved.status, 200);
@@ -502,4 +507,96 @@ test("snapshot summarizes message and evidence bookkeeping without inventing aut
   assert.equal(snapshot.body.lastSeq, "1");
   assert.equal(snapshot.body.messageCount, 1);
   assert.deepEqual(snapshot.body.evidence, { payer: true, payee: false });
+});
+
+// --- The closing certificate endpoint -------------------------------------
+
+import { buildSignedResult } from "../src/core/result.mjs";
+import { generateKeyPairSync } from "node:crypto";
+
+function signedResultFor(sessionId) {
+  const { privateKey } = generateKeyPairSync("ed25519");
+  return buildSignedResult({
+    issuedAtMs: "1785802329000",
+    keyId: "handshake-host",
+    parties: {
+      payer: { address: "0x" + "1".repeat(40), agentId: "9400", reference: "eip155:11155111:0x8004a818bfb912233c491871b3d84c89a494bd9e:9400" },
+      payee: { address: "0x" + "2".repeat(40), agentId: "9401", reference: "eip155:11155111:0x8004a818bfb912233c491871b3d84c89a494bd9e:9401" },
+    },
+    privateKeyPem: privateKey.export({ format: "pem", type: "pkcs8" }),
+    sessionDigest: "d".repeat(64),
+    sessionId,
+    verdict: {
+      outcome: "AUTHORIZED",
+      paymentMoved: false,
+      transitions: [
+        { blockHeight: "100", blockTimeRaw: "2026-08-04T00:00:01Z", digest: "a".repeat(64), kind: "proposal", ledgerId: "11111111-1111-4111-8111-111111111111" },
+        { blockHeight: "200", blockTimeRaw: "2026-08-04T00:00:02Z", digest: "b".repeat(64), kind: "acceptance", ledgerId: "22222222-2222-4222-8222-222222222222" },
+        { blockHeight: "300", blockTimeRaw: "2026-08-04T00:00:03Z", digest: "c".repeat(64), kind: "acknowledgment", ledgerId: "33333333-3333-4333-8333-333333333333" },
+      ],
+    },
+  });
+}
+
+test("result: absent until published, then served verbatim, and it survives a restart", async (t) => {
+  const dir = await temporaryDirectory(t);
+  let server = await createRelayServer({ stateDir: dir });
+  let port = await listen(server);
+  let baseUrl = `http://127.0.0.1:${port}`;
+
+  const created = await postJson(`${baseUrl}/v1/sessions`, {});
+  const sessionId = created.body.sessionId;
+
+  const before = await getJson(`${baseUrl}/v1/sessions/${sessionId}/result`);
+  assert.equal(before.status, 404);
+  assert.equal(before.body.error, "RESULT_NOT_SET");
+
+  const envelope = signedResultFor(sessionId);
+  const put = await putJson(`${baseUrl}/v1/sessions/${sessionId}/result`, envelope);
+  assert.equal(put.status, 200, `PUT must land: ${JSON.stringify(put.body)}`);
+  assert.equal(put.body.paymentMoved, false);
+
+  const served = await getJson(`${baseUrl}/v1/sessions/${sessionId}/result`);
+  assert.equal(served.status, 200);
+  assert.deepEqual(served.body, JSON.parse(JSON.stringify(envelope)), "served byte-for-byte as published");
+
+  // The certificate is the run's terminal artifact; losing it to a relay
+  // restart would orphan every kit that comes back later to fetch it.
+  await new Promise((resolve) => server.close(resolve));
+  server = await createRelayServer({ stateDir: dir });
+  port = await listen(server);
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  baseUrl = `http://127.0.0.1:${port}`;
+
+  const replayed = await getJson(`${baseUrl}/v1/sessions/${sessionId}/result`);
+  assert.equal(replayed.status, 200);
+  assert.deepEqual(replayed.body, JSON.parse(JSON.stringify(envelope)));
+});
+
+test("result: a malformed certificate is refused with a named reason", async (t) => {
+  const { baseUrl } = await startServer(t);
+  const created = await postJson(`${baseUrl}/v1/sessions`, {});
+  const sessionId = created.body.sessionId;
+  const envelope = signedResultFor(sessionId);
+
+  const wrongSession = await putJson(
+    `${baseUrl}/v1/sessions/${sessionId}/result`,
+    { ...envelope, result: { ...envelope.result, sessionId: "99999999-9999-4999-8999-999999999999" } },
+  );
+  assert.equal(wrongSession.status, 400);
+  assert.equal(wrongSession.body.error, "MALFORMED_RESULT");
+
+  const moneyMoved = await putJson(
+    `${baseUrl}/v1/sessions/${sessionId}/result`,
+    { ...envelope, result: { ...envelope.result, paymentMoved: true } },
+  );
+  assert.equal(moneyMoved.status, 400);
+  assert.equal(moneyMoved.body.error, "MALFORMED_RESULT");
+
+  const garbage = await putJson(`${baseUrl}/v1/sessions/${sessionId}/result`, { hello: "world" });
+  assert.equal(garbage.status, 400);
+
+  // None of the rejects may have stored anything.
+  const after = await getJson(`${baseUrl}/v1/sessions/${sessionId}/result`);
+  assert.equal(after.status, 404);
 });

@@ -564,6 +564,41 @@ export async function putSnapshot({
   );
 }
 
+export async function putResult({
+  relayUrl,
+  sessionId,
+  envelope,
+  timeoutMs,
+  ...retryOpts
+} = {}) {
+  return withRetry(
+    () =>
+      requestJson(
+        "PUT",
+        `${relayUrl}/v1/sessions/${encodeURIComponent(sessionId)}/result`,
+        { body: envelope, timeoutMs },
+      ),
+    retryOptionsFrom(retryOpts),
+  );
+}
+
+export async function getResult({
+  relayUrl,
+  sessionId,
+  timeoutMs,
+  ...retryOpts
+} = {}) {
+  return withRetry(
+    () =>
+      requestJson(
+        "GET",
+        `${relayUrl}/v1/sessions/${encodeURIComponent(sessionId)}/result`,
+        { timeoutMs },
+      ),
+    retryOptionsFrom(retryOpts),
+  );
+}
+
 export async function health({ relayUrl, timeoutMs, ...retryOpts } = {}) {
   return withRetry(
     () => requestJson("GET", `${relayUrl}/healthz`, { timeoutMs }),

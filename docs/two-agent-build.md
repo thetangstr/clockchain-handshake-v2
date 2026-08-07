@@ -33,7 +33,10 @@ were checked against live infrastructure or repos on the date above.
 
 Two implications worth stating plainly. **The migration is smaller than it sounded:**
 the chain node — the stateful, scary part — is already on AWS; what moves is a
-containerized API service whose deployment is already documented. And **P3 got
+containerized API service whose deployment is already documented. (*Verified 08-07,
+post-login:* the node is **not in Yang's AWS account** `570035913370` — no instance in
+us-west-1/2 carries its IP — so it is the Clockchain team's box. M consolidates our
+account; the node stays external and unmoved.) And **P3 got
 simpler:** with the MCP codebase in hand, the handshake tools are implemented
 directly in the MCP server — the load-balancer routing fallback from the previous
 revision is withdrawn.

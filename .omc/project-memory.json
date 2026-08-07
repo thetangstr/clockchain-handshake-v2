@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1785782257409,
+  "lastScanned": 1786118660588,
   "projectRoot": "/Users/Kailor/Documents/Projects/handshake",
   "techStack": {
     "languages": [
@@ -18,11 +18,14 @@
     "runtime": "Node.js 22"
   },
   "build": {
-    "buildCommand": "R=/private/tmp/claude-501/-Users-Kailor-Documents-Projects-handshake/07afa53e-82b5-48a5-81cf-db1b435412ba/scratchpad/research; node -e '\nconst fs=require(\"fs\");\nconst R=process.argv[1], ROOT=\"/Users/Kailor/Documents/Projects/handshake\";\nconst URL=\"http://44.249.47.220:8080/v1/discovery/current\";\nconst prompt=fs.readFileSync(ROOT+\"/prompts/requestor.md\",\"utf8\");\nfs.writeFileSync(R+\"/public/handshake/claude-v6/requestor-prompt.md\", prompt.replace(/<DISCOVERY_URL>/g,URL));\nconst page=R+\"/src/components/ClaudeV6Runbook.tsx\";\nlet pt=fs.readFileSync(page,\"utf8\");\nconst body=prompt.replace(/<DISCOVERY_URL>/g,URL).replace(/`/g,\"\\\\`\").replace(/\\$\\{/g,\"\\\\${\").trimEnd();\nconst s=pt.indexOf(\"const requestorPrompt = `\"), e=pt.indexOf(\"`;\", s);\nif(s===-1||e===-1) throw new Error(\"MISS anchor\");\nfs.writeFileSync(page, pt.slice(0,s)+\"const requestorPrompt = `\"+body+\"`;\"+pt.slice(e+2));\nconsole.log(\"published prompt + page copy resynced to 209 lines\");\n' \"$R\" && cd \"$R\" && npm install --silent 2>&1 | tail -1; npm run build 2>&1 | grep -E \"error|Compiled successfully\" | head -2",
-    "testCommand": "echo \"=== git ===\"; for r in main claude/handshake-v6 origin/main origin/claude/handshake-v6; do printf \"  %-28s %s\\n\" \"$r\" \"$(git rev-parse --short \"$r\" 2>/dev/null)\"; done; echo \"=== tests ===\"; npm test 2>&1 | grep -E \"^# (tests|pass|fail)\"; echo \"=== invariants ===\"; bash scripts/check-invariants.sh 2>&1 | tail -1; echo \"=== treasury + ledger ===\"; npm run preflight 2>&1 | grep -E \"treasury|ledger\" | sed 's/^OK *//'; echo \"=== runs recorded ===\"; curl -s http://44.249.47.220:8080/v1/runs | node -e 'let d=\"\";process.stdin.on(\"data\",c=>d+=c).on(\"end\",()=>{const r=JSON.parse(d).runs;console.log(\"  \"+r.length+\" runs, \"+r.filter(x=>x.outcome).length+\" reached a verdict, \"+r.filter(x=>x.stage===\"FAILED\").length+\" stopped\")})'",
+    "buildCommand": null,
+    "testCommand": "npm test 2>&1 | grep -E \"^# (tests|pass|fail)|^not ok\" | head -5; bash scripts/check-invariants.sh 2>&1 | tail -1",
     "lintCommand": null,
     "devCommand": null,
     "scripts": {
+      "preflight": "CLOCKCHAIN_FUNDING_PASSWORD_FILE=\"${CLOCKCHAIN_FUNDING_PASSWORD_FILE:-$PWD/keys/funding.password}\" node scripts/preflight.mjs",
+      "demo": "CLOCKCHAIN_FUNDING_PASSWORD_FILE=\"${CLOCKCHAIN_FUNDING_PASSWORD_FILE:-$PWD/keys/funding.password}\" HANDSHAKE_RELAY=\"${HANDSHAKE_RELAY:-http://44.249.47.220:8080}\" node bin/operator.mjs",
+      "demo:local": "CLOCKCHAIN_FUNDING_PASSWORD_FILE=\"${CLOCKCHAIN_FUNDING_PASSWORD_FILE:-$PWD/keys/funding.password}\" node scripts/run-local-demo.mjs",
       "negative": "node scripts/negative-checks.mjs",
       "test": "node --test --test-concurrency=4 test/*.test.mjs",
       "verify": "npm run test && bash scripts/check-invariants.sh",
@@ -53,7 +56,7 @@
       "path": "bin",
       "purpose": "Executable scripts",
       "fileCount": 3,
-      "lastAccessed": 1785782257396,
+      "lastAccessed": 1786118660547,
       "keyFiles": [
         "operator.mjs",
         "relay.mjs",
@@ -64,17 +67,18 @@
       "path": "config",
       "purpose": "Configuration files",
       "fileCount": 0,
-      "lastAccessed": 1785782257396,
+      "lastAccessed": 1786118660549,
       "keyFiles": []
     },
     "docs": {
       "path": "docs",
       "purpose": "Documentation",
-      "fileCount": 3,
-      "lastAccessed": 1785782257398,
+      "fileCount": 4,
+      "lastAccessed": 1786118660567,
       "keyFiles": [
         "RUNBOOK.md",
         "deviations.md",
+        "for-ken.md",
         "infographic-prompt.md"
       ]
     },
@@ -82,7 +86,7 @@
       "path": "keys",
       "purpose": null,
       "fileCount": 5,
-      "lastAccessed": 1785782257398,
+      "lastAccessed": 1786118660568,
       "keyFiles": [
         "clockchain.token",
         "funding-wallet.json",
@@ -95,7 +99,7 @@
       "path": "prompts",
       "purpose": null,
       "fileCount": 2,
-      "lastAccessed": 1785782257399,
+      "lastAccessed": 1786118660569,
       "keyFiles": [
         "payer.md",
         "requestor.md"
@@ -104,163 +108,79 @@
     "runs": {
       "path": "runs",
       "purpose": null,
-      "fileCount": 18,
-      "lastAccessed": 1785782257399,
+      "fileCount": 45,
+      "lastAccessed": 1786118660571,
       "keyFiles": [
+        "discovery-0f188cc7-65cd-4aa0-b45a-e0b8d14cb41e.json",
+        "discovery-10fe6e37-a7a0-432b-8085-87d2d45a2052.json",
+        "discovery-13fa0fc7-ef15-47f7-aba2-110b1790b4e5.json",
         "discovery-15028a47-5c75-4b67-a525-cc06e74fd88d.json",
-        "discovery-1d943555-10fc-4ad3-92f6-1d1fca9e383b.json",
-        "discovery-43d1ef86-359f-4147-be83-179740a81803.json",
-        "discovery-58eab963-a290-48ce-aea8-e9215354a8d6.json",
-        "discovery-6a0b5a91-7342-4025-b770-8724715f23ed.json"
+        "discovery-1d943555-10fc-4ad3-92f6-1d1fca9e383b.json"
       ]
     },
     "scripts": {
       "path": "scripts",
       "purpose": "Build/utility scripts",
-      "fileCount": 6,
-      "lastAccessed": 1785782257399,
+      "fileCount": 7,
+      "lastAccessed": 1786118660571,
       "keyFiles": [
         "check-invariants.sh",
         "negative-checks.mjs",
         "port-pure.mjs",
-        "release-pin.mjs",
-        "run-local-demo.mjs"
+        "preflight.mjs",
+        "release-pin.mjs"
       ]
     },
     "src": {
       "path": "src",
       "purpose": "Source code",
-      "fileCount": 0,
-      "lastAccessed": 1785782257399,
+      "fileCount": 1,
+      "lastAccessed": 1786118660571,
       "keyFiles": []
     },
     "test": {
       "path": "test",
       "purpose": "Test files",
-      "fileCount": 35,
-      "lastAccessed": 1785782257399,
+      "fileCount": 39,
+      "lastAccessed": 1786118660572,
       "keyFiles": [
+        "anchor-terms.test.mjs",
         "blocktime.test.mjs",
         "canonical-v1.test.mjs",
         "canonical.test.mjs",
-        "clockchain.test.mjs",
-        "deadline-coherence.test.mjs"
+        "clockchain.test.mjs"
       ]
     }
   },
   "hotPaths": [
     {
-      "path": "src/relay/server.mjs",
-      "accessCount": 16,
-      "lastAccessed": 1785790020348,
-      "type": "file"
-    },
-    {
-      "path": "prompts/requestor.md",
-      "accessCount": 12,
-      "lastAccessed": 1785796431668,
-      "type": "file"
-    },
-    {
-      "path": "prompts/payer.md",
-      "accessCount": 8,
-      "lastAccessed": 1785795079637,
-      "type": "file"
-    },
-    {
-      "path": "test/prompts.test.mjs",
-      "accessCount": 7,
-      "lastAccessed": 1785795037193,
-      "type": "file"
-    },
-    {
-      "path": "test/relay.test.mjs",
-      "accessCount": 4,
-      "lastAccessed": 1785790032655,
-      "type": "file"
-    },
-    {
-      "path": "bin/operator.mjs",
-      "accessCount": 3,
-      "lastAccessed": 1785785771542,
-      "type": "file"
-    },
-    {
-      "path": "package.json",
-      "accessCount": 2,
-      "lastAccessed": 1785783049995,
-      "type": "file"
-    },
-    {
-      "path": "scripts/preflight.mjs",
-      "accessCount": 2,
-      "lastAccessed": 1785783065238,
-      "type": "file"
-    },
-    {
-      "path": "src/monitor/snapshot.mjs",
-      "accessCount": 2,
-      "lastAccessed": 1785791506859,
-      "type": "file"
-    },
-    {
-      "path": "bin/requestor.mjs",
-      "accessCount": 2,
-      "lastAccessed": 1785799631317,
-      "type": "file"
-    },
-    {
-      "path": "docs/for-ken.md",
-      "accessCount": 2,
-      "lastAccessed": 1785804974083,
-      "type": "file"
-    },
-    {
-      "path": "src/monitor/stakeholder/app.mjs",
+      "path": "docs/two-agent-plan.md",
       "accessCount": 1,
-      "lastAccessed": 1785782944000,
+      "lastAccessed": 1786119010291,
       "type": "file"
     },
     {
-      "path": "src/monitor/stakeholder/messages.mjs",
+      "path": "id-probe.tmp.mjs",
       "accessCount": 1,
-      "lastAccessed": 1785784106174,
+      "lastAccessed": 1786123039428,
       "type": "file"
     },
     {
-      "path": "test/monitor-timeline.test.mjs",
+      "path": "id-probe2.tmp.mjs",
       "accessCount": 1,
-      "lastAccessed": 1785784123720,
+      "lastAccessed": 1786123073836,
       "type": "file"
     },
     {
-      "path": "test/request-window.test.mjs",
+      "path": "src/core/result.mjs",
       "accessCount": 1,
-      "lastAccessed": 1785794171777,
+      "lastAccessed": 1786125767660,
       "type": "file"
     },
     {
-      "path": "registry-rate.tmp.mjs",
+      "path": "test/result.test.mjs",
       "accessCount": 1,
-      "lastAccessed": 1785799338866,
-      "type": "file"
-    },
-    {
-      "path": "test/anchor-terms.test.mjs",
-      "accessCount": 1,
-      "lastAccessed": 1785806383903,
-      "type": "file"
-    },
-    {
-      "path": "HANDOFF.md",
-      "accessCount": 1,
-      "lastAccessed": 1785859073384,
-      "type": "file"
-    },
-    {
-      "path": "reach.tmp.mjs",
-      "accessCount": 1,
-      "lastAccessed": 1785859109523,
+      "lastAccessed": 1786125798312,
       "type": "file"
     }
   ],

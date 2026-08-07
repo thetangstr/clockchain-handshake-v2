@@ -28,6 +28,7 @@ import { randomUUID } from "node:crypto";
 
 import { PARTY_ROLES } from "../core/evidence.mjs";
 import { validateSnapshot } from "../monitor/snapshot.mjs";
+import { ResultError, validateResultEnvelope } from "../core/result.mjs";
 import { RelayError } from "./errors.mjs";
 
 export const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -64,6 +65,7 @@ export const EVIDENCE_PART_LIMITS = Object.freeze({
 // fields plus three anchor receipts -- same order of magnitude as one
 // message envelope, so it shares that bound.
 export const MAX_SNAPSHOT_BODY_BYTES = 262_144; // 256 KiB
+export const MAX_RESULT_BODY_BYTES = 65_536; // 64 KiB — a certificate is small
 const DEFAULT_WAIT_MS = 25_000;
 const MAX_WAIT_MS = 25_000;
 
@@ -263,6 +265,7 @@ function createSessionState(sessionId, journalPath) {
     discovery: undefined,
     publishedAtMs: 0,
     monitorSnapshot: null,
+    resultEnvelope: null,
     waiters: new Set(),
     writeLock: Promise.resolve(),
   };
@@ -308,6 +311,10 @@ function applyJournalRecord(session, record) {
     // Already validated at write time (handlePutSnapshot); replay trusts it
     // rather than re-validating, the same way "message" records above do.
     session.monitorSnapshot = record.snapshot;
+    return;
+  }
+  if (record.type === "result" && isPlainObject(record.envelope)) {
+    session.resultEnvelope = record.envelope;
   }
 }
 
@@ -653,7 +660,10 @@ function newestPublishedSession(sessions) {
   for (const candidate of sessions.values()) {
     if (candidate.discovery === undefined) continue;
     const startedAtMs = sessionStartedAtMs(candidate);
-    if (startedAtMs > newestAtMs) {
+    // >= not >: Map iteration is insertion order, so a same-millisecond tie —
+    // easy to hit when two sessions open back-to-back — resolves to the most
+    // recently created session instead of the oldest one in the map.
+    if (startedAtMs >= newestAtMs) {
       newest = candidate;
       newestAtMs = startedAtMs;
     }
@@ -922,6 +932,55 @@ async function serveStaticFile(res, filePath, contentType) {
   res.end(body);
 }
 
+// The closing certificate: the host's signed handshake-result/v1, the one
+// document both kits fetch at the end of a run. The relay stores and serves it
+// exactly as published -- shape-checked so the board and the kits can rely on
+// its structure, but never signature-checked here: the relay is an untrusted
+// mailbox, and the certificate's protection is that readers verify its
+// signature against the operator key the session's descriptor already named.
+// Last write wins, same as the snapshot: an unauthenticated relay cannot stop
+// a determined forger anyway, and a forged certificate fails the reader's key
+// check, which is the control that actually holds.
+async function handlePutResult(req, sessions, sessionId) {
+  const session = requireSession(sessions, sessionId);
+  const bodyBuf = await readBoundedBody(
+    req,
+    MAX_RESULT_BODY_BYTES,
+    "BODY_TOO_LARGE",
+  );
+  const envelope = parseJsonBody(bodyBuf);
+  if (!isPlainObject(envelope) || envelope?.result?.sessionId !== sessionId) {
+    throw new RelayError(
+      "Result body must be a signed handshake result for this session.",
+      "MALFORMED_RESULT",
+      { status: 400 },
+    );
+  }
+  try {
+    validateResultEnvelope(envelope);
+  } catch (error) {
+    if (error instanceof ResultError) {
+      throw new RelayError(error.message, "MALFORMED_RESULT", { status: 400 });
+    }
+    throw error;
+  }
+  session.resultEnvelope = envelope;
+  await appendJournalLine(session, { type: "result", envelope });
+  return { paymentMoved: false };
+}
+
+function handleGetResult(sessions, sessionId) {
+  const session = requireSession(sessions, sessionId);
+  if (session.resultEnvelope === null) {
+    throw new RelayError(
+      "No result has been published for this session.",
+      "RESULT_NOT_SET",
+      { status: 404 },
+    );
+  }
+  return session.resultEnvelope;
+}
+
 async function dispatch(req, res, sessions, stateDir) {
   const url = new URL(req.url, "http://relay.local");
   const segments = url.pathname.split("/").filter(Boolean);
@@ -1021,6 +1080,17 @@ async function dispatch(req, res, sessions, stateDir) {
 
     if (method === "PUT" && segments.length === 4 && segments[3] === "snapshot") {
       const result = await handlePutSnapshot(req, sessions, sessionId);
+      writeJson(res, 200, { ok: true, ...result });
+      return;
+    }
+
+    if (method === "GET" && segments.length === 4 && segments[3] === "result") {
+      writeJson(res, 200, handleGetResult(sessions, sessionId));
+      return;
+    }
+
+    if (method === "PUT" && segments.length === 4 && segments[3] === "result") {
+      const result = await handlePutResult(req, sessions, sessionId);
       writeJson(res, 200, { ok: true, ...result });
       return;
     }
