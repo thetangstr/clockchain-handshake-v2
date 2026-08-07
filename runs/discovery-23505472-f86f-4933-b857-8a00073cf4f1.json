@@ -1,0 +1,13 @@
+{
+  "schema": "handshake-discovery/v2",
+  "sessionId": "23505472-f86f-4933-b857-8a00073cf4f1",
+  "subjectRun": "stakeholder",
+  "protocolVersion": "1",
+  "relayUrl": "http://44.249.47.220:8080",
+  "kitRepoUrl": "https://github.com/thetangstr/clockchain-handshake-v2.git",
+  "repositorySha": "0000000000000000000000000000000000000000",
+  "operatorPublicKey": "TDSpEdZLgMTimf8FPcaXQpmXQmaveRNzpT2Ay+uGnq4=",
+  "issuedAtMs": "1786139376075",
+  "expiresAtMs": "1786142076075",
+  "paymentMoved": false
+}

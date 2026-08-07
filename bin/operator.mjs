@@ -26,11 +26,12 @@ import {
   say as logSay, stop as stopSession, DISCOVERY_SCHEMA,
 } from "../src/roles/session.mjs";
 import { createMcpClient } from "../src/core/clockchain.mjs";
-import { createSignedEnvelope } from "../src/core/descriptor.mjs";
+import { DESCRIPTOR_CHAIN_ID, REGISTRY_ADDRESS as CANONICAL_REGISTRY, createSignedEnvelope } from "../src/core/descriptor.mjs";
 import { openFundingWallet } from "../src/core/funding/wallet.mjs";
 import { ERC8004_ABI } from "../src/core/registration.mjs";
 import { runPayerRole } from "../src/core/roles-core.mjs";
 import { verifyBilateralAuthorization } from "../src/core/verdict.mjs";
+import { buildSignedResult } from "../src/core/result.mjs";
 import { REGISTRY_ADDRESS, RPC_URL } from "../src/core/constants.mjs";
 import { buildSnapshot, FAILED_STAGE, REASON_CODES, STATUSES } from "../src/monitor/snapshot.mjs";
 
@@ -464,8 +465,63 @@ async function main() {
     process.stdout.write(`  ${t.kind}  block ${t.blockHeight}  ledger ${t.ledgerId}\n`);
   }
 
+  // The closing certificate: the verifier's words, signed with the same
+  // operator key that signed the descriptor, published to the relay so BOTH
+  // parties fetch the same artifact. Every value is the verifier's own return
+  // -- outcome, sessionDigest, transitions -- none is restated or improved.
+  //
+  // The ENTIRE section is guarded, construction included. The first live run
+  // of this path proved why: identityReference threw on a string agent id
+  // AFTER the verdict had printed, the exception escaped a guard that only
+  // covered the publish, and a verified AUTHORIZED run exited as Stopped.
+  // Nothing on the certificate path may ever demote a verified run.
+  let resultEnvelope = null;
+  try {
+    resultEnvelope = buildSignedResult({
+      issuedAtMs: String(Date.now()),
+      keyId: "bilateral-demo-2026-07-28",
+      parties: {
+        payee: {
+          address: requestorAddress.toLowerCase(),
+          agentId: String(requestorAgentId),
+          // Built from descriptor.mjs exports -- the LOWERCASE registry the
+          // canonical signed path uses. registration.mjs has a checksummed
+          // twin of this constant, and a checksummed address is rejected by
+          // the canonical profile at signing time.
+          reference: `eip155:${DESCRIPTOR_CHAIN_ID}:${CANONICAL_REGISTRY}:${requestorAgentId}`,
+        },
+        payer: {
+          address: payerAccount.address.toLowerCase(),
+          agentId: String(payerAgentId),
+          reference: `eip155:${DESCRIPTOR_CHAIN_ID}:${CANONICAL_REGISTRY}:${payerAgentId}`,
+        },
+      },
+      privateKeyPem: operatorPrivateKeyPem,
+      sessionDigest: verdict.sessionDigest,
+      sessionId,
+      verdict,
+    });
+    await relay.putResult({
+      relayUrl: RELAY_URL,
+      sessionId,
+      envelope: resultEnvelope,
+      retryBudgetMs: 30_000,
+    });
+    process.stdout.write(
+      "\nClosing certificate published. Both parties can fetch it from the\n" +
+      "session and verify it against the operator key the descriptor named.\n",
+    );
+  } catch (error) {
+    process.stdout.write(
+      `\nCERTIFICATE_NOT_ISSUED: the closing certificate could not be ` +
+      `${resultEnvelope === null ? "built" : "published"}\n` +
+      `(${error?.code ?? error?.message ?? "unknown"}). The verdict above stands; whatever was\n` +
+      `produced is preserved in runs/session-${sessionId}.json.\n`,
+    );
+  }
+
   await writeFile(join(process.cwd(), "runs", `session-${sessionId}.json`),
-    JSON.stringify({ descriptorEnvelope: envelope, mandateEnvelope, requestEnvelope, repositoryPublicKey, payerDirectory, payeeDirectory, outcome: verdict.outcome, anchors: verdict.transitions, paymentMoved: false }, null, 2));
+    JSON.stringify({ descriptorEnvelope: envelope, mandateEnvelope, requestEnvelope, repositoryPublicKey, payerDirectory, payeeDirectory, outcome: verdict.outcome, anchors: verdict.transitions, resultEnvelope, paymentMoved: false }, null, 2));
   process.stdout.write(
     `\nThe run is complete and the verdict above came from the independent verifier.\n` +
     `Anyone can re-check those three blocks themselves; no money moved at any point.\n` +

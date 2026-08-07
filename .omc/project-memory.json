@@ -19,7 +19,7 @@
   },
   "build": {
     "buildCommand": null,
-    "testCommand": "npm test 2>&1 | grep -E \"^# (tests|pass|fail)|^not ok\" | head -5; bash scripts/check-invariants.sh 2>&1 | tail -1",
+    "testCommand": "node -e '\nconst fs=require(\"fs\");\nconst p=\"bin/operator.mjs\";\nlet t=fs.readFileSync(p,\"utf8\");\nconst edits=[\n  [`import { ERC8004_ABI, identityReference } from \"../src/core/registration.mjs\";`,\n   `import { ERC8004_ABI } from \"../src/core/registration.mjs\";`],\n  [`import { createSignedEnvelope } from \"../src/core/descriptor.mjs\";`,\n   `import { DESCRIPTOR_CHAIN_ID, REGISTRY_ADDRESS as CANONICAL_REGISTRY, createSignedEnvelope } from \"../src/core/descriptor.mjs\";`],\n  [`          // normalizeAgentId accepts bigint or safe integer, never strings.\n          reference: identityReference(BigInt(requestorAgentId)),`,\n   `          // Built from descriptor.mjs exports -- the LOWERCASE registry the\n          // canonical signed path uses. registration.mjs has a checksummed\n          // twin of this constant, and a checksummed address is rejected by\n          // the canonical profile at signing time.\n          reference: \\`eip155:\\${DESCRIPTOR_CHAIN_ID}:\\${CANONICAL_REGISTRY}:\\${requestorAgentId}\\`,`],\n  [`          reference: identityReference(BigInt(payerAgentId)),`,\n   `          reference: \\`eip155:\\${DESCRIPTOR_CHAIN_ID}:\\${CANONICAL_REGISTRY}:\\${payerAgentId}\\`,`],\n];\nfor(const [from,to] of edits){\n  const n=t.split(from).length-1;\n  if(n!==1){console.error(\"MISS (\"+n+\"): \"+from.slice(0,60));process.exit(1)}\n  t=t.replace(from,to);\n}\nfs.writeFileSync(p,t);\nconsole.log(\"references now built from the canonical lowercase constants\");\n' && node --check bin/operator.mjs && node -e '\nimport(\"./src/core/descriptor.mjs\").then(({DESCRIPTOR_CHAIN_ID, REGISTRY_ADDRESS}) => {\n  const ref = `eip155:${DESCRIPTOR_CHAIN_ID}:${REGISTRY_ADDRESS}:9426`;\n  const live = \"eip155:11155111:0x8004a818bfb912233c491871b3d84c89a494bd9e:9400\";\n  console.log(\"built:\", ref);\n  console.log(\"matches the live signed message form:\", ref.slice(0, -4) === live.slice(0, -4));\n});' && npm test 2>&1 | grep -E \"^# (tests|pass|fail)\" | head -3",
     "lintCommand": null,
     "devCommand": null,
     "scripts": {
@@ -154,6 +154,12 @@
   },
   "hotPaths": [
     {
+      "path": "bin/operator.mjs",
+      "accessCount": 3,
+      "lastAccessed": 1786126376813,
+      "type": "file"
+    },
+    {
       "path": "docs/two-agent-plan.md",
       "accessCount": 1,
       "lastAccessed": 1786119010291,
@@ -181,6 +187,12 @@
       "path": "test/result.test.mjs",
       "accessCount": 1,
       "lastAccessed": 1786125798312,
+      "type": "file"
+    },
+    {
+      "path": "bin/requestor.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1786126408673,
       "type": "file"
     }
   ],

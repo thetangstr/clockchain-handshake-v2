@@ -9,7 +9,7 @@
  * the run succeeded — only the operator's independent verifier can say that, and
  * this says so out loud.
  */
-import { chmod, mkdir, mkdtemp, readFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -19,6 +19,7 @@ import { sepolia } from "viem/chains";
 
 import * as relay from "../src/relay/client.mjs";
 import { buildRequest, fetchDiscovery, postNext, say, stop } from "../src/roles/session.mjs";
+import { verifyResultEnvelope } from "../src/core/result.mjs";
 import { createMcpClient, mintDemoToken } from "../src/core/clockchain.mjs";
 import { ERC8004_ABI } from "../src/core/registration.mjs";
 import { runPayeeRole } from "../src/core/roles-core.mjs";
@@ -194,12 +195,60 @@ async function main() {
     json, markdown, marker,
   });
   say("ACCEPTED", "Our acceptance is recorded on Clockchain and our evidence is delivered.");
-  process.stdout.write(
-    "\nOur side is complete — and that is NOT authorization.\n" +
-    "Only the operator's independent verifier decides the outcome, after re-checking\n" +
-    "every piece of evidence from scratch. No money has moved at any point.\n" +
-    `\nEvidence: ${directory}\n`,
-  );
+
+  // The closing certificate. Until now this side finished blind: the verdict
+  // appeared on the payer's screen and never here. The verifier's signed
+  // certificate is fetched from the session and checked against the operator
+  // key this run's descriptor named -- the same key that gated every earlier
+  // step -- so what gets read back is the checker's own signed word, not this
+  // side's claim about itself.
+  let certificate = null;
+  const certificateDeadline = Date.now() + 5 * 60_000;
+  while (Date.now() < certificateDeadline) {
+    let envelope = null;
+    try {
+      envelope = await relay.getResult({ relayUrl: RELAY_URL, sessionId: SESSION_ID });
+    } catch {
+      // Not published yet (RESULT_NOT_SET) or a transient relay error: both
+      // are "keep waiting" inside the bounded window, not failures.
+    }
+    if (envelope !== null) {
+      try {
+        verifyResultEnvelope(envelope, { expectedPublicKey: repositoryPublicKey });
+        certificate = envelope;
+      } catch (error) {
+        // Fail closed on the artifact, honestly: a document that does not
+        // verify against this session's operator key is treated as absent,
+        // and saying so beats pretending it never arrived.
+        say("VERIFYING", `A closing certificate arrived but did NOT verify against this session's operator key (${error?.message ?? "unknown"}). Refusing it.`);
+      }
+      break;
+    }
+    say("VERIFYING", "Waiting for the independent verifier's signed certificate.");
+    await new Promise((resolve) => setTimeout(resolve, 5_000));
+  }
+
+  if (certificate !== null) {
+    await writeFile(join(directory, "closing-certificate.json"), JSON.stringify(certificate, null, 2));
+    const r = certificate.result;
+    process.stdout.write(
+      `\nThe independent verifier's certificate has arrived, and its signature\n` +
+      `verifies against this session's operator key.\n\n` +
+      `  Its verdict: ${r.outcome}\n` +
+      `  No money moved: ${r.paymentMoved === false}\n` +
+      r.anchors.map((a) => `  ${a.kind}  block ${a.blockHeight}  ledger ${a.ledgerId}`).join("\n") +
+      `\n\nSaved to: ${join(directory, "closing-certificate.json")}\n` +
+      `That verdict is the checker's signed word, not ours. No money has moved.\n` +
+      `\nEvidence: ${directory}\n`,
+    );
+  } else {
+    process.stdout.write(
+      "\nOur side is complete — and that is NOT authorization.\n" +
+      "The verifier's certificate did not arrive within the wait window, so the\n" +
+      "outcome was decided on the payer's side. No money has moved at any point.\n" +
+      `\nEvidence: ${directory}\n`,
+    );
+  }
 }
 
 main().catch((error) => {
