@@ -462,3 +462,23 @@ export function requestorPromptFor(discoveryUrl) {
   );
   return source.replaceAll("<DISCOVERY_URL>", discoveryUrl).trim();
 }
+
+// One seat per role in a session. A kit checks this before claiming its own
+// identity so a second agent of the SAME role stops cleanly rather than racing.
+//
+// Role-aware on purpose. The original requestor guard tripped on any
+// identity_ready at all, which was correct only while the requestor was the
+// lone kit posting one; the moment a payer kit posts its own identity_ready
+// into the same session, a role-blind guard would make every requestor abort
+// against the payer's presence. Each side must see only its own seat as taken.
+//
+// This is advisory, exactly like the relay's role_claim check: the relay is an
+// untrusted mailbox and adjudicates nothing. Two kits of one role claiming in
+// the same instant both pass here; the funding record's address is what
+// resolves that final race (see the requestor's funding check).
+export function roleAlreadySeated(messages, role) {
+  return (messages ?? []).some(
+    (message) =>
+      message?.kind === "identity_ready" && message?.role === role,
+  );
+}

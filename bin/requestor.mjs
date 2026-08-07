@@ -18,7 +18,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { sepolia } from "viem/chains";
 
 import * as relay from "../src/relay/client.mjs";
-import { buildRequest, fetchDiscovery, postNext, say, stop } from "../src/roles/session.mjs";
+import { buildRequest, fetchDiscovery, postNext, roleAlreadySeated, say, stop } from "../src/roles/session.mjs";
 import { verifyResultEnvelope } from "../src/core/result.mjs";
 import { createMcpClient, mintDemoToken } from "../src/core/clockchain.mjs";
 import { ERC8004_ABI } from "../src/core/registration.mjs";
@@ -97,7 +97,7 @@ async function main() {
   const seated = await relay.pollMessages({
     relayUrl: RELAY_URL, sessionId: SESSION_ID, after: "0", waitMs: 0,
   });
-  if ((seated.messages ?? []).some((message) => message.kind === "identity_ready")) {
+  if (roleAlreadySeated(seated.messages, "requestor")) {
     stop("ROLE_ALREADY_BOUND",
       "Another requestor already joined this session. Only one can be paid per session — ask the payer to open a fresh one.");
   }

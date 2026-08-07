@@ -473,7 +473,8 @@ async function main() {
   // The ENTIRE section is guarded, construction included. The first live run
   // of this path proved why: identityReference threw on a string agent id
   // AFTER the verdict had printed, the exception escaped a guard that only
-  // covered the publish, and a verified AUTHORIZED run exited as Stopped.
+  // covered the publish, and a run the verifier had already passed exited
+  // as Stopped.
   // Nothing on the certificate path may ever demote a verified run.
   let resultEnvelope = null;
   try {
