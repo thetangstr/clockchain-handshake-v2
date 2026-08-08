@@ -24,7 +24,7 @@ Context behind the plan, if you need it: [docs/two-agent-build.md](docs/two-agen
 | Closing certificate (`src/core/result.mjs`, relay result endpoint, both parties fetch+verify) | ✅ shipped `4d096f1`, live-verified (blocks 3057376/3057397/3057399, agents 9427/9428) |
 | Role-aware seating (`roleAlreadySeated`, unblocks two kits per session) | ✅ shipped `f80aa7a` |
 | Track A (A1–A8): host severance + payer kit + gates G0/G1 | ✅ complete — G0 and G1 live gates passed |
-| Track B (B0–B6): MCP → AWS migration, gate GM | 🟨 B0–B2 complete; B3 underway, waiting for `mcp-aws` DNS |
+| Track B (B0–B6): MCP → AWS migration, gate GM | 🟨 B0–B2 complete; B3 service deployed, public TLS/B4 waiting for `mcp-aws` DNS |
 | P2 / P3 / P4 | ⬜ gated on both tracks |
 
 Both tracks are independent until P2. Work them in parallel if you can; if you must pick
@@ -115,6 +115,13 @@ then do Track A while AWS/DNS steps settle.
   12-minute report wait instead of beginning evidence verification. No
   certificate or verifier result was produced; the four processes were stopped.
 
+- 2026-08-07 — B3's AWS containers are healthy, but public test-host TLS is
+  blocked exactly where the plan predicts: `mcp-aws.clockchain.network` is still
+  NXDOMAIN at Cloudflare's public resolver. Caddy's HTTP listener answers at the
+  Elastic IP and redirects that hostname to HTTPS, then ACME reports the missing
+  A/AAAA record. No certificate attempt was made for the production hostname.
+  Add the waiting A record to resume B3 and run B4; do not change production DNS.
+
 ## Evidence
 
 *(gate results land here: gate id, date, session id, block heights, anything a skeptic
@@ -160,6 +167,17 @@ would ask for)*
   `party_ready` or registered an identity; only winner agent `9437` appears in
   the session roster.
 
+- 2026-08-07 — B3 host-side deployment passed at external-repo commit
+  `9f0075021bbfd471854a34c0082bfb282c2d2b7f` on `34.209.199.138`.
+  `clockchain-mcp.service` is active with a successful exit; MCP is healthy,
+  Caddy is running, only ports 80/443 are published, and host port 8080 is
+  closed. An in-container `/health` check returned `status: ok`; the container
+  sees the intended nonsecret settings (port 8080, 30 requests/minute, 10
+  mints/hour, Clockchain node endpoint) and all three required SSM secrets are
+  nonempty. No secret-bearing env file was written. A public forced-resolution
+  HTTP request returned Caddy's HTTPS redirect, proving the security-group and
+  listener path before DNS.
+
 ## Migration inventory
 
 *(plan §B0's table gets filled in here — every row, even when the answer is "none")*
@@ -202,3 +220,15 @@ installed; `docker run --rm hello-world` passed; the instance read the PING para
 through its role; `/home/ubuntu/.aws` remains absent after the literal read; no long-lived
 AWS credentials or config file exists; IMDSv2 is required with hop limit 2. Provisioning
 sources are `clockchain-developer-tools` commits `610d519` and `11b9162`.
+
+### B3 deployed stack (2026-08-07)
+
+| Item | Value / evidence |
+|---|---|
+| Source branch / commit | `codex/aws-migration` / `9f0075021bbfd471854a34c0082bfb282c2d2b7f` |
+| Remote checkout | `/opt/clockchain-mcp/app`, clean clone of the source commit |
+| Service | `clockchain-mcp.service`: active, `Result=success`, `ExecMainStatus=0` |
+| Containers | `clockchain-mcp-mcp-1` healthy; `clockchain-mcp-caddy-1` running |
+| Host listeners | 80/443 only; no host listener on 8080 |
+| Public pre-DNS probe | `http://mcp-aws.clockchain.network/health` forced to the EIP returns `308` to HTTPS |
+| Remaining B3 gate | Public A record and ACME certificate for `mcp-aws.clockchain.network` |
