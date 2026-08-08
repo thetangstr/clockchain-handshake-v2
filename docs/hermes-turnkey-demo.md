@@ -105,6 +105,16 @@ the public presenter and relay board have no launch or signing authority.
 Both disposable agents are pinned to provider `minimax-cn` and model
 `MiniMax-M3`; no fallback provider is enabled.
 
+Hermes 0.19.1 has a hard one-shot ceiling of 90 agent iterations. At that exact
+ceiling it can preserve a valid final response and exit zero while its raw usage
+record still says `completed:false`. The launcher does not rewrite that field.
+It accepts this one narrow condition only after the agent's exact terminal
+contract and the relay's signed certificate have both independently verified,
+with `failed:false` and exactly 90 API calls. Retained evidence then records
+`completionBasis:"verified_terminal_contract_at_iteration_limit"` and
+`iterationLimitReached:true`. Every other `completed:false` usage record fails
+the run.
+
 The production wrapper derives a UUID run id, uses the canonical repository and
 relay, verifies that the current commit is pushed, and retains sanitized public
 evidence below `/Users/maxiaoer/.clockchain/hermes-demo/runs/<run-id>/evidence`.

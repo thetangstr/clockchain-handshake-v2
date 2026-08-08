@@ -69,6 +69,7 @@ const RAW_USAGE_KEYS = Object.freeze([
 ]);
 const EXPECTED_USAGE_MODEL = "MiniMax-M3";
 const EXPECTED_USAGE_PROVIDER = "minimax-cn";
+const HERMES_ONESHOT_MAX_ITERATIONS = 90;
 const COST_STATUS_VALUES = Object.freeze([null, "estimated", "exact", "unknown"]);
 const COST_SOURCE_VALUES = Object.freeze([null, "none", "official_docs_snapshot", "subagent"]);
 const SERVICE_TIER_VALUES = Object.freeze([null, "", "default", "flex", "priority"]);
@@ -627,10 +628,17 @@ async function validateProvisioned({ room, role: cleanRole, runRoot, keyName, to
   return Object.freeze({ ...validated, publicPrePrompt: manifest, principalSha256 });
 }
 
-function validateUsage(value) {
+function validateUsage(value, { terminalContractVerified = false } = {}) {
   const usage = object(value);
   if (Object.keys(usage).sort().join("\0") !== RAW_USAGE_KEYS.join("\0")) fail();
-  if (usage.completed !== true || usage.failed !== false || Object.hasOwn(usage, "failure")) fail();
+  const iterationLimitReached = usage.completed === false && usage.api_calls === HERMES_ONESHOT_MAX_ITERATIONS;
+  if (
+    usage.failed !== false ||
+    Object.hasOwn(usage, "failure") ||
+    (usage.completed !== true && !(terminalContractVerified === true && iterationLimitReached))
+  ) {
+    fail();
+  }
   if (usage.model !== EXPECTED_USAGE_MODEL || usage.provider !== EXPECTED_USAGE_PROVIDER) fail();
   if (!COST_STATUS_VALUES.includes(usage.cost_status)) fail();
   if (!COST_SOURCE_VALUES.includes(usage.cost_source)) fail();
@@ -649,11 +657,13 @@ function validateUsage(value) {
     if (!Number.isSafeInteger(usage[key]) || usage[key] < 0) fail();
   }
   const summary = Object.freeze({
-    completed: true,
+    completed: usage.completed,
+    completionBasis: iterationLimitReached ? "verified_terminal_contract_at_iteration_limit" : "hermes",
     costSource: usage.cost_source,
     costStatus: usage.cost_status,
     estimatedCostUsd: usage.estimated_cost_usd,
     failed: false,
+    iterationLimitReached,
     model: EXPECTED_USAGE_MODEL,
     provider: EXPECTED_USAGE_PROVIDER,
     serviceTier: usage.service_tier,
@@ -671,8 +681,8 @@ function validateUsage(value) {
   return summary;
 }
 
-async function readUsage(path) {
-  return validateUsage(await readJson(path));
+async function readUsage(path, options) {
+  return validateUsage(await readJson(path), options);
 }
 
 function diagnosticCount(value) {
@@ -1125,7 +1135,7 @@ export async function runHermesDemo(options = {}) {
     phase = "usage";
     const usages = {};
     for (const cleanRole of ROLES) {
-      usages[cleanRole] = await readUsage(launch[cleanRole].usagePath);
+      usages[cleanRole] = await readUsage(launch[cleanRole].usagePath, { terminalContractVerified: true });
     }
     phase = "post_run";
     const postRun = {};

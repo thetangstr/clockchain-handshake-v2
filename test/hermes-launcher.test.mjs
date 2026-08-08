@@ -704,6 +704,61 @@ test("post-agent checkpoint survives when rich failure evidence is rejected", as
   assert.equal(checkpoint.agents.requestor.result.certificateDigest, CERT_DIGEST);
 });
 
+test("exact Hermes iteration-limit fallback is role-agnostic after terminal and relay verification", async (t) => {
+  for (const fallbackRole of ["payer", "requestor"]) {
+    const root = await tempRoot(t);
+    const h = harness(root, t, {
+      usage: {
+        [fallbackRole]: hermesUsage({ api_calls: 90, completed: false }),
+      },
+    });
+
+    const result = await runHermesDemo(h.options);
+
+    const evidence = JSON.parse(await readFile(result.evidencePath, "utf8"));
+    for (const role of ["payer", "requestor"]) {
+      const reachedLimit = role === fallbackRole;
+      assert.equal(evidence.usage[role].completed, !reachedLimit);
+      assert.equal(
+        evidence.usage[role].completionBasis,
+        reachedLimit ? "verified_terminal_contract_at_iteration_limit" : "hermes",
+      );
+      assert.equal(evidence.usage[role].iterationLimitReached, reachedLimit);
+    }
+    assert.equal(evidence.certificate.digest, CERT_DIGEST);
+    assert.equal(evidence.certificate.outcome, "AUTHORIZED");
+    assert.equal(evidence.certificate.paymentMoved, false);
+  }
+});
+
+test("iteration-limit usage cannot bypass terminal or relay verification", async (t) => {
+  const cases = [
+    {
+      expectedPhase: "agents",
+      options: {
+        outputs: { payer: JSON.stringify(success("payer")) },
+        usage: { payer: hermesUsage({ api_calls: 90, completed: false }) },
+      },
+    },
+    {
+      expectedPhase: "relay",
+      options: {
+        relayResult: certificateResult({ outcome: "FAILED" }),
+        usage: { requestor: hermesUsage({ api_calls: 90, completed: false }) },
+      },
+    },
+  ];
+
+  for (const entry of cases) {
+    const root = await tempRoot(t);
+    const h = harness(root, t, entry.options);
+    await assert.rejects(runHermesDemo(h.options), /Hermes demo failed safely/);
+    const evidence = JSON.parse(await readFile(join(root, "evidence", "failure.json"), "utf8"));
+    assert.equal(evidence.phase, entry.expectedPhase);
+    await assert.rejects(readFile(join(root, "evidence", "result.json"), "utf8"), /ENOENT/);
+  }
+});
+
 test("checksum-style output addresses are normalized for comparison and evidence", async (t) => {
   const root = await tempRoot(t);
   const relayResult = certificateResult({
@@ -852,6 +907,8 @@ test("invalid output, partial failure, stderr, timeout, bad usage, and reused pr
     { delays: { payer: 50, requestor: 50 }, timeoutMs: 1 },
     { usage: { payer: { token: TOKEN_A } } },
     { usage: { payer: hermesUsage({ completed: false }) } },
+    { usage: { payer: hermesUsage({ api_calls: 89, completed: false }) } },
+    { usage: { payer: hermesUsage({ api_calls: 91, completed: false }) } },
     { usage: { payer: hermesUsage({ failed: true }) } },
     { usage: { payer: { ...hermesUsage(), failure: "boom" } } },
     { usage: { payer: hermesUsage({ model: "other" }) } },
