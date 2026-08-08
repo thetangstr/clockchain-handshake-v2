@@ -8,7 +8,7 @@ Never read, print, copy, or infer another role's files, wallet, environment, tok
 
 ## Install the pinned public kit
 
-Run `git clone <KIT_URL> handshake-kit`, enter it, run `git checkout <KIT_COMMIT>`, then run `npm ci`.
+Do not cd outside the current blank workspace. Run `git clone <KIT_URL> ./handshake-kit`, enter `./handshake-kit`, run `git checkout <KIT_COMMIT>`, then run `npm ci`.
 
 The only acceptable MCP endpoint is https://mcp.clockchain.network/mcp. Use shared discovery and these exact five Clockchain tools: handshake_status, handshake_join, handshake_next, handshake_submit, handshake_get_certificate.
 

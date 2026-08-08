@@ -693,6 +693,89 @@ test("bounded benign stderr is discarded, while secret-bearing stderr fails", as
   }
 });
 
+test("agent failure retains scrubbed diagnostics after both clean rooms are removed", async (t) => {
+  const root = await tempRoot(t);
+  const h = harness(root, t, {
+    exitCodes: { requestor: 1 },
+    outputs: {
+      requestor: `payment request was not submitted\nworking at ${root}/roles/requestor/workspace`,
+    },
+    usage: {
+      requestor: hermesUsage({ completed: false, failed: true }),
+    },
+  });
+
+  let failure;
+  try {
+    await runHermesDemo(h.options);
+  } catch (error) {
+    failure = error;
+  }
+
+  const evidencePath = join(root, "evidence", "failure.json");
+  assert.match(failure?.message ?? "", /Hermes demo failed safely/);
+  assert.equal(failure?.failureEvidencePath, evidencePath);
+  for (const role of ["payer", "requestor"]) {
+    await assert.rejects(readdir(join(root, "roles", role)), /ENOENT/);
+  }
+  const retained = await readFile(evidencePath, "utf8");
+  assert.equal(retained.includes(root), false);
+  assert.equal(retained.includes(TOKEN_A), false);
+  assert.equal(retained.includes(TOKEN_B), false);
+  assert.equal(retained.includes(INFERENCE_SECRET), false);
+  assert.equal(/AUTHORIZED/i.test(retained), false);
+  const evidence = JSON.parse(retained);
+  assert.equal(evidence.schema, "clockchain.hermes-demo-failure/v1");
+  assert.equal(evidence.phase, "agents");
+  assert.deepEqual(evidence.cleanup, { payerRemoved: true, requestorRemoved: true });
+  assert.equal(evidence.cleanRooms.payer.preProvision.tokensPresent, false);
+  assert.equal(evidence.cleanRooms.requestor.prePrompt.tokensPresent, true);
+  assert.equal(evidence.agents.payer.reason, "completed");
+  assert.equal(evidence.agents.requestor.reason, "nonzero_exit");
+  assert.equal(evidence.agents.requestor.code, 1);
+  assert.match(evidence.agents.requestor.console.outTail, /payment request was not submitted/);
+  assert.match(evidence.agents.requestor.console.outTail, /\[PATH\]/);
+  assert.equal(evidence.agents.requestor.usage.present, true);
+  assert.equal(evidence.agents.requestor.usage.completed, false);
+  assert.equal(evidence.agents.requestor.usage.failed, true);
+  assert.equal(evidence.agents.requestor.usage.model, "MiniMax-M3");
+  assert.equal(evidence.agents.requestor.usage.provider, "minimax-cn");
+});
+
+test("secret-bearing agent failure records only the detection class", async (t) => {
+  const root = await tempRoot(t);
+  const h = harness(root, t, {
+    exitCodes: { requestor: 1 },
+    outputs: { requestor: `requestor leaked ${TOKEN_B}` },
+  });
+
+  await assert.rejects(runHermesDemo(h.options), /Hermes demo failed safely/);
+
+  const retained = await readFile(join(root, "evidence", "failure.json"), "utf8");
+  assert.equal(retained.includes(TOKEN_B), false);
+  const evidence = JSON.parse(retained);
+  assert.equal(evidence.agents.requestor.reason, "secret_detected");
+  assert.equal(evidence.agents.requestor.console.outTail, null);
+  assert.equal(evidence.agents.requestor.console.errTail, null);
+});
+
+test("unrecognized secret-shaped diagnostics are dropped without bypassing cleanup evidence", async (t) => {
+  const root = await tempRoot(t);
+  const h = harness(root, t, {
+    exitCodes: { requestor: 1 },
+    outputs: { requestor: "credential=abcdefghijklmnopqrstuvwxyz012345" },
+  });
+
+  await assert.rejects(runHermesDemo(h.options), /Hermes demo failed safely/);
+
+  const retained = await readFile(join(root, "evidence", "failure.json"), "utf8");
+  assert.equal(retained.includes("abcdefghijklmnopqrstuvwxyz012345"), false);
+  const evidence = JSON.parse(retained);
+  assert.equal(evidence.agents.requestor.reason, "nonzero_exit");
+  assert.match(evidence.agents.requestor.console.outTail, /\[REDACTED\]/);
+  assert.deepEqual(evidence.cleanup, { payerRemoved: true, requestorRemoved: true });
+});
+
 test("invalid output, partial failure, stderr, timeout, bad usage, and reused principals fail without authorization evidence", async (t) => {
   const cases = [
     { outputs: { payer: terminal("payer", { certificateVerified: false }) } },
@@ -1000,6 +1083,8 @@ test("kit URL and commit are validated before prompt creation", () => {
   );
   const prompt = buildHermesPrompt({ role: "payer", kitUrl: KIT_URL, kitCommit: KIT_COMMIT });
   assert.match(prompt, new RegExp(KIT_COMMIT));
+  assert.match(prompt, /Do not cd outside the current blank workspace/i);
+  assert.match(prompt, /git clone .* \.\/handshake-kit/i);
   assert.match(prompt, /paymentMoved:false/);
   assert.match(prompt, /handshake_submit is signatures only/i);
   assert.match(prompt, /retryAfterMs/i);

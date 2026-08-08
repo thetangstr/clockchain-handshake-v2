@@ -8,6 +8,7 @@ import { digestHex } from "./canonical.mjs";
 import { mintDemoToken as defaultMintDemoToken } from "./clockchain.mjs";
 import { preparePrivateDirectory, readPrivateText, writePrivateFile } from "./private-path.mjs";
 import { assertPublicCleanRoomEvidence, fingerprintClockchainDemoToken } from "./hermes-cleanroom.mjs";
+import { redact } from "./redact.mjs";
 import { verifyResultEnvelope } from "./result.mjs";
 
 const execFile = promisify(execFileCallback);
@@ -43,6 +44,11 @@ const DECIMAL_PATTERN = /^(?:0|[1-9][0-9]*)$/;
 const LEDGER_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CLOCKCHAIN_TOKEN_PATTERN = /^cc_([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{16,})$/;
 const MAX_STDIO_BYTES = 1_048_576;
+const MAX_DIAGNOSTIC_TAIL_BYTES = 24_576;
+const ANSI_ESCAPE_PATTERN = /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001b\\))/g;
+const DIAGNOSTIC_PATH_PATTERN = /(?:^|(?<=[\s"'=:,(]))\/(?:Users|Volumes|private|tmp|var|etc|opt|home)\/[^\s"'`,;)\]}]*/g;
+const DIAGNOSTIC_SECRET_ASSIGNMENT_PATTERN = /(\b(?:api[\s_-]?key|authorization|credential|password|secret|token)\s*[:=]\s*)[^\s,;}]+/gi;
+const UNLABELED_PRIVATE_KEY_PATTERN = /0x[0-9a-fA-F]{64}(?![0-9a-fA-F])/g;
 const RAW_USAGE_KEYS = Object.freeze([
   "api_calls",
   "cache_read_tokens",
@@ -294,10 +300,10 @@ You are one fresh Hermes agent in an empty workspace. Clockchain is the host, fu
 
 ## Install the pinned public kit
 
-Run exactly:
+Do not cd outside the current blank workspace. Keep the checkout and dependencies inside it. Run exactly:
 
-1. git clone <KIT_URL> handshake-kit
-2. cd handshake-kit
+1. git clone <KIT_URL> ./handshake-kit
+2. cd ./handshake-kit
 3. git checkout <KIT_COMMIT>
 4. npm ci
 
@@ -350,6 +356,42 @@ function appendBounded(target, chunk) {
   const next = `${target}${value}`;
   if (Buffer.byteLength(next, "utf8") > MAX_STDIO_BYTES) return undefined;
   return next;
+}
+
+function diagnosticTail(value, canaries) {
+  try {
+    const bytes = Buffer.from(value, "utf8");
+    const tail = bytes.subarray(Math.max(0, bytes.length - MAX_DIAGNOSTIC_TAIL_BYTES)).toString("utf8");
+    const clean = redact(tail, canaries)
+      .replace(ANSI_ESCAPE_PATTERN, "")
+      .replace(DIAGNOSTIC_PATH_PATTERN, "[PATH]")
+      .replace(DIAGNOSTIC_SECRET_ASSIGNMENT_PATTERN, "$1[REDACTED]")
+      .replace(UNLABELED_PRIVATE_KEY_PATTERN, "[REDACTED]")
+      .trim();
+    const result = clean.length === 0 ? null : clean;
+    assertPublicCleanRoomEvidence(result, canaries);
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+function childDiagnostic({ canaries, code = null, reason, signal = null, stderr = "", stdout = "", suppressTails = false }) {
+  const safeCode = Number.isSafeInteger(code) ? code : null;
+  const safeSignal = typeof signal === "string" && /^[A-Z0-9]{1,32}$/.test(signal) ? signal : null;
+  const diagnostic = Object.freeze({
+    code: safeCode,
+    console: Object.freeze({
+      errBytes: Buffer.byteLength(stderr),
+      errTail: suppressTails ? null : diagnosticTail(stderr, canaries),
+      outBytes: Buffer.byteLength(stdout),
+      outTail: suppressTails ? null : diagnosticTail(stdout, canaries),
+    }),
+    reason,
+    signal: safeSignal,
+  });
+  assertPublicCleanRoomEvidence(diagnostic, canaries);
+  return diagnostic;
 }
 
 function parseTerminalJson(stdout) {
@@ -414,7 +456,11 @@ function waitForChild({ canaries, child, children, controller, role: cleanRole }
     function failStream() {
       controller.abort();
       for (const entry of children) killChild(entry);
-      finish({ ok: false, role: cleanRole });
+      finish({
+        diagnostic: childDiagnostic({ canaries, reason: "stream_limit", stderr, stdout }),
+        ok: false,
+        role: cleanRole,
+      });
     }
     child.stdout?.on("data", (chunk) => {
       const next = appendBounded(stdout, chunk);
@@ -435,31 +481,59 @@ function waitForChild({ canaries, child, children, controller, role: cleanRole }
     child.once("error", () => {
       controller.abort();
       for (const entry of children) killChild(entry);
-      finish({ ok: false, role: cleanRole });
+      finish({
+        diagnostic: childDiagnostic({ canaries, reason: "process_error", stderr, stdout }),
+        ok: false,
+        role: cleanRole,
+      });
     });
     child.once("close", (code, signal) => {
       child.__handshakeClosed = true;
-      const stderrBytes = Buffer.byteLength(stderr);
       for (const canary of canaries) {
         if (stdout.includes(canary) || stderr.includes(canary)) {
           controller.abort();
           for (const entry of children) killChild(entry);
-          finish({ ok: false, role: cleanRole, stderrBytes });
+          finish({
+            diagnostic: childDiagnostic({
+              canaries,
+              code,
+              reason: "secret_detected",
+              signal,
+              stderr,
+              stdout,
+              suppressTails: true,
+            }),
+            ok: false,
+            role: cleanRole,
+          });
           return;
         }
       }
       if (code !== 0 || signal !== null) {
         controller.abort();
         for (const entry of children) killChild(entry);
-        finish({ ok: false, role: cleanRole, stderrBytes, stdoutBytes: Buffer.byteLength(stdout) });
+        finish({
+          diagnostic: childDiagnostic({ canaries, code, reason: code !== 0 ? "nonzero_exit" : "signal", signal, stderr, stdout }),
+          ok: false,
+          role: cleanRole,
+        });
         return;
       }
       try {
-        finish({ ok: true, role: cleanRole, result: validateRoleResult(parseTerminalJson(stdout), cleanRole), stderrBytes });
+        finish({
+          diagnostic: childDiagnostic({ canaries, code, reason: "completed", signal, stderr, stdout }),
+          ok: true,
+          role: cleanRole,
+          result: validateRoleResult(parseTerminalJson(stdout), cleanRole),
+        });
       } catch {
         controller.abort();
         for (const entry of children) killChild(entry);
-        finish({ ok: false, role: cleanRole, stdoutBytes: Buffer.byteLength(stdout) });
+        finish({
+          diagnostic: childDiagnostic({ canaries, code, reason: "invalid_terminal_output", signal, stderr, stdout }),
+          ok: false,
+          role: cleanRole,
+        });
       }
     });
   });
@@ -579,6 +653,42 @@ function validateUsage(value) {
 
 async function readUsage(path) {
   return validateUsage(await readJson(path));
+}
+
+function diagnosticCount(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+async function readFailureUsage(path) {
+  try {
+    const usage = await readJson(path);
+    if (usage === null || typeof usage !== "object" || Array.isArray(usage)) {
+      return Object.freeze({ present: false });
+    }
+    const summary = Object.freeze({
+      completed: typeof usage.completed === "boolean" ? usage.completed : null,
+      estimatedCostUsd: typeof usage.estimated_cost_usd === "number" && Number.isFinite(usage.estimated_cost_usd) && usage.estimated_cost_usd >= 0
+        ? usage.estimated_cost_usd
+        : null,
+      failed: typeof usage.failed === "boolean" ? usage.failed : null,
+      model: usage.model === EXPECTED_USAGE_MODEL ? EXPECTED_USAGE_MODEL : "unexpected",
+      present: true,
+      provider: usage.provider === EXPECTED_USAGE_PROVIDER ? EXPECTED_USAGE_PROVIDER : "unexpected",
+      usageCounts: Object.freeze({
+        apiCalls: diagnosticCount(usage.api_calls),
+        cacheRead: diagnosticCount(usage.cache_read_tokens),
+        cacheWrite: diagnosticCount(usage.cache_write_tokens),
+        input: diagnosticCount(usage.input_tokens),
+        output: diagnosticCount(usage.output_tokens),
+        reasoning: diagnosticCount(usage.reasoning_tokens),
+        total: diagnosticCount(usage.total_tokens),
+      }),
+    });
+    assertPublicCleanRoomEvidence(summary);
+    return summary;
+  } catch {
+    return Object.freeze({ present: false });
+  }
 }
 
 async function pathExists(path, predicate) {
@@ -753,9 +863,34 @@ async function safeCleanup({ cleanRoom, keepCleanrooms, localDebug, provisioned,
   return Object.freeze(cleanup);
 }
 
+async function cleanupSnapshot(runRoot) {
+  const cleanup = {};
+  for (const cleanRole of ROLES) {
+    cleanup[`${cleanRole}Removed`] = await pathExists(expectedRoleRoot(runRoot, cleanRole)) === false;
+  }
+  return Object.freeze(cleanup);
+}
+
 export async function runHermesDemo(options = {}) {
   const children = [];
+  let agentTimedOut = false;
+  let childOutcomes = [];
+  let cleanKitCommit;
+  let cleanRunId;
+  let cleanRunRoot;
   let cleanupState = null;
+  let cleanupReport = null;
+  let evidenceCanaries = [];
+  let failureError = null;
+  let failureUsages = {};
+  let launch = {};
+  let phase = "inputs";
+  let prepared = {};
+  let provisioned = {};
+  let publicServices = null;
+  let runRootReady = false;
+  let runtimeCanaries = [];
+  let timeout = null;
   try {
     const {
       checkKit = defaultCheckKit,
@@ -785,14 +920,17 @@ export async function runHermesDemo(options = {}) {
     } = options;
     if (keepCleanrooms === true && localDebug !== true) fail();
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) fail();
-    const cleanRunId = runId(inputRunId ?? defaultRunId());
-    const cleanRunRoot = absolutePath(inputRunRoot ?? defaultRunRoot(cleanRunId));
+    cleanRunId = runId(inputRunId ?? defaultRunId());
+    cleanRunRoot = absolutePath(inputRunRoot ?? defaultRunRoot(cleanRunId));
+    evidenceCanaries = [cleanRunRoot];
     const cleanHermesBinary = absolutePath(hermesBinary);
     const cleanKitUrl = kitUrl(inputKitUrl ?? CANONICAL_KIT_URL);
-    const cleanKitCommit = kitCommit(inputKitCommit);
+    cleanKitCommit = kitCommit(inputKitCommit);
+    phase = "kit";
     if (typeof checkKit !== "function" || await checkKit({ fetchImpl, kitCommit: cleanKitCommit, kitUrl: cleanKitUrl }) !== true) fail();
+    phase = "services";
     if (typeof checkPublicServices !== "function") fail();
-    const publicServices = validatePublicServicesSummary(await checkPublicServices({
+    publicServices = validatePublicServicesSummary(await checkPublicServices({
       fetchImpl,
       kitCommit: cleanKitCommit,
       relayUrl: relayUrl ?? DEFAULT_RELAY_URL,
@@ -801,10 +939,12 @@ export async function runHermesDemo(options = {}) {
       await preparePrivateDirectory({ path: dirname(cleanRunRoot) });
     }
     await preparePrivateDirectory({ path: cleanRunRoot });
+    runRootReady = true;
     const loaded = await loadDefaultCleanRoomFunctions();
     const prepareHermesCleanRoom = options.prepareHermesCleanRoom ?? loaded.prepareHermesCleanRoom;
     const provisionHermesCleanRoom = options.provisionHermesCleanRoom ?? loaded.provisionHermesCleanRoom;
-    const prepared = {};
+    phase = "prepare";
+    prepared = {};
     for (const cleanRole of ROLES) {
       prepared[cleanRole] = await validatePrepared({
         role: cleanRole,
@@ -827,12 +967,14 @@ export async function runHermesDemo(options = {}) {
         publicServices,
       });
     }
+    phase = "credential";
     const credential = inferenceKeyValue !== undefined
       ? (() => {
           if (!SUPPORTED_INFERENCE_KEYS.includes(inferenceKeyName) || typeof inferenceKeyValue !== "string" || inferenceKeyValue.length === 0) fail();
           return { keyName: inferenceKeyName, value: inferenceKeyValue };
         })()
       : await readInferenceCredential({ credentialFile, env, keyName: inferenceKeyName ?? "MINIMAX_CN_API_KEY" });
+    phase = "mint";
     const tokenEntries = [];
     for (const cleanRole of ROLES) {
       tokenEntries.push([cleanRole, validateToken(await mintDemoToken({ subject: `hermes-demo:${cleanRunId}:${cleanRole}` }))]);
@@ -841,8 +983,10 @@ export async function runHermesDemo(options = {}) {
     if (tokens.payer === tokens.requestor) fail();
     const tokenFingerprints = Object.freeze(Object.fromEntries(ROLES.map((cleanRole) => [cleanRole, tokenFingerprint(tokens[cleanRole])])));
     if (tokenFingerprints.payer === tokenFingerprints.requestor) fail();
-    const canaries = Object.freeze([tokens.payer, tokens.requestor, credential.value, cleanRunRoot]);
-    const provisioned = {};
+    runtimeCanaries = Object.freeze([tokens.payer, tokens.requestor, credential.value]);
+    evidenceCanaries = Object.freeze([...runtimeCanaries, cleanRunRoot]);
+    phase = "provision";
+    provisioned = {};
     for (const cleanRole of ROLES) {
       provisioned[cleanRole] = await validateProvisioned({
         keyName: credential.keyName,
@@ -865,7 +1009,7 @@ export async function runHermesDemo(options = {}) {
       if (provisioned[cleanRole].principalSha256 !== tokenFingerprints[cleanRole]) fail();
     }
     cleanupState = { cleanRoom, keepCleanrooms, localDebug, provisioned, runRoot: cleanRunRoot };
-    const launch = {};
+    launch = {};
     for (const cleanRole of ROLES) {
       const prompt = buildHermesPrompt({ kitCommit: cleanKitCommit, kitUrl: cleanKitUrl, role: cleanRole });
       const usagePath = join(provisioned[cleanRole].paths.evidencePrivate, "usage.json");
@@ -873,11 +1017,13 @@ export async function runHermesDemo(options = {}) {
       absolutePath(usagePath);
     }
     const controller = new AbortController();
-    const timeout = setTimeout(() => {
+    timeout = setTimeout(() => {
+      agentTimedOut = true;
       controller.abort();
       for (const child of children) killChild(child);
     }, timeoutMs);
     const waiters = [];
+    phase = "launch";
     for (const cleanRole of ROLES) {
       const child = spawnProcess(cleanHermesBinary, [
         "-z",
@@ -900,26 +1046,38 @@ export async function runHermesDemo(options = {}) {
       });
       children.push(child);
     }
+    phase = "agents";
     for (const [index, cleanRole] of ROLES.entries()) {
-      waiters.push(waitForChild({ canaries, child: children[index], children, controller, role: cleanRole }));
+      waiters.push(waitForChild({ canaries: runtimeCanaries, child: children[index], children, controller, role: cleanRole }));
     }
     const settled = await Promise.allSettled(waiters);
+    childOutcomes = settled.map((entry, index) => entry.status === "fulfilled"
+      ? entry.value
+      : Object.freeze({
+          diagnostic: childDiagnostic({ canaries: runtimeCanaries, reason: "waiter_error" }),
+          ok: false,
+          role: ROLES[index],
+        }));
     const aborted = controller.signal.aborted;
     clearTimeout(timeout);
+    timeout = null;
     if (aborted) {
       for (const child of children) killChild(child);
       fail();
     }
-    if (settled.some((entry) => entry.status !== "fulfilled" || entry.value.ok !== true)) fail();
-    const roleResults = Object.fromEntries(settled.map((entry) => [entry.value.role, entry.value.result]));
+    if (childOutcomes.some((entry) => entry.ok !== true)) fail();
+    const roleResults = Object.fromEntries(childOutcomes.map((entry) => [entry.role, entry.result]));
     const sessionId = roleResults.payer.sessionId;
     if (roleResults.requestor.sessionId !== sessionId) fail();
+    phase = "relay";
     const relay = await verifyRelayResult({ relayUrl: relayUrl ?? DEFAULT_RELAY_URL, sessionId });
     const summary = validatedRelaySummary({ relay, roleResults });
+    phase = "usage";
     const usages = {};
     for (const cleanRole of ROLES) {
       usages[cleanRole] = await readUsage(launch[cleanRole].usagePath);
     }
+    phase = "post_run";
     const postRun = {};
     for (const cleanRole of ROLES) {
       postRun[cleanRole] = await inspectPostRun({
@@ -928,8 +1086,10 @@ export async function runHermesDemo(options = {}) {
         room: provisioned[cleanRole],
       });
     }
+    phase = "cleanup";
     const cleanup = await safeCleanup(cleanupState);
     cleanupState = null;
+    cleanupReport = cleanup;
     const evidence = Object.freeze({
       certificate: Object.freeze({
         digest: summary.certificateDigest,
@@ -955,16 +1115,79 @@ export async function runHermesDemo(options = {}) {
       usage: usages,
     });
     const evidencePath = join(cleanRunRoot, "evidence", "result.json");
-    await finalizeEvidence({ canaries, evidence, evidencePath });
+    phase = "evidence";
+    await finalizeEvidence({ canaries: evidenceCanaries, evidence, evidencePath });
     return Object.freeze({ evidencePath, summary });
   } catch (error) {
-    sanitize(error);
+    failureError = error;
+    for (const cleanRole of ROLES) {
+      const usagePath = launch?.[cleanRole]?.usagePath;
+      failureUsages[cleanRole] = typeof usagePath === "string"
+        ? await readFailureUsage(usagePath)
+        : Object.freeze({ present: false });
+    }
   } finally {
+    if (timeout !== null) clearTimeout(timeout);
     for (const child of children) killChild(child);
     if (cleanupState !== null) {
-      await safeCleanup(cleanupState).catch(() => {});
+      try {
+        cleanupReport = await safeCleanup(cleanupState);
+      } catch {
+        // The retained failure artifact records the exact removal booleans.
+      }
+      cleanupState = null;
+    }
+    if (cleanRunRoot !== undefined && runRootReady === true) {
+      cleanupReport = await cleanupSnapshot(cleanRunRoot).catch(() => cleanupReport);
     }
   }
+
+  let failureEvidencePath = null;
+  if (failureError !== null && cleanRunRoot !== undefined && cleanRunId !== undefined && runRootReady === true) {
+    try {
+      const outcomes = Object.fromEntries(childOutcomes.map((entry) => [entry.role, entry]));
+      const agents = Object.freeze(Object.fromEntries(ROLES.map((cleanRole) => {
+        const outcome = outcomes[cleanRole];
+        const diagnostic = outcome?.diagnostic ?? childDiagnostic({
+          canaries: runtimeCanaries,
+          reason: children.length > ROLES.indexOf(cleanRole) ? "no_result" : "not_started",
+        });
+        return [cleanRole, Object.freeze({
+          ...diagnostic,
+          usage: failureUsages[cleanRole] ?? Object.freeze({ present: false }),
+        })];
+      })));
+      const cleanRooms = Object.freeze(Object.fromEntries(ROLES.map((cleanRole) => [cleanRole, Object.freeze({
+        prePrompt: provisioned?.[cleanRole]?.publicPrePrompt ?? null,
+        preProvision: prepared?.[cleanRole]?.publicPreProvision ?? null,
+      })])));
+      const evidence = Object.freeze({
+        agents,
+        cleanRooms,
+        cleanup: cleanupReport ?? Object.freeze({ payerRemoved: false, requestorRemoved: false }),
+        kitCommit: cleanKitCommit ?? null,
+        paymentMoved: false,
+        phase,
+        prompts: Object.freeze(Object.fromEntries(ROLES.map((cleanRole) => [cleanRole, Object.freeze({
+          sha256: launch?.[cleanRole]?.promptSha256 ?? null,
+        })]))),
+        publicServices,
+        runId: cleanRunId,
+        schema: "clockchain.hermes-demo-failure/v1",
+        timedOut: agentTimedOut,
+      });
+      failureEvidencePath = join(cleanRunRoot, "evidence", "failure.json");
+      await finalizeEvidence({ canaries: evidenceCanaries, evidence, evidencePath: failureEvidencePath });
+    } catch {
+      failureEvidencePath = null;
+    }
+  }
+  if (failureEvidencePath !== null) {
+    const error = new Error(SAFE_ERROR);
+    Object.defineProperty(error, "failureEvidencePath", { value: failureEvidencePath });
+    throw error;
+  }
+  sanitize(failureError);
 }
 
 export const HERMES_DEMO_TERMINAL_MARKER = TERMINAL_MARKER;
