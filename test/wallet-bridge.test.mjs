@@ -31,6 +31,7 @@ import {
 const execFileAsync = promisify(execFile);
 const PRIVATE_KEY = `0x${"11".repeat(32)}`;
 const ADDRESS = "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A";
+const LETTER_PRIVATE_KEY = `0x${"ab".repeat(32)}`;
 const OTHER_PRIVATE_KEY = `0x${"22".repeat(32)}`;
 const REGISTER_TX = `0x${"33".repeat(32)}`;
 const METADATA_TX = `0x${"44".repeat(32)}`;
@@ -50,6 +51,16 @@ async function initializeDeterministicWallet(t) {
     statePath,
     platform: "darwin",
     generatePrivateKey: () => PRIVATE_KEY,
+  });
+  return { root, statePath, result };
+}
+
+async function initializeWalletWithPrivateKey(t, privateKey) {
+  const { root, statePath } = await temporaryState(t);
+  const result = await initializeWallet({
+    statePath,
+    platform: "darwin",
+    generatePrivateKey: () => privateKey,
   });
   return { root, statePath, result };
 }
@@ -80,6 +91,20 @@ function assertNoSecret(value) {
   const text = scan(value);
   assert.equal(text.includes(PRIVATE_KEY), false);
   assert.equal(text.includes(PRIVATE_KEY.slice(2)), false);
+}
+
+function assertNoText(value, needle) {
+  assert.equal(scan(value).includes(needle), false);
+}
+
+function mixedCasePrivateKeyHex(privateKey) {
+  return privateKey
+    .slice(2)
+    .split("")
+    .map((character, index) =>
+      index % 2 === 0 ? character.toUpperCase() : character.toLowerCase(),
+    )
+    .join("");
 }
 
 async function rejectSafe(operation) {
@@ -118,6 +143,42 @@ function fakeRegistrationEvidence(address = ADDRESS) {
         },
       ],
     },
+  };
+}
+
+function recoveryCheckpoint(overrides = {}) {
+  return {
+    schema: "clockchain.handshake-registration-recovery/v1",
+    chainId: 11155111,
+    registryAddress: "0x8004A818BFB912233c491871b3d84c89A494BD9e",
+    registryNamespace:
+      "eip155:11155111:0x8004A818BFB912233c491871b3d84c89A494BD9e",
+    identityReference:
+      "eip155:11155111:0x8004A818BFB912233c491871b3d84c89A494BD9e:42",
+    agentId: "42",
+    address: ADDRESS,
+    displayName: "Hermes party",
+    registerTx: REGISTER_TX,
+    registerBlock: "100",
+    ...overrides,
+  };
+}
+
+function intentCheckpoint(overrides = {}) {
+  return {
+    schema: "clockchain.handshake-registration-intent/v1",
+    chainId: 11155111,
+    registryAddress: "0x8004A818BFB912233c491871b3d84c89A494BD9e",
+    registryNamespace:
+      "eip155:11155111:0x8004A818BFB912233c491871b3d84c89A494BD9e",
+    address: ADDRESS,
+    displayName: "Hermes party",
+    registerNonce: 0,
+    registerCalldata: "0x1234",
+    registerGas: "226000",
+    maxFeePerGas: "2",
+    maxPriorityFeePerGas: "1",
+    ...overrides,
   };
 }
 
@@ -309,24 +370,7 @@ test("fails closed without leaking when newest checkpoint contains private-key-s
   );
   await writeFile(
     maliciousCheckpoint,
-    JSON.stringify(
-      {
-        schema: "clockchain.handshake-registration-recovery/v1",
-        chainId: 11155111,
-        registryAddress: "0x8004A818BFB912233c491871b3d84c89A494BD9e",
-        registryNamespace:
-          "eip155:11155111:0x8004A818BFB912233c491871b3d84c89A494BD9e",
-        identityReference:
-          "eip155:11155111:0x8004A818BFB912233c491871b3d84c89A494BD9e:42",
-        agentId: "42",
-        address: ADDRESS,
-        displayName: PRIVATE_KEY,
-        registerTx: REGISTER_TX,
-        registerBlock: "100",
-      },
-      null,
-      2,
-    ),
+    JSON.stringify(recoveryCheckpoint({ displayName: PRIVATE_KEY }), null, 2),
     { mode: 0o600 },
   );
 
@@ -340,6 +384,57 @@ test("fails closed without leaking when newest checkpoint contains private-key-s
   assert.equal(cliInspection.stdout.includes(PRIVATE_KEY.slice(2)), false);
   assert.equal(cliInspection.stderr.includes(PRIVATE_KEY), false);
   assert.equal(cliInspection.stderr.includes(PRIVATE_KEY.slice(2)), false);
+});
+
+test("fails closed without leaking when checkpoint fields contain case-varied private-key bytes", async (t) => {
+  for (const [name, secretEquivalent, checkpointForAddress] of [
+    [
+      "uppercase no-prefix raw recovery field",
+      LETTER_PRIVATE_KEY.slice(2).toUpperCase(),
+      (address) =>
+        recoveryCheckpoint({
+          address,
+          displayName: LETTER_PRIVATE_KEY.slice(2).toUpperCase(),
+        }),
+    ],
+    [
+      "mixed-case 0x-equivalent intent projection",
+      `0x${mixedCasePrivateKeyHex(LETTER_PRIVATE_KEY)}`,
+      (address) =>
+        intentCheckpoint({
+          address,
+          displayName: `0x${mixedCasePrivateKeyHex(LETTER_PRIVATE_KEY)}`,
+        }),
+    ],
+  ]) {
+    await t.test(name, async (t) => {
+      const { statePath, result } = await initializeWalletWithPrivateKey(
+        t,
+        LETTER_PRIVATE_KEY,
+      );
+      const maliciousCheckpoint = join(
+        dirname(statePath),
+        ".wallet.json.checkpoint-000001.json",
+      );
+      await writeFile(
+        maliciousCheckpoint,
+        JSON.stringify(checkpointForAddress(result.address), null, 2),
+        { mode: 0o600 },
+      );
+
+      const error = await rejectSafe(() =>
+        inspectWallet({ statePath, platform: "darwin" }),
+      );
+      assertNoText(error, secretEquivalent);
+
+      const cliInspection = await runCli(["inspect", "--state", statePath]);
+      assert.notEqual(cliInspection.code, 0);
+      assertNoSecret(cliInspection.stdout);
+      assertNoSecret(cliInspection.stderr);
+      assert.equal(cliInspection.stdout.includes(secretEquivalent), false);
+      assert.equal(cliInspection.stderr.includes(secretEquivalent), false);
+    });
+  }
 });
 
 test("signs only one exact even-length 0x byte string with EIP-191 raw bytes", async (t) => {
@@ -383,39 +478,17 @@ test("registers with the wallet key, persists checkpoints before broadcast, and 
         assert.equal(privateKey, PRIVATE_KEY);
         assert.equal(expectedAddress, ADDRESS);
         assert.equal(displayName, "Hermes party");
-        const intent = {
-          schema: "clockchain.handshake-registration-intent/v1",
-          chainId: 11155111,
-          registryAddress: "0x8004A818BFB912233c491871b3d84c89A494BD9e",
-          registryNamespace:
-            "eip155:11155111:0x8004A818BFB912233c491871b3d84c89A494BD9e",
-          address: ADDRESS,
+        const intent = intentCheckpoint({
           displayName,
-          registerNonce: 0,
-          registerCalldata: "0x1234",
-          registerGas: "226000",
-          maxFeePerGas: "2",
-          maxPriorityFeePerGas: "1",
-        };
+        });
         await onCheckpoint(intent);
         durableCheckpointExistsAtBroadcast =
           (await inspectWallet({ statePath, platform: "darwin" })).registration
             .schema === intent.schema;
         calls.push("broadcast");
-        await onCheckpoint({
-          schema: "clockchain.handshake-registration-recovery/v1",
-          chainId: 11155111,
-          registryAddress: "0x8004A818BFB912233c491871b3d84c89A494BD9e",
-          registryNamespace:
-            "eip155:11155111:0x8004A818BFB912233c491871b3d84c89A494BD9e",
-          identityReference:
-            "eip155:11155111:0x8004A818BFB912233c491871b3d84c89A494BD9e:42",
-          agentId: "42",
-          address: ADDRESS,
+        await onCheckpoint(recoveryCheckpoint({
           displayName,
-          registerTx: REGISTER_TX,
-          registerBlock: "100",
-        });
+        }));
         return fakeRegistrationEvidence();
       },
     },
@@ -458,6 +531,56 @@ test("registers with the wallet key, persists checkpoints before broadcast, and 
     },
   );
   assertNoSecret(registered);
+});
+
+test("rejects checkpoint callbacks carrying case-varied private-key bytes before persistence or broadcast", async (t) => {
+  for (const [name, checkpointForAddress] of [
+    [
+      "uppercase no-prefix callback field",
+      (address) =>
+        intentCheckpoint({
+          address,
+          displayName: LETTER_PRIVATE_KEY.slice(2).toUpperCase(),
+        }),
+    ],
+    [
+      "mixed-case 0x-equivalent callback field",
+      (address) =>
+        recoveryCheckpoint({
+          address,
+          displayName: `0x${mixedCasePrivateKeyHex(LETTER_PRIVATE_KEY)}`,
+        }),
+    ],
+  ]) {
+    await t.test(name, async (t) => {
+      const { statePath, result } = await initializeWalletWithPrivateKey(
+        t,
+        LETTER_PRIVATE_KEY,
+      );
+      let broadcastReached = false;
+
+      const error = await rejectSafe(() =>
+        registerWalletIdentity({
+          statePath,
+          displayName: "Hermes party",
+          platform: "darwin",
+          registration: {
+            registerIdentity: async ({ onCheckpoint }) => {
+              await onCheckpoint(checkpointForAddress(result.address));
+              broadcastReached = true;
+            },
+          },
+        }),
+      );
+      assertNoText(error, checkpointForAddress(result.address).displayName);
+
+      assert.equal(broadcastReached, false);
+      const checkpointEntries = (await readdir(dirname(statePath))).filter((entry) =>
+        entry.includes("checkpoint"),
+      );
+      assert.deepEqual(checkpointEntries, []);
+    });
+  }
 });
 
 test("fails closed when registration checkpoint parent is swapped for a symlink before persistence", async (t) => {
