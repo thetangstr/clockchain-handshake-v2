@@ -218,6 +218,7 @@ for (const name of HERMES_PROMPTS) {
     assert.match(text, /EIP-191/i);
     assert.match(text, /ERC-8004/i);
     assert.match(text, /handshake_get_certificate/i);
+    assert.match(text, /handshake_get_certificate.*needed.*certificate.*retryAfterMs.*retry/is);
     assert.match(text, /handshake_submit`? is signatures only/i);
     assert.match(text, /retryAfterMs/i);
     assert.match(text, /start at 5 seconds/i);

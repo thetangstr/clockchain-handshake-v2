@@ -1096,6 +1096,7 @@ test("kit URL and commit are validated before prompt creation", () => {
   assert.match(prompt, /do not write diagnostic scripts/i);
   assert.match(prompt, /SIGNATURE_ROLE_MISMATCH.*handshake_next.*sign again.*resubmit/i);
   assert.match(prompt, /retryAfterMs/i);
+  assert.match(prompt, /handshake_get_certificate.*needed.*certificate.*retryAfterMs.*retry/is);
   assert.match(prompt, /start at 5 seconds/i);
   assert.match(prompt, /back off to at most 15 seconds/i);
   assert.match(prompt, /erc8004_identity.*register command above, then call handshake_next again/i);

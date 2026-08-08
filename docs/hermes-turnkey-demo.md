@@ -57,6 +57,11 @@ digests must match before an agent submits the signature. A mismatch is retried
 from `handshake_next` without reconstructing the payload or opening a diagnostic
 loop.
 
+A host result that is still pending is normal waiting, not an invalid
+certificate. `handshake_get_certificate` returns `needed:"certificate"` with
+`retryAfterMs` until the checker publishes the signed result; each agent keeps
+retrying without terminating its clean room.
+
 The relay is a separate protocol service, not an MCP REST surface:
 
 | Endpoint | Purpose |
