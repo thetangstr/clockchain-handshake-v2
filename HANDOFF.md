@@ -1,6 +1,6 @@
 # Handoff — two-agent build + AWS migration
 
-**As of:** 2026-08-08 · **Branch:** `codex/handshake-build` · **910 tests pass and all
+**As of:** 2026-08-08 · **Branch:** `codex/handshake-build` · **914 tests pass and all
 structural invariants hold.** The previous handoff (still valid for context, landmines §4, known
 gaps §5, and the stakeholder-prompt lesson §6) is archived at
 [docs/handoff-2026-08-04.md](docs/handoff-2026-08-04.md).
@@ -25,7 +25,7 @@ Context behind the plan, if you need it: [docs/two-agent-build.md](docs/two-agen
 | Role-aware seating (`roleAlreadySeated`, unblocks two kits per session) | ✅ shipped `f80aa7a` |
 | Track A (A1–A8): host severance + payer kit + gates G0/G1 | ✅ complete — G0 and G1 live gates passed |
 | Track B (B0–B6): MCP → AWS migration, gate GM | ✅ complete — GM green; B6 explicitly deferred under its plan branch |
-| P2 / P3 / P4 | ⬜ P2 host deployment next |
+| P2 / P3 / P4 | ✅ P2 + G2 complete · ⬜ P3 handshake tools next |
 
 Both tracks are independent until P2. Work them in parallel if you can; if you must pick
 one, Track B's first steps (B0–B2) have the longest external waits — start them first,
@@ -161,6 +161,19 @@ then do Track A while AWS/DNS steps settle.
   ledger block `3091503`, and the full demo completed session
   `64dd961d-25e9-42d9-9dcb-7d30a55dc302`. Production remains on AWS.
 
+- 2026-08-08 — P2's first service restart stopped the old compose stack, then
+  the new wrapper rejected `/opt/clockchain-host/app` as “not a git checkout.”
+  The dedicated checkout is owned by `ubuntu`, while systemd runs the wrapper
+  as root without sudo's `SUDO_UID`; Git's ownership guard therefore rejected
+  `rev-parse` before Docker could start. Production MCP health was briefly
+  unavailable. We restored the stack with an exact-path temporary
+  `safe.directory`, reproduced the difference between sudo-shaped and
+  systemd-shaped environments, then removed the host-wide setting. External
+  repo commit `c73a3a4` now passes `safe.directory` only to the three Git reads
+  for the exact configured checkout. A second installer run brought MCP,
+  Caddy, and host up; both public health endpoints are green. No persistent
+  system or global Git exception remains.
+
 ## Evidence
 
 *(gate results land here: gate id, date, session id, block heights, anything a skeptic
@@ -268,6 +281,26 @@ would ask for)*
   relay through `HANDSHAKE_RELAY`, and the plan explicitly accepts Lightsail as
   the end state. Revisit only as a separate post-P4 maintenance change.
 
+- 2026-08-08 — **P2 / G2 complete.** Handshake commit `fbb054d` supplies the
+  Node 22 non-root host image; external-repo commits `86637a2` and `c73a3a4`
+  add the third compose service, SSM materialization, and the systemd-owned
+  checkout fix. The EC2 role can read only `/clockchain/mcp/*` and
+  `/clockchain/host/*`; all four host files were hash-matched to SSM without
+  exposing values, are mode 0600, and are mounted read-only at `/app/keys`.
+  With no handshake process on the laptop, the AWS host and two transient
+  party services on the relay machine completed session
+  `c5944663-9419-47ea-98c2-b75a054c2fdc`. Payer agent `9443` and requestor
+  agent `9444` anchored proposal `3093515` /
+  `44a420e0-9b1b-4a62-87d5-6c8b4336dae3`, acceptance `3093535` /
+  `7f339b7e-9be4-4662-aea2-c996322d6b46`, and acknowledgment `3093537` /
+  `b242b010-69ce-4d7d-b70d-440282d05585`. The AWS host's verifier returned
+  `AUTHORIZED`; both remote kits verified and saved the signed certificate;
+  `paymentMoved` remained false. The host loop opened session
+  `2e6a116b-7f69-4ebc-8931-1a983faafbd1`. A manual
+  `docker restart clockchain-mcp-host-1` changed its start time from
+  `08:10:42Z` to `08:14:13Z`, returned to `running`, and opened fresh session
+  `69071193-f140-494c-bb60-70b654160a15`; production MCP health stayed green.
+
 ## Migration inventory
 
 *(plan §B0's table gets filled in here — every row, even when the answer is "none")*
@@ -301,9 +334,10 @@ Inventory source: `clockchain-developer-tools` commit
 | EC2 key pair | `clockchain-mcp` / `key-0cf030c5ba260d457`; private key at `~/.ssh/clockchain-mcp.pem` mode 0600 |
 | IAM role | `arn:aws:iam::570035913370:role/clockchain-mcp-ec2-role` |
 | Instance profile | `arn:aws:iam::570035913370:instance-profile/clockchain-mcp-instance-profile` |
-| Inline role policy | `clockchain-mcp-ssm-parameter-read`: `ssm:GetParameter` on `arn:aws:ssm:us-west-2:570035913370:parameter/clockchain/mcp/*` only |
+| Inline role policy | `clockchain-mcp-ssm-parameter-read`: `ssm:GetParameter` on only `arn:aws:ssm:us-west-2:570035913370:parameter/clockchain/mcp/*` and `arn:aws:ssm:us-west-2:570035913370:parameter/clockchain/host/*` |
 | SSM verification parameter | `/clockchain/mcp/PING` (`SecureString`, `alias/aws/ssm`) |
 | SSM application secrets | `/clockchain/mcp/CLOCKCHAIN_API_KEY`, `/clockchain/mcp/MCP_AUTH_TOKENS`, `/clockchain/mcp/MCP_TOKEN_SIGNING_SECRET` (`SecureString`; byte-for-byte hashes verified against their GCP Secret Manager sources without exposing values) |
+| SSM host secrets | `/clockchain/host/FUNDING_WALLET_JSON`, `/clockchain/host/FUNDING_WALLET_PUBLIC_JSON`, `/clockchain/host/FUNDING_PASSWORD`, `/clockchain/host/CLOCKCHAIN_TOKEN` (`SecureString`; byte-for-byte hashes verified against the private source files without exposing values) |
 
 Bootstrap evidence: cloud-init completed; Docker, Compose, AWS CLI v2, git, and jq are
 installed; `docker run --rm hello-world` passed; the instance read the PING parameter
@@ -322,3 +356,14 @@ sources are `clockchain-developer-tools` commits `610d519` and `11b9162`.
 | Application listeners / SSH | Caddy publishes 80/443; SSH 22 remains source-restricted by the locked security group; no host listener on 8080 |
 | Public HTTPS | `https://mcp-aws.clockchain.network/health` returns `{"status":"ok"}` with a valid hostname-only Let's Encrypt certificate |
 | DNS | GoDaddy authoritative nameservers and public resolvers return `34.209.199.138` for both test and production names at TTL 600; GCP `136.68.167.2` remains the warm rollback target |
+
+### P2 host deployment (2026-08-08)
+
+| Item | Value / evidence |
+|---|---|
+| Handshake source | `codex/handshake-build` / `fbb054d5ec9b03a483583c683a10b3cf44e8557a`, clean checkout at `/opt/clockchain-host/app` |
+| Deploy source | `codex/aws-migration` / `c73a3a426d9148e18dd0744e0a1992c06d2fdd7c`, clean checkout at `/opt/clockchain-mcp/app` |
+| Containers | `clockchain-mcp-mcp-1` healthy; `clockchain-mcp-caddy-1` running; `clockchain-mcp-host-1` running as non-root `node` with no published port |
+| Host secret files | `/run/clockchain-host-secrets/{funding-wallet.json,funding-wallet.public.json,funding.password,clockchain.token}`; owner `ubuntu:ubuntu` (UID/GID 1000), mode 0600, exact SSM hashes verified |
+| Runtime mounts | Host secrets bind-mounted read-only at `/app/keys`; named volume `clockchain-mcp_host_runs` mounted at `/app/runs` |
+| Restart evidence | Manual container restart changed `StartedAt`, preserved production MCP health, and advanced relay `discovery/current` from session `2e6a116b-7f69-4ebc-8931-1a983faafbd1` to `69071193-f140-494c-bb60-70b654160a15` |
