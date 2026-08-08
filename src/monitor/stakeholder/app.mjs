@@ -146,7 +146,14 @@ function anchorCardBody(anchor) {
   link.rel = "noopener noreferrer";
   link.textContent = "View on Clockchain →";
 
-  body.append(block, when, link);
+  const verify = document.createElement("a");
+  verify.className = "receipt-link";
+  verify.href = `/v1/verify/${encodeURIComponent(anchor.ledgerId)}`;
+  verify.target = "_blank";
+  verify.rel = "noopener noreferrer";
+  verify.textContent = "Verify receipt →";
+
+  body.append(block, when, link, verify);
   return body;
 }
 

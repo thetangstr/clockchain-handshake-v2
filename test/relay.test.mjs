@@ -11,6 +11,7 @@ import test from "node:test";
 
 import { EVIDENCE_PART_LIMITS, createRelayServer } from "../src/relay/server.mjs";
 import { RelayError, verifyEnvelope } from "../src/relay/client.mjs";
+import { buildSnapshot } from "../src/monitor/snapshot.mjs";
 
 async function temporaryDirectory(t) {
   const directory = await mkdtemp(join(tmpdir(), "handshake-relay-"));
@@ -599,4 +600,196 @@ test("result: a malformed certificate is refused with a named reason", async (t)
   // None of the rejects may have stored anything.
   const after = await getJson(`${baseUrl}/v1/sessions/${sessionId}/result`);
   assert.equal(after.status, 404);
+});
+
+test("public verify endpoint rejects malformed and unknown ledger ids", async (t) => {
+  const { baseUrl } = await startServer(t);
+
+  const malformed = await getJson(`${baseUrl}/v1/verify/not-a-uuid`);
+  assert.equal(malformed.status, 400);
+  assert.equal(malformed.body.error, "MALFORMED_LEDGER_ID");
+
+  const unknown = await getJson(`${baseUrl}/v1/verify/00000000-0000-4000-8000-000000000000`);
+  assert.equal(unknown.status, 404);
+  assert.equal(unknown.body.error, "UNKNOWN_LEDGER_ID");
+});
+
+test("public verify endpoint returns the ledger's cross-party verdict for a known anchor", async (t) => {
+  const { stateDir } = await startServer(t);
+  const ledgerId = "00000000-0000-4000-8000-000000000001";
+  const anchoredHash = "0".repeat(64);
+  const fakeClient = {
+    async verifyCrossParty({ ledgerId: lid, blockHeight, hash }) {
+      assert.equal(lid, ledgerId);
+      assert.equal(blockHeight, "3375602");
+      assert.equal(hash, anchoredHash);
+      return {
+        onChain: {
+          anchoredHash: hash,
+          blockHeight,
+          keyless: true,
+          ledgerId: lid,
+          verifiedAgainst: "on-chain block",
+        },
+      };
+    },
+  };
+
+  const server = await createRelayServer({ stateDir, ledgerClient: fakeClient });
+  const port = await listen(server);
+  const url = `http://127.0.0.1:${port}`;
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const created = await postJson(`${url}/v1/sessions`, {});
+  assert.equal(created.status, 201);
+  const sessionId = created.body.sessionId;
+
+  const snapshot = buildSnapshot({
+    anchors: {
+      proposal: null,
+      acceptance: {
+        blockHeight: "3375602",
+        blockTime: Date.now(),
+        explorerUrl: "http://relay.local/v1/blocks/3375602",
+        kind: "acceptance",
+        ledgerId,
+        receipt: { anchoredHash, digest: anchoredHash },
+        signedBy: { address: "0x1111111111111111111111111111111111111111", agentId: "1" },
+        terms: {
+          currency: "USD",
+          expirySeconds: "600",
+          predecessor: null,
+          sequence: "2",
+          sessionDigest: "a".repeat(64),
+          value: "100",
+        },
+      },
+      acknowledgment: null,
+    },
+    currentStage: "ACCEPTED",
+    funding: null,
+    heartbeat: {
+      payer: { lastSeenMs: Date.now() },
+      payee: { lastSeenMs: Date.now() },
+      verifier: null,
+    },
+    identities: null,
+    sessionId,
+    stageHistory: [{ atMs: Date.now(), status: "ACCEPTED" }],
+    subjectRun: "stakeholder",
+    updatedAtMs: Date.now(),
+    verdict: null,
+  });
+
+  const putResponse = await putJson(`${url}/v1/sessions/${sessionId}/snapshot`, snapshot);
+  assert.equal(putResponse.status, 200);
+
+  const verified = await getJson(`${url}/v1/verify/${ledgerId}`);
+  assert.equal(verified.status, 200);
+  assert.equal(verified.body.ok, true);
+  assert.equal(verified.body.verified, true);
+  assert.equal(verified.body.paymentMoved, false);
+  assert.equal(verified.body.ledgerId, ledgerId);
+  assert.equal(verified.body.blockHeight, "3375602");
+  assert.equal(verified.body.anchoredHash, anchoredHash);
+  assert.match(verified.body.source, /Verified on Clockchain by the demo relay/i);
+});
+
+test("public verify endpoint surfaces a ledger failure as a named gateway error", async (t) => {
+  const { stateDir } = await startServer(t);
+  const ledgerId = "00000000-0000-4000-8000-000000000002";
+  const anchoredHash = "1".repeat(64);
+  const fakeClient = {
+    async verifyCrossParty() {
+      throw new Error("clockchain timeout");
+    },
+  };
+
+  const server = await createRelayServer({ stateDir, ledgerClient: fakeClient });
+  const port = await listen(server);
+  const url = `http://127.0.0.1:${port}`;
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const created = await postJson(`${url}/v1/sessions`, {});
+  assert.equal(created.status, 201);
+  const sessionId = created.body.sessionId;
+
+  const snapshot = buildSnapshot({
+    anchors: {
+      proposal: null,
+      acceptance: {
+        blockHeight: "3375603",
+        blockTime: Date.now(),
+        explorerUrl: "http://relay.local/v1/blocks/3375603",
+        kind: "acceptance",
+        ledgerId,
+        receipt: { anchoredHash, digest: anchoredHash },
+        signedBy: { address: "0x1111111111111111111111111111111111111111", agentId: "1" },
+        terms: {
+          currency: "USD",
+          expirySeconds: "600",
+          predecessor: null,
+          sequence: "2",
+          sessionDigest: "b".repeat(64),
+          value: "100",
+        },
+      },
+      acknowledgment: null,
+    },
+    currentStage: "ACCEPTED",
+    funding: null,
+    heartbeat: {
+      payer: { lastSeenMs: Date.now() },
+      payee: { lastSeenMs: Date.now() },
+      verifier: null,
+    },
+    identities: null,
+    sessionId,
+    stageHistory: [{ atMs: Date.now(), status: "ACCEPTED" }],
+    subjectRun: "stakeholder",
+    updatedAtMs: Date.now(),
+    verdict: null,
+  });
+
+  await putJson(`${url}/v1/sessions/${sessionId}/snapshot`, snapshot);
+  const failed = await getJson(`${url}/v1/verify/${ledgerId}`);
+  assert.equal(failed.status, 502);
+  assert.equal(failed.body.error, "LEDGER_VERIFY_FAILED");
+});
+
+test("public agent endpoint resolves an identity", async (t) => {
+  const { stateDir } = await startServer(t);
+  const fakeClient = {
+    async resolveAgent(agentId) {
+      if (agentId === "42") {
+        return {
+          agentId: "42",
+          agentURI: "https://example.test/agent/42",
+          owner: "0x2222222222222222222222222222222222222222",
+          status: "active",
+        };
+      }
+      return { agentId, status: "unknown" };
+    },
+  };
+
+  const server = await createRelayServer({ stateDir, ledgerClient: fakeClient });
+  const port = await listen(server);
+  const url = `http://127.0.0.1:${port}`;
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const resolved = await getJson(`${url}/v1/agents/42`);
+  assert.equal(resolved.status, 200);
+  assert.equal(resolved.body.ok, true);
+  assert.equal(resolved.body.status, "active");
+  assert.equal(resolved.body.owner, "0x2222222222222222222222222222222222222222");
+  assert.equal(resolved.body.agentURI, "https://example.test/agent/42");
+
+  const unknown = await getJson(`${url}/v1/agents/99`);
+  assert.equal(unknown.status, 200);
+  assert.equal(unknown.body.status, "unknown");
+
+  const malformed = await getJson(`${url}/v1/agents/notanumber`);
+  assert.equal(malformed.status, 400);
+  assert.equal(malformed.body.error, "MALFORMED_AGENT_ID");
 });
