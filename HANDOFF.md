@@ -15,6 +15,12 @@ files for rationale and pitfall history, not as unexecuted work.
 Context behind the plan, if you need it: [docs/two-agent-build.md](docs/two-agent-build.md)
 (locked decisions D1–D5, verified infrastructure map, phase rationale).
 
+The current turnkey two-fresh-Hermes operator path, endpoint map, and evidence
+contract are in
+[docs/hermes-turnkey-demo.md](docs/hermes-turnkey-demo.md). It is an addendum to
+the completed P4 record below; do not revive the retired laptop/operator party
+topology.
+
 ## State of play
 
 | Piece | Status |

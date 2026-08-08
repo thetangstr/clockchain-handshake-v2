@@ -25,6 +25,8 @@ const CLOCKCHAIN_TOOLS = Object.freeze([
 const SUPPORTED_KIMI_KEYS = Object.freeze(["KIMI_API_KEY", "KIMI_CODING_API_KEY"]);
 const CANONICAL_KIT_URL = "https://github.com/thetangstr/clockchain-handshake-v2.git";
 const DEFAULT_RELAY_URL = "http://44.249.47.220:8080";
+const MCP_HEALTH_URL = "https://mcp.clockchain.network/health";
+const MCP_AWS_HEALTH_URL = "https://mcp-aws.clockchain.network/health";
 const DEFAULT_HERMES_BINARY = "/Users/maxiaoer/.local/bin/hermes";
 const DEFAULT_OPERATOR_ROOT = "/Users/maxiaoer/.clockchain/hermes-demo";
 const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
@@ -176,6 +178,68 @@ async function defaultCheckKit({ fetchImpl = fetch, kitCommit: commit, kitUrl: u
     const body = object(await response.json());
     if (body.sha !== cleanCommit) fail();
     return true;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function validatePublicServicesSummary(value) {
+  const summary = object(value);
+  const keys = ["discoveryRepositoryMatches", "mcpAwsHealth", "mcpHealth", "relayDiscovery", "relayHealth"];
+  if (Object.keys(summary).sort().join("\0") !== keys.sort().join("\0")) fail();
+  if (keys.some((key) => summary[key] !== true)) fail();
+  return Object.freeze({ ...summary });
+}
+
+async function defaultCheckPublicServices({
+  fetchImpl = fetch,
+  kitCommit: expectedCommit,
+  relayUrl,
+  timeoutMs = DEFAULT_KIT_CHECK_BOUND_MS,
+}) {
+  const relay = validateRelayUrl(relayUrl);
+  const commit = kitCommit(expectedCommit);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  async function json(url) {
+    const response = await fetchImpl(url, {
+      headers: { accept: "application/json" },
+      method: "GET",
+      signal: controller.signal,
+    });
+    if (!response.ok) fail();
+    return object(await response.json());
+  }
+  try {
+    const [mcpHealth, mcpAwsHealth, relayHealth, discovery] = await Promise.all([
+      json(MCP_HEALTH_URL),
+      json(MCP_AWS_HEALTH_URL),
+      json(`${relay}/healthz`),
+      json(`${relay}/v1/discovery/current`),
+    ]);
+    if (mcpHealth.status !== "ok" || mcpAwsHealth.status !== "ok") fail();
+    if (relayHealth.ok !== true || relayHealth.paymentMoved !== false) fail();
+    if (
+      discovery.schema !== "handshake-discovery/v2" ||
+      typeof discovery.sessionId !== "string" ||
+      !UUID_PATTERN.test(discovery.sessionId) ||
+      discovery.relayUrl !== relay ||
+      discovery.repositorySha !== commit ||
+      discovery.paymentMoved !== false ||
+      typeof discovery.operatorPublicKey !== "string" ||
+      discovery.operatorPublicKey.length === 0 ||
+      !Number.isSafeInteger(Number(discovery.expiresAtMs)) ||
+      Number(discovery.expiresAtMs) <= Date.now()
+    ) {
+      fail();
+    }
+    return validatePublicServicesSummary({
+      discoveryRepositoryMatches: true,
+      mcpAwsHealth: true,
+      mcpHealth: true,
+      relayDiscovery: true,
+      relayHealth: true,
+    });
   } finally {
     clearTimeout(timeout);
   }
@@ -695,6 +759,7 @@ export async function runHermesDemo(options = {}) {
   try {
     const {
       checkKit = defaultCheckKit,
+      checkPublicServices = defaultCheckPublicServices,
       cleanRoomOptions = {},
       cleanRoom,
       credentialFile,
@@ -725,8 +790,14 @@ export async function runHermesDemo(options = {}) {
     const cleanHermesBinary = absolutePath(hermesBinary);
     const cleanKitUrl = kitUrl(inputKitUrl ?? CANONICAL_KIT_URL);
     const cleanKitCommit = kitCommit(inputKitCommit);
-    await preparePrivateDirectory({ path: cleanRunRoot });
     if (typeof checkKit !== "function" || await checkKit({ fetchImpl, kitCommit: cleanKitCommit, kitUrl: cleanKitUrl }) !== true) fail();
+    if (typeof checkPublicServices !== "function") fail();
+    const publicServices = validatePublicServicesSummary(await checkPublicServices({
+      fetchImpl,
+      kitCommit: cleanKitCommit,
+      relayUrl: relayUrl ?? DEFAULT_RELAY_URL,
+    }));
+    await preparePrivateDirectory({ path: cleanRunRoot });
     const loaded = await loadDefaultCleanRoomFunctions();
     const prepareHermesCleanRoom = options.prepareHermesCleanRoom ?? loaded.prepareHermesCleanRoom;
     const provisionHermesCleanRoom = options.provisionHermesCleanRoom ?? loaded.provisionHermesCleanRoom;
@@ -750,6 +821,7 @@ export async function runHermesDemo(options = {}) {
       return Object.freeze({
         dryRun: true,
         manifests: Object.freeze(Object.fromEntries(ROLES.map((cleanRole) => [cleanRole, prepared[cleanRole].publicPreProvision]))),
+        publicServices,
       });
     }
     const credential = inferenceKeyValue !== undefined
@@ -874,6 +946,7 @@ export async function runHermesDemo(options = {}) {
         requestor: Object.freeze({ sha256: provisioned.requestor.principalSha256 }),
       }),
       prompts: Object.freeze(Object.fromEntries(ROLES.map((cleanRole) => [cleanRole, Object.freeze({ sha256: launch[cleanRole].promptSha256 })]))),
+      publicServices,
       runId: cleanRunId,
       summary,
       usage: usages,

@@ -336,6 +336,7 @@ async function realCleanRoomOptions(root) {
 function harness(root, t, options = {}) {
   const calls = {
     checkKit: [],
+    checkPublicServices: [],
     credentialReads: [],
     minted: [],
     prepared: [],
@@ -356,6 +357,16 @@ function harness(root, t, options = {}) {
       checkKit: async (kit) => {
         calls.checkKit.push(kit);
         return true;
+      },
+      checkPublicServices: async (services) => {
+        calls.checkPublicServices.push(services);
+        return {
+          discoveryRepositoryMatches: true,
+          mcpAwsHealth: true,
+          mcpHealth: true,
+          relayDiscovery: true,
+          relayHealth: true,
+        };
       },
       cleanRoom: async ({ roleRoot }) => {
         calls.cleaned.push(roleRoot);
@@ -784,7 +795,7 @@ test("retained evidence embeds public manifests and usage without token digests,
   assert.match(retained, /"certificate"/);
 });
 
-test("dry-run prepares zero-state rooms and checks kit but requires no provider secret, token, or agent start", async (t) => {
+test("dry-run checks public services and prepares zero-state rooms without a provider secret, token, or agent start", async (t) => {
   const root = await tempRoot(t);
   const h = harness(root, t, {
     inferenceKeyValue: undefined,
@@ -795,9 +806,76 @@ test("dry-run prepares zero-state rooms and checks kit but requires no provider 
 
   assert.equal(result.dryRun, true);
   assert.equal(h.calls.checkKit.length, 1);
+  assert.equal(h.calls.checkPublicServices.length, 1);
+  assert.deepEqual(result.publicServices, {
+    discoveryRepositoryMatches: true,
+    mcpAwsHealth: true,
+    mcpHealth: true,
+    relayDiscovery: true,
+    relayHealth: true,
+  });
   assert.deepEqual(h.calls.prepared.map((entry) => entry.role), ["payer", "requestor"]);
   assert.equal(h.calls.minted.length, 0);
   assert.equal(h.calls.spawns.length, 0);
+});
+
+test("public-service preflight fails before any clean room or token exists", async (t) => {
+  const root = await tempRoot(t);
+  const h = harness(root, t, {
+    extra: {
+      checkPublicServices: async () => {
+        throw new Error("network detail that must be hidden");
+      },
+      dryRun: true,
+    },
+  });
+
+  await assert.rejects(runHermesDemo(h.options), /Hermes demo failed safely/);
+  assert.equal(h.calls.prepared.length, 0);
+  assert.equal(h.calls.minted.length, 0);
+  assert.equal(h.calls.spawns.length, 0);
+});
+
+test("default public-service preflight binds both MCP origins and current relay discovery to the kit commit", async (t) => {
+  const root = await tempRoot(t);
+  const requested = [];
+  const bodies = new Map([
+    ["https://mcp.clockchain.network/health", { status: "ok" }],
+    ["https://mcp-aws.clockchain.network/health", { status: "ok" }],
+    ["http://relay.local/healthz", { ok: true, paymentMoved: false, sessions: 1 }],
+    ["http://relay.local/v1/discovery/current", {
+      expiresAtMs: String(Date.now() + 60_000),
+      operatorPublicKey: "public-host-key",
+      paymentMoved: false,
+      relayUrl: "http://relay.local",
+      repositorySha: KIT_COMMIT,
+      schema: "handshake-discovery/v2",
+      sessionId: SESSION_ID,
+    }],
+  ]);
+  const h = harness(root, t, {
+    extra: {
+      checkPublicServices: undefined,
+      dryRun: true,
+      fetchImpl: async (url, options) => {
+        requested.push({ options, url });
+        return { ok: bodies.has(url), json: async () => bodies.get(url) };
+      },
+    },
+  });
+
+  const result = await runHermesDemo(h.options);
+  assert.equal(result.publicServices.discoveryRepositoryMatches, true);
+  assert.deepEqual(requested.map(({ url }) => url).sort(), [...bodies.keys()].sort());
+  assert.ok(requested.every(({ options }) => options.method === "GET"));
+
+  bodies.get("http://relay.local/v1/discovery/current").repositorySha = "f".repeat(40);
+  const mismatchRoot = await tempRoot(t);
+  const mismatch = harness(mismatchRoot, t, {
+    extra: { checkPublicServices: undefined, dryRun: true, fetchImpl: async (url) => ({ ok: bodies.has(url), json: async () => bodies.get(url) }) },
+  });
+  await assert.rejects(runHermesDemo(mismatch.options), /Hermes demo failed safely/);
+  assert.equal(mismatch.calls.prepared.length, 0);
 });
 
 test("default GitHub kit check requires exact commit sha from response JSON", async (t) => {
