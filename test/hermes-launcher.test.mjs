@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
 import { createHash } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, realpath, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -20,6 +20,10 @@ import {
   prepareHermesCleanRoom,
   provisionHermesCleanRoom,
 } from "../src/core/hermes-cleanroom.mjs";
+import {
+  currentPushedCommit,
+  parseArgs,
+} from "../bin/hermes-demo.mjs";
 
 const execFile = promisify(execFileCallback);
 const ROOT = resolve(join(dirname(fileURLToPath(import.meta.url)), ".."));
@@ -126,13 +130,46 @@ function jtiFingerprint(jti) {
   return createHash("sha256").update(`jti:${jti}`).digest("hex");
 }
 
+function hermesUsage(overrides = {}) {
+  return {
+    api_calls: 3,
+    cache_read_tokens: 4,
+    cache_write_tokens: 5,
+    completed: true,
+    cost_source: "official_docs_snapshot",
+    cost_status: "estimated",
+    estimated_cost_usd: 0.0123,
+    failed: false,
+    input_tokens: 100,
+    model: "k3",
+    output_tokens: 40,
+    provider: "kimi-coding",
+    reasoning_tokens: 6,
+    service_tier: null,
+    session_id: "hermes-private-session-id",
+    total_tokens: 155,
+    ...overrides,
+  };
+}
+
 async function makePrepared(root, role, overrides = {}) {
   const roleRoot = join(root, "roles", role);
-  const workspace = join(roleRoot, "workspace");
-  const evidencePrivate = join(roleRoot, "private-evidence");
-  await mkdir(workspace, { recursive: true, mode: 0o700 });
-  await mkdir(evidencePrivate, { recursive: true, mode: 0o700 });
-  const preProvisionPath = join(evidencePrivate, "pre-provision.json");
+  const paths = {
+    corepackHome: join(roleRoot, "corepack-cache"),
+    evidencePrivate: join(roleRoot, "private-evidence"),
+    gitConfig: join(roleRoot, "gitconfig"),
+    hermesHome: join(roleRoot, "hermes-home"),
+    home: join(roleRoot, "home"),
+    npmCache: join(roleRoot, "npm-cache"),
+    tmp: join(roleRoot, "tmp"),
+    workspace: join(roleRoot, "workspace"),
+    xdgCache: join(roleRoot, "xdg-cache"),
+  };
+  for (const path of Object.values(paths).filter((value) => value !== paths.gitConfig)) {
+    await mkdir(path, { recursive: true, mode: 0o700 });
+  }
+  await writeFile(paths.gitConfig, "", { mode: 0o600 });
+  const preProvisionPath = join(paths.evidencePrivate, "pre-provision.json");
   await writeFile(
     preProvisionPath,
     JSON.stringify({
@@ -148,9 +185,24 @@ async function makePrepared(root, role, overrides = {}) {
   return {
     role,
     roleRoot,
-    paths: { evidencePrivate, workspace },
+    paths,
     manifests: { preProvisionPath },
   };
+}
+
+function createPostRunState({ kitCommit = KIT_COMMIT, role, room }) {
+  const repo = join(room.paths.workspace, "handshake-kit");
+  mkdirSync(join(repo, ".git"), { recursive: true, mode: 0o700 });
+  mkdirSync(join(repo, "node_modules", "viem", "deep-tree-that-must-not-be-recursed"), { recursive: true, mode: 0o700 });
+  mkdirSync(join(room.paths.home, ".clockchain"), { recursive: true, mode: 0o700 });
+  mkdirSync(join(room.paths.npmCache, "_cacache"), { recursive: true, mode: 0o700 });
+  mkdirSync(join(room.paths.corepackHome, "v1"), { recursive: true, mode: 0o700 });
+  mkdirSync(join(room.paths.xdgCache, "hermes"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(repo, "package-lock.json"), JSON.stringify({ lockfileVersion: 3, role }), { mode: 0o600 });
+  writeFileSync(join(repo, "node_modules", "viem", "deep-tree-that-must-not-be-recursed", "sentinel.txt"), "nested dependency content", { mode: 0o600 });
+  writeFileSync(join(repo, ".git", "HEAD"), kitCommit, { mode: 0o600 });
+  writeFileSync(join(room.paths.home, ".clockchain", "wallet.json"), JSON.stringify({ address: role }), { mode: 0o600 });
+  chmodSync(join(room.paths.home, ".clockchain", "wallet.json"), 0o600);
 }
 
 function success(role, overrides = {}) {
@@ -322,12 +374,19 @@ function harness(root, t, options = {}) {
         if (options.tokens) return options.tokens[calls.minted.length - 1];
         return calls.minted.length === 1 ? TOKEN_A : TOKEN_B;
       },
+      postRunCommandRunner: async (command, args) => {
+        if (command === "git" && args[0] === "-C" && args[2] === "rev-parse" && args[3] === "HEAD") {
+          return { stdout: `${KIT_COMMIT}\n`, stderr: "" };
+        }
+        throw new Error("unexpected post-run command");
+      },
       prepareHermesCleanRoom: async ({ role }) => {
         const room = await makePrepared(root, role, options.manifestOverrides?.[role]);
         calls.prepared.push({ role, room });
         return room;
       },
-      provisionHermesCleanRoom: async ({ prepared: room, role, clockchainMcpToken, inferenceKeyValue }) => {
+      provisionHermesCleanRoom: async ({ prepared: room, clockchainMcpToken, inferenceKeyValue }) => {
+        const role = room.role;
         const prePromptPath = join(room.paths.evidencePrivate, "pre-prompt.json");
         await writeFile(
           prePromptPath,
@@ -357,15 +416,18 @@ function harness(root, t, options = {}) {
         calls.spawns.push({ role, command, args, options: spawnOptions });
         const usagePath = args[args.indexOf("--usage-file") + 1];
         if (!options.missingUsage?.includes(role)) {
-          writeFileSync(usagePath, JSON.stringify(options.usage?.[role] ?? {
-            durationMs: 42,
-            input: 10,
-            model: "k3",
-            output: 20,
-            provider: "kimi-coding",
-            total: 30,
-          }), { mode: 0o600 });
+          writeFileSync(usagePath, JSON.stringify(options.usage?.[role] ?? hermesUsage()), { mode: 0o600 });
         }
+        const provisionedRoom = calls.provisioned.find((entry) => entry.role === role)?.room ?? {
+          paths: {
+            corepackHome: spawnOptions.env.COREPACK_HOME,
+            home: spawnOptions.env.HOME,
+            npmCache: spawnOptions.env.NPM_CONFIG_CACHE,
+            workspace: spawnOptions.cwd,
+            xdgCache: spawnOptions.env.XDG_CACHE_HOME,
+          },
+        };
+        createPostRunState({ role, room: provisionedRoom });
         return fakeProcess({
           role,
           output: outputs[role],
@@ -613,6 +675,11 @@ test("bounded benign stderr is discarded, while secret-bearing stderr fails", as
     const h = harness(root, t, { stderr: { requestor: `oops ${TOKEN_B}` } });
     await assert.rejects(runHermesDemo(h.options), /Hermes demo failed safely/);
   }
+  {
+    const root = await tempRoot(t);
+    const h = harness(root, t, { outputs: { payer: `oops ${TOKEN_A}\n${terminal("payer")}` } });
+    await assert.rejects(runHermesDemo(h.options), /Hermes demo failed safely/);
+  }
 });
 
 test("invalid output, partial failure, stderr, timeout, bad usage, and reused principals fail without authorization evidence", async (t) => {
@@ -622,6 +689,11 @@ test("invalid output, partial failure, stderr, timeout, bad usage, and reused pr
     { exitCodes: { payer: 1 } },
     { delays: { payer: 50, requestor: 50 }, timeoutMs: 1 },
     { usage: { payer: { token: TOKEN_A } } },
+    { usage: { payer: hermesUsage({ completed: false }) } },
+    { usage: { payer: hermesUsage({ failed: true }) } },
+    { usage: { payer: { ...hermesUsage(), failure: "boom" } } },
+    { usage: { payer: hermesUsage({ model: "other" }) } },
+    { usage: { payer: hermesUsage({ session_id: TOKEN_A }) } },
     { missingUsage: ["requestor"] },
     { manifestOverrides: { requestor: { prePrompt: { principalFingerprint: jtiFingerprint(PAYER_JTI) } } } },
   ];
@@ -660,12 +732,7 @@ test("cleanup attempts both exact role roots and fails if either cleanup fails",
 
 test("retained evidence embeds public manifests and usage without token digests, stdout, stderr, or absolute paths", async (t) => {
   const root = await tempRoot(t);
-  const h = harness(root, t, {
-    outputs: {
-      payer: `debug ${TOKEN_A}\n${terminal("payer")}`,
-      requestor: `secret ${KIMI}\n${terminal("requestor")}`,
-    },
-  });
+  const h = harness(root, t);
 
   const result = await runHermesDemo(h.options);
 
@@ -680,8 +747,39 @@ test("retained evidence embeds public manifests and usage without token digests,
   assert.equal(retained.includes("tokenSha256"), false);
   assert.equal(retained.includes("stdout"), false);
   assert.equal(retained.includes("stderr"), false);
+  assert.equal(retained.includes("session_id"), false);
+  assert.equal(retained.includes("hermes-private-session-id"), false);
+  const evidence = JSON.parse(retained);
+  assert.equal(Object.hasOwn(evidence.cleanRooms.payer.preProvision, "principalFingerprint"), false);
+  assert.equal(evidence.cleanRooms.payer.preProvision.tokensPresent, false);
+  assert.equal(JSON.stringify(evidence.cleanRooms.payer.preProvision).includes("nodeModulesPresent"), false);
+  assert.equal(JSON.stringify(evidence.cleanRooms.payer.preProvision).includes("walletState"), false);
+  for (const role of ["payer", "requestor"]) {
+    assert.equal(evidence.cleanRooms[role].postRun.role, role);
+    assert.equal(evidence.cleanRooms[role].postRun.workspace.pinnedCommit, KIT_COMMIT);
+    assert.equal(evidence.cleanRooms[role].postRun.workspace.pinnedCommitMatches, true);
+    assert.equal(evidence.cleanRooms[role].postRun.workspace.nodeModulesPresent, true);
+    assert.equal(evidence.cleanRooms[role].postRun.workspace.topLevelCount, 1);
+    assert.equal(evidence.cleanRooms[role].postRun.workspace.nodeModulesTopLevelCount, 1);
+    assert.equal(evidence.cleanRooms[role].postRun.walletState.present, true);
+    assert.equal(evidence.cleanRooms[role].postRun.walletState.mode, "0600");
+    assert.equal(evidence.cleanRooms[role].postRun.unexpectedSiblingPaths, false);
+    assert.ok(evidence.cleanRooms[role].postRun.caches.npm.topLevelCount > 0);
+  }
+  assert.deepEqual(evidence.cleanup, { payerRemoved: true, requestorRemoved: true });
   assert.match(retained, /"principals"/);
   assert.match(retained, /"usage"/);
+  assert.match(retained, /"estimatedCostUsd"/);
+  assert.match(retained, /"usageCounts"/);
+  assert.match(retained, /"input": 100/);
+  assert.match(retained, /"apiCalls"/);
+  assert.match(retained, /"postRun"/);
+  assert.match(retained, /"packageLockSha256"/);
+  assert.match(retained, /"nodeModulesPresent": true/);
+  assert.match(retained, /"walletState"/);
+  assert.match(retained, /"cleanup"/);
+  assert.match(retained, /"payerRemoved": true/);
+  assert.match(retained, /"requestorRemoved": true/);
   assert.match(retained, /"receipts"/);
   assert.match(retained, /"certificate"/);
 });
@@ -726,6 +824,7 @@ test("production CLI exposes turnkey defaults and rejects debug cleanroom retent
   assert.match(stdout, /https:\/\/github\.com\/thetangstr\/clockchain-handshake-v2\.git/);
   assert.match(stdout, /http:\/\/44\.249\.47\.220:8080/);
   assert.match(stdout, /CLOCKCHAIN_HERMES_DEMO_ROOT/);
+  assert.match(stdout, /\/Users\/maxiaoer\/\.clockchain\/hermes-demo\/kimi\.key/);
   assert.match(stdout, /--keep-cleanrooms is rejected/);
   assert.doesNotMatch(stdout.split("\n")[0], /--run-root/);
   assert.doesNotMatch(stdout, /--kit-url/);
@@ -738,6 +837,42 @@ test("production CLI exposes turnkey defaults and rejects debug cleanroom retent
     }),
     /Hermes demo failed safely/,
   );
+});
+
+test("production CLI derives only a clean live remote branch HEAD and validates flag values", async () => {
+  const calls = [];
+  const commandRunner = async (command, args) => {
+    calls.push([command, args]);
+    if (args[0] === "status") return { stdout: "", stderr: "" };
+    if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") return { stdout: "codex/hermes-turnkey-demo\n", stderr: "" };
+    if (args[0] === "rev-parse" && args[1] === "HEAD") return { stdout: `${KIT_COMMIT}\n`, stderr: "" };
+    if (args[0] === "ls-remote") return { stdout: `${KIT_COMMIT}\trefs/heads/codex/hermes-turnkey-demo\n`, stderr: "" };
+    throw new Error("unexpected git command");
+  };
+
+  assert.equal(await currentPushedCommit({ commandRunner }), KIT_COMMIT);
+  assert.deepEqual(calls.map((entry) => entry[1][0]), ["status", "rev-parse", "rev-parse", "ls-remote"]);
+
+  const parsed = await parseArgs(["--timeout-ms", "1234"], { commandRunner });
+  assert.equal(parsed.kitCommit, KIT_COMMIT);
+  assert.equal(parsed.credentialFile, "/Users/maxiaoer/.clockchain/hermes-demo/kimi.key");
+  assert.equal(parsed.timeoutMs, 1234);
+
+  await assert.rejects(currentPushedCommit({
+    commandRunner: async (command, args) => {
+      if (args[0] === "status") return { stdout: " M src/core/hermes-launcher.mjs\n", stderr: "" };
+      return commandRunner(command, args);
+    },
+  }), /dirty worktree/);
+  await assert.rejects(currentPushedCommit({
+    commandRunner: async (command, args) => {
+      if (args[0] === "ls-remote") return { stdout: `${"f".repeat(40)}\trefs/heads/codex/hermes-turnkey-demo\n`, stderr: "" };
+      return commandRunner(command, args);
+    },
+  }), /unpushed commit/);
+  await assert.rejects(parseArgs(["--run-root"], { commandRunner }), /missing argument value/);
+  await assert.rejects(parseArgs(["--kit-commit", "--timeout-ms"], { commandRunner }), /missing argument value/);
+  await assert.rejects(parseArgs(["--timeout-ms", "0"], { commandRunner }), /unsafe timeout/);
 });
 
 test("production wrapper rejects keep-cleanrooms unless local debug is explicit", async (t) => {

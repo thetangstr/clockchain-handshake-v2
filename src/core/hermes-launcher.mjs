@@ -1,13 +1,16 @@
-import { spawn } from "node:child_process";
+import { execFile as execFileCallback, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, readFile, rename, rm } from "node:fs/promises";
+import { chmod, lstat, readFile, readdir, rename, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, parse, resolve } from "node:path";
+import { promisify } from "node:util";
 
 import { digestHex } from "./canonical.mjs";
 import { mintDemoToken as defaultMintDemoToken } from "./clockchain.mjs";
 import { preparePrivateDirectory, readPrivateText, writePrivateFile } from "./private-path.mjs";
 import { assertPublicCleanRoomEvidence, fingerprintClockchainDemoToken } from "./hermes-cleanroom.mjs";
 import { verifyResultEnvelope } from "./result.mjs";
+
+const execFile = promisify(execFileCallback);
 
 const ROLES = Object.freeze(["payer", "requestor"]);
 const ROLE_LABELS = Object.freeze({ payer: "Payer", requestor: "Requestor" });
@@ -38,14 +41,29 @@ const DECIMAL_PATTERN = /^(?:0|[1-9][0-9]*)$/;
 const LEDGER_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const CLOCKCHAIN_TOKEN_PATTERN = /^cc_([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{16,})$/;
 const MAX_STDIO_BYTES = 1_048_576;
-const USAGE_ALLOWED_KEYS = Object.freeze([
-  "durationMs",
-  "input",
+const RAW_USAGE_KEYS = Object.freeze([
+  "api_calls",
+  "cache_read_tokens",
+  "cache_write_tokens",
+  "completed",
+  "cost_source",
+  "cost_status",
+  "estimated_cost_usd",
+  "failed",
+  "input_tokens",
   "model",
-  "output",
+  "output_tokens",
   "provider",
-  "total",
+  "reasoning_tokens",
+  "service_tier",
+  "session_id",
+  "total_tokens",
 ]);
+const EXPECTED_USAGE_MODEL = "k3";
+const EXPECTED_USAGE_PROVIDER = "kimi-coding";
+const COST_STATUS_VALUES = Object.freeze([null, "estimated", "exact", "unknown"]);
+const COST_SOURCE_VALUES = Object.freeze([null, "none", "official_docs_snapshot", "subagent"]);
+const SERVICE_TIER_VALUES = Object.freeze([null, "", "default", "flex", "priority"]);
 
 function fail() {
   throw new Error(SAFE_ERROR);
@@ -266,7 +284,7 @@ export function buildHermesPrompt({ role: inputRole, kitUrl: inputKitUrl, kitCom
 function appendBounded(target, chunk) {
   const value = Buffer.from(chunk).toString("utf8");
   const next = `${target}${value}`;
-  if (Buffer.byteLength(next, "utf8") > MAX_STDIO_BYTES) fail();
+  if (Buffer.byteLength(next, "utf8") > MAX_STDIO_BYTES) return undefined;
   return next;
 }
 
@@ -322,12 +340,6 @@ function killChild(child) {
 function waitForChild({ canaries, child, children, controller, role: cleanRole }) {
   let stdout = "";
   let stderr = "";
-  child.stdout?.on("data", (chunk) => {
-    stdout = appendBounded(stdout, chunk);
-  });
-  child.stderr?.on("data", (chunk) => {
-    stderr = appendBounded(stderr, chunk);
-  });
   return new Promise((resolvePromise) => {
     let done = false;
     function finish(value) {
@@ -335,6 +347,27 @@ function waitForChild({ canaries, child, children, controller, role: cleanRole }
       done = true;
       resolvePromise(value);
     }
+    function failStream() {
+      controller.abort();
+      for (const entry of children) killChild(entry);
+      finish({ ok: false, role: cleanRole });
+    }
+    child.stdout?.on("data", (chunk) => {
+      const next = appendBounded(stdout, chunk);
+      if (next === undefined) {
+        failStream();
+        return;
+      }
+      stdout = next;
+    });
+    child.stderr?.on("data", (chunk) => {
+      const next = appendBounded(stderr, chunk);
+      if (next === undefined) {
+        failStream();
+        return;
+      }
+      stderr = next;
+    });
     child.once("error", () => {
       controller.abort();
       for (const entry of children) killChild(entry);
@@ -343,9 +376,8 @@ function waitForChild({ canaries, child, children, controller, role: cleanRole }
     child.once("close", (code, signal) => {
       child.__handshakeClosed = true;
       const stderrBytes = Buffer.byteLength(stderr);
-      if (stderrBytes > MAX_STDIO_BYTES) fail();
       for (const canary of canaries) {
-        if (stderr.includes(canary)) {
+        if (stdout.includes(canary) || stderr.includes(canary)) {
           controller.abort();
           for (const entry of children) killChild(entry);
           finish({ ok: false, role: cleanRole, stderrBytes });
@@ -439,21 +471,137 @@ async function validateProvisioned({ room, role: cleanRole, runRoot, keyName, to
 
 function validateUsage(value) {
   const usage = object(value);
-  for (const key of Object.keys(usage)) {
-    if (!USAGE_ALLOWED_KEYS.includes(key)) fail();
+  if (Object.keys(usage).sort().join("\0") !== RAW_USAGE_KEYS.join("\0")) fail();
+  if (usage.completed !== true || usage.failed !== false || Object.hasOwn(usage, "failure")) fail();
+  if (usage.model !== EXPECTED_USAGE_MODEL || usage.provider !== EXPECTED_USAGE_PROVIDER) fail();
+  if (!COST_STATUS_VALUES.includes(usage.cost_status)) fail();
+  if (!COST_SOURCE_VALUES.includes(usage.cost_source)) fail();
+  if (!SERVICE_TIER_VALUES.includes(usage.service_tier)) fail();
+  if (typeof usage.session_id !== "string" || usage.session_id.length === 0 || usage.session_id.length > 128) fail();
+  if (typeof usage.estimated_cost_usd !== "number" || !Number.isFinite(usage.estimated_cost_usd) || usage.estimated_cost_usd < 0) fail();
+  for (const key of [
+    "api_calls",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "input_tokens",
+    "output_tokens",
+    "reasoning_tokens",
+    "total_tokens",
+  ]) {
+    if (!Number.isSafeInteger(usage[key]) || usage[key] < 0) fail();
   }
-  for (const key of ["input", "output", "total", "durationMs"]) {
-    if (usage[key] !== undefined && (!Number.isSafeInteger(usage[key]) || usage[key] < 0)) fail();
-  }
-  for (const key of ["model", "provider"]) {
-    if (usage[key] !== undefined && (typeof usage[key] !== "string" || usage[key].length > 128)) fail();
-  }
-  assertPublicCleanRoomEvidence(usage);
-  return Object.freeze({ ...usage });
+  const summary = Object.freeze({
+    completed: true,
+    costSource: usage.cost_source,
+    costStatus: usage.cost_status,
+    estimatedCostUsd: usage.estimated_cost_usd,
+    failed: false,
+    model: EXPECTED_USAGE_MODEL,
+    provider: EXPECTED_USAGE_PROVIDER,
+    serviceTier: usage.service_tier,
+    usageCounts: Object.freeze({
+      apiCalls: usage.api_calls,
+      cacheRead: usage.cache_read_tokens,
+      cacheWrite: usage.cache_write_tokens,
+      input: usage.input_tokens,
+      output: usage.output_tokens,
+      reasoning: usage.reasoning_tokens,
+      total: usage.total_tokens,
+    }),
+  });
+  assertPublicCleanRoomEvidence(summary);
+  return summary;
 }
 
 async function readUsage(path) {
   return validateUsage(await readJson(path));
+}
+
+async function pathExists(path, predicate) {
+  try {
+    const stats = await lstat(path);
+    return predicate === undefined ? true : predicate(stats);
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function topLevelDirectory(path) {
+  const stats = await lstat(path);
+  if (!stats.isDirectory() || stats.isSymbolicLink()) fail();
+  return (await readdir(path)).sort();
+}
+
+async function defaultInspectPostRun({ commandRunner = execFile, kitCommit: expectedCommit, room }) {
+  const cleanRole = role(room.role);
+  const workspace = absolutePath(room.paths.workspace);
+  const repo = join(workspace, "handshake-kit");
+  const packageLock = join(repo, "package-lock.json");
+  const nodeModules = join(repo, "node_modules");
+  const wallet = join(room.paths.home, ".clockchain", "wallet.json");
+  const workspaceEntries = await topLevelDirectory(workspace);
+  if (workspaceEntries.join("\0") !== "handshake-kit") fail();
+  const nodeModulesEntries = await topLevelDirectory(nodeModules);
+  const npmCacheEntries = await topLevelDirectory(room.paths.npmCache);
+  const corepackCacheEntries = await topLevelDirectory(room.paths.corepackHome);
+  const xdgCacheEntries = await topLevelDirectory(room.paths.xdgCache);
+  const { stdout } = await commandRunner("git", ["-C", repo, "rev-parse", "HEAD"], {
+    encoding: "utf8",
+    maxBuffer: 4_096,
+    timeout: 10_000,
+  });
+  const head = stdout.trim();
+  if (head !== expectedCommit) fail();
+  const lockBytes = await readFile(packageLock);
+  const walletStats = await lstat(wallet);
+  if (!walletStats.isFile() || walletStats.isSymbolicLink()) fail();
+  if (process.platform !== "win32" && (walletStats.mode & 0o777) !== 0o600) fail();
+  const topEntries = (await readdir(room.roleRoot)).sort();
+  const allowedTop = [
+    "corepack-cache",
+    "gitconfig",
+    "hermes-home",
+    "home",
+    "npm-cache",
+    "private-evidence",
+    "tmp",
+    "workspace",
+    "xdg-cache",
+  ].sort();
+  if (topEntries.join("\0") !== allowedTop.join("\0")) fail();
+  const summary = Object.freeze({
+    caches: Object.freeze({
+      corepack: Object.freeze({
+        topLevelCount: corepackCacheEntries.length,
+        populated: corepackCacheEntries.length > 0,
+      }),
+      npm: Object.freeze({
+        topLevelCount: npmCacheEntries.length,
+        populated: npmCacheEntries.length > 0,
+      }),
+      xdg: Object.freeze({
+        topLevelCount: xdgCacheEntries.length,
+        populated: xdgCacheEntries.length > 0,
+      }),
+    }),
+    cleanupEligibleRoot: true,
+    packageLockSha256: sha256(lockBytes),
+    role: cleanRole,
+    unexpectedSiblingPaths: false,
+    walletState: Object.freeze({ mode: "0600", present: true }),
+    workspace: Object.freeze({
+      nodeModulesTopLevelCount: nodeModulesEntries.length,
+      nodeModulesPresent: await pathExists(nodeModules, (stats) => stats.isDirectory() && !stats.isSymbolicLink()),
+      packageLockPresent: true,
+      pinnedCommit: head,
+      pinnedCommitMatches: true,
+      repoCheckoutPresent: true,
+      topLevelCount: workspaceEntries.length,
+    }),
+  });
+  assertPublicCleanRoomEvidence(summary);
+  return summary;
 }
 
 async function defaultVerifyRelayResult({ fetchImpl = fetch, relayUrl, sessionId }) {
@@ -532,6 +680,13 @@ async function safeCleanup({ cleanRoom, keepCleanrooms, localDebug, provisioned,
   if (settled.some((entry) => entry.status !== "fulfilled")) {
     fail();
   }
+  const cleanup = {};
+  for (const cleanRole of ROLES) {
+    const removed = await pathExists(expectedRoleRoot(runRoot, cleanRole)) === false;
+    if (removed !== true) fail();
+    cleanup[`${cleanRole}Removed`] = true;
+  }
+  return Object.freeze(cleanup);
 }
 
 export async function runHermesDemo(options = {}) {
@@ -549,11 +704,13 @@ export async function runHermesDemo(options = {}) {
       hermesBinary = DEFAULT_HERMES_BINARY,
       inferenceKeyName,
       inferenceKeyValue,
+      inspectPostRun = defaultInspectPostRun,
       keepCleanrooms = false,
       kitCommit: inputKitCommit,
       kitUrl: inputKitUrl,
       localDebug = false,
       mintDemoToken = defaultMintDemoToken,
+      postRunCommandRunner,
       relayUrl,
       runId: inputRunId,
       runRoot: inputRunRoot,
@@ -688,6 +845,16 @@ export async function runHermesDemo(options = {}) {
     for (const cleanRole of ROLES) {
       usages[cleanRole] = await readUsage(launch[cleanRole].usagePath);
     }
+    const postRun = {};
+    for (const cleanRole of ROLES) {
+      postRun[cleanRole] = await inspectPostRun({
+        commandRunner: postRunCommandRunner,
+        kitCommit: cleanKitCommit,
+        room: provisioned[cleanRole],
+      });
+    }
+    const cleanup = await safeCleanup(cleanupState);
+    cleanupState = null;
     const evidence = Object.freeze({
       certificate: Object.freeze({
         digest: summary.certificateDigest,
@@ -696,9 +863,11 @@ export async function runHermesDemo(options = {}) {
         receipts: summary.receipts,
       }),
       cleanRooms: Object.freeze(Object.fromEntries(ROLES.map((cleanRole) => [cleanRole, Object.freeze({
+        postRun: postRun[cleanRole],
         prePrompt: provisioned[cleanRole].publicPrePrompt,
         preProvision: provisioned[cleanRole].publicPreProvision,
       })]))),
+      cleanup,
       finalResponses: roleResults,
       principals: Object.freeze({
         payer: Object.freeze({ sha256: provisioned.payer.principalSha256 }),
@@ -711,8 +880,6 @@ export async function runHermesDemo(options = {}) {
     });
     const evidencePath = join(cleanRunRoot, "evidence", "result.json");
     await finalizeEvidence({ canaries, evidence, evidencePath });
-    await safeCleanup(cleanupState);
-    cleanupState = null;
     return Object.freeze({ evidencePath, summary });
   } catch (error) {
     sanitize(error);
