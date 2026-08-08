@@ -1,6 +1,6 @@
 # Handoff — two-agent build + AWS migration
 
-**As of:** 2026-08-07 · **Branch:** `codex/handshake-build` · **908 tests pass and all
+**As of:** 2026-08-07 · **Branch:** `codex/handshake-build` · **910 tests pass and all
 structural invariants hold.** The previous handoff (still valid for context, landmines §4, known
 gaps §5, and the stakeholder-prompt lesson §6) is archived at
 [docs/handoff-2026-08-04.md](docs/handoff-2026-08-04.md).
@@ -90,6 +90,14 @@ then do Track A while AWS/DNS steps settle.
   `ubuntu`. The same wrapper is live on `i-0d6765d143da7e1ea`; the exact PING
   read passed through the instance role and `/home/ubuntu/.aws` remained absent
   before and after. B2 is green.
+
+- 2026-08-07 — B3 pre-deploy review found the live GCP service advertising a
+  temporary token-mint limit of 240/hour/IP while the locked plan, handoff, and
+  server default require 10. A header-only verification mint returned limit
+  240. The GCP service was restored to `MCP_TOKEN_MINT_PER_HOUR=10` in revision
+  `clockchain-mcp-00018-csh`; `/health` stayed green and a fresh public response
+  reported limit 10. The AWS deploy assets also pin 10, so B4 will compare the
+  intended abuse ceiling rather than propagate the drift.
 
 - 2026-08-07 — G0 attempt 1 stopped after both roles completed their ledger
   work but before host verification. We ran a local relay on `127.0.0.1:18789`,
