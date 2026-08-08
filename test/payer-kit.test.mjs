@@ -51,7 +51,7 @@ test("payer rejects discovery repository key substitution before running its rol
       discovery: { operatorPublicKey: "expected-public-key" },
       handshake: { body: { repositoryPublicKey: "substituted-public-key" } },
     }),
-    /signed terms name a different operator key/u,
+    /signed terms name a different session host key/u,
   );
 });
 

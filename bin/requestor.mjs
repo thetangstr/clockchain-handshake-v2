@@ -6,7 +6,7 @@
  * hand. It fetches the invitation behind that URL, checks it, generates its own
  * keypair, asks to be paid, follows whatever the payer's response tells it to do,
  * registers its own on-chain identity, and records its acceptance. It never claims
- * the run succeeded — only the operator's independent verifier can say that, and
+ * the run succeeded — only the session host's independent checker can say that, and
  * this says so out loud.
  */
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -248,9 +248,9 @@ async function main() {
         certificate = envelope;
       } catch (error) {
         // Fail closed on the artifact, honestly: a document that does not
-        // verify against this session's operator key is treated as absent,
+        // verify against this session's host key is treated as absent,
         // and saying so beats pretending it never arrived.
-        say("VERIFYING", `A closing certificate arrived but did NOT verify against this session's operator key (${error?.message ?? "unknown"}). Refusing it.`);
+        say("VERIFYING", `A closing certificate arrived but did NOT verify against this session host key (${error?.message ?? "unknown"}). Refusing it.`);
       }
       break;
     }
@@ -263,7 +263,7 @@ async function main() {
     const r = certificate.result;
     process.stdout.write(
       `\nThe independent verifier's certificate has arrived, and its signature\n` +
-      `verifies against this session's operator key.\n\n` +
+      `verifies against this session host key.\n\n` +
       `  Its verdict: ${r.outcome}\n` +
       `  No money moved: ${r.paymentMoved === false}\n` +
       r.anchors.map((a) => `  ${a.kind}  block ${a.blockHeight}  ledger ${a.ledgerId}`).join("\n") +

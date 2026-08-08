@@ -25,6 +25,8 @@ const MAX_PARAGRAPH_LINES = 12;
 const TOKEN_SHAPED = /[A-Za-z0-9_-]{32,}/;
 const FORTY_HEX = /\b[0-9a-f]{40}\b/i;
 const PLACEHOLDER = /<[A-Z][A-Z0-9_]*>/g;
+const LIVE_BRANCH = "codex/handshake-build";
+const STALE_BRANCH = "claude/handshake-v6";
 
 async function load(name) {
   return readFile(join(ROOT, "prompts", `${name}.md`), "utf8");
@@ -97,6 +99,15 @@ for (const name of PROMPTS) {
     assert.match(text, /22 or higher/);
   });
 
+  test(`prompts/${name}.md describes npm ci honestly`, async () => {
+    const text = await load(name);
+    assert.match(
+      text,
+      /only direct npm dependency is viem; npm ci installs locked transitive dependencies; nothing globally/i,
+    );
+    assert.ok(!text.includes("Exactly one package is installed"));
+  });
+
   test(`prompts/${name}.md keeps the testnet limitation honest`, async () => {
     const text = await load(name);
     assert.match(text, /single-validator testnet/i);
@@ -120,9 +131,11 @@ test("prompts/requestor.md installs from a clean clone and takes exactly one inp
   // unbranched command, which is how that shipped.
   assert.match(
     text,
-    /git clone -b claude\/handshake-v6 https:\/\/github\.com\/thetangstr\/clockchain-handshake-v2\.git/,
+    /git clone -b codex\/handshake-build https:\/\/github\.com\/thetangstr\/clockchain-handshake-v2\.git/,
     "the clone must pin the branch that actually contains the requestor",
   );
+  assert.ok(!text.includes(STALE_BRANCH), `${STALE_BRANCH} is a stale branch for stranger setup`);
+  assert.ok(text.includes(LIVE_BRANCH));
   assert.match(text, /npm ci/);
   assert.match(text, /node bin\/requestor\.mjs --discovery-url <DISCOVERY_URL>/);
   const distinct = new Set(text.match(PLACEHOLDER) ?? []);
@@ -137,9 +150,11 @@ test("prompts/payer.md installs from a clean clone and takes the hosted discover
   const text = await load("payer");
   assert.match(
     text,
-    /git clone -b claude\/handshake-v6 https:\/\/github\.com\/thetangstr\/clockchain-handshake-v2\.git/,
+    /git clone -b codex\/handshake-build https:\/\/github\.com\/thetangstr\/clockchain-handshake-v2\.git/,
     "the payer prompt must work for a stranger from a clean public checkout",
   );
+  assert.ok(!text.includes(STALE_BRANCH), `${STALE_BRANCH} is a stale branch for stranger setup`);
+  assert.ok(text.includes(LIVE_BRANCH));
   assert.match(text, /npm ci/);
   assert.match(text, /node bin\/payer\.mjs --discovery-url <DISCOVERY_URL>/);
   assert.ok(!text.includes("npm run demo"), "the hosted path must not start the legacy demo operator");

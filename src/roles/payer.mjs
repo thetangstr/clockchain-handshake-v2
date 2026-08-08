@@ -46,7 +46,7 @@ export function assertHandshakeRepositoryKey({ discovery, handshake }) {
   const expected = discovery?.operatorPublicKey;
   const actual = handshake?.body?.repositoryPublicKey;
   if (actual !== expected) {
-    throw new Error("The signed terms name a different operator key than the invitation.");
+    throw new Error("The signed terms name a different session host key than the invitation.");
   }
   return actual;
 }

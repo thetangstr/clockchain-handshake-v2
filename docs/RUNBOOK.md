@@ -25,6 +25,24 @@ curl -s http://44.249.47.220:8080/healthz
 
 Expect JSON with `"ok":true` and `"paymentMoved":false`.
 
+Check the Clockchain MCP endpoint the kits write through:
+
+```bash
+curl -s https://mcp.clockchain.network/health
+```
+
+Expect a healthy JSON response before inviting either side.
+
+Fetch the current discovery JSON:
+
+```bash
+curl -s http://44.249.47.220:8080/v1/discovery/current
+```
+
+Expect JSON with `sessionId`, `relayUrl`, and `operatorPublicKey`. The field is
+still named `operatorPublicKey` on the wire; public instructions call it the
+session host key.
+
 Open the monitor URL above. It should either show the current session or keep
 retrying until the AWS host publishes the next one.
 
@@ -52,7 +70,7 @@ session, relay, and host key.
 Requestor:
 
 ```bash
-git clone -b claude/handshake-v6 https://github.com/thetangstr/clockchain-handshake-v2.git
+git clone -b codex/handshake-build https://github.com/thetangstr/clockchain-handshake-v2.git
 cd clockchain-handshake-v2
 npm ci
 node bin/requestor.mjs --discovery-url <DISCOVERY_URL>
@@ -61,7 +79,7 @@ node bin/requestor.mjs --discovery-url <DISCOVERY_URL>
 Payer:
 
 ```bash
-git clone -b claude/handshake-v6 https://github.com/thetangstr/clockchain-handshake-v2.git
+git clone -b codex/handshake-build https://github.com/thetangstr/clockchain-handshake-v2.git
 cd clockchain-handshake-v2
 npm ci
 node bin/payer.mjs --discovery-url <DISCOVERY_URL>

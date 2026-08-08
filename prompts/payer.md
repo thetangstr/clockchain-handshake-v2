@@ -37,11 +37,11 @@ Skip this if you already have a normal developer setup.
   ethereum-sepolia-rpc.publicnode.com, and 44.249.47.220 on port 8080
 - permission to leave one command running for a few minutes
 
-Exactly one package is installed, viem, and nothing is installed globally.
+The only direct npm dependency is viem; npm ci installs locked transitive dependencies; nothing globally.
 
 ## Set up now, before the host opens the session
 
-1. Run: git clone -b claude/handshake-v6 https://github.com/thetangstr/clockchain-handshake-v2.git
+1. Run: git clone -b codex/handshake-build https://github.com/thetangstr/clockchain-handshake-v2.git
    then move into the clockchain-handshake-v2 folder it creates.
 2. Run: node --version — it must report 22 or higher.
 3. Run: npm ci

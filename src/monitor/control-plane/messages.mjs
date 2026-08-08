@@ -62,7 +62,7 @@ export const REASON_CODES = Object.freeze([
 export const STATUS_MESSAGES = Object.freeze({
   SESSION_STARTED: "Session started. No anchors exist yet; nothing can expire.",
   REHEARSAL_PASSED: "Rehearsal drill passed. Stakeholder engagement is cleared to begin.",
-  TERMS_PUBLISHED: "The host published the signed payment terms.",
+  TERMS_PUBLISHED: "The payer published the signed payment terms.",
   REQUEST_SUBMITTED: "The payment request was submitted for this session.",
   HANDSHAKE_REQUIRED: "Waiting on a role to bind and begin the handshake.",
   IDENTITY_REGISTERED: "Both on-chain identities are registered.",

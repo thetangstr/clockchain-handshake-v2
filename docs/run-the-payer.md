@@ -24,12 +24,14 @@ account of yours, ask you for any secret, or read anything outside the folder it
 clones into. This is a single-validator testnet, not mainnet or court-grade
 evidence.
 
+The only direct npm dependency is viem; npm ci installs locked transitive dependencies; nothing globally.
+
 ## Then run it
 
 Needs Node 22 or newer. Everything lands in the folder it clones.
 
 ```
-git clone -b claude/handshake-v6 https://github.com/thetangstr/clockchain-handshake-v2.git
+git clone -b codex/handshake-build https://github.com/thetangstr/clockchain-handshake-v2.git
 cd clockchain-handshake-v2
 npm ci
 node bin/payer.mjs --discovery-url http://44.249.47.220:8080/v1/discovery/current

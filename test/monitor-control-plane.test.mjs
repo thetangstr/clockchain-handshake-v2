@@ -158,7 +158,7 @@ test("GET /control/snapshot returns the injected snapshot verbatim", async () =>
 test("control-plane narration names the host role without stale operator or four-address copy", () => {
   assert.equal(
     STATUS_MESSAGES.TERMS_PUBLISHED,
-    "The host published the signed payment terms.",
+    "The payer published the signed payment terms.",
   );
   assert.equal(
     STATUS_MESSAGES.FUNDED,

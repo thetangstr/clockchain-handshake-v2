@@ -6,7 +6,7 @@ One command, about a minute. Read this first — it is short on purpose.
 
 The code is public. Your side is one file:
 
-    https://github.com/thetangstr/clockchain-handshake-v2/blob/claude/handshake-v6/bin/requestor.mjs
+    https://github.com/thetangstr/clockchain-handshake-v2/blob/codex/handshake-build/bin/requestor.mjs
 
 209 lines. It imports about 13,000 more under `src/`, so reading the entry
 point is not a full audit — but it is enough to see the shape of what runs.
@@ -19,7 +19,7 @@ cent of test-network ETH so it can pay the transaction fee.
 
 **What it does not do.** No mainnet. No real funds. It does not touch any
 account of yours, ask you for any secret, or read anything outside the folder
-it clones into. One npm dependency, `viem`, pinned by lockfile. This is a
+it clones into. The only direct npm dependency is `viem`; `npm ci` installs locked transitive dependencies; nothing globally. This is a
 single-validator testnet, not mainnet or court-grade evidence.
 
 ## Then run it
@@ -27,7 +27,7 @@ single-validator testnet, not mainnet or court-grade evidence.
 Needs Node 22 or newer. Everything lands in the folder it clones.
 
 ```
-git clone -b claude/handshake-v6 https://github.com/thetangstr/clockchain-handshake-v2.git
+git clone -b codex/handshake-build https://github.com/thetangstr/clockchain-handshake-v2.git
 cd clockchain-handshake-v2
 npm ci
 node bin/requestor.mjs --discovery-url http://44.249.47.220:8080/v1/discovery/current

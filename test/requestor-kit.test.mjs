@@ -24,6 +24,29 @@ test("requestor binds the handshake repository key to the validated invitation",
   );
 });
 
+test("requestor checks the host key after handshake_required and before watching or role work", async () => {
+  const source = await requestorSource();
+  const handshakeIndex = source.indexOf('awaitKind("handshake_required"');
+  const keyCheckIndex = source.indexOf("assertHandshakeRepositoryKey", handshakeIndex);
+  const watchingIndex = source.indexOf('kind: "watching"', handshakeIndex);
+  const roleIndex = source.indexOf("runPayeeRole", handshakeIndex);
+
+  assert.notEqual(handshakeIndex, -1, "handshake_required intake must exist");
+  assert.notEqual(keyCheckIndex, -1, "repository-key binding check must exist after handshake intake");
+  assert.notEqual(watchingIndex, -1, "watching signal must exist");
+  assert.notEqual(roleIndex, -1, "requestor role work must exist");
+  assert.ok(handshakeIndex < keyCheckIndex, "key binding must happen after handshake_required intake");
+  assert.ok(keyCheckIndex < watchingIndex, "key binding must happen before watching is posted");
+  assert.ok(keyCheckIndex < roleIndex, "key binding must happen before runPayeeRole");
+});
+
+test("requestor-facing host-key prose does not say operator key", async () => {
+  const source = await requestorSource();
+
+  assert.ok(!source.includes("operator key"), "requestor CLI prose must say session host key");
+  assert.match(source, /session host key/);
+});
+
 test("requestor cannot bypass discovery validation with explicit relay/session flags", async () => {
   const source = await requestorSource();
 
