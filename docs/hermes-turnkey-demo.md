@@ -74,8 +74,8 @@ Requirements:
 - Node.js 22 or newer;
 - the pinned Hermes 0.19.1 Mac build at
   `/Users/maxiaoer/.local/bin/hermes`;
-- a reusable Kimi inference key stored as raw text in the mode-`0600` operator
-  file `/Users/maxiaoer/.clockchain/hermes-demo/kimi.key`;
+- a reusable MiniMax China inference key stored as raw text in the mode-`0600`
+  operator file `/Users/maxiaoer/.clockchain/hermes-demo/minimax-cn.key`;
 - a clean checkout whose current branch HEAD exactly matches its live GitHub
   remote branch.
 
@@ -89,6 +89,8 @@ npm run demo:hermes
 The second line is the single launch command. Operators reach this control
 surface only through the authenticated Mac-mini account (normally over SSH);
 the public presenter and relay board have no launch or signing authority.
+Both disposable agents are pinned to provider `minimax-cn` and model
+`MiniMax-M3`; no fallback provider is enabled.
 
 The production wrapper derives a UUID run id, uses the canonical repository and
 relay, verifies that the current commit is pushed, and retains sanitized public

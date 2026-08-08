@@ -50,7 +50,7 @@ const EXPECTED_GIT_HEAD = "87bc710609f8b89b6e6b4aa418dde8ee30ec6873";
 const EXPECTED_GIT_DESCRIBE = "v2026.7.30-357-g87bc71060";
 const EXPECTED_CONFIG_VERSION = 33;
 const DOTENV_KEY_PATTERN = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/;
-const PROVIDER_KEY_NAMES = Object.freeze(["KIMI_API_KEY", "KIMI_CODING_API_KEY"]);
+const PROVIDER_KEY_NAMES = Object.freeze(["MINIMAX_CN_API_KEY"]);
 const SECRET_KEY_PATTERN = /(?:KEY|TOKEN|SECRET|AUTH|PASSWORD|CREDENTIAL)/i;
 const CLOCKCHAIN_TOKEN_PATTERN = /^cc_([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{16,})$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -675,7 +675,7 @@ function buildConfig(paths) {
       },
     },
     memory: { memory_enabled: false, user_profile_enabled: false },
-    model: { default: "k3", provider: "kimi-coding" },
+    model: { default: "MiniMax-M3", provider: "minimax-cn" },
     platform_toolsets: { cli: ["terminal", "file", "clockchain"] },
     security: { redact_secrets: true },
     terminal: {
@@ -978,7 +978,7 @@ export async function provisionHermesCleanRoom({
   peerClockchainMcpToken,
   prepared,
   probeEnvLoader = defaultProbeEnvLoader,
-  providerKeyName = "KIMI_API_KEY",
+  providerKeyName = "MINIMAX_CN_API_KEY",
   providerKeyValue,
   room,
 } = {}) {

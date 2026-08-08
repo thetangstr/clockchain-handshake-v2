@@ -22,7 +22,7 @@ const CLOCKCHAIN_TOOLS = Object.freeze([
   "handshake_submit",
   "handshake_get_certificate",
 ]);
-const SUPPORTED_KIMI_KEYS = Object.freeze(["KIMI_API_KEY", "KIMI_CODING_API_KEY"]);
+const SUPPORTED_INFERENCE_KEYS = Object.freeze(["MINIMAX_CN_API_KEY"]);
 const CANONICAL_KIT_URL = "https://github.com/thetangstr/clockchain-handshake-v2.git";
 const DEFAULT_RELAY_URL = "http://44.249.47.220:8080";
 const MCP_HEALTH_URL = "https://mcp.clockchain.network/health";
@@ -61,8 +61,8 @@ const RAW_USAGE_KEYS = Object.freeze([
   "session_id",
   "total_tokens",
 ]);
-const EXPECTED_USAGE_MODEL = "k3";
-const EXPECTED_USAGE_PROVIDER = "kimi-coding";
+const EXPECTED_USAGE_MODEL = "MiniMax-M3";
+const EXPECTED_USAGE_PROVIDER = "minimax-cn";
 const COST_STATUS_VALUES = Object.freeze([null, "estimated", "exact", "unknown"]);
 const COST_SOURCE_VALUES = Object.freeze([null, "none", "official_docs_snapshot", "subagent"]);
 const SERVICE_TIER_VALUES = Object.freeze([null, "", "default", "flex", "priority"]);
@@ -259,11 +259,11 @@ async function loadDefaultCleanRoomFunctions() {
   };
 }
 
-export async function readKimiCredential({ credentialFile, env = process.env, keyName = "KIMI_API_KEY" } = {}) {
+export async function readInferenceCredential({ credentialFile, env = process.env, keyName = "MINIMAX_CN_API_KEY" } = {}) {
   try {
-    if (!SUPPORTED_KIMI_KEYS.includes(keyName)) fail();
+    if (!SUPPORTED_INFERENCE_KEYS.includes(keyName)) fail();
     object(env);
-    const present = SUPPORTED_KIMI_KEYS.filter((name) => typeof env[name] === "string" && env[name].length > 0);
+    const present = SUPPORTED_INFERENCE_KEYS.filter((name) => typeof env[name] === "string" && env[name].length > 0);
     if (credentialFile !== undefined) {
       if (present.length > 0) fail();
       const value = (await readPrivateText({ path: absolutePath(credentialFile) })).trim();
@@ -829,10 +829,10 @@ export async function runHermesDemo(options = {}) {
     }
     const credential = inferenceKeyValue !== undefined
       ? (() => {
-          if (!SUPPORTED_KIMI_KEYS.includes(inferenceKeyName) || typeof inferenceKeyValue !== "string" || inferenceKeyValue.length === 0) fail();
+          if (!SUPPORTED_INFERENCE_KEYS.includes(inferenceKeyName) || typeof inferenceKeyValue !== "string" || inferenceKeyValue.length === 0) fail();
           return { keyName: inferenceKeyName, value: inferenceKeyValue };
         })()
-      : await readKimiCredential({ credentialFile, env, keyName: inferenceKeyName ?? "KIMI_API_KEY" });
+      : await readInferenceCredential({ credentialFile, env, keyName: inferenceKeyName ?? "MINIMAX_CN_API_KEY" });
     const tokenEntries = [];
     for (const cleanRole of ROLES) {
       tokenEntries.push([cleanRole, validateToken(await mintDemoToken({ subject: `hermes-demo:${cleanRunId}:${cleanRole}` }))]);
@@ -886,9 +886,9 @@ export async function runHermesDemo(options = {}) {
         launch[cleanRole].usagePath,
         "--ignore-rules",
         "--provider",
-        "kimi-coding",
+        "minimax-cn",
         "-m",
-        "k3",
+        "MiniMax-M3",
         "-t",
         "terminal,file,clockchain",
       ], {

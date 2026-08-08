@@ -76,7 +76,7 @@ function jtiFingerprint(jti) {
 async function makeFakeHermesInstall(root, {
   dirty = false,
   dotenv = [
-    "KIMI_API_KEY=from-shared-dotenv",
+    "MINIMAX_CN_API_KEY=from-shared-dotenv",
     "OPENAI_API_KEY=from-shared-dotenv",
     "CLOCKCHAIN_TOKEN=from-shared-dotenv",
   ],
@@ -186,8 +186,8 @@ function basePrepare(root, install) {
 function providerInput(jti = UUIDS.payer) {
   return {
     clockchainMcpToken: clockchainToken(jti),
-    providerKeyName: "KIMI_API_KEY",
-    providerKeyValue: "kimi-provider-secret-00000000000000000000",
+    providerKeyName: "MINIMAX_CN_API_KEY",
+    providerKeyValue: "minimax-provider-secret-0000000000000000",
   };
 }
 
@@ -266,7 +266,7 @@ test("prepare and provision are split so both rooms can be prepared before any s
       },
     },
     memory: { memory_enabled: false, user_profile_enabled: false },
-    model: { default: "k3", provider: "kimi-coding" },
+    model: { default: "MiniMax-M3", provider: "minimax-cn" },
     platform_toolsets: { cli: ["terminal", "file", "clockchain"] },
     security: { redact_secrets: true },
     terminal: {
@@ -282,7 +282,7 @@ test("prepare and provision are split so both rooms can be prepared before any s
   assert.equal(provisioned.env.PATH, MAC_PATH);
   assert.equal(provisioned.env.HOME, payer.paths.home);
   assert.equal(provisioned.env.HERMES_HOME, payer.paths.hermesHome);
-  assert.equal(provisioned.env.KIMI_API_KEY, "kimi-provider-secret-00000000000000000000");
+  assert.equal(provisioned.env.MINIMAX_CN_API_KEY, "minimax-provider-secret-0000000000000000");
   assert.equal(provisioned.env.OPENAI_API_KEY, "");
   assert.equal(provisioned.env.CLOCKCHAIN_TOKEN, "");
   assert.equal(Object.hasOwn(provisioned.env, "MOONSHOT_API_KEY"), false);
@@ -317,11 +317,11 @@ test("prepare and provision are split so both rooms can be prepared before any s
   assert.equal(prePrompt.zeroState.clean, true);
   const retained = `${await readFile(payer.manifests.preProvisionPath, "utf8")}\n${await readFile(join(payer.runRoot, prePrompt.retainedEvidencePath), "utf8")}`;
   assert.equal(retained.includes(providerInput(UUIDS.payer).clockchainMcpToken), false);
-  assert.equal(retained.includes("kimi-provider-secret-00000000000000000000"), false);
+  assert.equal(retained.includes(providerInput(UUIDS.payer).providerKeyValue), false);
   assert.equal(retained.includes(payer.paths.hermesHome), false);
   assertPublicCleanRoomEvidence(prePrompt, [
     providerInput(UUIDS.payer).clockchainMcpToken,
-    "kimi-provider-secret-00000000000000000000",
+    providerInput(UUIDS.payer).providerKeyValue,
     payer.paths.hermesHome,
   ]);
 });
@@ -353,14 +353,13 @@ test("production default adapters use fake executable and venv-python contracts"
   assert.equal(calls.every((call) => call.env?.HERMES_HOME === undefined || call.env.HERMES_HOME.startsWith(root)), true);
   const provisioned = await provisionHermesCleanRoom({
     clockchainMcpToken: providerInput(UUIDS.defaultAdapter).clockchainMcpToken,
-    inferenceKeyName: "KIMI_CODING_API_KEY",
-    inferenceKeyValue: "kimi-provider-secret-22222222222222222222",
+    inferenceKeyName: "MINIMAX_CN_API_KEY",
+    inferenceKeyValue: "minimax-provider-secret-2222222222222222",
     prepared: room,
   });
   assert.deepEqual(provisioned.probes.mcp.registeredTools, REGISTERED_TOOLS);
   assert.equal(provisioned.probes.envLoader.roleEnvCommentOnly, true);
-  assert.equal(provisioned.env.KIMI_CODING_API_KEY, "kimi-provider-secret-22222222222222222222");
-  assert.equal(provisioned.env.KIMI_API_KEY, "");
+  assert.equal(provisioned.env.MINIMAX_CN_API_KEY, "minimax-provider-secret-2222222222222222");
 });
 
 test("provision removes only the pinned empty artifacts created by live MCP discovery", async (t) => {
@@ -599,7 +598,7 @@ test("provision rejects bad provider names, malformed tokens, equal peer tokens,
   const install = await makeFakeHermesInstall(root);
   const room = await prepareHermesCleanRoom({ ...basePrepare(root, install), role: "payer" });
   await assert.rejects(
-    provisionHermesCleanRoom({ room, ...providerInput("bad-provider"), providerKeyName: "MOONSHOT_API_KEY" }),
+    provisionHermesCleanRoom({ room, ...providerInput("bad-provider"), providerKeyName: "KIMI_API_KEY" }),
     /Clean room preparation failed safely/,
   );
   await assert.rejects(
@@ -630,7 +629,7 @@ test("provision rejects bad provider names, malformed tokens, equal peer tokens,
     /Clean room preparation failed safely/,
   );
   const validEnvProbe = {
-    allowedSecretKeysPresent: { KIMI_API_KEY: true, AUXILIARY_CLOCKCHAIN_MCP_API_KEY: true },
+    allowedSecretKeysPresent: { MINIMAX_CN_API_KEY: true, AUXILIARY_CLOCKCHAIN_MCP_API_KEY: true },
     dotenvEmpty: { CLOCKCHAIN_TOKEN: true, OPENAI_API_KEY: true },
     loadedCount: 1,
     loadedRoleEnv: true,
@@ -641,8 +640,8 @@ test("provision rejects bad provider names, malformed tokens, equal peer tokens,
     terminalSanitizerRemovedProvider: true,
   };
   for (const badProbe of [
-    { ...validEnvProbe, allowedSecretKeysPresent: { KIMI_API_KEY: true } },
-    { ...validEnvProbe, allowedSecretKeysPresent: { KIMI_API_KEY: true, AUXILIARY_CLOCKCHAIN_MCP_API_KEY: false } },
+    { ...validEnvProbe, allowedSecretKeysPresent: { MINIMAX_CN_API_KEY: true } },
+    { ...validEnvProbe, allowedSecretKeysPresent: { MINIMAX_CN_API_KEY: true, AUXILIARY_CLOCKCHAIN_MCP_API_KEY: false } },
     { ...validEnvProbe, dotenvEmpty: { CLOCKCHAIN_TOKEN: true } },
     { ...validEnvProbe, loadedCount: 0 },
     { ...validEnvProbe, loadedRoleEnv: false },
@@ -703,7 +702,7 @@ test("evidence scanner rejects embedded absolute paths, canaries, and retained s
   const root = await temporaryRoot(t);
   const install = await makeFakeHermesInstall(root);
   const room = await prepareHermesCleanRoom({ ...basePrepare(root, install), role: "payer" });
-  const secret = "kimi-provider-secret-retained-111111111111111111";
+  const secret = "retired-provider-secret-retained-111111111111111";
   const provisioned = await provisionHermesCleanRoom({
     room,
     ...providerInput(UUIDS.retained),

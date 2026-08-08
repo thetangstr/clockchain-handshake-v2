@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { digestHex } from "../src/core/canonical.mjs";
 import {
   buildHermesPrompt,
-  readKimiCredential,
+  readInferenceCredential,
   runHermesDemo,
 } from "../src/core/hermes-launcher.mjs";
 import {
@@ -30,7 +30,7 @@ const ROOT = resolve(join(dirname(fileURLToPath(import.meta.url)), ".."));
 const KIT_URL = "https://github.com/thetangstr/clockchain-handshake-v2.git";
 const KIT_COMMIT = "0123456789abcdef0123456789abcdef01234567";
 const HERMES = "/Users/maxiaoer/.local/bin/hermes";
-const KIMI = "kimi-secret-AAAAAAAAAAAAAAAAAAAAAAAA";
+const INFERENCE_SECRET = "minimax-secret-AAAAAAAAAAAAAAAAAAAAAAAA";
 const SESSION_ID = "123e4567-e89b-42d3-a456-426614174000";
 const PAYER_ADDRESS = "0x1111111111111111111111111111111111111111";
 const REQUESTOR_ADDRESS = "0x2222222222222222222222222222222222222222";
@@ -118,9 +118,9 @@ async function tempRoot(t) {
   return resolve(root);
 }
 
-async function writePrivateCredential(t, value = KIMI) {
+async function writePrivateCredential(t, value = INFERENCE_SECRET) {
   const root = await tempRoot(t);
-  const path = join(root, "kimi.key");
+  const path = join(root, "minimax-cn.key");
   await writeFile(path, value, { mode: 0o600 });
   await chmod(path, 0o600);
   return path;
@@ -141,9 +141,9 @@ function hermesUsage(overrides = {}) {
     estimated_cost_usd: 0.0123,
     failed: false,
     input_tokens: 100,
-    model: "k3",
+    model: "MiniMax-M3",
     output_tokens: 40,
-    provider: "kimi-coding",
+    provider: "minimax-cn",
     reasoning_tokens: 6,
     service_tier: null,
     session_id: "hermes-private-session-id",
@@ -247,7 +247,7 @@ function envFor(room, tokenValue, inferenceKeyValue) {
     GIT_CONFIG_NOSYSTEM: "1",
     HERMES_HOME: join(room.roleRoot, "hermes-home"),
     HOME: join(room.roleRoot, "home"),
-    KIMI_API_KEY: inferenceKeyValue,
+    MINIMAX_CN_API_KEY: inferenceKeyValue,
     LANG: "C.UTF-8",
     LC_ALL: "C.UTF-8",
     NPM_CONFIG_CACHE: join(room.roleRoot, "npm-cache"),
@@ -271,7 +271,7 @@ async function realCleanRoomOptions(root) {
   const installRoot = join(root, "hermes-agent");
   await mkdir(installRoot, { recursive: true, mode: 0o700 });
   await writeFile(join(installRoot, ".env"), [
-    "KIMI_API_KEY=from-shared-dotenv",
+    "MINIMAX_CN_API_KEY=from-shared-dotenv",
     "OPENAI_API_KEY=from-shared-dotenv",
     "CLOCKCHAIN_TOKEN=from-shared-dotenv",
     "",
@@ -375,8 +375,8 @@ function harness(root, t, options = {}) {
       credentialFile: options.credentialFile,
       env: options.env ?? {},
       hermesBinary: HERMES,
-      inferenceKeyName: "KIMI_API_KEY",
-      inferenceKeyValue: options.inferenceKeyValue ?? KIMI,
+      inferenceKeyName: "MINIMAX_CN_API_KEY",
+      inferenceKeyValue: options.inferenceKeyValue ?? INFERENCE_SECRET,
       kitCommit: KIT_COMMIT,
       kitUrl: KIT_URL,
       localDebug: options.localDebug ?? false,
@@ -503,9 +503,9 @@ test("-z receives prompt text, both prompts are built before spawn, and both chi
       join(root, "roles", call.role, "private-evidence", "usage.json"),
       "--ignore-rules",
       "--provider",
-      "kimi-coding",
+      "minimax-cn",
       "-m",
-      "k3",
+      "MiniMax-M3",
       "-t",
       "terminal,file,clockchain",
     ]);
@@ -524,7 +524,7 @@ test("each child receives the exact provisioned allowlist env and its own token"
 
   for (const call of h.calls.spawns) {
     assert.equal(call.options.env.AUXILIARY_CLOCKCHAIN_MCP_API_KEY, call.role === "payer" ? TOKEN_A : TOKEN_B);
-    assert.equal(call.options.env.KIMI_API_KEY, KIMI);
+    assert.equal(call.options.env.MINIMAX_CN_API_KEY, INFERENCE_SECRET);
     assert.deepEqual(Object.keys(call.options.env).sort(), [
       "AUXILIARY_CLOCKCHAIN_MCP_API_KEY",
       "COREPACK_HOME",
@@ -532,9 +532,9 @@ test("each child receives the exact provisioned allowlist env and its own token"
       "GIT_CONFIG_NOSYSTEM",
       "HERMES_HOME",
       "HOME",
-      "KIMI_API_KEY",
       "LANG",
       "LC_ALL",
+      "MINIMAX_CN_API_KEY",
       "NPM_CONFIG_CACHE",
       "PATH",
       "PYTHONNOUSERSITE",
@@ -564,7 +564,7 @@ test("launcher uses real cleanroom prepare/provision contract with only Hermes r
   assert.equal(h.calls.spawns.length, 2);
   for (const call of h.calls.spawns) {
     assert.equal(call.options.env.AUXILIARY_CLOCKCHAIN_MCP_API_KEY, call.role === "payer" ? TOKEN_A : TOKEN_B);
-    assert.equal(call.options.env.KIMI_API_KEY, KIMI);
+    assert.equal(call.options.env.MINIMAX_CN_API_KEY, INFERENCE_SECRET);
     assert.equal(call.options.env.OPENAI_API_KEY, "");
     assert.equal(call.options.env.CLOCKCHAIN_TOKEN, "");
     assert.equal(call.options.env.HOME, join(root, "roles", call.role, "home"));
@@ -753,7 +753,7 @@ test("retained evidence embeds public manifests and usage without token digests,
   const retained = await readFile(result.evidencePath, "utf8");
   assert.equal(retained.includes(TOKEN_A), false);
   assert.equal(retained.includes(TOKEN_B), false);
-  assert.equal(retained.includes(KIMI), false);
+  assert.equal(retained.includes(INFERENCE_SECRET), false);
   assert.equal(retained.includes(root), false);
   assert.equal(retained.includes("tokenSha256"), false);
   assert.equal(retained.includes("stdout"), false);
@@ -919,7 +919,7 @@ test("production CLI exposes turnkey defaults and rejects debug cleanroom retent
   assert.match(stdout, /https:\/\/github\.com\/thetangstr\/clockchain-handshake-v2\.git/);
   assert.match(stdout, /http:\/\/44\.249\.47\.220:8080/);
   assert.match(stdout, /CLOCKCHAIN_HERMES_DEMO_ROOT/);
-  assert.match(stdout, /\/Users\/maxiaoer\/\.clockchain\/hermes-demo\/kimi\.key/);
+  assert.match(stdout, /\/Users\/maxiaoer\/\.clockchain\/hermes-demo\/minimax-cn\.key/);
   assert.match(stdout, /--keep-cleanrooms is rejected/);
   assert.doesNotMatch(stdout.split("\n")[0], /--run-root/);
   assert.doesNotMatch(stdout, /--kit-url/);
@@ -950,8 +950,13 @@ test("production CLI derives only a clean live remote branch HEAD and validates 
 
   const parsed = await parseArgs(["--timeout-ms", "1234"], { commandRunner });
   assert.equal(parsed.kitCommit, KIT_COMMIT);
-  assert.equal(parsed.credentialFile, "/Users/maxiaoer/.clockchain/hermes-demo/kimi.key");
+  assert.equal(parsed.credentialFile, "/Users/maxiaoer/.clockchain/hermes-demo/minimax-cn.key");
   assert.equal(parsed.timeoutMs, 1234);
+  const explicitCredential = await parseArgs([
+    "--inference-key-file",
+    "/private/minimax-cn.key",
+  ], { commandRunner });
+  assert.equal(explicitCredential.credentialFile, "/private/minimax-cn.key");
 
   await assert.rejects(currentPushedCommit({
     commandRunner: async (command, args) => {
@@ -968,6 +973,7 @@ test("production CLI derives only a clean live remote branch HEAD and validates 
   await assert.rejects(parseArgs(["--run-root"], { commandRunner }), /missing argument value/);
   await assert.rejects(parseArgs(["--kit-commit", "--timeout-ms"], { commandRunner }), /missing argument value/);
   await assert.rejects(parseArgs(["--timeout-ms", "0"], { commandRunner }), /unsafe timeout/);
+  await assert.rejects(parseArgs(["--kimi-key-file", "/private/retired.key"], { commandRunner }), /unknown argument/);
 });
 
 test("production wrapper rejects keep-cleanrooms unless local debug is explicit", async (t) => {
@@ -1005,22 +1011,18 @@ test("kit URL and commit are validated before prompt creation", () => {
 
 test("credential reader accepts exactly one supported env var or one private file and never searches", async (t) => {
   assert.deepEqual(
-    await readKimiCredential({ env: { KIMI_API_KEY: KIMI } }),
-    { keyName: "KIMI_API_KEY", value: KIMI },
-  );
-  assert.deepEqual(
-    await readKimiCredential({ env: { KIMI_CODING_API_KEY: KIMI } }),
-    { keyName: "KIMI_CODING_API_KEY", value: KIMI },
+    await readInferenceCredential({ env: { MINIMAX_CN_API_KEY: INFERENCE_SECRET } }),
+    { keyName: "MINIMAX_CN_API_KEY", value: INFERENCE_SECRET },
   );
   await assert.rejects(
-    readKimiCredential({ env: { KIMI_API_KEY: KIMI, KIMI_CODING_API_KEY: "other" } }),
+    readInferenceCredential({ env: { KIMI_API_KEY: INFERENCE_SECRET } }),
     /Hermes demo failed safely/,
   );
   const file = await writePrivateCredential(t);
   assert.deepEqual(
-    await readKimiCredential({ credentialFile: file, env: {} }),
-    { keyName: "KIMI_API_KEY", value: KIMI },
+    await readInferenceCredential({ credentialFile: file, env: {} }),
+    { keyName: "MINIMAX_CN_API_KEY", value: INFERENCE_SECRET },
   );
   await chmod(file, 0o644);
-  await assert.rejects(readKimiCredential({ credentialFile: file, env: {} }), /Hermes demo failed safely/);
+  await assert.rejects(readInferenceCredential({ credentialFile: file, env: {} }), /Hermes demo failed safely/);
 });

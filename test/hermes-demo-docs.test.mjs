@@ -54,6 +54,9 @@ test("turnkey guide defines freshness, evidence, cleanup, and rollback without l
   assert.match(text, /removes both disposable role roots after every success or\s+failure/i);
   assert.match(text, /Application rollback is the previous pushed Handshake commit/i);
   assert.match(text, /single-validator testnet/i);
+  assert.match(text, /MiniMax-M3/);
+  assert.match(text, /minimax-cn/);
+  assert.match(text, /minimax-cn\.key/);
 
   for (const banned of [
     "handshake_payer",
@@ -61,6 +64,7 @@ test("turnkey guide defines freshness, evidence, cleanup, and rollback without l
     "handshake_requestor",
     "BEGIN PRIVATE KEY",
     "KIMI_API_KEY=",
+    "MINIMAX_CN_API_KEY=",
     "cc_ey",
   ]) {
     assert.ok(!text.includes(banned), `guide contains banned material: ${banned}`);

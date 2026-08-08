@@ -14,13 +14,13 @@ import {
 const execFile = promisify(execFileCallback);
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
 const BRANCH_PATTERN = /^[A-Za-z0-9._/-]{1,200}$/;
-const DEFAULT_CREDENTIAL_FILE = "/Users/maxiaoer/.clockchain/hermes-demo/kimi.key";
+const DEFAULT_CREDENTIAL_FILE = "/Users/maxiaoer/.clockchain/hermes-demo/minimax-cn.key";
 
 function usage() {
   return [
-    "Usage: node bin/hermes-demo.mjs [--kit-commit <40-hex>] [--kimi-key-file <abs>] [--dry-run]",
+    "Usage: node bin/hermes-demo.mjs [--kit-commit <40-hex>] [--inference-key-file <abs>] [--dry-run]",
     "",
-    `Defaults: kit ${HERMES_DEMO_CANONICAL_KIT_URL}; relay ${HERMES_DEMO_DEFAULT_RELAY_URL}; run root under CLOCKCHAIN_HERMES_DEMO_ROOT or the Mac operator directory; Kimi key file ${DEFAULT_CREDENTIAL_FILE} (0600).`,
+    `Defaults: kit ${HERMES_DEMO_CANONICAL_KIT_URL}; relay ${HERMES_DEMO_DEFAULT_RELAY_URL}; run root under CLOCKCHAIN_HERMES_DEMO_ROOT or the Mac operator directory; MiniMax China key file ${DEFAULT_CREDENTIAL_FILE} (0600).`,
     "",
     "--keep-cleanrooms is rejected by this production wrapper. Use the core localDebug API for local tests only.",
   ].join("\n");
@@ -73,7 +73,7 @@ async function parseArgs(argv, helpers = {}) {
       options.kitCommit = readValue(argv, index);
       if (!COMMIT_PATTERN.test(options.kitCommit)) throw new Error("unsafe commit");
       index += 1;
-    } else if (arg === "--kimi-key-file") {
+    } else if (arg === "--inference-key-file") {
       options.credentialFile = resolve(readValue(argv, index));
       index += 1;
     } else if (arg === "--timeout-ms") {
