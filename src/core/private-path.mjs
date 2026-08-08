@@ -2,14 +2,12 @@ import { execFile as execFileCallback } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import {
   chmod,
-  link,
   lstat,
   mkdir,
   open,
   unlink,
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, parse, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFileCallback);
@@ -44,10 +42,10 @@ function normalizedPath(value) {
 
 function fileSystem(value) {
   if (value === undefined) {
-    return Object.freeze({ chmod, link, lstat, mkdir, open, unlink });
+    return Object.freeze({ chmod, lstat, mkdir, open, unlink });
   }
   if (value === null || typeof value !== "object" || Array.isArray(value)) fail();
-  const required = ["chmod", "link", "lstat", "mkdir", "open", "unlink"];
+  const required = ["chmod", "lstat", "mkdir", "open", "unlink"];
   if (required.some((name) => typeof value[name] !== "function")) fail();
   return value;
 }
@@ -84,10 +82,27 @@ function validFile(stats, activePlatform, { expectedSize, maxBytes }) {
   );
 }
 
-function sameIdentity(left, right) {
+function validEmptyFile(stats, activePlatform) {
+  return (
+    stats.isFile() &&
+    !stats.isSymbolicLink() &&
+    stats.nlink === 1 &&
+    ownedByCurrentUser(stats, activePlatform) &&
+    (activePlatform === "win32" || (stats.mode & 0o777) === 0o600) &&
+    stats.size === 0
+  );
+}
+
+function sameNodeIdentity(left, right) {
   return (
     left.dev === right.dev &&
-    left.ino === right.ino &&
+    left.ino === right.ino
+  );
+}
+
+function sameFileIdentity(left, right) {
+  return (
+    sameNodeIdentity(left, right) &&
     left.size === right.size
   );
 }
@@ -198,7 +213,7 @@ export async function preparePrivateDirectory({
         runIcacls,
       });
       const afterAcl = await fs.lstat(target);
-      if (!validDirectory(afterAcl, activePlatform) || !sameIdentity(stats, afterAcl)) fail();
+      if (!validDirectory(afterAcl, activePlatform) || !sameNodeIdentity(stats, afterAcl)) fail();
     }
     return Object.freeze({ created, path: target });
   } catch (error) {
@@ -232,7 +247,7 @@ export async function readPrivateText({
     const handle = await fs.open(target, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
     try {
       const opened = await handle.stat();
-      if (!validFile(opened, activePlatform, { maxBytes }) || !sameIdentity(before, opened)) fail();
+      if (!validFile(opened, activePlatform, { maxBytes }) || !sameFileIdentity(before, opened)) fail();
       return await handle.readFile("utf8");
     } finally {
       await handle.close();
@@ -244,67 +259,189 @@ export async function readPrivateText({
   fail();
 }
 
+async function closeHandle(handle) {
+  if (handle !== undefined) {
+    await handle.close().catch(() => {});
+  }
+}
+
+async function syncHandle(handle) {
+  if (typeof handle?.sync === "function") {
+    await handle.sync().catch(() => {});
+  }
+}
+
+async function pinParentDirectory({ activePlatform, fs, parent, runIcacls }) {
+  await preparePrivateDirectory({
+    fileSystem: fs,
+    path: parent,
+    platform: activePlatform,
+    runIcacls,
+  });
+  const before = await fs.lstat(parent);
+  if (!validDirectory(before, activePlatform)) fail();
+  if (activePlatform === "win32") {
+    return { handle: undefined, stats: before };
+  }
+
+  const flags =
+    fsConstants.O_RDONLY |
+    (fsConstants.O_DIRECTORY ?? 0) |
+    (fsConstants.O_NOFOLLOW ?? 0);
+  const handle = await fs.open(parent, flags);
+  try {
+    const opened = await handle.stat();
+    if (!validDirectory(opened, activePlatform) || !sameNodeIdentity(before, opened)) fail();
+    return { handle, stats: opened };
+  } catch (error) {
+    await closeHandle(handle);
+    throw error;
+  }
+}
+
+async function verifyPinnedParent({
+  activePlatform,
+  fs,
+  parent,
+  parentHandle,
+  parentStats,
+}) {
+  const current = await fs.lstat(parent);
+  if (!validDirectory(current, activePlatform) || !sameNodeIdentity(parentStats, current)) fail();
+  if (parentHandle !== undefined) {
+    const opened = await parentHandle.stat();
+    if (!validDirectory(opened, activePlatform) || !sameNodeIdentity(parentStats, opened)) fail();
+  }
+}
+
+function sameWritableTarget(opened, checked, activePlatform, { expectedSize }) {
+  const valid =
+    expectedSize === 0
+      ? validEmptyFile(checked, activePlatform)
+      : validFile(checked, activePlatform, {
+          expectedSize,
+          maxBytes: expectedSize,
+        });
+  return valid && sameNodeIdentity(opened, checked);
+}
+
+async function unlinkCreatedTarget({
+  activePlatform,
+  fs,
+  parent,
+  parentHandle,
+  parentStats,
+  target,
+  targetStats,
+}) {
+  try {
+    await verifyPinnedParent({
+      activePlatform,
+      fs,
+      parent,
+      parentHandle,
+      parentStats,
+    });
+    const currentTarget = await fs.lstat(target);
+    if (
+      currentTarget.isFile() &&
+      !currentTarget.isSymbolicLink() &&
+      sameNodeIdentity(targetStats, currentTarget)
+    ) {
+      await fs.unlink(target);
+      await syncHandle(parentHandle);
+    }
+  } catch {
+    // Leaving an empty or private partial is safer than unlinking through a stale path.
+  }
+}
+
 export async function writePrivateFile({
   bytes: inputBytes,
   fileSystem: fileSystemOverride,
   path: inputPath,
   platform: inputPlatform = process.platform,
-  randomId = randomUUID,
   runIcacls,
 } = {}) {
   let handle;
-  let temporary;
+  let parentHandle;
+  let parentStats;
+  let targetStats;
+  let target;
+  let parent;
   try {
     const activePlatform = platform(inputPlatform);
-    const target = normalizedPath(inputPath);
+    target = normalizedPath(inputPath);
+    parent = dirname(target);
     const fs = fileSystem(fileSystemOverride);
     if (
       !(Buffer.isBuffer(inputBytes) || inputBytes instanceof Uint8Array) ||
       inputBytes.byteLength < 1 ||
-      inputBytes.byteLength > DEFAULT_MAX_FILE_BYTES ||
-      typeof randomId !== "function"
+      inputBytes.byteLength > DEFAULT_MAX_FILE_BYTES
     ) {
       fail();
     }
     const bytes = Buffer.from(inputBytes);
-    const identifier = randomId();
-    if (typeof identifier !== "string" || !/^[0-9a-f-]{36}$/.test(identifier)) fail();
-    temporary = join(dirname(target), `.clockchain-private-${identifier}.tmp`);
+    ({ handle: parentHandle, stats: parentStats } =
+      await pinParentDirectory({
+        activePlatform,
+        fs,
+        parent,
+        runIcacls,
+      }));
+    await verifyPinnedParent({
+      activePlatform,
+      fs,
+      parent,
+      parentHandle,
+      parentStats,
+    });
     handle = await fs.open(
-      temporary,
+      target,
       fsConstants.O_WRONLY |
         fsConstants.O_CREAT |
         fsConstants.O_EXCL |
         (fsConstants.O_NOFOLLOW ?? 0),
       0o600,
     );
-    await handle.writeFile(bytes);
     if (activePlatform !== "win32") await handle.chmod(0o600);
-    await handle.sync();
-    await handle.close();
-    handle = undefined;
     if (activePlatform === "win32") {
       await enforceWindowsAcl({
         action: "secure-and-verify",
         kind: "file",
-        path: temporary,
+        path: target,
         runIcacls,
       });
     }
-    const temporaryStats = await fs.lstat(temporary);
-    if (!validFile(temporaryStats, activePlatform, { expectedSize: bytes.length, maxBytes: bytes.length })) fail();
-    await fs.link(temporary, target);
-    const linkedStats = await fs.lstat(target);
+    targetStats = await handle.stat();
+    const emptyStats = await fs.lstat(target);
     if (
-      !linkedStats.isFile() ||
-      linkedStats.isSymbolicLink() ||
-      linkedStats.nlink !== 2 ||
-      !sameIdentity(temporaryStats, linkedStats)
+      !validEmptyFile(targetStats, activePlatform) ||
+      !sameWritableTarget(targetStats, emptyStats, activePlatform, { expectedSize: 0 })
     ) {
       fail();
     }
-    await fs.unlink(temporary);
-    temporary = undefined;
+    await verifyPinnedParent({
+      activePlatform,
+      fs,
+      parent,
+      parentHandle,
+      parentStats,
+    });
+    await handle.writeFile(bytes);
+    await handle.sync();
+    const writtenStats = await handle.stat();
+    if (
+      !validFile(writtenStats, activePlatform, {
+        expectedSize: bytes.length,
+        maxBytes: bytes.length,
+      }) ||
+      !sameNodeIdentity(targetStats, writtenStats)
+    ) {
+      fail();
+    }
+    await handle.close();
+    handle = undefined;
     if (activePlatform === "win32") {
       await enforceWindowsAcl({
         action: "verify",
@@ -316,18 +453,41 @@ export async function writePrivateFile({
     const finalStats = await fs.lstat(target);
     if (
       !validFile(finalStats, activePlatform, { expectedSize: bytes.length, maxBytes: bytes.length }) ||
-      !sameIdentity(temporaryStats, finalStats)
+      !sameNodeIdentity(targetStats, finalStats)
     ) {
       fail();
     }
+    await verifyPinnedParent({
+      activePlatform,
+      fs,
+      parent,
+      parentHandle,
+      parentStats,
+    });
+    await syncHandle(parentHandle);
+    await closeHandle(parentHandle);
+    parentHandle = undefined;
     return Object.freeze({ path: target, size: bytes.length });
   } catch (error) {
-    if (handle !== undefined) await handle.close().catch(() => {});
-    if (temporary !== undefined && fileSystemOverride?.unlink !== undefined) {
-      await fileSystemOverride.unlink(temporary).catch(() => {});
-    } else if (temporary !== undefined) {
-      await unlink(temporary).catch(() => {});
+    const activePlatform = SUPPORTED_PLATFORMS.includes(inputPlatform)
+      ? inputPlatform
+      : process.platform;
+    const fs = fileSystemOverride === undefined
+      ? Object.freeze({ chmod, lstat, mkdir, open, unlink })
+      : fileSystemOverride;
+    await closeHandle(handle);
+    if (targetStats !== undefined && target !== undefined && parent !== undefined) {
+      await unlinkCreatedTarget({
+        activePlatform,
+        fs,
+        parent,
+        parentHandle,
+        parentStats,
+        target,
+        targetStats,
+      });
     }
+    await closeHandle(parentHandle);
     sanitize(error);
   }
   fail();

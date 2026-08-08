@@ -12,6 +12,7 @@ import {
   rename,
   rm,
   symlink,
+  writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -298,6 +299,47 @@ test("inspects only public address and registration state", async (t) => {
     registration: null,
   });
   assertNoSecret(inspected);
+});
+
+test("fails closed without leaking when newest checkpoint contains private-key-shaped public fields", async (t) => {
+  const { statePath } = await initializeDeterministicWallet(t);
+  const maliciousCheckpoint = join(
+    dirname(statePath),
+    ".wallet.json.checkpoint-000001.json",
+  );
+  await writeFile(
+    maliciousCheckpoint,
+    JSON.stringify(
+      {
+        schema: "clockchain.handshake-registration-recovery/v1",
+        chainId: 11155111,
+        registryAddress: "0x8004A818BFB912233c491871b3d84c89A494BD9e",
+        registryNamespace:
+          "eip155:11155111:0x8004A818BFB912233c491871b3d84c89A494BD9e",
+        identityReference:
+          "eip155:11155111:0x8004A818BFB912233c491871b3d84c89A494BD9e:42",
+        agentId: "42",
+        address: ADDRESS,
+        displayName: PRIVATE_KEY,
+        registerTx: REGISTER_TX,
+        registerBlock: "100",
+      },
+      null,
+      2,
+    ),
+    { mode: 0o600 },
+  );
+
+  await rejectSafe(() => inspectWallet({ statePath, platform: "darwin" }));
+
+  const cliInspection = await runCli(["inspect", "--state", statePath]);
+  assert.notEqual(cliInspection.code, 0);
+  assertNoSecret(cliInspection.stdout);
+  assertNoSecret(cliInspection.stderr);
+  assert.equal(cliInspection.stdout.includes(PRIVATE_KEY), false);
+  assert.equal(cliInspection.stdout.includes(PRIVATE_KEY.slice(2)), false);
+  assert.equal(cliInspection.stderr.includes(PRIVATE_KEY), false);
+  assert.equal(cliInspection.stderr.includes(PRIVATE_KEY.slice(2)), false);
 });
 
 test("signs only one exact even-length 0x byte string with EIP-191 raw bytes", async (t) => {

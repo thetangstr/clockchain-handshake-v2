@@ -1,12 +1,4 @@
-import {
-  chmod,
-  link,
-  lstat,
-  mkdir,
-  open,
-  readdir,
-  unlink,
-} from "node:fs/promises";
+import { lstat, readdir } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 import { isHex } from "viem";
@@ -15,6 +7,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import {
   finalizeIdentityRegistration,
   registerIdentity,
+  validateRegistrationCheckpoint,
 } from "./registration.mjs";
 import {
   preparePrivateDirectory,
@@ -61,6 +54,11 @@ function assertDisplayName(value) {
 function assertPrivateKey(value) {
   if (!PRIVATE_KEY_PATTERN.test(value)) fail();
   return value;
+}
+
+function validatePublicRegistration(record, expectedAddress) {
+  if (record === null) return null;
+  return validateRegistrationCheckpoint(record, { expectedAddress });
 }
 
 function publicRegistration(record) {
@@ -180,56 +178,6 @@ async function verifyParentIdentity(identity) {
   }
 }
 
-function pinnedFileSystem(parentIdentity) {
-  const wrap = (operation) => async (...args) => {
-    await verifyParentIdentity(parentIdentity);
-    const result = await operation(...args);
-    await verifyParentIdentity(parentIdentity);
-    return result;
-  };
-  return Object.freeze({
-    chmod: wrap(chmod),
-    link: wrap(link),
-    lstat: wrap(lstat),
-    mkdir: wrap(mkdir),
-    open: async (...args) => {
-      await verifyParentIdentity(parentIdentity);
-      const handle = await open(...args);
-      await verifyParentIdentity(parentIdentity);
-      return {
-        chmod: async (...handleArgs) => {
-          await verifyParentIdentity(parentIdentity);
-          const result = await handle.chmod(...handleArgs);
-          await verifyParentIdentity(parentIdentity);
-          return result;
-        },
-        close: (...handleArgs) => handle.close(...handleArgs),
-        readFile: async (...handleArgs) => {
-          await verifyParentIdentity(parentIdentity);
-          return await handle.readFile(...handleArgs);
-        },
-        stat: async (...handleArgs) => {
-          await verifyParentIdentity(parentIdentity);
-          return await handle.stat(...handleArgs);
-        },
-        sync: async (...handleArgs) => {
-          await verifyParentIdentity(parentIdentity);
-          const result = await handle.sync(...handleArgs);
-          await verifyParentIdentity(parentIdentity);
-          return result;
-        },
-        writeFile: async (...handleArgs) => {
-          await verifyParentIdentity(parentIdentity);
-          const result = await handle.writeFile(...handleArgs);
-          await verifyParentIdentity(parentIdentity);
-          return result;
-        },
-      };
-    },
-    unlink: wrap(unlink),
-  });
-}
-
 function checkpointName(statePath, sequence) {
   return `.${basename(statePath)}.checkpoint-${String(sequence).padStart(6, "0")}.json`;
 }
@@ -243,7 +191,13 @@ function checkpointPattern(statePath) {
   return new RegExp(`^\\.${escaped}\\.checkpoint-([0-9]{6})\\.json$`);
 }
 
-async function latestCheckpoint({ platform, runIcacls, statePath }) {
+async function latestCheckpoint({
+  expectedAddress,
+  platform,
+  privateKey,
+  runIcacls,
+  statePath,
+}) {
   const parentIdentity = await captureParentIdentity(statePath, {
     platform,
     runIcacls,
@@ -260,15 +214,18 @@ async function latestCheckpoint({ platform, runIcacls, statePath }) {
   for (const sequence of sequences) {
     await verifyParentIdentity(parentIdentity);
     const text = await readPrivateText({
-      fileSystem: pinnedFileSystem(parentIdentity),
       path: checkpointPath(statePath, sequence),
       platform,
       runIcacls,
     });
     await verifyParentIdentity(parentIdentity);
+    assertOmitsPrivateKey(text, privateKey);
     const record = JSON.parse(text);
-    publicRegistration(record);
-    return { parentIdentity, record, sequence };
+    const checkpoint = validatePublicRegistration(record, expectedAddress);
+    assertOmitsPrivateKey(checkpoint, privateKey);
+    const projected = publicRegistration(checkpoint);
+    assertOmitsPrivateKey(projected, privateKey);
+    return { parentIdentity, record: checkpoint, sequence };
   }
   return { parentIdentity, record: null, sequence: 0 };
 }
@@ -285,7 +242,6 @@ async function persistCheckpoint({
   await verifyParentIdentity(parentIdentity);
   await writePrivateFile({
     bytes: jsonBytes(record),
-    fileSystem: pinnedFileSystem(parentIdentity),
     path: target,
     platform,
     runIcacls,
@@ -300,7 +256,6 @@ async function readWallet({ platform, runIcacls, statePath }) {
   });
   await verifyParentIdentity(parentIdentity);
   const text = await readPrivateText({
-    fileSystem: pinnedFileSystem(parentIdentity),
     path: statePath,
     platform,
     runIcacls,
@@ -342,7 +297,6 @@ export async function initializeWallet({
     };
     await writePrivateFile({
       bytes: jsonBytes(wallet),
-      fileSystem: pinnedFileSystem(parentIdentity),
       path: statePath,
       platform,
       runIcacls,
@@ -364,7 +318,9 @@ export async function inspectWallet({
     const statePath = assertPath(inputStatePath);
     const { wallet } = await readWallet({ platform, runIcacls, statePath });
     const { record } = await latestCheckpoint({
+      expectedAddress: wallet.address,
       platform,
+      privateKey: wallet.privateKey,
       runIcacls,
       statePath,
     });
@@ -421,13 +377,15 @@ export async function registerWalletIdentity({
       statePath,
     });
     const { parentIdentity, record, sequence } = await latestCheckpoint({
+      expectedAddress: account.address,
       platform,
+      privateKey: wallet.privateKey,
       runIcacls,
       statePath,
     });
     let nextSequence = sequence + 1;
     const onCheckpoint = async (checkpoint) => {
-      publicRegistration(checkpoint);
+      validatePublicRegistration(checkpoint, account.address);
       assertOmitsPrivateKey(checkpoint, wallet.privateKey);
       await persistCheckpoint({
         parentIdentity,
