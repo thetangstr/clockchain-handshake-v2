@@ -21,6 +21,7 @@ import {
   buildVerdictView,
   NO_MONEY_MOVED_SENTENCE,
   timelineCoversAllStatuses,
+  TIMELINE_STEPS,
   VERDICT_MESSAGES,
 } from "../src/monitor/stakeholder/messages.mjs";
 
@@ -129,6 +130,15 @@ test("message maps cover every status and every reason code", () => {
 
 test("the five-step timeline covers every status exactly once", () => {
   assert.equal(timelineCoversAllStatuses(), true);
+});
+
+test("the public board labels the verifier lane as Clockchain while the internal role key stays verifier", () => {
+  const verifyingStep = TIMELINE_STEPS.find((step) => step.id === "verifying");
+  assert.ok(verifyingStep);
+  assert.equal(verifyingStep.activeRole, "verifier");
+  assert.equal(verifyingStep.label, "Clockchain — session host & independent checker.");
+  assert.ok(ROLE_NAMES.includes("verifier"));
+  assert.ok(!ROLE_NAMES.includes("operator"));
 });
 
 test("buildSnapshot produces a snapshot that validates cleanly", () => {

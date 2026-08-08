@@ -62,11 +62,11 @@ export const REASON_CODES = Object.freeze([
 export const STATUS_MESSAGES = Object.freeze({
   SESSION_STARTED: "Session started. No anchors exist yet; nothing can expire.",
   REHEARSAL_PASSED: "Rehearsal drill passed. Stakeholder engagement is cleared to begin.",
-  TERMS_PUBLISHED: "The operator published the signed payment terms.",
+  TERMS_PUBLISHED: "The host published the signed payment terms.",
   REQUEST_SUBMITTED: "The payment request was submitted for this session.",
   HANDSHAKE_REQUIRED: "Waiting on a role to bind and begin the handshake.",
   IDENTITY_REGISTERED: "Both on-chain identities are registered.",
-  FUNDED: "All four addresses are funded for registration gas.",
+  FUNDED: "Both session seats are funded for registration gas.",
   PROPOSED: "The proposal is anchored on Clockchain. The 10-minute window is open.",
   ACCEPTED: "The acceptance is anchored on Clockchain.",
   ACKNOWLEDGED: "The acknowledgment is anchored on Clockchain. All three anchors exist.",

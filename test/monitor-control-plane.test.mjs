@@ -155,6 +155,19 @@ test("GET /control/snapshot returns the injected snapshot verbatim", async () =>
   });
 });
 
+test("control-plane narration names the host role without stale operator or four-address copy", () => {
+  assert.equal(
+    STATUS_MESSAGES.TERMS_PUBLISHED,
+    "The host published the signed payment terms.",
+  );
+  assert.equal(
+    STATUS_MESSAGES.FUNDED,
+    "Both session seats are funded for registration gas.",
+  );
+  assert.ok(!STATUS_MESSAGES.TERMS_PUBLISHED.includes("operator"));
+  assert.ok(!STATUS_MESSAGES.FUNDED.includes("four addresses"));
+});
+
 test("POST /control/reverify calls the injected clockchain client and returns its fresh result", async () => {
   const { calls, dependencies } = buildDependencies();
   const handler = createControlPlaneRoutes(dependencies);
