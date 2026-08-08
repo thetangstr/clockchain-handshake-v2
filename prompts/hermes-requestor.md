@@ -12,24 +12,27 @@ Run `git clone <KIT_URL> handshake-kit`, enter it, run `git checkout <KIT_COMMIT
 
 The only acceptable MCP endpoint is https://mcp.clockchain.network/mcp. Use shared discovery and these exact five Clockchain tools: handshake_status, handshake_join, handshake_next, handshake_submit, handshake_get_certificate.
 
-## Local wallet and registration
+## Wallet bridge commands
 
-Create your own wallet with `node bin/wallet-bridge.mjs init`. Inspect it with `node bin/wallet-bridge.mjs inspect`. Sign exact bytes with `node bin/wallet-bridge.mjs sign` using EIP-191 raw-byte semantics. Register the same local address with `node bin/wallet-bridge.mjs register` for ERC-8004 identity.
+Use only your own wallet at `$HOME/.clockchain/wallet.json`. Create its parent with mode 0700 before first use.
 
-Never expose the private key.
+- `node bin/wallet-bridge.mjs init --state "$HOME/.clockchain/wallet.json"`
+- `node bin/wallet-bridge.mjs inspect --state "$HOME/.clockchain/wallet.json"`
+- `node bin/wallet-bridge.mjs sign --state "$HOME/.clockchain/wallet.json" --bytes "$BYTES_TO_SIGN_HEX"`
+- `node bin/wallet-bridge.mjs register --state "$HOME/.clockchain/wallet.json" --displayName "Requestor Hermes demo agent"`
 
-## Protocol duties
+Sign only exact bytes with EIP-191 raw-byte semantics. Register the same local address for ERC-8004 identity. Never expose the private key.
 
-Call `handshake_join` for Role: Requestor, then loop on `handshake_next`. When `bytesToSignHex` appears, sign those bytes locally and submit only the public signature through `handshake_submit`.
+## MCP loop
 
-You author the payment request only; you must not author the mandate. If a step asks you to create the mandate, stop and emit failure JSON.
+Call `handshake_join` with lowercase role `requestor`. Then call `handshake_next` with the returned UUID sessionId and lowercase role `requestor`.
 
-Both parties sign their own party result and evidence. Hosted MCP coordinators advance PROPOSED, ACCEPTED, and ACKNOWLEDGED; do not invent or claim an ACK signed by a party.
+If `bytesToSignHex` appears, sign it locally and call `handshake_submit` with only `signatureHex`. If `needed` is `funding_record`, `counterpart`, or `wait`, sleep 2 seconds and back off to at most 10 seconds. If `needed` is `erc8004_identity`, register locally and submit only public registration fields. If `needed` is `certificate`, call `handshake_get_certificate`.
 
-Fetch the certificate with `handshake_get_certificate` and verify the digest locally. No money moves; the final JSON must include paymentMoved:false. This is a single-validator testnet demo, not court-grade finality.
+You author the payment request only; you must not author the mandate. Hosted MCP coordinators advance PROPOSED, ACCEPTED, and ACKNOWLEDGED; do not invent or claim an ACK signed by a party.
+
+Save only the public returned certificate envelope to `$HOME/clockchain-certificate.json`. Define certificateDigest exactly as `digestHex(certificate.result)` from `src/core/canonical.mjs`. The final JSON must include paymentMoved:false. This is a single-validator testnet demo, not court-grade finality.
 
 ## Terminal success contract
 
-Do not announce success in prose. The independent checker decides the verdict. End with one line prefixed `FINAL_HANDSHAKE_JSON` followed by compact JSON:
-
-`FINAL_HANDSHAKE_JSON {"role":"requestor","sessionId":"...","address":"0x...","agentId":"...","certificateDigest":"<sha256>","certificateVerified":true,"paymentMoved":false,"receipts":[]}`
+Do not announce success in prose. The independent checker decides the verdict. The final nonempty stdout line must start with `FINAL_HANDSHAKE_JSON` followed by compact JSON containing `certificateVerified:true` and `paymentMoved:false`.
