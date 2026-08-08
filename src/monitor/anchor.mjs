@@ -1,5 +1,4 @@
-// Duplicated from bin/operator.mjs until P4 moves both entrypoints onto one
-// monitor-anchor path. Keep the operator copy in place for this track.
+// The canonical shared monitor-anchor helper for host and role-side narration.
 export function transitionToAnchor(kind, transition, { relayUrl = "" } = {}) {
   return {
     blockHeight: transition.onChain.blockHeight,
