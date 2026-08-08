@@ -57,6 +57,12 @@ digests must match before an agent submits the signature. A mismatch is retried
 from `handshake_next` without reconstructing the payload or opening a diagnostic
 loop.
 
+Every demo `handshake_next` call also supplies `waitMs:15000`. This optional,
+backward-compatible field holds only an `awaiting_counterpart_transition`
+response for up to 15 seconds, releasing the caller lock between checks. Other
+actions and dependencies still return immediately. Keeping the wait inside one
+MCP call avoids consuming a separate model turn merely to run `sleep`.
+
 A host result that is still pending is normal waiting, not an invalid
 certificate. `handshake_get_certificate` returns `needed:"certificate"` with
 `retryAfterMs` until the checker publishes the signed result; each agent keeps

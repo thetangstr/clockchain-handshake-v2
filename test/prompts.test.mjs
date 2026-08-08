@@ -207,7 +207,19 @@ for (const name of HERMES_PROMPTS) {
     assert.match(text, /node bin\/wallet-bridge\.mjs inspect/);
     assert.match(text, /node bin\/wallet-bridge\.mjs sign/);
     assert.match(text, /--gzip-base64url/);
-    assert.match(text, /signingEncoding[^\n]*gzip-base64url/i);
+    const expectedLowercaseRole = name.endsWith("payer") ? "payer" : "requestor";
+    assert.match(
+      text,
+      new RegExp(
+        "Every `?handshake_next`? call[^\\n]*" +
+          "waitMs:15000[^\\n]*" +
+          "returned UUID sessionId[^\\n]*" +
+          `lowercase role \`${expectedLowercaseRole}\`[^\\n]*` +
+          'signingEncoding:"gzip-base64url"',
+      ),
+      `${name}.md must put sessionId, role, signingEncoding, and waitMs in one handshake_next instruction`,
+    );
+    assert.match(text, /counterpart_transition[^\n]*already waited[^\n]*do not run a terminal sleep/i);
     assert.match(text, /bytesToSignGzipBase64Url/);
     assert.match(text, /bytesSha256/i);
     assert.match(text, /must match/i);

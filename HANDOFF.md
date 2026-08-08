@@ -188,6 +188,23 @@ public discovery URL, with payer/requestor kits joining from a clean clone.
   Caddy, and host up; both public health endpoints are green. No persistent
   system or global Git exception remains.
 
+- 2026-08-08 — Turnkey live attempt
+  `e6ee2305-afed-4cc0-b67a-53a1a80a6e4d` against Handshake commit
+  `34ebf982dee51f5f19bcba0ab81061a2e92d8b8c` stopped safely in the agent
+  phase. Session `abdb55f5-f0ed-4a61-94d3-b0154a08e6b7` created distinct
+  Payer agent `9468` / `0x0fa88cedf08a577bcf30f1db8eb2bc54de56bb7f`
+  and Requestor agent `9467` /
+  `0x9b4138a2f2f9ed26c814cac49713589fbf0b2f83`; the real mandate, payment
+  request, and host descriptor were present, but no anchor or verdict had been
+  published. Requestor exhausted Hermes 0.19.1's 90-iteration one-shot budget
+  while honestly waiting on `counterpart_transition`, emitted no terminal
+  certificate marker, and the launcher terminated Payer. Retained
+  `failure.json`/`checkpoint.json` report `paymentMoved:false`; both disposable
+  roots were removed. Root-cause inspection also found that the MCP runtime
+  adapter dropped `signingEncoding`, explaining the live legacy-hex payloads.
+  The next attempt is gated on a tested compact-encoding forwarder plus a
+  bounded, lock-releasing wait for that exact counterpart state.
+
 ## Evidence
 
 *(gate results land here: gate id, date, session id, block heights, anything a skeptic
