@@ -25,7 +25,7 @@ Context behind the plan, if you need it: [docs/two-agent-build.md](docs/two-agen
 | Role-aware seating (`roleAlreadySeated`, unblocks two kits per session) | ✅ shipped `f80aa7a` |
 | Track A (A1–A8): host severance + payer kit + gates G0/G1 | ✅ complete — G0 and G1 live gates passed |
 | Track B (B0–B6): MCP → AWS migration, gate GM | ✅ complete — GM green; B6 explicitly deferred under its plan branch |
-| P2 / P3 / P4 | ✅ P2 + G2 complete · ⬜ P3 handshake tools next |
+| P2 / P3 / P4 | ✅ P2 + G2 complete · ✅ P3 + G3 complete · ⬜ P4 board/page/cutover next |
 
 Both tracks are independent until P2. Work them in parallel if you can; if you must pick
 one, Track B's first steps (B0–B2) have the longest external waits — start them first,
@@ -301,6 +301,36 @@ would ask for)*
   `08:10:42Z` to `08:14:13Z`, returned to `running`, and opened fresh session
   `69071193-f140-494c-bb60-70b654160a15`; production MCP health stayed green.
 
+- 2026-08-08 — **P3 / G3 complete.** External-repo commits `88c2956`,
+  `395a921`, and `2e2d869` add the non-custodial handshake primitives, the five
+  public handshake tools, and crash-durable state. Production runs exact commit
+  `2e2d8695dc7cc93a6ecffbd7cf01b5df98dc32fe`; `/health` is green, the MCP
+  advertises exactly 36 tools, all five handshake tools are present, and the
+  legacy `get_time` smoke check passed.
+
+  A fresh agent configured with the production MCP endpoint, one in-memory MCP
+  token, and a fresh in-memory EIP-191 signer completed the payer side of session
+  `fc623ec9-bad8-458c-91d6-f8df94612ecb`. The client signed the identity claim,
+  mandate, and party result locally; only the three public signatures crossed
+  the MCP tool schema. After the host funded registration gas, the client
+  registered ephemeral payer agent `9446` locally at Sepolia block `11444548`;
+  the stock requestor kit registered agent `9445`. The independent verifier
+  returned `AUTHORIZED`, `paymentMoved` remained false, and both sides fetched
+  and verified the signed certificate. Anchors: proposal `3100017` /
+  `589f5f57-253a-4b92-bb7b-eb7d3182a000`, acceptance `3100034` /
+  `3d4e8f6b-afa8-41c3-acfb-f4d83fccff13`, acknowledgment `3100039` /
+  `39438e96-55ec-4b1e-8b6a-70070ab07371`; session digest
+  `fb1bb5730a86c9b8e15bdf4ac60a7647e08a92a4f6e22e78bc28f97899f12884`.
+
+  The named `clockchain-mcp_mcp_state` volume is mounted at `/app/state`; its
+  completed record is stored in `handshake.json` as mode 0600 under a SHA-256
+  key. The persisted record has no raw `principal`, `session`, or `role` fields
+  and a recursive field-name audit found zero forbidden private-key or plaintext
+  credential fields. The stored relay Ed25519 PEM is the MCP's mailbox key, not
+  a party EVM key. The production systemd drop-in explicitly sets
+  `HANDSHAKE_ALLOW_DEGRADED=true` because validator count is temporarily
+  non-blocking; source and deployment-wrapper defaults remain fail-closed.
+
 ## Migration inventory
 
 *(plan §B0's table gets filled in here — every row, even when the answer is "none")*
@@ -367,3 +397,13 @@ sources are `clockchain-developer-tools` commits `610d519` and `11b9162`.
 | Host secret files | `/run/clockchain-host-secrets/{funding-wallet.json,funding-wallet.public.json,funding.password,clockchain.token}`; owner `ubuntu:ubuntu` (UID/GID 1000), mode 0600, exact SSM hashes verified |
 | Runtime mounts | Host secrets bind-mounted read-only at `/app/keys`; named volume `clockchain-mcp_host_runs` mounted at `/app/runs` |
 | Restart evidence | Manual container restart changed `StartedAt`, preserved production MCP health, and advanced relay `discovery/current` from session `2e6a116b-7f69-4ebc-8931-1a983faafbd1` to `69071193-f140-494c-bb60-70b654160a15` |
+
+### P3 handshake-tool deployment (2026-08-08)
+
+| Item | Value / evidence |
+|---|---|
+| Deploy source | `codex/aws-migration` / `2e2d8695dc7cc93a6ecffbd7cf01b5df98dc32fe`, pushed and clean at `/opt/clockchain-mcp/app` |
+| Public surface | `https://mcp.clockchain.network/health` green; exactly 36 tools; `handshake_status`, `handshake_join`, `handshake_next`, `handshake_submit`, and `handshake_get_certificate` present; legacy `get_time` passed |
+| Runtime state | Named volume `clockchain-mcp_mcp_state` mounted at `/app/state`; `handshake.json` mode 0600; completed G3 state has `certificate_verified=true` and no raw principal/session/role or forbidden secret-shaped fields |
+| Validator policy | Source and wrapper default `HANDSHAKE_ALLOW_DEGRADED=false`; production-only systemd drop-in sets it to `true` under Yang's temporary validator-count exception |
+| G3 certificate | Session `fc623ec9-bad8-458c-91d6-f8df94612ecb`; payer/requestor agents `9446`/`9445`; blocks `3100017`/`3100034`/`3100039`; `AUTHORIZED`; `paymentMoved=false` |
