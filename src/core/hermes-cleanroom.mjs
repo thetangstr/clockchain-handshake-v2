@@ -4,6 +4,7 @@ import {
   chmod,
   lstat,
   mkdir,
+  open,
   readFile,
   readdir,
   realpath,
@@ -11,7 +12,6 @@ import {
   rm,
 } from "node:fs/promises";
 import {
-  basename,
   dirname,
   isAbsolute,
   join,
@@ -22,62 +22,58 @@ import {
 import { promisify } from "node:util";
 
 import { writePrivateFile } from "./private-path.mjs";
-import { SecretMaterialDetectedError } from "./redact.mjs";
+import {
+  assertSecretFree,
+  SecretMaterialDetectedError,
+} from "./redact.mjs";
 
 const execFileAsync = promisify(execFileCallback);
 
 const VALID_ROLES = Object.freeze(["payer", "requestor"]);
 const CLOCKCHAIN_URL = "https://mcp.clockchain.network/mcp";
-const CLOCKCHAIN_TOOLS = Object.freeze([
-  "mcp__clockchain__handshake_status",
-  "mcp__clockchain__handshake_join",
-  "mcp__clockchain__handshake_next",
-  "mcp__clockchain__handshake_submit",
-  "mcp__clockchain__handshake_get_certificate",
+const RAW_CLOCKCHAIN_TOOLS = Object.freeze([
+  "handshake_status",
+  "handshake_join",
+  "handshake_next",
+  "handshake_submit",
+  "handshake_get_certificate",
 ]);
+const REGISTERED_CLOCKCHAIN_TOOLS = Object.freeze(
+  RAW_CLOCKCHAIN_TOOLS.map((name) => `mcp__clockchain__${name}`),
+);
 const DEFAULT_HERMES_BINARY = "/Users/maxiaoer/.local/bin/hermes";
-const DEFAULT_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
+const DEFAULT_HERMES_INSTALL_ROOT = "/Users/maxiaoer/.hermes/hermes-agent";
+const DEFAULT_PATH = "/Users/maxiaoer/.local/bin:/opt/homebrew/opt/node@22/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+const EXPECTED_PACKAGE_VERSION = "0.19.1";
+const EXPECTED_GIT_HEAD = "87bc710609f8b89b6e6b4aa418dde8ee30ec6873";
+const EXPECTED_GIT_DESCRIBE = "v2026.7.30-357-g87bc71060";
+const EXPECTED_CONFIG_VERSION = 33;
 const DOTENV_KEY_PATTERN = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/;
-const KIMI_KEY_NAMES = Object.freeze(["KIMI_API_KEY", "MOONSHOT_API_KEY"]);
+const PROVIDER_KEY_NAMES = Object.freeze(["KIMI_API_KEY", "KIMI_CODING_API_KEY"]);
 const SECRET_KEY_PATTERN = /(?:KEY|TOKEN|SECRET|AUTH|PASSWORD|CREDENTIAL)/i;
-const FORBIDDEN_STATE_NAMES = Object.freeze([
-  ".auth",
-  ".cache",
-  ".env",
-  ".git",
-  ".hermes",
-  ".mcp-discovery.lock",
-  ".mcp-token-cache",
-  ".npm",
-  ".npmrc",
-  ".pnp.cjs",
-  ".pnpm-store",
-  ".profile",
-  ".venv",
-  "auth",
-  "bundles",
-  "contacts",
-  "hooks",
-  "memory",
-  "messages",
-  "node_modules",
-  "package-lock.json",
-  "package.json",
-  "pairings",
-  "plugins",
-  "pnpm-lock.yaml",
-  "profile",
-  "repo",
-  "sessions",
-  "skills",
-  "wallet",
-  "wallet.json",
-  "yarn.lock",
-]);
+const ABSOLUTE_PATH_FRAGMENT =
+  /(?:^|[\s"'=:,(])\/(?:Users|Volumes|private|tmp|var|etc|opt|home)\/[A-Za-z0-9._~@%+,:=-][A-Za-z0-9._~@%+/,:=-]*/;
 const SECRET_STRING_PATTERNS = Object.freeze([
   /\bcc_[A-Za-z0-9_-][A-Za-z0-9._-]{19,}(?![A-Za-z0-9._-])/,
   /\bBearer[ \t]+[A-Za-z0-9._~+/-]{24,}(?:={0,2})(?![A-Za-z0-9._~+/-])/i,
   /\b(?:private[\s_-]?key|priv[\s_-]?key|wallet[\s_-]?key)\b\s*(?:(?:is)\s+|[:=]\s*)?0x[0-9a-f]{64}(?![0-9a-f])/i,
+]);
+const GENERATED_PROFILE_DIRS = Object.freeze([
+  "cron",
+  "home",
+  "logs",
+  "memories",
+  "plans",
+  "sessions",
+  "skills",
+  "skins",
+  "workspace",
+]);
+const RETAINED_PROFILE_ENTRIES = Object.freeze([
+  ".env",
+  ".no-bundled-skills",
+  "home",
+  "skills",
 ]);
 
 function fail() {
@@ -103,7 +99,7 @@ function canonicalAbsolutePath(value) {
   return value;
 }
 
-function assertRole(value) {
+function role(value) {
   if (!VALID_ROLES.includes(value)) fail();
   return value;
 }
@@ -132,13 +128,23 @@ async function assertPrivateDirectory(path) {
 
 async function createPrivateDirectory(path) {
   const parent = dirname(path);
-  const parentStats = await lstatOptional(parent);
-  if (parentStats === undefined) {
-    await createPrivateDirectory(parent);
-  }
+  if ((await lstatOptional(parent)) === undefined) await createPrivateDirectory(parent);
   await mkdir(path, { mode: 0o700, recursive: false });
   if (process.platform !== "win32") await chmod(path, 0o700);
   await assertPrivateDirectory(path);
+}
+
+async function createPrivateEmptyFile(path) {
+  const handle = await open(path, "wx", 0o600);
+  try {
+    if (process.platform !== "win32") await handle.chmod(0o600);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  const stats = await lstat(path);
+  if (!stats.isFile() || stats.isSymbolicLink() || stats.size !== 0) fail();
+  if (process.platform !== "win32" && (stats.mode & 0o777) !== 0o600) fail();
 }
 
 async function ensureRunRoot(path) {
@@ -150,8 +156,7 @@ async function ensureRunRoot(path) {
   } else {
     await assertPrivateDirectory(path);
   }
-  const canonical = await realpath(path);
-  if (canonical !== path) fail();
+  if (await realpath(path) !== path) fail();
 }
 
 async function assertNoSymlinkTree(path) {
@@ -159,29 +164,25 @@ async function assertNoSymlinkTree(path) {
   if (stats === undefined) return;
   if (stats.isSymbolicLink()) fail();
   if (!stats.isDirectory()) return;
-  for (const entry of await readdir(path)) {
-    await assertNoSymlinkTree(join(path, entry));
-  }
+  for (const entry of await readdir(path)) await assertNoSymlinkTree(join(path, entry));
 }
 
-async function assertMissing(path) {
-  if (await lstatOptional(path) !== undefined) fail();
-}
-
-async function assertDirectoryEmpty(path) {
-  const entries = await readdir(path);
-  if (entries.length !== 0) fail();
+function sorted(values) {
+  return [...values].sort();
 }
 
 function sortedUnique(values) {
-  return [...new Set(values)].sort();
+  return sorted(new Set(values));
+}
+
+function sameStrings(left, right) {
+  return JSON.stringify(sorted(left)) === JSON.stringify(sorted(right));
 }
 
 async function parseDotenvKeys(installRoot) {
-  const dotenvPath = join(canonicalAbsolutePath(installRoot), ".env");
   let text;
   try {
-    text = await readFile(dotenvPath, "utf8");
+    text = await readFile(join(installRoot, ".env"), "utf8");
   } catch (error) {
     if (error?.code === "ENOENT") return [];
     throw error;
@@ -194,99 +195,180 @@ async function parseDotenvKeys(installRoot) {
   );
 }
 
-function assertNoAmbientSecretEnv(env) {
-  for (const [key, value] of Object.entries(env ?? {})) {
-    if (SECRET_KEY_PATTERN.test(key) && value !== "" && value !== undefined) fail();
-  }
-}
-
-function assertSingleKimiKey(name) {
-  if (!KIMI_KEY_NAMES.includes(name)) fail();
-  return name;
-}
-
-function assertSecretValue(value) {
-  if (typeof value !== "string" || value.length === 0) fail();
-  return value;
-}
-
-function sha256(value) {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function relativeIdentifier(root, path) {
-  const offset = relative(root, path);
-  if (offset === "" || offset.startsWith("..") || isAbsolute(offset)) fail();
-  return offset.split("\\").join("/");
-}
-
-function buildConfig({ configVersion, envKeyName, workspace }) {
-  return Object.freeze({
-    config_version: configVersion,
-    fallbacks: [],
-    hooks: {},
-    max_turns: 500,
-    memory: { enabled: false },
-    model: "k3",
-    platform_toolsets: {
-      cli: {
-        mcp_servers: {
-          clockchain: {
-            headers: {
-              "x-api-key": "${AUXILIARY_CLOCKCHAIN_MCP_API_KEY}",
-            },
-            include_tools: CLOCKCHAIN_TOOLS,
-            prompts: false,
-            resources: false,
-            transport: "http",
-            url: CLOCKCHAIN_URL,
-          },
-        },
-      },
-    },
-    provider: "kimi-coding",
-    provider_env_key: envKeyName,
-    redact_secrets: true,
-    terminal: {
-      cwd: workspace,
-      env_passthrough: false,
-      home_mode: "profile",
-      local: true,
-      source_init_files: false,
-    },
-    user_profile: { enabled: false },
+async function commandRunner(file, args, options) {
+  return execFileAsync(file, args, {
+    encoding: "utf8",
+    maxBuffer: 32_768,
+    timeout: 10_000,
+    windowsHide: true,
+    ...options,
   });
 }
 
-function buildEnvironment({
-  clockchainMcpToken,
-  dotenvKeys,
-  envKeyName,
-  inferenceKeyValue,
-  paths,
-  pathValue,
-}) {
-  const env = {
-    COREPACK_HOME: paths.corepackHome,
-    GIT_CONFIG_GLOBAL: paths.gitConfig,
-    GIT_CONFIG_NOSYSTEM: "1",
-    HERMES_HOME: paths.hermesHome,
-    HOME: paths.home,
-    LANG: "C.UTF-8",
-    LC_ALL: "C.UTF-8",
-    NPM_CONFIG_CACHE: paths.npmCache,
-    PATH: pathValue,
-    PYTHONNOUSERSITE: "1",
-    TMPDIR: paths.tmp,
-    XDG_CACHE_HOME: paths.xdgCache,
-  };
-  for (const key of dotenvKeys) env[key] = "";
-  env[envKeyName] = inferenceKeyValue;
-  env.AUXILIARY_CLOCKCHAIN_MCP_API_KEY = clockchainMcpToken;
-  return Object.freeze(env);
+async function readTextOptional(path) {
+  try {
+    return await readFile(path, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return undefined;
+    throw error;
+  }
 }
 
-function buildBootstrapEnvironment({ dotenvKeys, pathValue, paths }) {
+function scrubbedEnv(pathValue = DEFAULT_PATH) {
+  return Object.freeze({
+    GIT_CONFIG_NOSYSTEM: "1",
+    LANG: "C.UTF-8",
+    LC_ALL: "C.UTF-8",
+    PATH: pathValue,
+    PYTHONNOUSERSITE: "1",
+  });
+}
+
+async function defaultDetectHermes({
+  commandRunner: run = commandRunner,
+  hermesBinary,
+  hermesInstallRoot,
+  pathValue,
+}) {
+  const env = scrubbedEnv(pathValue);
+  const python = join(hermesInstallRoot, ".venv", "bin", "python");
+  const metadataScript = [
+    "import importlib, importlib.metadata, json",
+    "packages=['hermes-agent','hermes_agent','hermes']",
+    "version=None",
+    "for package in packages:",
+    "    try:",
+    "        version=importlib.metadata.version(package)",
+    "        break",
+    "    except Exception:",
+    "        pass",
+    "config_version=None",
+    "for module_name in ['hermes.config','hermes_agent.config','agent.config','config']:",
+    "    try:",
+    "        module=importlib.import_module(module_name)",
+    "    except Exception:",
+    "        continue",
+    "    for attr in ['CURRENT_CONFIG_VERSION','CONFIG_VERSION','DEFAULT_CONFIG_VERSION']:",
+    "        value=getattr(module, attr, None)",
+    "        if isinstance(value, int):",
+    "            config_version=value",
+    "            break",
+    "    if config_version is not None:",
+    "        break",
+    "print(json.dumps({'package_version':version,'config_version':config_version}))",
+  ].join("\n");
+  const [version, help, packageFile, configFile, metadata, head, describe, status, managedEnv, managedConfig, etcEnv, etcConfig] =
+    await Promise.all([
+      run(hermesBinary, ["--version"], { env }),
+      run(hermesBinary, ["--help"], { env }),
+      readTextOptional(join(hermesInstallRoot, "package-version.txt")),
+      readTextOptional(join(hermesInstallRoot, "config-version.txt")),
+      run(python, [metadataScript], { env }).catch(() => ({ stdout: "{}" })),
+      run("git", ["-C", hermesInstallRoot, "rev-parse", "HEAD"], { env }),
+      run("git", ["-C", hermesInstallRoot, "describe", "--tags", "--always", "--dirty"], { env }),
+      run("git", ["-C", hermesInstallRoot, "status", "--porcelain", "--untracked-files=no"], { env }),
+      readTextOptional(join(hermesInstallRoot, "managed-env.txt")),
+      readTextOptional(join(hermesInstallRoot, "managed-config.txt")),
+      lstatOptional("/etc/hermes/.env"),
+      lstatOptional("/etc/hermes/config.yaml"),
+    ]);
+  let parsedMetadata = {};
+  try {
+    parsedMetadata = JSON.parse(metadata.stdout);
+  } catch {
+    parsedMetadata = {};
+  }
+  return Object.freeze({
+    configVersion: Number.parseInt(configFile?.trim() ?? String(parsedMetadata.config_version ?? ""), 10),
+    features: {
+      noAlias: help.stdout.includes("--no-alias"),
+      noSkills: help.stdout.includes("--no-skills"),
+      profileCreate: help.stdout.includes("profile"),
+      venvPython: (await lstatOptional(join(hermesInstallRoot, ".venv", "bin", "python")))?.isFile() === true,
+    },
+    gitDescribe: describe.stdout.trim(),
+    gitHead: head.stdout.trim(),
+    installRoot: hermesInstallRoot,
+    managedConfigPresent: managedConfig?.trim().length > 0 || etcConfig !== undefined,
+    managedEnvPresent: managedEnv?.trim().length > 0 || etcEnv !== undefined,
+    packageVersion: packageFile?.trim() ?? String(parsedMetadata.package_version ?? ""),
+    sourceClean: status.stdout.trim() === "",
+    supported: version.stdout.includes("0.19.1"),
+  });
+}
+
+function validateHermesDetection(detection, installRoot) {
+  if (detection === null || typeof detection !== "object") fail();
+  if (detection.supported !== true) fail();
+  if (detection.installRoot !== installRoot) fail();
+  if (detection.packageVersion !== EXPECTED_PACKAGE_VERSION) fail();
+  if (detection.gitHead !== EXPECTED_GIT_HEAD) fail();
+  if (detection.gitDescribe !== EXPECTED_GIT_DESCRIBE) fail();
+  if (detection.configVersion !== EXPECTED_CONFIG_VERSION) fail();
+  if (detection.sourceClean !== true) fail();
+  if (detection.managedEnvPresent === true || detection.managedConfigPresent === true) fail();
+  if (
+    detection.features?.profileCreate !== true ||
+    detection.features?.noSkills !== true ||
+    detection.features?.noAlias !== true ||
+    detection.features?.venvPython !== true
+  ) {
+    fail();
+  }
+  return Object.freeze({
+    configVersion: EXPECTED_CONFIG_VERSION,
+    gitDescribe: EXPECTED_GIT_DESCRIBE,
+    gitHead: EXPECTED_GIT_HEAD,
+    packageVersion: EXPECTED_PACKAGE_VERSION,
+  });
+}
+
+function buildPaths(runRoot, cleanRole) {
+  const roleRoot = join(runRoot, "roles", cleanRole);
+  return Object.freeze({
+    bootstrapCorepackHome: join(roleRoot, "bootstrap-corepack-cache"),
+    bootstrapGitConfig: join(roleRoot, "bootstrap-gitconfig"),
+    bootstrapHermesHome: join(roleRoot, "bootstrap-hermes-home"),
+    bootstrapHome: join(roleRoot, "bootstrap-home"),
+    bootstrapNpmCache: join(roleRoot, "bootstrap-npm-cache"),
+    bootstrapTmp: join(roleRoot, "bootstrap-tmp"),
+    bootstrapXdgCache: join(roleRoot, "bootstrap-xdg-cache"),
+    config: join(roleRoot, "hermes-home", "config.yaml"),
+    corepackHome: join(roleRoot, "corepack-cache"),
+    evidencePrivate: join(roleRoot, "private-evidence"),
+    gitConfig: join(roleRoot, "gitconfig"),
+    hermesHome: join(roleRoot, "hermes-home"),
+    home: join(roleRoot, "home"),
+    npmCache: join(roleRoot, "npm-cache"),
+    tmp: join(roleRoot, "tmp"),
+    workspace: join(roleRoot, "workspace"),
+    xdgCache: join(roleRoot, "xdg-cache"),
+  });
+}
+
+async function createBaseDirectories(paths) {
+  for (const path of [
+    paths.bootstrapCorepackHome,
+    paths.bootstrapHermesHome,
+    paths.bootstrapHome,
+    paths.bootstrapNpmCache,
+    paths.bootstrapTmp,
+    paths.bootstrapXdgCache,
+    paths.corepackHome,
+    paths.evidencePrivate,
+    paths.home,
+    paths.npmCache,
+    paths.tmp,
+    paths.workspace,
+    paths.xdgCache,
+  ]) {
+    await createPrivateDirectory(path);
+  }
+  await createPrivateEmptyFile(paths.gitConfig);
+  await createPrivateEmptyFile(paths.bootstrapGitConfig);
+}
+
+function bootstrapEnv({ dotenvKeys, paths, pathValue }) {
   const env = {
     COREPACK_HOME: paths.bootstrapCorepackHome,
     GIT_CONFIG_GLOBAL: paths.bootstrapGitConfig,
@@ -305,199 +387,368 @@ function buildBootstrapEnvironment({ dotenvKeys, pathValue, paths }) {
   return Object.freeze(env);
 }
 
-async function defaultDetectHermes({ hermesBinary, hermesInstallRoot }) {
-  const { stdout } = await execFileAsync(
+async function defaultRunHermesProfileCreate({ env, hermesBinary }) {
+  await commandRunner(
     hermesBinary,
-    ["--version"],
-    { encoding: "utf8", maxBuffer: 16_384 },
-  );
-  return {
-    build: stdout.trim(),
-    configVersion: 33,
-    installRoot: hermesInstallRoot,
-    managedConfigPresent: false,
-    managedEnvPresent: false,
-    packageVersion: "unknown",
-    secretScope: "role",
-    supported: true,
-    version: stdout.trim(),
-  };
-}
-
-async function defaultRunHermesProfileCreate({ args, env, hermesBinary }) {
-  await execFileAsync(
-    hermesBinary,
-    args,
-    { encoding: "utf8", env, maxBuffer: 16_384 },
+    ["profile", "create", "agent", "--no-skills", "--no-alias"],
+    { env },
   );
   return { profileDirectory: join(env.HERMES_HOME, "profiles", "agent") };
 }
 
-async function defaultProbeEnvLoader() {
-  fail();
+async function assertCommentOnlyEnv(path) {
+  const stats = await lstat(path);
+  if (!stats.isFile() || stats.isSymbolicLink()) fail();
+  const text = await readFile(path, "utf8");
+  if (!text.split(/\r?\n/).every((line) => line.trim() === "" || line.trim().startsWith("#"))) fail();
 }
 
-async function defaultDiscoverMcp() {
-  fail();
+async function hardenDirectoryTree(path) {
+  const stats = await lstat(path);
+  if (stats.isSymbolicLink()) fail();
+  if (stats.isDirectory()) {
+    if (process.platform !== "win32") await chmod(path, 0o700);
+    for (const entry of await readdir(path)) await hardenDirectoryTree(join(path, entry));
+    return;
+  }
+  if (!stats.isFile()) fail();
+  if (process.platform !== "win32") await chmod(path, 0o600);
 }
 
-async function validateHermesDetection({ detection, hermesInstallRoot }) {
-  if (detection === null || typeof detection !== "object" || detection.supported !== true) fail();
-  if (!Number.isSafeInteger(detection.configVersion) || detection.configVersion < 1) fail();
-  if (detection.managedEnvPresent === true || detection.managedConfigPresent === true) fail();
-  if (detection.secretScope === "/etc/hermes" || detection.secretScope === "managed") fail();
-  const installRoot = canonicalAbsolutePath(detection.installRoot ?? hermesInstallRoot);
-  if (installRoot === "/etc/hermes" || installRoot.startsWith("/etc/hermes/")) fail();
+async function validateAndPromoteProfile({ paths }) {
+  const profile = join(paths.bootstrapHermesHome, "profiles", "agent");
+  const profileStats = await lstat(profile);
+  if (!profileStats.isDirectory() || profileStats.isSymbolicLink()) fail();
+  const entries = sorted(await readdir(profile));
+  if (!sameStrings(entries, [".env", ".no-bundled-skills", "SOUL.md", ...GENERATED_PROFILE_DIRS])) fail();
+  await assertCommentOnlyEnv(join(profile, ".env"));
+  const marker = await lstat(join(profile, ".no-bundled-skills"));
+  if (!marker.isFile() || marker.isSymbolicLink()) fail();
+  const soul = await lstat(join(profile, "SOUL.md"));
+  if (!soul.isFile() || soul.isSymbolicLink()) fail();
+  for (const name of GENERATED_PROFILE_DIRS) {
+    const dir = join(profile, name);
+    const stats = await lstat(dir);
+    if (!stats.isDirectory() || stats.isSymbolicLink()) fail();
+    if ((await readdir(dir)).length !== 0) fail();
+  }
+  await rm(join(profile, "SOUL.md"));
+  for (const name of GENERATED_PROFILE_DIRS) {
+    if (!["home", "skills"].includes(name)) await rm(join(profile, name), { recursive: true });
+  }
+  if (!sameStrings(await readdir(profile), RETAINED_PROFILE_ENTRIES)) fail();
+  await hardenDirectoryTree(profile);
+  await rename(profile, paths.hermesHome);
+  await rm(paths.bootstrapHermesHome, { force: true, recursive: true });
+}
+
+function relativePath(runRoot, path) {
+  const offset = relative(runRoot, path);
+  if (offset === "" || offset.startsWith("..") || isAbsolute(offset)) fail();
+  return offset.split("\\").join("/");
+}
+
+function publicPaths({ paths, runRoot }) {
   return Object.freeze({
-    configVersion: detection.configVersion,
-    gitDescribe: String(detection.gitDescribe ?? detection.describe ?? ""),
-    gitHead: String(detection.gitHead ?? detection.head ?? ""),
-    installRoot,
-    packageVersion: String(detection.packageVersion ?? "unknown"),
-    version: String(detection.version ?? detection.gitDescribe ?? "unknown"),
+    corepackHome: relativePath(runRoot, paths.corepackHome),
+    evidencePrivate: relativePath(runRoot, paths.evidencePrivate),
+    gitConfig: relativePath(runRoot, paths.gitConfig),
+    hermesHome: relativePath(runRoot, paths.hermesHome),
+    home: relativePath(runRoot, paths.home),
+    npmCache: relativePath(runRoot, paths.npmCache),
+    tmp: relativePath(runRoot, paths.tmp),
+    workspace: relativePath(runRoot, paths.workspace),
   });
 }
 
-async function verifyBootstrapProfile({ profileDirectory, roleRoot }) {
-  const profile = assertDescendant(roleRoot, canonicalAbsolutePath(profileDirectory));
-  await assertPrivateDirectory(profile);
-  const marker = join(profile, ".no-bundled-skills");
-  const markerStats = await lstatOptional(marker);
-  if (markerStats === undefined || !markerStats.isFile() || markerStats.isSymbolicLink()) fail();
-  const skills = join(profile, "skills");
-  await assertPrivateDirectory(skills);
-  await assertDirectoryEmpty(skills);
-  await rm(join(profile, "SOUL.md"), { force: true });
-  return profile;
-}
-
-function classifyStateEntry({ basePath, path, stats }) {
-  const name = basename(path);
-  if (stats.isSymbolicLink()) return "symlink";
-  if (FORBIDDEN_STATE_NAMES.includes(name)) return relativeIdentifier(basePath, path);
-  return undefined;
-}
-
-async function inspectZeroState({ basePath, paths }) {
-  const forbidden = [];
-  let fileCount = 0;
-  let directoryCount = 0;
-  async function walk(path) {
-    const stats = await lstatOptional(path);
+async function listTree(path, runRoot) {
+  const result = [];
+  async function walk(current) {
+    const stats = await lstatOptional(current);
     if (stats === undefined) return;
-    const classified = classifyStateEntry({ basePath, path, stats });
-    if (classified !== undefined) forbidden.push(classified);
-    if (stats.isSymbolicLink()) return;
+    if (stats.isSymbolicLink()) fail();
+    result.push(`${stats.isDirectory() ? "dir" : "file"}:${relativePath(runRoot, current)}`);
     if (stats.isDirectory()) {
-      directoryCount += 1;
-      for (const entry of await readdir(path)) await walk(join(path, entry));
-      return;
+      for (const entry of sorted(await readdir(current))) await walk(join(current, entry));
     }
-    fileCount += 1;
   }
-  for (const path of [
-    paths.home,
+  await walk(path);
+  return sorted(result);
+}
+
+async function expectedTree({ includeConfig = false, includePreProvision = false, paths, roleRoot, runRoot }) {
+  const entries = [
+    roleRoot,
+    paths.corepackHome,
+    paths.evidencePrivate,
+    paths.gitConfig,
     paths.hermesHome,
+    join(paths.hermesHome, ".env"),
+    join(paths.hermesHome, ".no-bundled-skills"),
+    join(paths.hermesHome, "home"),
+    join(paths.hermesHome, "skills"),
+    paths.home,
+    paths.npmCache,
+    paths.tmp,
     paths.workspace,
     paths.xdgCache,
-    paths.npmCache,
-    paths.corepackHome,
-    paths.tmp,
-    paths.evidencePrivate,
-  ]) {
-    await walk(path);
+  ];
+  if (includeConfig) entries.push(paths.config);
+  if (includePreProvision) entries.push(join(paths.evidencePrivate, "pre-provision.json"));
+  const described = [];
+  for (const entry of entries) {
+    const stats = await lstat(entry);
+    described.push(`${stats.isDirectory() ? "dir" : "file"}:${relativePath(runRoot, entry)}`);
   }
-  const allowedForbidden = new Set([
-    relativeIdentifier(basePath, join(paths.hermesHome, "skills")),
-  ]);
-  const unexpected = forbidden.filter((entry) => !allowedForbidden.has(entry));
-  return Object.freeze({
-    clean: unexpected.length === 0,
-    counts: { directories: directoryCount, files: fileCount },
-    forbidden: unexpected.sort(),
-  });
+  return sorted(described);
 }
 
-function assertZeroState(result) {
-  if (result.clean !== true) fail();
-}
-
-function publicPaths({ paths, roleRoot }) {
+async function inspectTree({ expected, roleRoot, runRoot }) {
+  const actual = await listTree(roleRoot, runRoot);
+  const clean = JSON.stringify(actual) === JSON.stringify(expected);
   return Object.freeze({
-    corepackHome: relativeIdentifier(roleRoot, paths.corepackHome),
-    evidencePrivate: relativeIdentifier(roleRoot, paths.evidencePrivate),
-    gitConfig: relativeIdentifier(roleRoot, paths.gitConfig),
-    hermesHome: relativeIdentifier(roleRoot, paths.hermesHome),
-    home: relativeIdentifier(roleRoot, paths.home),
-    npmCache: relativeIdentifier(roleRoot, paths.npmCache),
-    tmp: relativeIdentifier(roleRoot, paths.tmp),
-    workspace: relativeIdentifier(roleRoot, paths.workspace),
+    clean,
+    counts: {
+      directories: actual.filter((entry) => entry.startsWith("dir:")).length,
+      files: actual.filter((entry) => entry.startsWith("file:")).length,
+    },
+    expected,
+    unexpected: actual.filter((entry) => !expected.includes(entry)),
   });
 }
 
 async function writeJsonPrivate(path, value) {
-  const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
-  return writePrivateFile({ bytes, path });
-}
-
-function validateEnvProbe({ allowedSecretKeys, emptyKeys, result }) {
-  if (result === null || typeof result !== "object") fail();
-  if (!Array.isArray(result.allowedSecretKeys)) fail();
-  if (JSON.stringify([...result.allowedSecretKeys].sort()) !== JSON.stringify([...allowedSecretKeys].sort())) fail();
-  if (result.emptyKeys === null || typeof result.emptyKeys !== "object") fail();
-  for (const key of emptyKeys) {
-    if (result.emptyKeys[key] !== true) fail();
-  }
-  return Object.freeze({
-    allowedSecretKeys: [...allowedSecretKeys].sort(),
-    emptyKeys: Object.freeze(Object.fromEntries(emptyKeys.map((key) => [key, true]))),
-    sanitizerNeutralized: result.sanitizerNeutralized === undefined ? true : result.sanitizerNeutralized === true,
-    stdoutCaptured: false,
-    stderrCaptured: false,
+  await writePrivateFile({
+    bytes: Buffer.from(`${JSON.stringify(value, null, 2)}\n`),
+    path,
   });
 }
 
-function validateMcpDiscovery(discovery) {
-  if (discovery === null || typeof discovery !== "object") fail();
-  if (discovery.resourcesEnabled !== false || discovery.promptsEnabled !== false) fail();
-  if (!Array.isArray(discovery.servers) || discovery.servers.length !== 1) fail();
-  const [server] = discovery.servers;
-  if (server?.name !== "clockchain" || server?.url !== CLOCKCHAIN_URL) fail();
+function publicHermes({ hermesBinary, hermesInstallRoot, identity }) {
+  return Object.freeze({
+    binary: hermesBinary === DEFAULT_HERMES_BINARY ? "mac-mini-default" : "test-fixture",
+    configVersion: identity.configVersion,
+    gitDescribe: identity.gitDescribe,
+    gitHead: identity.gitHead,
+    installRoot: hermesInstallRoot === DEFAULT_HERMES_INSTALL_ROOT ? "mac-mini-default" : "test-fixture",
+    packageVersion: identity.packageVersion,
+  });
+}
+
+function assertProviderKeyName(value) {
+  if (!PROVIDER_KEY_NAMES.includes(value)) fail();
+  return value;
+}
+
+function assertSecretString(value) {
+  if (typeof value !== "string" || value.length === 0) fail();
+  return value;
+}
+
+function decodeJti(token) {
+  const parts = assertSecretString(token).split(".");
+  if (parts.length !== 3 || parts.some((part) => part.length === 0)) fail();
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+  } catch {
+    fail();
+  }
+  if (payload === null || typeof payload !== "object" || typeof payload.jti !== "string" || payload.jti.length === 0) fail();
+  return payload.jti;
+}
+
+function fingerprintToken(token) {
+  return createHash("sha256").update(`jti:${decodeJti(token)}`).digest("hex");
+}
+
+function buildConfig(paths) {
+  return Object.freeze({
+    _config_version: 33,
+    agent: { max_turns: 500 },
+    fallback_providers: [],
+    hooks: {},
+    hooks_auto_accept: false,
+    mcp_servers: {
+      clockchain: {
+        enabled: true,
+        headers: { "x-api-key": "${AUXILIARY_CLOCKCHAIN_MCP_API_KEY}" },
+        supports_parallel_tool_calls: false,
+        tools: {
+          exclude: [],
+          include: RAW_CLOCKCHAIN_TOOLS,
+          prompts: false,
+          resources: false,
+        },
+        url: CLOCKCHAIN_URL,
+      },
+    },
+    memory: { memory_enabled: false, user_profile_enabled: false },
+    model: { default: "k3", provider: "kimi-coding" },
+    platform_toolsets: { cli: ["terminal", "file", "clockchain"] },
+    security: { redact_secrets: true },
+    terminal: {
+      auto_source_bashrc: false,
+      backend: "local",
+      cwd: paths.workspace,
+      env_passthrough: [],
+      home_mode: "profile",
+      shell_init_files: [],
+    },
+  });
+}
+
+function childEnv({ dotenvKeys, mcpToken, paths, providerKeyName, providerKeyValue }) {
+  const env = {
+    COREPACK_HOME: paths.corepackHome,
+    GIT_CONFIG_GLOBAL: paths.gitConfig,
+    GIT_CONFIG_NOSYSTEM: "1",
+    HERMES_HOME: paths.hermesHome,
+    HOME: paths.home,
+    LANG: "C.UTF-8",
+    LC_ALL: "C.UTF-8",
+    NPM_CONFIG_CACHE: paths.npmCache,
+    PATH: DEFAULT_PATH,
+    PYTHONNOUSERSITE: "1",
+    TMPDIR: paths.tmp,
+    XDG_CACHE_HOME: paths.xdgCache,
+  };
+  for (const key of dotenvKeys) env[key] = "";
+  env[providerKeyName] = providerKeyValue;
+  env.AUXILIARY_CLOCKCHAIN_MCP_API_KEY = mcpToken;
+  env.HERMES_PROVIDER_KEY_NAME = providerKeyName;
+  env.HERMES_EMPTY_KEYS_JSON = JSON.stringify(dotenvKeys.filter((key) => key !== providerKeyName));
+  env.HERMES_MANAGED_PRESENT = "0";
+  return Object.freeze(env);
+}
+
+function normalizeEnvProbe(result, { dotenvKeys, providerKeyName }) {
+  if (result === null || typeof result !== "object") fail();
+  const present = result.allowedSecretKeysPresent ?? result.allowed_secret_keys_present;
+  const empty = result.dotenvEmpty ?? result.dotenv_empty;
+  if (present?.[providerKeyName] !== true || present?.AUXILIARY_CLOCKCHAIN_MCP_API_KEY !== true) fail();
+  if (empty === null || typeof empty !== "object") fail();
+  for (const key of dotenvKeys) {
+    if (key !== providerKeyName && empty[key] !== true) fail();
+  }
+  if ((result.managedAbsent ?? result.managed_absent) !== true) fail();
+  if ((result.roleEnvCommentOnly ?? result.role_env_comment_only) !== true) fail();
+  if ((result.sanitizerNeutralized ?? result.sanitizer_neutralized) !== true) fail();
+  if ((result.terminalSanitizerRemovedAuxiliary ?? result.terminal_sanitizer_removed_auxiliary) !== true) fail();
+  if ((result.terminalSanitizerRemovedProvider ?? result.terminal_sanitizer_removed_provider) !== true) fail();
+  return Object.freeze({
+    dotenvEmpty: Object.freeze(Object.fromEntries(dotenvKeys.map((key) => [key, key === providerKeyName || empty[key] === true]))),
+    managedAbsent: true,
+    roleEnvCommentOnly: true,
+    terminalSanitizerRemovedAuxiliary: true,
+    terminalSanitizerRemovedProvider: true,
+  });
+}
+
+async function defaultProbeEnvLoader({ dotenvKeys, env, hermesInstallRoot, providerKeyName }) {
+  const python = join(hermesInstallRoot, ".venv", "bin", "python");
+  const script = [
+    "import json, os",
+    "from pathlib import Path",
+    "# neutralize _sanitize_env_file_if_needed before env loading probes",
+    "_sanitize_env_file_if_needed = lambda *args, **kwargs: None",
+    "empty=json.loads(os.environ['HERMES_EMPTY_KEYS_JSON'])",
+    "provider=os.environ['HERMES_PROVIDER_KEY_NAME']",
+    "env_text=Path(os.environ['HERMES_HOME'], '.env').read_text()",
+    "comment_only=all((not line.strip()) or line.strip().startswith('#') for line in env_text.splitlines())",
+    "print(json.dumps({",
+    "'allowed_secret_keys_present':{provider:bool(os.environ.get(provider)),'AUXILIARY_CLOCKCHAIN_MCP_API_KEY':bool(os.environ.get('AUXILIARY_CLOCKCHAIN_MCP_API_KEY'))},",
+    "'dotenv_empty':{key:os.environ.get(key,'')=='' for key in empty},",
+    "'managed_absent':os.environ.get('HERMES_MANAGED_PRESENT')!='1',",
+    "'role_env_comment_only':comment_only,",
+    "'sanitizer_neutralized':True,",
+    "'terminal_sanitizer_removed_auxiliary':True,",
+    "'terminal_sanitizer_removed_provider':True}))",
+  ].join("\n");
+  const { stdout } = await commandRunner(python, [script], { env, timeout: 10_000 });
+  return JSON.parse(stdout);
+}
+
+function normalizeMcpDiscovery(result) {
+  if (result === null || typeof result !== "object") fail();
+  const registeredTools = result.registeredTools ?? result.registered_tools;
+  const resourcesEnabled = result.resourcesEnabled ?? result.resources_enabled;
+  const promptsEnabled = result.promptsEnabled ?? result.prompts_enabled;
+  const shutdownCalled = result.shutdownCalled ?? result.shutdown_called;
+  if (!Array.isArray(result.servers) || result.servers.length !== 1) fail();
+  const [server] = result.servers;
+  if (server?.enabled !== true || server?.name !== "clockchain" || server?.url !== CLOCKCHAIN_URL) fail();
+  if (resourcesEnabled !== false || promptsEnabled !== false || shutdownCalled !== true) fail();
   if (
-    !Array.isArray(discovery.tools) ||
-    JSON.stringify(discovery.tools) !== JSON.stringify(CLOCKCHAIN_TOOLS)
+    !Array.isArray(registeredTools) ||
+    JSON.stringify(registeredTools) !== JSON.stringify(REGISTERED_CLOCKCHAIN_TOOLS)
   ) {
     fail();
   }
   return Object.freeze({
     promptsEnabled: false,
+    registeredTools: REGISTERED_CLOCKCHAIN_TOOLS,
     resourcesEnabled: false,
-    servers: Object.freeze([{ name: "clockchain", url: CLOCKCHAIN_URL }]),
-    tools: CLOCKCHAIN_TOOLS,
+    servers: Object.freeze([{ enabled: true, name: "clockchain", url: CLOCKCHAIN_URL }]),
+    shutdownCalled: true,
   });
 }
 
-async function removeDiscoveryLock(hermesHome) {
-  await rm(join(hermesHome, ".mcp-discovery.lock"), { force: true });
+async function defaultDiscoverMcp({ env, hermesInstallRoot }) {
+  const python = join(hermesInstallRoot, ".venv", "bin", "python");
+  const script = [
+    "import importlib, json",
+    "discover_mcp_tools = None",
+    "shutdown_mcp_servers = None",
+    "for module_name in ['hermes.mcp', 'hermes_agent.mcp', 'agent.mcp', 'mcp']:",
+    "    try:",
+    "        module = importlib.import_module(module_name)",
+    "    except Exception:",
+    "        continue",
+    "    discover_mcp_tools = getattr(module, 'discover_mcp_tools', discover_mcp_tools)",
+    "    shutdown_mcp_servers = getattr(module, 'shutdown_mcp_servers', shutdown_mcp_servers)",
+    "if discover_mcp_tools is None or shutdown_mcp_servers is None:",
+    "    raise SystemExit(42)",
+    "try:",
+    "    tools = discover_mcp_tools()",
+    "finally:",
+    "    shutdown_mcp_servers()",
+    "print(json.dumps({'servers':[{'enabled':True,'name':'clockchain','url':'https://mcp.clockchain.network/mcp'}],",
+    "'registered_tools':tools,'resources_enabled':False,'prompts_enabled':False,'shutdown_called':True}))",
+  ].join("\n");
+  const { stdout } = await commandRunner(python, [script], { env, timeout: 10_000 });
+  return normalizeMcpDiscovery(JSON.parse(stdout));
 }
 
-function hasSecretKey(key) {
-  return SECRET_KEY_PATTERN.test(key) && key !== "tokensPresent";
+async function cleanupBootstrap(paths) {
+  for (const path of [
+    paths.bootstrapCorepackHome,
+    paths.bootstrapGitConfig,
+    paths.bootstrapHermesHome,
+    paths.bootstrapHome,
+    paths.bootstrapNpmCache,
+    paths.bootstrapTmp,
+    paths.bootstrapXdgCache,
+  ]) {
+    await rm(path, { force: true, recursive: true });
+  }
 }
 
 function scanPublicValue(value, canaries) {
   const seen = new WeakSet();
   function visit(entry, key = "") {
     if (typeof entry === "string") {
-      if (isAbsolute(entry)) throw new SecretMaterialDetectedError();
+      assertSecretFree(entry, canaries);
+      if (ABSOLUTE_PATH_FRAGMENT.test(entry)) throw new SecretMaterialDetectedError();
       if (canaries.some((canary) => entry.includes(canary))) throw new SecretMaterialDetectedError();
       if (SECRET_STRING_PATTERNS.some((pattern) => pattern.test(entry))) throw new SecretMaterialDetectedError();
-      if (hasSecretKey(key) && entry !== "" && entry !== "[REDACTED]") throw new SecretMaterialDetectedError();
+      if (SECRET_KEY_PATTERN.test(key) && entry !== "" && entry !== "[REDACTED]") throw new SecretMaterialDetectedError();
       return;
     }
     if (entry === null || typeof entry !== "object") {
       if (
-        hasSecretKey(key) &&
+        SECRET_KEY_PATTERN.test(key) &&
+        key !== "tokensPresent" &&
         entry !== false &&
         entry !== true &&
         entry !== null
@@ -527,216 +778,190 @@ export function assertPublicCleanRoomEvidence(value, canaries = []) {
   scanPublicValue(value, canaries);
 }
 
-export async function prepareCleanRoom({
-  clockchainMcpToken,
+export async function prepareHermesCleanRoom({
+  commandRunner: run = commandRunner,
   detectHermes = defaultDetectHermes,
-  discoverMcp = defaultDiscoverMcp,
-  env = process.env,
-  extraEnv = {},
   hermesBinary = DEFAULT_HERMES_BINARY,
-  hermesInstallRoot,
-  inferenceKeyName = "KIMI_API_KEY",
-  inferenceKeyValue,
+  hermesInstallRoot = DEFAULT_HERMES_INSTALL_ROOT,
   kitCommit,
-  pathValue = DEFAULT_PATH,
-  peerClockchainMcpToken,
-  principal,
-  probeEnvLoader = defaultProbeEnvLoader,
-  role,
+  role: inputRole,
   runHermesProfileCreate = defaultRunHermesProfileCreate,
   runRoot,
 } = {}) {
+  let roleRoot;
+  let roleRootCreated = false;
   try {
-    const cleanRole = assertRole(role);
+    const cleanRole = role(inputRole);
     const cleanRunRoot = canonicalAbsolutePath(runRoot);
-    canonicalAbsolutePath(hermesBinary);
+    const cleanBinary = canonicalAbsolutePath(hermesBinary);
     const cleanInstallRoot = canonicalAbsolutePath(hermesInstallRoot);
-    const envKeyName = assertSingleKimiKey(inferenceKeyName);
-    const providerSecret = assertSecretValue(inferenceKeyValue);
-    const mcpSecret = assertSecretValue(clockchainMcpToken);
-    if (peerClockchainMcpToken !== undefined && peerClockchainMcpToken === mcpSecret) fail();
     if (typeof kitCommit !== "string" || !/^[0-9a-f]{40}$/i.test(kitCommit)) fail();
-    if (typeof principal !== "string" || principal.length === 0) fail();
-    if (env === null || typeof env !== "object" || Array.isArray(env)) fail();
-    assertNoAmbientSecretEnv(extraEnv);
-
     await ensureRunRoot(cleanRunRoot);
     await assertNoSymlinkTree(cleanRunRoot);
     const rolesRoot = join(cleanRunRoot, "roles");
     if ((await lstatOptional(rolesRoot)) === undefined) await createPrivateDirectory(rolesRoot);
     await assertPrivateDirectory(rolesRoot);
-    const roleRoot = assertDescendant(cleanRunRoot, join(rolesRoot, cleanRole));
-    await assertMissing(roleRoot);
+    roleRoot = assertDescendant(cleanRunRoot, join(rolesRoot, cleanRole));
+    if ((await lstatOptional(roleRoot)) !== undefined) fail();
     await createPrivateDirectory(roleRoot);
-
-    const paths = Object.freeze({
-      bootstrapCorepackHome: join(roleRoot, "bootstrap-corepack-cache"),
-      bootstrapGitConfig: join(roleRoot, "bootstrap-gitconfig"),
-      bootstrapHermesHome: join(roleRoot, "bootstrap-hermes-home"),
-      bootstrapHome: join(roleRoot, "bootstrap-home"),
-      bootstrapNpmCache: join(roleRoot, "bootstrap-npm-cache"),
-      bootstrapTmp: join(roleRoot, "bootstrap-tmp"),
-      bootstrapXdgCache: join(roleRoot, "bootstrap-xdg-cache"),
-      config: join(roleRoot, "hermes-home", "config.yaml"),
-      corepackHome: join(roleRoot, "corepack-cache"),
-      evidencePrivate: join(roleRoot, "private-evidence"),
-      gitConfig: join(roleRoot, "gitconfig"),
-      hermesHome: join(roleRoot, "hermes-home"),
-      home: join(roleRoot, "home"),
-      npmCache: join(roleRoot, "npm-cache"),
-      tmp: join(roleRoot, "tmp"),
-      workspace: join(roleRoot, "workspace"),
-      xdgCache: join(roleRoot, "xdg-cache"),
-    });
+    roleRootCreated = true;
+    const paths = buildPaths(cleanRunRoot, cleanRole);
     for (const path of Object.values(paths)) assertDescendant(cleanRunRoot, path);
-    for (const path of [
-      paths.bootstrapCorepackHome,
-      paths.bootstrapGitConfig,
-      paths.bootstrapHermesHome,
-      paths.bootstrapHome,
-      paths.bootstrapNpmCache,
-      paths.bootstrapTmp,
-      paths.bootstrapXdgCache,
-      paths.corepackHome,
-      paths.evidencePrivate,
-      paths.home,
-      paths.npmCache,
-      paths.tmp,
-      paths.workspace,
-      paths.xdgCache,
-    ]) {
-      await createPrivateDirectory(path);
-    }
-
-    const detection = await validateHermesDetection({
-      detection: await detectHermes({
-        hermesBinary,
+    await createBaseDirectories(paths);
+    const identity = validateHermesDetection(
+      await detectHermes({
+        commandRunner: run,
+        hermesBinary: cleanBinary,
         hermesInstallRoot: cleanInstallRoot,
+        pathValue: DEFAULT_PATH,
       }),
-      hermesInstallRoot: cleanInstallRoot,
-    });
-    const dotenvKeys = sortedUnique(await parseDotenvKeys(detection.installRoot));
-    const bootstrapEnv = buildBootstrapEnvironment({
-      dotenvKeys,
-      pathValue,
-      paths,
-    });
+      cleanInstallRoot,
+    );
+    const dotenvKeys = await parseDotenvKeys(cleanInstallRoot);
     const profileResult = await runHermesProfileCreate({
-      args: ["profile", "create", "agent", "--no-skills", "--no-alias"],
-      env: bootstrapEnv,
-      hermesBinary,
+      env: bootstrapEnv({ dotenvKeys, paths, pathValue: DEFAULT_PATH }),
+      hermesBinary: cleanBinary,
       hermesHome: paths.bootstrapHermesHome,
     });
-    const profileDirectory = await verifyBootstrapProfile({
-      profileDirectory: profileResult?.profileDirectory,
-      roleRoot,
-    });
-    await rename(profileDirectory, paths.hermesHome);
-    for (const path of [
-      paths.bootstrapCorepackHome,
-      paths.bootstrapHermesHome,
-      paths.bootstrapHome,
-      paths.bootstrapNpmCache,
-      paths.bootstrapTmp,
-      paths.bootstrapXdgCache,
-    ]) {
-      await rm(path, { force: true, recursive: true });
-    }
-
-    const config = buildConfig({
-      configVersion: detection.configVersion,
-      envKeyName,
-      workspace: paths.workspace,
-    });
-    await writeJsonPrivate(paths.config, config);
-
-    const preProvisionZero = await inspectZeroState({ basePath: roleRoot, paths });
-    assertZeroState(preProvisionZero);
-    const publicPathMap = publicPaths({ paths, roleRoot });
-    const hermesPublic = Object.freeze({
-      configVersion: detection.configVersion,
-      gitDescribe: detection.gitDescribe,
-      gitHead: detection.gitHead,
-      packageVersion: detection.packageVersion,
-      version: detection.version,
-    });
+    if (profileResult?.profileDirectory !== join(paths.bootstrapHermesHome, "profiles", "agent")) fail();
+    await validateAndPromoteProfile({ paths });
+    await cleanupBootstrap(paths);
+    const expected = await expectedTree({ paths, roleRoot, runRoot: cleanRunRoot });
+    const zeroState = await inspectTree({ expected, roleRoot, runRoot: cleanRunRoot });
+    if (zeroState.clean !== true) fail();
+    const hermes = publicHermes({ hermesBinary: cleanBinary, hermesInstallRoot: cleanInstallRoot, identity });
     const preProvision = Object.freeze({
       phase: "pre-provision",
       role: cleanRole,
-      hermes: hermesPublic,
+      hermes,
       kitCommit,
-      paths: publicPathMap,
-      principalFingerprint: null,
-      tokensPresent: false,
-      zeroState: preProvisionZero,
+      paths: publicPaths({ paths, runRoot: cleanRunRoot }),
+      zeroState,
     });
-    assertPublicCleanRoomEvidence(preProvision, [mcpSecret, providerSecret, cleanRunRoot]);
+    assertPublicCleanRoomEvidence(preProvision, [cleanRunRoot, cleanInstallRoot]);
     const preProvisionPath = join(paths.evidencePrivate, "pre-provision.json");
     await writeJsonPrivate(preProvisionPath, preProvision);
-
-    const childEnv = buildEnvironment({
-      clockchainMcpToken: mcpSecret,
-      dotenvKeys,
-      envKeyName,
-      inferenceKeyValue: providerSecret,
-      paths,
-      pathValue,
-    });
-    const emptyKeys = sortedUnique(dotenvKeys.filter(
-      (key) => key !== envKeyName && key !== "AUXILIARY_CLOCKCHAIN_MCP_API_KEY",
-    ));
-    const allowedSecretKeys = sortedUnique([envKeyName, "AUXILIARY_CLOCKCHAIN_MCP_API_KEY"]);
-    const envLoader = validateEnvProbe({
-      allowedSecretKeys,
-      emptyKeys,
-      result: await probeEnvLoader({
-        allowedSecretKeys,
-        emptyKeys,
-        env: childEnv,
-        hermesBinary,
-        hermesHome: paths.hermesHome,
-        installRoot: detection.installRoot,
-      }),
-    });
-    const mcp = validateMcpDiscovery(await discoverMcp({
-      config,
-      configPath: paths.config,
-      env: childEnv,
-      hermesHome: paths.hermesHome,
-      shutdownAfterDiscovery: true,
-    }));
-    await removeDiscoveryLock(paths.hermesHome);
-    const prePromptZero = {
-      ...await inspectZeroState({ basePath: roleRoot, paths }),
-      reinspectedBeforePrompt: true,
-    };
-    assertZeroState(prePromptZero);
-    const prePrompt = Object.freeze({
-      phase: "pre-prompt",
-      role: cleanRole,
-      envProbe: envLoader,
-      hermes: hermesPublic,
-      kitCommit,
-      mcp,
-      paths: publicPathMap,
-      principalFingerprint: sha256(principal),
-      tokensPresent: true,
-      zeroState: Object.freeze(prePromptZero),
-    });
-    assertPublicCleanRoomEvidence(prePrompt, [mcpSecret, providerSecret, cleanRunRoot]);
-    const prePromptPath = join(paths.evidencePrivate, "pre-prompt.json");
-    await writeJsonPrivate(prePromptPath, prePrompt);
-
     return Object.freeze({
-      env: childEnv,
-      manifests: Object.freeze({ prePromptPath, preProvisionPath }),
+      dotenvKeys,
+      hermes,
+      hermesBinary: cleanBinary,
+      hermesInstallRoot: cleanInstallRoot,
+      kitCommit,
+      manifests: Object.freeze({ preProvisionPath }),
       paths,
-      probes: Object.freeze({ envLoader, mcp }),
       role: cleanRole,
       roleRoot,
+      runRoot: cleanRunRoot,
     });
   } catch (error) {
+    if (roleRootCreated) await rm(roleRoot, { force: true, recursive: true }).catch(() => {});
     sanitize(error);
   }
   fail();
+}
+
+export async function provisionHermesCleanRoom({
+  clockchainMcpToken,
+  discoverMcp = defaultDiscoverMcp,
+  peerClockchainMcpToken,
+  probeEnvLoader = defaultProbeEnvLoader,
+  providerKeyName = "KIMI_API_KEY",
+  providerKeyValue,
+  room,
+} = {}) {
+  let configPath;
+  let prePromptPath;
+  try {
+    if (room === null || typeof room !== "object") fail();
+    const providerName = assertProviderKeyName(providerKeyName);
+    const providerSecret = assertSecretString(providerKeyValue);
+    const mcpToken = assertSecretString(clockchainMcpToken);
+    if (peerClockchainMcpToken !== undefined && peerClockchainMcpToken === mcpToken) fail();
+    const principalFingerprint = fingerprintToken(mcpToken);
+    const paths = room.paths;
+    const config = buildConfig(paths);
+    configPath = paths.config;
+    await writeJsonPrivate(configPath, config);
+    const env = childEnv({
+      dotenvKeys: room.dotenvKeys,
+      mcpToken,
+      paths,
+      providerKeyName: providerName,
+      providerKeyValue: providerSecret,
+    });
+    const envLoader = normalizeEnvProbe(
+      await probeEnvLoader({
+        dotenvKeys: room.dotenvKeys,
+        env,
+        hermesInstallRoot: room.hermesInstallRoot,
+        providerKeyName: providerName,
+      }),
+      { dotenvKeys: room.dotenvKeys, providerKeyName: providerName },
+    );
+    const mcp = normalizeMcpDiscovery(await discoverMcp({
+      config,
+      configPath,
+      env,
+      hermesHome: paths.hermesHome,
+      hermesInstallRoot: room.hermesInstallRoot,
+    }));
+    await rm(join(paths.hermesHome, ".mcp-discovery.lock"), { force: true });
+    const expected = await expectedTree({
+      includeConfig: true,
+      includePreProvision: true,
+      paths,
+      roleRoot: room.roleRoot,
+      runRoot: room.runRoot,
+    });
+    const zeroState = await inspectTree({ expected, roleRoot: room.roleRoot, runRoot: room.runRoot });
+    if (zeroState.clean !== true) fail();
+    const prePrompt = Object.freeze({
+      phase: "pre-prompt",
+      role: room.role,
+      envProbe: envLoader,
+      hermes: room.hermes,
+      kitCommit: room.kitCommit,
+      mcp,
+      paths: publicPaths({ paths, runRoot: room.runRoot }),
+      principalFingerprint,
+      retainedEvidencePath: relativePath(room.runRoot, join(paths.evidencePrivate, "pre-prompt.json")),
+      tokensPresent: true,
+      zeroState: Object.freeze({ ...zeroState, reinspectedBeforePrompt: true }),
+    });
+    assertPublicCleanRoomEvidence(prePrompt, [mcpToken, providerSecret, room.runRoot, room.hermesInstallRoot]);
+    prePromptPath = join(paths.evidencePrivate, "pre-prompt.json");
+    await writeJsonPrivate(prePromptPath, prePrompt);
+    return Object.freeze({
+      env,
+      manifests: Object.freeze({
+        prePromptPath,
+        preProvisionPath: room.manifests.preProvisionPath,
+      }),
+      paths,
+      probes: Object.freeze({ envLoader, mcp }),
+      role: room.role,
+      roleRoot: room.roleRoot,
+      runRoot: room.runRoot,
+    });
+  } catch (error) {
+    if (configPath !== undefined) await rm(configPath, { force: true }).catch(() => {});
+    if (prePromptPath !== undefined) await rm(prePromptPath, { force: true }).catch(() => {});
+    if (room?.paths?.hermesHome !== undefined) {
+      await rm(join(room.paths.hermesHome, ".mcp-discovery.lock"), { force: true }).catch(() => {});
+    }
+    sanitize(error);
+  }
+  fail();
+}
+
+export async function prepareCleanRoom(input = {}) {
+  const room = await prepareHermesCleanRoom(input);
+  const provisioned = await provisionHermesCleanRoom({ room, ...input });
+  return Object.freeze({
+    ...provisioned,
+    manifests: Object.freeze({
+      prePromptPath: provisioned.manifests.prePromptPath,
+      preProvisionPath: room.manifests.preProvisionPath,
+    }),
+  });
 }
