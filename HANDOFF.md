@@ -91,13 +91,15 @@ then do Track A while AWS/DNS steps settle.
   read passed through the instance role and `/home/ubuntu/.aws` remained absent
   before and after. B2 is green.
 
-- 2026-08-07 — B3 pre-deploy review found the live GCP service advertising a
-  temporary token-mint limit of 240/hour/IP while the locked plan, handoff, and
-  server default require 10. A header-only verification mint returned limit
-  240. The GCP service was restored to `MCP_TOKEN_MINT_PER_HOUR=10` in revision
-  `clockchain-mcp-00018-csh`; `/health` stayed green and a fresh public response
-  reported limit 10. The AWS deploy assets also pin 10, so B4 will compare the
-  intended abuse ceiling rather than propagate the drift.
+- 2026-08-07 — B3 pre-deploy review found the live GCP service advertising
+  temporary rate limits of 240 token mints/hour/IP and 300 MCP requests/minute,
+  while the locked handoff/server default requires 10 mints and the deployment
+  contract requires 30 requests. A header-only verification mint returned limit
+  240. GCP was restored to `MCP_TOKEN_MINT_PER_HOUR=10` and
+  `MCP_RATE_PER_MIN=30`; final revision `clockchain-mcp-00019-bqh` serves 100%
+  of traffic, `/health` is green, and a fresh public token response reported
+  limit 10. The AWS deploy assets pin the same limits, so B4 will compare the
+  intended abuse ceilings rather than propagate the drift.
 
 - 2026-08-07 — G0 attempt 1 stopped after both roles completed their ledger
   work but before host verification. We ran a local relay on `127.0.0.1:18789`,
