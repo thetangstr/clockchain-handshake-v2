@@ -229,6 +229,6 @@ sources are `clockchain-developer-tools` commits `610d519` and `11b9162`.
 | Remote checkout | `/opt/clockchain-mcp/app`, clean clone of the source commit |
 | Service | `clockchain-mcp.service`: active, `Result=success`, `ExecMainStatus=0` |
 | Containers | `clockchain-mcp-mcp-1` healthy; `clockchain-mcp-caddy-1` running |
-| Host listeners | 80/443 only; no host listener on 8080 |
+| Application listeners / SSH | Caddy publishes 80/443; SSH 22 remains source-restricted by the locked security group; no host listener on 8080 |
 | Public pre-DNS probe | `http://mcp-aws.clockchain.network/health` forced to the EIP returns `308` to HTTPS |
 | Remaining B3 gate | Public A record and ACME certificate for `mcp-aws.clockchain.network` |
