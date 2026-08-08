@@ -32,6 +32,7 @@ import {
   fundIdentitySeats,
   mandateBodyFrom,
   remainingWaitMinutes,
+  requestEnvelopeFrom,
   runHostLoop,
 } from "../src/roles/host.mjs";
 import { createMcpClient } from "../src/core/clockchain.mjs";
@@ -343,7 +344,7 @@ async function runOneSession({ token, treasury }) {
     after: mandateResult.after,
     buffer: mandateResult.buffer,
   }).catch((error) => stop(error?.code ?? "EXPIRED", error?.message ?? "The payment request did not arrive in time."));
-  const requestEnvelope = submitted.message.body.requestEnvelope;
+  const requestEnvelope = requestEnvelopeFrom(submitted.message);
   await say("REQUEST_SUBMITTED", "The requestor submitted a signed payment request against those terms.");
 
   const descriptor = buildDescriptor({ common, mandateEnvelope, requestEnvelope, repositorySha: REPO_SHA, sessionUuid });

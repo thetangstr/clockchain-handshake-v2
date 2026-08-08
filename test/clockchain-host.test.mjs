@@ -13,7 +13,9 @@ import {
   downloadEvidencePackages,
   evidenceDeadlineAfterAnchorReport,
   fundIdentitySeats,
+  mandateBodyFrom,
   remainingWaitMinutes,
+  requestEnvelopeFrom,
   runHostLoop,
 } from "../src/roles/host.mjs";
 
@@ -546,7 +548,7 @@ test("host monitor narration advances only after the named protocol artifact exi
     'await say("TERMS_PUBLISHED"',
   );
   const requestIndex = CLOCKCHAIN_HOST_SOURCE.indexOf(
-    "const requestEnvelope = submitted.message.body.requestEnvelope",
+    "const requestEnvelope = requestEnvelopeFrom",
   );
   const submittedIndex = CLOCKCHAIN_HOST_SOURCE.indexOf(
     'await say("REQUEST_SUBMITTED"',
@@ -595,6 +597,34 @@ test("host monitor narration advances only after the named protocol artifact exi
   assert.doesNotMatch(identityWait, /onHeartbeat:[\s\S]*say\(/);
   assert.match(registrationWait, /onHeartbeat: async \(\) => refresh\(/);
   assert.doesNotMatch(registrationWait, /onHeartbeat:[\s\S]*say\(/);
+});
+
+test("host rejects malformed payer mandate before TERMS_PUBLISHED can be narrated", () => {
+  assert.throws(
+    () => mandateBodyFrom({
+      body: {
+        common: {},
+        mandateEnvelope: { schema: "not-a-payer-mandate-envelope" },
+        sessionUuid: "session-uuid",
+      },
+    }),
+    (error) => error instanceof SessionEnded && error.code === "MALFORMED",
+  );
+});
+
+test("host rejects missing or malformed payment request before REQUEST_SUBMITTED can be narrated", () => {
+  assert.throws(
+    () => requestEnvelopeFrom({ body: {} }),
+    (error) => error instanceof SessionEnded && error.code === "MALFORMED",
+  );
+  assert.throws(
+    () => requestEnvelopeFrom({
+      body: {
+        requestEnvelope: { schema: "not-a-payment-request-envelope" },
+      },
+    }),
+    (error) => error instanceof SessionEnded && error.code === "MALFORMED",
+  );
 });
 
 test("host verifier remains the only source of the published verdict", () => {

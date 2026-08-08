@@ -3,6 +3,8 @@ import { join } from "node:path";
 
 import { wireReportToAnchor } from "../monitor/anchor.mjs";
 import { validateAnchor } from "../monitor/snapshot.mjs";
+import { payerMandateDigest } from "../core/payer-mandate.mjs";
+import { paymentRequestDigest } from "../core/payment-request.mjs";
 import { verifyEnvelope } from "../relay/client.mjs";
 
 export class SessionEnded extends Error {
@@ -222,7 +224,25 @@ export function mandateBodyFrom(message) {
   if (!body?.common || !body?.sessionUuid || !body?.mandateEnvelope) {
     throw new SessionEnded("MALFORMED", "The payer mandate message was incomplete.");
   }
+  try {
+    payerMandateDigest(body.mandateEnvelope);
+  } catch {
+    throw new SessionEnded("MALFORMED", "The payer mandate message was malformed.");
+  }
   return body;
+}
+
+export function requestEnvelopeFrom(message) {
+  const requestEnvelope = message?.body?.requestEnvelope;
+  if (!requestEnvelope) {
+    throw new SessionEnded("MALFORMED", "The payment request message was incomplete.");
+  }
+  try {
+    paymentRequestDigest(requestEnvelope);
+  } catch {
+    throw new SessionEnded("MALFORMED", "The payment request message was malformed.");
+  }
+  return requestEnvelope;
 }
 
 export async function applyAnchorReport({
