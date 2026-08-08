@@ -21,9 +21,6 @@ const INTENT_SCHEMA = "clockchain.handshake-registration-intent/v1";
 const RECOVERY_SCHEMA = "clockchain.handshake-registration-recovery/v1";
 const PRIVATE_KEY_PATTERN = /^0x[0-9a-fA-F]{64}$/;
 const BYTES_PATTERN = /^0x(?:[0-9a-fA-F]{2})*$/;
-const HEX_PRIVATE_KEY_CANDIDATE_PATTERN =
-  /0[xX][0-9a-fA-F]{64}|[0-9a-fA-F]{64}/g;
-const HEX_CHARACTER_PATTERN = /[0-9a-fA-F]/;
 
 function fail() {
   throw new Error(BRIDGE_ERROR_MESSAGE);
@@ -121,31 +118,10 @@ function assertOmitsPrivateKey(value, privateKey) {
   const secretHex = privateKey.slice(2).toLowerCase();
   if (
     typeof text !== "string" ||
-    hexCandidates(text).some((candidate) => candidate === secretHex)
+    text.toLowerCase().includes(secretHex)
   ) {
     fail();
   }
-}
-
-function hexCandidates(text) {
-  return [...text.matchAll(HEX_PRIVATE_KEY_CANDIDATE_PATTERN)]
-    .filter((match) => isStandaloneHexCandidate(text, match))
-    .map(([candidate]) =>
-      candidate.replace(/^0[xX]/, "").toLowerCase(),
-    );
-}
-
-function isStandaloneHexCandidate(text, match) {
-  const candidate = match[0];
-  if (candidate.startsWith("0x") || candidate.startsWith("0X")) {
-    return true;
-  }
-  const before = text[match.index - 1];
-  const after = text[match.index + candidate.length];
-  return (
-    (before === undefined || !HEX_CHARACTER_PATTERN.test(before)) &&
-    (after === undefined || !HEX_CHARACTER_PATTERN.test(after))
-  );
 }
 
 async function captureParentIdentity(statePath, { platform, runIcacls }) {

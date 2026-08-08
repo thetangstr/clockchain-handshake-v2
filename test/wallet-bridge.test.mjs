@@ -437,6 +437,57 @@ test("fails closed without leaking when checkpoint fields contain case-varied pr
   }
 });
 
+test("fails closed when checkpoint fields embed private-key bytes inside longer hex text", async (t) => {
+  for (const [name, secretEquivalent, checkpointForAddress] of [
+    [
+      "suffixed uppercase no-prefix raw recovery field",
+      `${LETTER_PRIVATE_KEY.slice(2).toUpperCase()}A`,
+      (address) =>
+        recoveryCheckpoint({
+          address,
+          displayName: `${LETTER_PRIVATE_KEY.slice(2).toUpperCase()}A`,
+        }),
+    ],
+    [
+      "prefixed mixed-case 0x-equivalent intent projection",
+      `A${mixedCasePrivateKeyHex(LETTER_PRIVATE_KEY)}`,
+      (address) =>
+        intentCheckpoint({
+          address,
+          displayName: `A${mixedCasePrivateKeyHex(LETTER_PRIVATE_KEY)}`,
+        }),
+    ],
+  ]) {
+    await t.test(name, async (t) => {
+      const { statePath, result } = await initializeWalletWithPrivateKey(
+        t,
+        LETTER_PRIVATE_KEY,
+      );
+      const maliciousCheckpoint = join(
+        dirname(statePath),
+        ".wallet.json.checkpoint-000001.json",
+      );
+      await writeFile(
+        maliciousCheckpoint,
+        JSON.stringify(checkpointForAddress(result.address), null, 2),
+        { mode: 0o600 },
+      );
+
+      const error = await rejectSafe(() =>
+        inspectWallet({ statePath, platform: "darwin" }),
+      );
+      assertNoText(error, secretEquivalent);
+
+      const cliInspection = await runCli(["inspect", "--state", statePath]);
+      assert.notEqual(cliInspection.code, 0);
+      assertNoSecret(cliInspection.stdout);
+      assertNoSecret(cliInspection.stderr);
+      assert.equal(cliInspection.stdout.includes(secretEquivalent), false);
+      assert.equal(cliInspection.stderr.includes(secretEquivalent), false);
+    });
+  }
+});
+
 test("signs only one exact even-length 0x byte string with EIP-191 raw bytes", async (t) => {
   const { statePath } = await initializeDeterministicWallet(t);
   const signed = await signExactBytes({
@@ -573,6 +624,57 @@ test("rejects checkpoint callbacks carrying case-varied private-key bytes before
         }),
       );
       assertNoText(error, checkpointForAddress(result.address).displayName);
+
+      assert.equal(broadcastReached, false);
+      const checkpointEntries = (await readdir(dirname(statePath))).filter((entry) =>
+        entry.includes("checkpoint"),
+      );
+      assert.deepEqual(checkpointEntries, []);
+    });
+  }
+});
+
+test("rejects checkpoint callbacks embedding private-key bytes inside longer hex text", async (t) => {
+  for (const [name, checkpointForAddress] of [
+    [
+      "suffixed uppercase no-prefix callback field",
+      (address) =>
+        intentCheckpoint({
+          address,
+          displayName: `${LETTER_PRIVATE_KEY.slice(2).toUpperCase()}A`,
+        }),
+    ],
+    [
+      "prefixed mixed-case 0x-equivalent callback field",
+      (address) =>
+        recoveryCheckpoint({
+          address,
+          displayName: `A${mixedCasePrivateKeyHex(LETTER_PRIVATE_KEY)}`,
+        }),
+    ],
+  ]) {
+    await t.test(name, async (t) => {
+      const { statePath, result } = await initializeWalletWithPrivateKey(
+        t,
+        LETTER_PRIVATE_KEY,
+      );
+      let broadcastReached = false;
+      const checkpoint = checkpointForAddress(result.address);
+
+      const error = await rejectSafe(() =>
+        registerWalletIdentity({
+          statePath,
+          displayName: "Hermes party",
+          platform: "darwin",
+          registration: {
+            registerIdentity: async ({ onCheckpoint }) => {
+              await onCheckpoint(checkpoint);
+              broadcastReached = true;
+            },
+          },
+        }),
+      );
+      assertNoText(error, checkpoint.displayName);
 
       assert.equal(broadcastReached, false);
       const checkpointEntries = (await readdir(dirname(statePath))).filter((entry) =>
