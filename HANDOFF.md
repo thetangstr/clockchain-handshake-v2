@@ -99,3 +99,26 @@ Inventory source: `clockchain-developer-tools` commit
 | Does it use ANY GCP-managed service (Firestore, GCS, Cloud SQL, Memorystore, Pub/Sub)? | Deployment uses Cloud Run, Cloud Build, Artifact Registry, Secret Manager, Cloud Armor, and Cloud Logging/Monitoring. It uses none of Firestore, GCS, Cloud SQL, Memorystore, Pub/Sub, or any other application datastore. Default session/account state is memory; optional `MCP_SESSION_FILE` is local JSON; the documented DynamoDB store is not implemented. The B0 stateful-data STOP trigger did not fire. |
 | Does it stream (SSE/websocket) on the MCP endpoint? | Streamable HTTP can return SSE and clients advertise `application/json, text/event-stream`. No websocket server was found. |
 | Health endpoint | Unauthenticated `GET /health` and `GET /healthz`, returning `{"status":"ok"}` before auth or gateway access. |
+
+### B2 provisioned host (2026-08-07)
+
+| Resource | ID / value |
+|---|---|
+| AWS account / region | `570035913370` / `us-west-2` |
+| EC2 instance | `i-0d6765d143da7e1ea` — `t3.small`, running, status checks green |
+| Ubuntu AMI | `ami-0ac74609c6396bed3` — Canonical Ubuntu 24.04 LTS amd64 gp3 |
+| VPC / subnet / AZ | `vpc-0aa12e33b416f8a90` / `subnet-0098c0ad31cc55dab` / `us-west-2d` |
+| Private / Elastic IP | `172.31.50.64` / `34.209.199.138` |
+| EIP allocation / association | `eipalloc-01233aceb0e395e04` / `eipassoc-04b63a9427c4addfb` |
+| Security group | `sg-019cf9e090977a49f` (`clockchain-mcp-sg`): 80/443 public; 22 from `172.12.143.34/32` only |
+| Root volume | `vol-0d84c8180aa7d2dff` — 20 GiB encrypted gp3, delete on termination |
+| EC2 key pair | `clockchain-mcp` / `key-0cf030c5ba260d457`; private key at `~/.ssh/clockchain-mcp.pem` mode 0600 |
+| IAM role | `arn:aws:iam::570035913370:role/clockchain-mcp-ec2-role` |
+| Instance profile | `arn:aws:iam::570035913370:instance-profile/clockchain-mcp-instance-profile` |
+| Inline role policy | `clockchain-mcp-ssm-parameter-read`: `ssm:GetParameter` on `arn:aws:ssm:us-west-2:570035913370:parameter/clockchain/mcp/*` only |
+| SSM verification parameter | `/clockchain/mcp/PING` (`SecureString`, `alias/aws/ssm`) |
+
+Bootstrap evidence: cloud-init completed; Docker, Compose, AWS CLI v2, git, and jq are
+installed; `docker run --rm hello-world` passed; the instance read the PING parameter
+through its role; `/home/ubuntu/.aws` is absent; IMDSv2 is required with hop limit 2.
+Provisioning source is `clockchain-developer-tools` commit `6da3fc9`.
