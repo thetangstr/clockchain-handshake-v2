@@ -18,7 +18,6 @@ import { test } from "node:test";
 
 import {
   assertPublicCleanRoomEvidence,
-  prepareCleanRoom,
   prepareHermesCleanRoom,
   provisionHermesCleanRoom,
 } from "../src/core/hermes-cleanroom.mjs";
@@ -45,9 +44,28 @@ async function temporaryRoot(t) {
   return root;
 }
 
-function jwtWithJti(jti) {
-  const enc = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
-  return `${enc({ alg: "none", typ: "JWT" })}.${enc({ jti, sub: "not-authoritative" })}.signature`;
+const UUIDS = Object.freeze({
+  defaultAdapter: "44444444-4444-4444-8444-444444444444",
+  payer: "11111111-1111-4111-8111-111111111111",
+  retained: "55555555-5555-4555-8555-555555555555",
+  same: "66666666-6666-4666-8666-666666666666",
+  wrapper: "33333333-3333-4333-8333-333333333333",
+});
+
+function clockchainToken(jti) {
+  const payload = {
+    aud: "demo",
+    exp: 2_000_000_000,
+    iat: 1_700_000_000,
+    jti,
+    sub: "optional-public-subject",
+    v: 1,
+  };
+  return `cc_${Buffer.from(JSON.stringify(payload)).toString("base64url")}.hmacsignature000000`;
+}
+
+function clockchainTokenWithPayload(payload) {
+  return `cc_${Buffer.from(JSON.stringify(payload)).toString("base64url")}.hmacsignature000000`;
 }
 
 function jtiFingerprint(jti) {
@@ -65,12 +83,11 @@ async function makeFakeHermesInstall(root, {
   const installRoot = join(root, "hermes-agent");
   const binDir = join(root, "bin");
   const hermesBinary = join(binDir, "hermes");
-  const python = join(installRoot, ".venv", "bin", "python");
+  const python = join(installRoot, "venv", "bin", "python");
   await mkdir(binDir, { recursive: true });
-  await mkdir(join(installRoot, ".venv", "bin"), { recursive: true });
+  await mkdir(join(installRoot, "venv", "bin"), { recursive: true });
   await writeFile(join(installRoot, ".env"), `${dotenv.join("\n")}\n`);
-  await writeFile(join(installRoot, "package-version.txt"), "0.19.1\n");
-  await writeFile(join(installRoot, "config-version.txt"), "33\n");
+  await writeFile(join(installRoot, "pyproject.toml"), '[project]\nname = "hermes-agent"\nversion = "0.19.1"\n');
   await writeFile(join(installRoot, "managed-env.txt"), "\n");
   await writeFile(join(installRoot, "managed-config.txt"), "\n");
   await writeFile(join(installRoot, "dirty.txt"), dirty ? "dirty\n" : "\n");
@@ -78,11 +95,11 @@ async function makeFakeHermesInstall(root, {
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 if (process.argv.includes("--version")) {
-  process.stdout.write("hermes 0.19.1\\n");
+  process.stdout.write("Hermes CLI 0.19.1 (2026.7.30)\\n");
   process.exit(0);
 }
-if (process.argv.includes("--help")) {
-  process.stdout.write("profile create agent --no-skills --no-alias\\n");
+if (process.argv.slice(2).join(" ") === "profile create --help") {
+  process.stdout.write("  --no-skills\\n  --no-alias\\n");
   process.exit(0);
 }
 if (process.argv.slice(2).join(" ") !== "profile create agent --no-skills --no-alias") {
@@ -100,9 +117,15 @@ writeFileSync(join(profile, ".no-bundled-skills"), "\\n");
   await writeFile(python, `#!/usr/bin/env node
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-const code = process.argv[2] || "";
-if (code.includes("discover_mcp_tools")) {
+if (process.argv[2] !== "-c") process.exit(51);
+const code = process.argv[3] || "";
+if (code.includes("hermes_cli.config_defaults") && code.includes("DEFAULT_CONFIG")) {
+  process.stdout.write(JSON.stringify({ config_version: 33 }));
+  process.exit(0);
+}
+if (code.includes("tools.mcp_tool") && code.includes("discover_mcp_tools") && code.includes("shutdown_mcp_servers")) {
   writeFileSync(join(process.env.HERMES_HOME, ".mcp-discovery.lock"), "lock");
+  process.stderr.write("masked noisy discovery stderr");
   process.stdout.write(JSON.stringify({
     prompts_enabled: false,
     resources_enabled: false,
@@ -112,8 +135,10 @@ if (code.includes("discover_mcp_tools")) {
   }));
   process.exit(0);
 }
+if (!code.includes("hermes_cli.env_loader") || !code.includes("load_hermes_dotenv") || !code.includes("tools.environments.local") || !code.includes("_sanitize_subprocess_env")) process.exit(52);
 const envText = readFileSync(join(process.env.HERMES_HOME, ".env"), "utf8");
 const emptyKeys = JSON.parse(process.env.HERMES_EMPTY_KEYS_JSON);
+const sanitizedKeys = [];
 process.stdout.write(JSON.stringify({
   allowed_secret_keys_present: {
     [process.env.HERMES_PROVIDER_KEY_NAME]: Boolean(process.env[process.env.HERMES_PROVIDER_KEY_NAME]),
@@ -121,10 +146,12 @@ process.stdout.write(JSON.stringify({
   },
   dotenv_empty: Object.fromEntries(emptyKeys.map((key) => [key, process.env[key] === ""])),
   managed_absent: process.env.HERMES_MANAGED_PRESENT !== "1",
+  observed_empty_keys: emptyKeys,
+  probe_vars_present: Object.keys(process.env).filter((key) => key.startsWith("HERMES_")).sort(),
   role_env_comment_only: envText.split(/\\r?\\n/).every((line) => line.trim() === "" || line.trim().startsWith("#")),
   sanitizer_neutralized: true,
-  terminal_sanitizer_removed_auxiliary: true,
-  terminal_sanitizer_removed_provider: true
+  terminal_sanitizer_removed_auxiliary: !sanitizedKeys.includes("AUXILIARY_CLOCKCHAIN_MCP_API_KEY"),
+  terminal_sanitizer_removed_provider: !sanitizedKeys.includes(process.env.HERMES_PROVIDER_KEY_NAME)
 }));
 `, { mode: 0o755 });
   await chmod(python, 0o755);
@@ -153,9 +180,9 @@ function basePrepare(root, install) {
   };
 }
 
-function providerInput(jti = "payer-token-jti") {
+function providerInput(jti = UUIDS.payer) {
   return {
-    clockchainMcpToken: jwtWithJti(jti),
+    clockchainMcpToken: clockchainToken(jti),
     providerKeyName: "KIMI_API_KEY",
     providerKeyValue: "kimi-provider-secret-00000000000000000000",
   };
@@ -211,7 +238,7 @@ test("prepare and provision are split so both rooms can be prepared before any s
   assertRelativeToRun(payer.runRoot, preProvision.paths.hermesHome);
   assert.equal(JSON.stringify(preProvision).includes(payer.paths.hermesHome), false);
 
-  const provisioned = await provisionHermesCleanRoom({ room: payer, ...providerInput("payer-jti-1") });
+  const provisioned = await provisionHermesCleanRoom({ room: payer, ...providerInput(UUIDS.payer) });
   const config = await readJson(provisioned.paths.config);
   assert.deepEqual(config, {
     _config_version: 33,
@@ -262,40 +289,29 @@ test("prepare and provision are split so both rooms can be prepared before any s
 
   const prePrompt = await readJson(provisioned.manifests.prePromptPath);
   assert.equal(prePrompt.phase, "pre-prompt");
-  assert.equal(prePrompt.principalFingerprint, jtiFingerprint("payer-jti-1"));
+  assert.deepEqual(Object.keys(provisioned.env).filter((key) => key.startsWith("HERMES_")), ["HERMES_HOME"]);
+  assert.equal(prePrompt.principalFingerprint, jtiFingerprint(UUIDS.payer));
   assert.deepEqual(prePrompt.mcp.registeredTools, REGISTERED_TOOLS);
   assert.equal(prePrompt.zeroState.clean, true);
   const retained = `${await readFile(payer.manifests.preProvisionPath, "utf8")}\n${await readFile(join(payer.runRoot, prePrompt.retainedEvidencePath), "utf8")}`;
-  assert.equal(retained.includes(providerInput("payer-jti-1").clockchainMcpToken), false);
+  assert.equal(retained.includes(providerInput(UUIDS.payer).clockchainMcpToken), false);
   assert.equal(retained.includes("kimi-provider-secret-00000000000000000000"), false);
   assert.equal(retained.includes(payer.paths.hermesHome), false);
   assertPublicCleanRoomEvidence(prePrompt, [
-    providerInput("payer-jti-1").clockchainMcpToken,
+    providerInput(UUIDS.payer).clockchainMcpToken,
     "kimi-provider-secret-00000000000000000000",
     payer.paths.hermesHome,
   ]);
 });
 
-test("compatibility wrapper preserves ordering by emitting both phase manifests", async (t) => {
-  const root = await temporaryRoot(t);
-  const install = await makeFakeHermesInstall(root);
-  const room = await prepareCleanRoom({
-    ...basePrepare(root, install),
-    role: "payer",
-    ...providerInput("wrapper-jti"),
-  });
-  assert.equal(room.manifests.preProvisionPath.endsWith("pre-provision.json"), true);
-  assert.equal(room.manifests.prePromptPath.endsWith("pre-prompt.json"), true);
-  const preProvision = await readJson(room.manifests.preProvisionPath);
-  assert.equal(Object.hasOwn(preProvision, "principalFingerprint"), false);
-});
-
 test("production default adapters use fake executable and venv-python contracts", async (t) => {
   const root = await temporaryRoot(t);
   const install = await makeFakeHermesInstall(root);
+  const calls = [];
   const room = await prepareHermesCleanRoom({
     ...basePrepare(root, install),
     commandRunner: async (file, args, options) => {
+      calls.push({ args, env: options?.env, file });
       if (file === "git" && args[0] === "-C" && args[2] === "rev-parse") return { stdout: `${HERMES_HEAD}\n`, stderr: "" };
       if (file === "git" && args[0] === "-C" && args[2] === "describe") return { stdout: `${HERMES_DESCRIBE}\n`, stderr: "" };
       if (file === "git" && args[0] === "-C" && args[2] === "status") return { stdout: "", stderr: "" };
@@ -309,9 +325,20 @@ test("production default adapters use fake executable and venv-python contracts"
     },
     role: "payer",
   });
-  const provisioned = await provisionHermesCleanRoom({ room, ...providerInput("default-adapter-jti") });
+  assert.equal(calls.some((call) => call.file === install.hermesBinary && call.args.join(" ") === "profile create --help"), true);
+  assert.equal(calls.some((call) => call.file === join(install.installRoot, "venv", "bin", "python") && call.args[0] === "-c" && call.args[1].includes("hermes_cli.config_defaults.DEFAULT_CONFIG")), true);
+  assert.equal(calls.every((call) => call.env?.HOME === undefined || call.env.HOME.startsWith(root)), true);
+  assert.equal(calls.every((call) => call.env?.HERMES_HOME === undefined || call.env.HERMES_HOME.startsWith(root)), true);
+  const provisioned = await provisionHermesCleanRoom({
+    clockchainMcpToken: providerInput(UUIDS.defaultAdapter).clockchainMcpToken,
+    inferenceKeyName: "KIMI_CODING_API_KEY",
+    inferenceKeyValue: "kimi-provider-secret-22222222222222222222",
+    prepared: room,
+  });
   assert.deepEqual(provisioned.probes.mcp.registeredTools, REGISTERED_TOOLS);
   assert.equal(provisioned.probes.envLoader.roleEnvCommentOnly, true);
+  assert.equal(provisioned.env.KIMI_CODING_API_KEY, "kimi-provider-secret-22222222222222222222");
+  assert.equal(provisioned.env.KIMI_API_KEY, "");
 });
 
 test("prepare rejects non-Mac-compatible Hermes detection and cleans partial role roots", async (t) => {
@@ -402,9 +429,24 @@ test("provision rejects bad provider names, malformed tokens, equal peer tokens,
     provisionHermesCleanRoom({ room, ...providerInput("bad-token"), clockchainMcpToken: "cc_opaque_token_without_jti_000000" }),
     /Clean room preparation failed safely/,
   );
-  const token = jwtWithJti("same-token");
+  for (const payload of [
+    { aud: "prod", exp: 2_000_000_000, iat: 1_700_000_000, jti: UUIDS.payer, v: 1 },
+    { aud: "demo", exp: 2_000_000_000, iat: 1_700_000_000, jti: "not-a-uuid", v: 1 },
+    { aud: "demo", exp: 1_700_000_000, iat: 1_700_000_000, jti: UUIDS.payer, v: 1 },
+    { aud: "demo", exp: 2_000_000_000, iat: 1_700_000_000, jti: UUIDS.payer, v: 2 },
+  ]) {
+    await assert.rejects(
+      provisionHermesCleanRoom({
+        room,
+        ...providerInput(UUIDS.payer),
+        clockchainMcpToken: clockchainTokenWithPayload(payload),
+      }),
+      /Clean room preparation failed safely/,
+    );
+  }
+  const token = clockchainToken(UUIDS.same);
   await assert.rejects(
-    provisionHermesCleanRoom({ room, ...providerInput("same-token"), clockchainMcpToken: token, peerClockchainMcpToken: token }),
+    provisionHermesCleanRoom({ room, ...providerInput(UUIDS.same), clockchainMcpToken: token, peerClockchainMcpToken: token }),
     /Clean room preparation failed safely/,
   );
   await assert.rejects(
@@ -455,7 +497,7 @@ test("evidence scanner rejects embedded absolute paths, canaries, and retained s
   const secret = "kimi-provider-secret-retained-111111111111111111";
   const provisioned = await provisionHermesCleanRoom({
     room,
-    ...providerInput("retained-scan"),
+    ...providerInput(UUIDS.retained),
     providerKeyValue: secret,
   });
   for (const path of [room.manifests.preProvisionPath, provisioned.manifests.prePromptPath]) {

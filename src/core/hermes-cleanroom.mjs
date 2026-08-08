@@ -10,6 +10,7 @@ import {
   realpath,
   rename,
   rm,
+  stat,
 } from "node:fs/promises";
 import {
   dirname,
@@ -51,6 +52,8 @@ const EXPECTED_CONFIG_VERSION = 33;
 const DOTENV_KEY_PATTERN = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=/;
 const PROVIDER_KEY_NAMES = Object.freeze(["KIMI_API_KEY", "KIMI_CODING_API_KEY"]);
 const SECRET_KEY_PATTERN = /(?:KEY|TOKEN|SECRET|AUTH|PASSWORD|CREDENTIAL)/i;
+const CLOCKCHAIN_TOKEN_PATTERN = /^cc_([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{16,})$/;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ABSOLUTE_PATH_FRAGMENT =
   /(?:^|[\s"'=:,(])\/(?:Users|Volumes|private|tmp|var|etc|opt|home)\/[A-Za-z0-9._~@%+,:=-][A-Za-z0-9._~@%+/,:=-]*/;
 const SECRET_STRING_PATTERNS = Object.freeze([
@@ -114,6 +117,15 @@ function assertDescendant(root, child) {
 async function lstatOptional(path) {
   try {
     return await lstat(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+async function statOptional(path) {
+  try {
+    return await stat(path);
   } catch (error) {
     if (error?.code === "ENOENT") return undefined;
     throw error;
@@ -224,46 +236,36 @@ function scrubbedEnv(pathValue = DEFAULT_PATH) {
   });
 }
 
+function scrubbedHermesEnv({ hermesHome, home, pathValue = DEFAULT_PATH }) {
+  return Object.freeze({
+    ...scrubbedEnv(pathValue),
+    HERMES_HOME: hermesHome,
+    HOME: home,
+  });
+}
+
 async function defaultDetectHermes({
   commandRunner: run = commandRunner,
+  hermesHome,
   hermesBinary,
   hermesInstallRoot,
+  home,
   pathValue,
 }) {
-  const env = scrubbedEnv(pathValue);
-  const python = join(hermesInstallRoot, ".venv", "bin", "python");
+  const env = scrubbedHermesEnv({ hermesHome, home, pathValue });
+  const python = join(hermesInstallRoot, "venv", "bin", "python");
   const metadataScript = [
-    "import importlib, importlib.metadata, json",
-    "packages=['hermes-agent','hermes_agent','hermes']",
-    "version=None",
-    "for package in packages:",
-    "    try:",
-    "        version=importlib.metadata.version(package)",
-    "        break",
-    "    except Exception:",
-    "        pass",
-    "config_version=None",
-    "for module_name in ['hermes.config','hermes_agent.config','agent.config','config']:",
-    "    try:",
-    "        module=importlib.import_module(module_name)",
-    "    except Exception:",
-    "        continue",
-    "    for attr in ['CURRENT_CONFIG_VERSION','CONFIG_VERSION','DEFAULT_CONFIG_VERSION']:",
-    "        value=getattr(module, attr, None)",
-    "        if isinstance(value, int):",
-    "            config_version=value",
-    "            break",
-    "    if config_version is not None:",
-    "        break",
-    "print(json.dumps({'package_version':version,'config_version':config_version}))",
+    "import json",
+    "# hermes_cli.config_defaults.DEFAULT_CONFIG",
+    "import hermes_cli.config_defaults as config_defaults",
+    "print(json.dumps({'config_version': config_defaults.DEFAULT_CONFIG.get('_config_version')}))",
   ].join("\n");
-  const [version, help, packageFile, configFile, metadata, head, describe, status, managedEnv, managedConfig, etcEnv, etcConfig] =
+  const [version, profileCreateHelp, pyproject, metadata, head, describe, status, managedEnv, managedConfig, etcEnv, etcConfig] =
     await Promise.all([
       run(hermesBinary, ["--version"], { env }),
-      run(hermesBinary, ["--help"], { env }),
-      readTextOptional(join(hermesInstallRoot, "package-version.txt")),
-      readTextOptional(join(hermesInstallRoot, "config-version.txt")),
-      run(python, [metadataScript], { env }).catch(() => ({ stdout: "{}" })),
+      run(hermesBinary, ["profile", "create", "--help"], { env }),
+      readTextOptional(join(hermesInstallRoot, "pyproject.toml")),
+      run(python, ["-c", metadataScript], { env }).catch(() => ({ stdout: "{}" })),
       run("git", ["-C", hermesInstallRoot, "rev-parse", "HEAD"], { env }),
       run("git", ["-C", hermesInstallRoot, "describe", "--tags", "--always", "--dirty"], { env }),
       run("git", ["-C", hermesInstallRoot, "status", "--porcelain", "--untracked-files=no"], { env }),
@@ -278,20 +280,21 @@ async function defaultDetectHermes({
   } catch {
     parsedMetadata = {};
   }
+  const packageVersion = /^\s*version\s*=\s*"([^"]+)"/m.exec(pyproject ?? "")?.[1] ?? "";
   return Object.freeze({
-    configVersion: Number.parseInt(configFile?.trim() ?? String(parsedMetadata.config_version ?? ""), 10),
+    configVersion: Number.parseInt(String(parsedMetadata.config_version ?? ""), 10),
     features: {
-      noAlias: help.stdout.includes("--no-alias"),
-      noSkills: help.stdout.includes("--no-skills"),
-      profileCreate: help.stdout.includes("profile"),
-      venvPython: (await lstatOptional(join(hermesInstallRoot, ".venv", "bin", "python")))?.isFile() === true,
+      noAlias: profileCreateHelp.stdout.includes("--no-alias"),
+      noSkills: profileCreateHelp.stdout.includes("--no-skills"),
+      profileCreate: true,
+      venvPython: (await statOptional(join(hermesInstallRoot, "venv", "bin", "python")))?.isFile() === true,
     },
     gitDescribe: describe.stdout.trim(),
     gitHead: head.stdout.trim(),
     installRoot: hermesInstallRoot,
     managedConfigPresent: managedConfig?.trim().length > 0 || etcConfig !== undefined,
     managedEnvPresent: managedEnv?.trim().length > 0 || etcEnv !== undefined,
-    packageVersion: packageFile?.trim() ?? String(parsedMetadata.package_version ?? ""),
+    packageVersion,
     sourceClean: status.stdout.trim() === "",
     supported: version.stdout.includes("0.19.1"),
   });
@@ -387,8 +390,8 @@ function bootstrapEnv({ dotenvKeys, paths, pathValue }) {
   return Object.freeze(env);
 }
 
-async function defaultRunHermesProfileCreate({ env, hermesBinary }) {
-  await commandRunner(
+async function defaultRunHermesProfileCreate({ commandRunner: run = commandRunner, env, hermesBinary }) {
+  await run(
     hermesBinary,
     ["profile", "create", "agent", "--no-skills", "--no-alias"],
     { env },
@@ -546,15 +549,32 @@ function assertSecretString(value) {
 }
 
 function decodeJti(token) {
-  const parts = assertSecretString(token).split(".");
-  if (parts.length !== 3 || parts.some((part) => part.length === 0)) fail();
+  const match = CLOCKCHAIN_TOKEN_PATTERN.exec(assertSecretString(token));
+  if (match === null) fail();
   let payload;
   try {
-    payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    payload = JSON.parse(Buffer.from(match[1], "base64url").toString("utf8"));
   } catch {
     fail();
   }
-  if (payload === null || typeof payload !== "object" || typeof payload.jti !== "string" || payload.jti.length === 0) fail();
+  if (
+    payload === null ||
+    typeof payload !== "object" ||
+    payload.v !== 1 ||
+    payload.aud !== "demo" ||
+    typeof payload.jti !== "string" ||
+    !UUID_PATTERN.test(payload.jti) ||
+    !Number.isSafeInteger(payload.iat) ||
+    !Number.isSafeInteger(payload.exp) ||
+    payload.iat < 0 ||
+    payload.exp <= payload.iat ||
+    (
+      Object.hasOwn(payload, "sub") &&
+      (typeof payload.sub !== "string" || payload.sub.length === 0 || payload.sub.length > 256)
+    )
+  ) {
+    fail();
+  }
   return payload.jti;
 }
 
@@ -616,10 +636,16 @@ function childEnv({ dotenvKeys, mcpToken, paths, providerKeyName, providerKeyVal
   for (const key of dotenvKeys) env[key] = "";
   env[providerKeyName] = providerKeyValue;
   env.AUXILIARY_CLOCKCHAIN_MCP_API_KEY = mcpToken;
-  env.HERMES_PROVIDER_KEY_NAME = providerKeyName;
-  env.HERMES_EMPTY_KEYS_JSON = JSON.stringify(dotenvKeys.filter((key) => key !== providerKeyName));
-  env.HERMES_MANAGED_PRESENT = "0";
   return Object.freeze(env);
+}
+
+function probeEnv({ dotenvKeys, env, providerKeyName }) {
+  return Object.freeze({
+    ...env,
+    HERMES_EMPTY_KEYS_JSON: JSON.stringify(dotenvKeys.filter((key) => key !== providerKeyName)),
+    HERMES_MANAGED_PRESENT: "0",
+    HERMES_PROVIDER_KEY_NAME: providerKeyName,
+  });
 }
 
 function normalizeEnvProbe(result, { dotenvKeys, providerKeyName }) {
@@ -646,26 +672,34 @@ function normalizeEnvProbe(result, { dotenvKeys, providerKeyName }) {
 }
 
 async function defaultProbeEnvLoader({ dotenvKeys, env, hermesInstallRoot, providerKeyName }) {
-  const python = join(hermesInstallRoot, ".venv", "bin", "python");
+  const python = join(hermesInstallRoot, "venv", "bin", "python");
   const script = [
-    "import json, os",
+    "import contextlib, io, json, os",
     "from pathlib import Path",
-    "# neutralize _sanitize_env_file_if_needed before env loading probes",
-    "_sanitize_env_file_if_needed = lambda *args, **kwargs: None",
+    "import hermes_cli.env_loader as env_loader",
+    "from hermes_cli.env_loader import load_hermes_dotenv",
+    "from tools.environments.local import _sanitize_subprocess_env",
+    "env_loader._sanitize_env_file_if_needed = lambda *args, **kwargs: None",
     "empty=json.loads(os.environ['HERMES_EMPTY_KEYS_JSON'])",
     "provider=os.environ['HERMES_PROVIDER_KEY_NAME']",
-    "env_text=Path(os.environ['HERMES_HOME'], '.env').read_text()",
+    "loaded=[]",
+    "with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):",
+    "    loaded=[str(path) for path in load_hermes_dotenv(hermes_home=os.environ['HERMES_HOME'])]",
+    "    sanitized=_sanitize_subprocess_env(os.environ, {})",
+    "env_text=Path(os.environ['HERMES_HOME'], '.env').read_text(encoding='utf8')",
     "comment_only=all((not line.strip()) or line.strip().startswith('#') for line in env_text.splitlines())",
     "print(json.dumps({",
     "'allowed_secret_keys_present':{provider:bool(os.environ.get(provider)),'AUXILIARY_CLOCKCHAIN_MCP_API_KEY':bool(os.environ.get('AUXILIARY_CLOCKCHAIN_MCP_API_KEY'))},",
     "'dotenv_empty':{key:os.environ.get(key,'')=='' for key in empty},",
     "'managed_absent':os.environ.get('HERMES_MANAGED_PRESENT')!='1',",
+    "'loaded_count':len(loaded),",
+    "'observed_empty_keys':empty,",
     "'role_env_comment_only':comment_only,",
     "'sanitizer_neutralized':True,",
-    "'terminal_sanitizer_removed_auxiliary':True,",
-    "'terminal_sanitizer_removed_provider':True}))",
+    "'terminal_sanitizer_removed_auxiliary':'AUXILIARY_CLOCKCHAIN_MCP_API_KEY' not in sanitized,",
+    "'terminal_sanitizer_removed_provider':provider not in sanitized}))",
   ].join("\n");
-  const { stdout } = await commandRunner(python, [script], { env, timeout: 10_000 });
+  const { stdout } = await commandRunner(python, ["-c", script], { env, timeout: 10_000 });
   return JSON.parse(stdout);
 }
 
@@ -695,28 +729,20 @@ function normalizeMcpDiscovery(result) {
 }
 
 async function defaultDiscoverMcp({ env, hermesInstallRoot }) {
-  const python = join(hermesInstallRoot, ".venv", "bin", "python");
+  const python = join(hermesInstallRoot, "venv", "bin", "python");
   const script = [
-    "import importlib, json",
-    "discover_mcp_tools = None",
-    "shutdown_mcp_servers = None",
-    "for module_name in ['hermes.mcp', 'hermes_agent.mcp', 'agent.mcp', 'mcp']:",
-    "    try:",
-    "        module = importlib.import_module(module_name)",
-    "    except Exception:",
-    "        continue",
-    "    discover_mcp_tools = getattr(module, 'discover_mcp_tools', discover_mcp_tools)",
-    "    shutdown_mcp_servers = getattr(module, 'shutdown_mcp_servers', shutdown_mcp_servers)",
-    "if discover_mcp_tools is None or shutdown_mcp_servers is None:",
-    "    raise SystemExit(42)",
+    "import contextlib, io, json",
+    "from tools.mcp_tool import discover_mcp_tools, shutdown_mcp_servers",
     "try:",
-    "    tools = discover_mcp_tools()",
+    "    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):",
+    "        tools = discover_mcp_tools()",
     "finally:",
-    "    shutdown_mcp_servers()",
+    "    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):",
+    "        shutdown_mcp_servers()",
     "print(json.dumps({'servers':[{'enabled':True,'name':'clockchain','url':'https://mcp.clockchain.network/mcp'}],",
     "'registered_tools':tools,'resources_enabled':False,'prompts_enabled':False,'shutdown_called':True}))",
   ].join("\n");
-  const { stdout } = await commandRunner(python, [script], { env, timeout: 10_000 });
+  const { stdout } = await commandRunner(python, ["-c", script], { env, timeout: 10_000 });
   return normalizeMcpDiscovery(JSON.parse(stdout));
 }
 
@@ -811,14 +837,17 @@ export async function prepareHermesCleanRoom({
     const identity = validateHermesDetection(
       await detectHermes({
         commandRunner: run,
+        hermesHome: paths.bootstrapHermesHome,
         hermesBinary: cleanBinary,
         hermesInstallRoot: cleanInstallRoot,
+        home: paths.bootstrapHome,
         pathValue: DEFAULT_PATH,
       }),
       cleanInstallRoot,
     );
     const dotenvKeys = await parseDotenvKeys(cleanInstallRoot);
     const profileResult = await runHermesProfileCreate({
+      commandRunner: run,
       env: bootstrapEnv({ dotenvKeys, paths, pathValue: DEFAULT_PATH }),
       hermesBinary: cleanBinary,
       hermesHome: paths.bootstrapHermesHome,
@@ -863,7 +892,10 @@ export async function prepareHermesCleanRoom({
 export async function provisionHermesCleanRoom({
   clockchainMcpToken,
   discoverMcp = defaultDiscoverMcp,
+  inferenceKeyName,
+  inferenceKeyValue,
   peerClockchainMcpToken,
+  prepared,
   probeEnvLoader = defaultProbeEnvLoader,
   providerKeyName = "KIMI_API_KEY",
   providerKeyValue,
@@ -872,18 +904,19 @@ export async function provisionHermesCleanRoom({
   let configPath;
   let prePromptPath;
   try {
-    if (room === null || typeof room !== "object") fail();
-    const providerName = assertProviderKeyName(providerKeyName);
-    const providerSecret = assertSecretString(providerKeyValue);
+    const preparedRoom = room ?? prepared;
+    if (preparedRoom === null || typeof preparedRoom !== "object") fail();
+    const providerName = assertProviderKeyName(inferenceKeyName ?? providerKeyName);
+    const providerSecret = assertSecretString(inferenceKeyValue ?? providerKeyValue);
     const mcpToken = assertSecretString(clockchainMcpToken);
     if (peerClockchainMcpToken !== undefined && peerClockchainMcpToken === mcpToken) fail();
     const principalFingerprint = fingerprintToken(mcpToken);
-    const paths = room.paths;
+    const paths = preparedRoom.paths;
     const config = buildConfig(paths);
     configPath = paths.config;
     await writeJsonPrivate(configPath, config);
     const env = childEnv({
-      dotenvKeys: room.dotenvKeys,
+      dotenvKeys: preparedRoom.dotenvKeys,
       mcpToken,
       paths,
       providerKeyName: providerName,
@@ -891,77 +924,66 @@ export async function provisionHermesCleanRoom({
     });
     const envLoader = normalizeEnvProbe(
       await probeEnvLoader({
-        dotenvKeys: room.dotenvKeys,
-        env,
-        hermesInstallRoot: room.hermesInstallRoot,
+        dotenvKeys: preparedRoom.dotenvKeys,
+        env: probeEnv({ dotenvKeys: preparedRoom.dotenvKeys, env, providerKeyName: providerName }),
+        hermesInstallRoot: preparedRoom.hermesInstallRoot,
         providerKeyName: providerName,
       }),
-      { dotenvKeys: room.dotenvKeys, providerKeyName: providerName },
+      { dotenvKeys: preparedRoom.dotenvKeys, providerKeyName: providerName },
     );
     const mcp = normalizeMcpDiscovery(await discoverMcp({
       config,
       configPath,
       env,
       hermesHome: paths.hermesHome,
-      hermesInstallRoot: room.hermesInstallRoot,
+      hermesInstallRoot: preparedRoom.hermesInstallRoot,
     }));
     await rm(join(paths.hermesHome, ".mcp-discovery.lock"), { force: true });
     const expected = await expectedTree({
       includeConfig: true,
       includePreProvision: true,
       paths,
-      roleRoot: room.roleRoot,
-      runRoot: room.runRoot,
+      roleRoot: preparedRoom.roleRoot,
+      runRoot: preparedRoom.runRoot,
     });
-    const zeroState = await inspectTree({ expected, roleRoot: room.roleRoot, runRoot: room.runRoot });
+    const zeroState = await inspectTree({ expected, roleRoot: preparedRoom.roleRoot, runRoot: preparedRoom.runRoot });
     if (zeroState.clean !== true) fail();
     const prePrompt = Object.freeze({
       phase: "pre-prompt",
-      role: room.role,
+      role: preparedRoom.role,
       envProbe: envLoader,
-      hermes: room.hermes,
-      kitCommit: room.kitCommit,
+      hermes: preparedRoom.hermes,
+      kitCommit: preparedRoom.kitCommit,
       mcp,
-      paths: publicPaths({ paths, runRoot: room.runRoot }),
+      paths: publicPaths({ paths, runRoot: preparedRoom.runRoot }),
       principalFingerprint,
-      retainedEvidencePath: relativePath(room.runRoot, join(paths.evidencePrivate, "pre-prompt.json")),
+      retainedEvidencePath: relativePath(preparedRoom.runRoot, join(paths.evidencePrivate, "pre-prompt.json")),
       tokensPresent: true,
       zeroState: Object.freeze({ ...zeroState, reinspectedBeforePrompt: true }),
     });
-    assertPublicCleanRoomEvidence(prePrompt, [mcpToken, providerSecret, room.runRoot, room.hermesInstallRoot]);
+    assertPublicCleanRoomEvidence(prePrompt, [mcpToken, providerSecret, preparedRoom.runRoot, preparedRoom.hermesInstallRoot]);
     prePromptPath = join(paths.evidencePrivate, "pre-prompt.json");
     await writeJsonPrivate(prePromptPath, prePrompt);
     return Object.freeze({
       env,
       manifests: Object.freeze({
         prePromptPath,
-        preProvisionPath: room.manifests.preProvisionPath,
+        preProvisionPath: preparedRoom.manifests.preProvisionPath,
       }),
       paths,
       probes: Object.freeze({ envLoader, mcp }),
-      role: room.role,
-      roleRoot: room.roleRoot,
-      runRoot: room.runRoot,
+      role: preparedRoom.role,
+      roleRoot: preparedRoom.roleRoot,
+      runRoot: preparedRoom.runRoot,
     });
   } catch (error) {
     if (configPath !== undefined) await rm(configPath, { force: true }).catch(() => {});
     if (prePromptPath !== undefined) await rm(prePromptPath, { force: true }).catch(() => {});
-    if (room?.paths?.hermesHome !== undefined) {
-      await rm(join(room.paths.hermesHome, ".mcp-discovery.lock"), { force: true }).catch(() => {});
+    const cleanupRoom = room ?? prepared;
+    if (cleanupRoom?.paths?.hermesHome !== undefined) {
+      await rm(join(cleanupRoom.paths.hermesHome, ".mcp-discovery.lock"), { force: true }).catch(() => {});
     }
     sanitize(error);
   }
   fail();
-}
-
-export async function prepareCleanRoom(input = {}) {
-  const room = await prepareHermesCleanRoom(input);
-  const provisioned = await provisionHermesCleanRoom({ room, ...input });
-  return Object.freeze({
-    ...provisioned,
-    manifests: Object.freeze({
-      prePromptPath: provisioned.manifests.prePromptPath,
-      preProvisionPath: room.manifests.preProvisionPath,
-    }),
-  });
 }
