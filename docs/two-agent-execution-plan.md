@@ -1,5 +1,9 @@
 # Execution plan: two agents, Clockchain-operated, on AWS
 
+**Historical note (2026-08-08):** P4 is complete. Remaining operator language in
+this file is historical plan text, not current public terminology or a live
+instruction to restore the retired operator path.
+
 **Date:** 2026-08-07 · Supersedes nothing — this is the *execution-grade* expansion of
 [two-agent-build.md](two-agent-build.md) (which holds the locked decisions D1–D5 and the
 verified infrastructure map). Where detail here conflicts with that document, this one wins.

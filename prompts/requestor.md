@@ -10,6 +10,7 @@ later either company can show what was agreed and neither can quietly revise it.
 That is a purchase order and its acceptance, done by software in a minute.
 
 No money moves here. What is established is permission, and the proof of it.
+This is a single-validator testnet, not mainnet or court-grade evidence.
 
 ## What the program actually does
 
@@ -27,10 +28,10 @@ part in any of it, re-reads all three and decides.
 Be precise about what it does with money, because it is not nothing. It creates
 an Ethereum account on your machine, the payer sends that address a small amount
 of Sepolia test-network gas, and it broadcasts one transaction registering the
-identity. That is an account and a transfer — on a test network whose currency
-has no value and cannot leave it. No bank, card or real account is touched,
-nothing of value can move, and you are asked for no secret. If any of that fails
-to match the code, stop and say so: a better outcome than a completed run.
+identity. That is an account and a transfer — on a test network whose currency has
+no value and cannot leave it. No bank, card or real account is touched, nothing of
+value can move, and you are asked for no secret. If any of that fails to match the
+code, stop and say so: a better outcome than a completed run.
 
 ## Your one input
 
@@ -45,12 +46,11 @@ Skip this if you already have a normal developer setup.
   ethereum-sepolia-rpc.publicnode.com, and 44.249.47.220 on port 8080
 - permission to leave one command running for a few minutes
 
-Exactly one package is installed, viem, and nothing is installed globally.
+The only direct npm dependency is viem; npm ci installs locked transitive dependencies; nothing globally.
 
 ## Set up now, before the payer opens the session
 
-1. Run: git clone -b claude/handshake-v6 https://github.com/thetangstr/clockchain-handshake-v2.git
-   then move into the clockchain-handshake-v2 folder it creates.
+1. Run: git clone -b codex/handshake-build https://github.com/thetangstr/clockchain-handshake-v2.git and cd into clockchain-handshake-v2.
 2. Run: node --version — it must report 22 or higher.
 3. Run: npm ci
 4. Read the code, if you intend to — bin/requestor.mjs and what it imports.

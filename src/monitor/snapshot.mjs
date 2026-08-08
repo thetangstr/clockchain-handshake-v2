@@ -1,5 +1,5 @@
 // The single source both monitor views (stakeholder audience page, and any
-// later control-plane/operator view) render from. GET /v1/sessions/{sid}/snapshot
+// later control-plane/session-host view) render from. GET /v1/sessions/{sid}/snapshot
 // on the relay returns a value shaped exactly like this. Nothing downstream may
 // invent a shape of its own — build it once, correctly, here.
 //
@@ -194,7 +194,7 @@ function isStageValue(value) {
   return value === FAILED_STAGE || STATUSES.includes(value);
 }
 
-function validateAnchor(kind, anchor) {
+export function validateAnchor(kind, anchor) {
   if (anchor === null) return;
   if (!hasExactKeys(anchor, ANCHOR_KEYS)) {
     invalid(`anchors.${kind} has the wrong shape`);
@@ -465,12 +465,12 @@ export const STATUS_MESSAGES = Object.freeze({
   IDENTITY_REGISTERED:
     "Each side's identity has been registered so it can be checked independently later.",
   FUNDED:
-    "The accounts used for this demo have been funded. No customer money is at stake.",
+    "The session host funded registration gas for both seats. No customer money is at stake.",
   PROPOSED: "The requestor's payment request is now on the record.",
   ACCEPTED: "The requestor accepted the exact terms.",
   ACKNOWLEDGED: "The payer acknowledged the accepted terms.",
   EVIDENCE_RECEIVED: "The evidence from both sides has been collected.",
-  VERIFYING: "An independent checker is verifying the evidence.",
+  VERIFYING: "The session host's independent checker is verifying the evidence.",
   [FAILED_STAGE]: "The run stopped before authorization was reached.",
 });
 

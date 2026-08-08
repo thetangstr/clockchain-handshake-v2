@@ -1,5 +1,9 @@
 # Build plan: two agents, Clockchain-operated — on AWS
 
+**Historical note (2026-08-08):** P4 is complete. Remaining operator language in
+this file is historical plan text, not current public terminology or a live
+instruction to restore the retired operator path.
+
 **Date:** 2026-08-07 · Extends [two-agent-plan.md](two-agent-plan.md); where they differ,
 this document wins. Decisions were made explicitly by Yang; facts marked *verified*
 were checked against live infrastructure or repos on the date above.

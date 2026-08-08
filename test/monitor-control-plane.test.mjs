@@ -88,7 +88,7 @@ function mismatchedReverifyResult(anchor) {
 }
 
 // A minimal harness: a real node:http server mounting the handler under test,
-// so this exercises exactly the (req, res) contract the operator process
+// so this exercises exactly the (req, res) contract the session host process
 // will mount, not a hand-rolled stand-in for it.
 async function withServer(handler, run) {
   const server = createServer(async (req, res) => {
@@ -153,6 +153,35 @@ test("GET /control/snapshot returns the injected snapshot verbatim", async () =>
     const body = await response.json();
     assert.deepEqual(body, dependencies.getSnapshot());
   });
+});
+
+test("control-plane narration names the host role without stale operator or four-address copy", () => {
+  assert.equal(
+    STATUS_MESSAGES.TERMS_PUBLISHED,
+    "The payer published the signed payment terms.",
+  );
+  assert.equal(
+    STATUS_MESSAGES.FUNDED,
+    "Both session seats are funded for registration gas.",
+  );
+  assert.equal(
+    STATUS_MESSAGES.VERIFYING,
+    "The session host's independent checker is re-checking every anchor now.",
+  );
+  assert.ok(!STATUS_MESSAGES.TERMS_PUBLISHED.includes("operator"));
+  assert.ok(!STATUS_MESSAGES.FUNDED.includes("four addresses"));
+  assert.ok(!STATUS_MESSAGES.VERIFYING.includes("independent verifier"));
+});
+
+test("control-plane verdict copy names the independent checker", () => {
+  assert.equal(
+    renderVerdict(null).detail,
+    "No money has moved. The independent checker has not published a result yet.",
+  );
+  assert.equal(
+    renderVerdict({ outcome: "AUTHORIZED", paymentMoved: false }).detail,
+    "The independent checker re-checked every anchor against Clockchain and signed this result. No money has moved.",
+  );
 });
 
 test("POST /control/reverify calls the injected clockchain client and returns its fresh result", async () => {

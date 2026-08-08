@@ -21,6 +21,7 @@ import {
   buildVerdictView,
   NO_MONEY_MOVED_SENTENCE,
   timelineCoversAllStatuses,
+  TIMELINE_STEPS,
   VERDICT_MESSAGES,
 } from "../src/monitor/stakeholder/messages.mjs";
 
@@ -129,6 +130,38 @@ test("message maps cover every status and every reason code", () => {
 
 test("the five-step timeline covers every status exactly once", () => {
   assert.equal(timelineCoversAllStatuses(), true);
+});
+
+test("the public board labels the verifier lane as Clockchain while the internal role key stays verifier", () => {
+  const verifyingStep = TIMELINE_STEPS.find((step) => step.id === "verifying");
+  assert.ok(verifyingStep);
+  assert.equal(verifyingStep.activeRole, "verifier");
+  assert.equal(verifyingStep.label, "Clockchain — session host & independent checker.");
+  assert.ok(ROLE_NAMES.includes("verifier"));
+  assert.ok(!ROLE_NAMES.includes("operator"));
+});
+
+test("public status and verdict copy use session host and independent checker terms", () => {
+  assert.equal(
+    STATUS_MESSAGES.FUNDED,
+    "The session host funded registration gas for both seats. No customer money is at stake.",
+  );
+  assert.equal(
+    STATUS_MESSAGES.VERIFYING,
+    "The session host's independent checker is verifying the evidence.",
+  );
+  assert.equal(
+    VERDICT_MESSAGES.PENDING,
+    "Waiting for the independent checker's signed decision.",
+  );
+  assert.equal(
+    VERDICT_MESSAGES.AUTHORIZED,
+    "AUTHORIZED — the independent checker confirmed the handshake. No money has moved.",
+  );
+  assert.ok(!STATUS_MESSAGES.FUNDED.includes("operator"));
+  assert.ok(!STATUS_MESSAGES.VERIFYING.includes("independent verifier"));
+  assert.ok(!VERDICT_MESSAGES.PENDING.includes("independent verifier"));
+  assert.ok(!VERDICT_MESSAGES.AUTHORIZED.includes("independent verifier"));
 });
 
 test("buildSnapshot produces a snapshot that validates cleanly", () => {

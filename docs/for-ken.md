@@ -6,7 +6,7 @@ One command, about a minute. Read this first — it is short on purpose.
 
 The code is public. Your side is one file:
 
-    https://github.com/thetangstr/clockchain-handshake-v2/blob/claude/handshake-v6/bin/requestor.mjs
+    https://github.com/thetangstr/clockchain-handshake-v2/blob/codex/handshake-build/bin/requestor.mjs
 
 209 lines. It imports about 13,000 more under `src/`, so reading the entry
 point is not a full audit — but it is enough to see the shape of what runs.
@@ -19,14 +19,15 @@ cent of test-network ETH so it can pay the transaction fee.
 
 **What it does not do.** No mainnet. No real funds. It does not touch any
 account of yours, ask you for any secret, or read anything outside the folder
-it clones into. One npm dependency, `viem`, pinned by lockfile.
+it clones into. The only direct npm dependency is `viem`; `npm ci` installs locked transitive dependencies; nothing globally. This is a
+single-validator testnet, not mainnet or court-grade evidence.
 
 ## Then run it
 
 Needs Node 22 or newer. Everything lands in the folder it clones.
 
 ```
-git clone -b claude/handshake-v6 https://github.com/thetangstr/clockchain-handshake-v2.git
+git clone -b codex/handshake-build https://github.com/thetangstr/clockchain-handshake-v2.git
 cd clockchain-handshake-v2
 npm ci
 node bin/requestor.mjs --discovery-url http://44.249.47.220:8080/v1/discovery/current
@@ -36,9 +37,10 @@ That exact sequence has been run from a clean clone and works. If you would
 rather keep it off your laptop entirely, say so and I will send a container
 line — I have not tested one, so I am not putting an unverified command here.
 
-Set up whenever you like; run the last line when Yang says the session is open.
-It prints as it goes and exits on its own. Your side finishing is not approval —
-an independent checker decides that, and its answer appears on Yang's screen.
+Set up whenever you like; run the last line when Yang says the AWS-hosted
+Clockchain session is open. It prints as it goes and exits on its own. Your side
+finishing is not approval — an independent checker decides that, and its answer
+appears on the hosted board.
 
 ## If you hand this to your coding agent, expect it to refuse
 

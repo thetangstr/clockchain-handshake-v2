@@ -1,8 +1,8 @@
 // src/monitor/control-plane/app.mjs
 //
-// The operator control plane's client-side script. Plain ES module, no
+// The session host control plane's client-side script. Plain ES module, no
 // build step, no framework -- loaded directly by the browser from
-// index.html. Served loopback-only by the operator process alongside
+// index.html. Served loopback-only by the session host process alongside
 // routes.mjs (see that file's header for the HTTP surface and the P2
 // rationale for binding 127.0.0.1 only).
 //

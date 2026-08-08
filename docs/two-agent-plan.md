@@ -1,5 +1,9 @@
 # Plan: two agents, with Clockchain as the operator
 
+**Historical note (2026-08-08):** P4 is complete. Remaining operator language in
+this file is historical plan text, not current public terminology or a live
+instruction to restore the retired operator path.
+
 **Goal.** Today `bin/operator.mjs` is three roles in one process on Yang's laptop:
 session host, **payer**, and verifier. The demo becomes: a **payer agent** and a
 **requestor agent**, both independent, both joining with one URL — and **Clockchain

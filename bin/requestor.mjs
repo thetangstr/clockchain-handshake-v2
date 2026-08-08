@@ -6,7 +6,7 @@
  * hand. It fetches the invitation behind that URL, checks it, generates its own
  * keypair, asks to be paid, follows whatever the payer's response tells it to do,
  * registers its own on-chain identity, and records its acceptance. It never claims
- * the run succeeded — only the operator's independent verifier can say that, and
+ * the run succeeded — only the session host's independent checker can say that, and
  * this says so out loud.
  */
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -24,14 +24,17 @@ import { createMcpClient, mintDemoToken } from "../src/core/clockchain.mjs";
 import { ERC8004_ABI } from "../src/core/registration.mjs";
 import { runPayeeRole } from "../src/core/roles-core.mjs";
 import { REGISTRY_ADDRESS, RPC_URL } from "../src/core/constants.mjs";
+import { selectFundingRecord } from "../src/roles/funding-selection.mjs";
+import { assertHandshakeRepositoryKey } from "../src/roles/payer.mjs";
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) args.set(process.argv[i], process.argv[i + 1]);
 const DISCOVERY_URL = args.get("--discovery-url") ?? process.env.HANDSHAKE_DISCOVERY ?? null;
-// Resolved either from the invitation (the stakeholder path) or from the explicit
-// pair (our own testing escape hatch). Nothing downstream cares which.
-let RELAY_URL = args.get("--relay-url") ?? process.env.HANDSHAKE_RELAY ?? null;
-let SESSION_ID = args.get("--session") ?? process.env.HANDSHAKE_SESSION ?? null;
+// Resolved only from the invitation. The discovery document binds the relay,
+// session, and host key together before this side does role work.
+let RELAY_URL = null;
+let SESSION_ID = null;
+let DISCOVERY = null;
 
 /**
  * Turn the one thing a stakeholder was given into somewhere to dial out to.
@@ -41,7 +44,6 @@ let SESSION_ID = args.get("--session") ?? process.env.HANDSHAKE_SESSION ?? null;
  * the one moment a refusal costs nothing.
  */
 async function resolveRendezvous() {
-  if (RELAY_URL && SESSION_ID) return;
   if (!DISCOVERY_URL) {
     stop("MALFORMED", "This needs one thing: --discovery-url followed by the link the payer sent you.");
   }
@@ -51,14 +53,15 @@ async function resolveRendezvous() {
     onHeartbeat: () => say("SESSION_STARTED", "Still trying the payer's link. No money has moved."),
   });
   if (!found.ok) stop(found.reason, found.sentence);
-  RELAY_URL = found.discovery.relayUrl;
-  SESSION_ID = found.discovery.sessionId;
+  DISCOVERY = found.discovery;
+  RELAY_URL = DISCOVERY.relayUrl;
+  SESSION_ID = DISCOVERY.sessionId;
   say("SESSION_STARTED", "The link checks out. Joining the payer's session.", {
     sessionId: SESSION_ID,
   });
 }
 
-// Human-paced throughout: the operator has to fund us on a public testnet, which
+// Human-paced throughout: the session host has to fund us on a public testnet, which
 // takes as long as it takes. Nothing here has an anchor yet, so nothing can expire.
 const WAIT_MS = 45 * 60_000;
 const HEARTBEAT_MS = 20_000;
@@ -85,6 +88,31 @@ async function awaitKind(kind, budgetMs, after = "0") {
   stop("EXPIRED", "The payer did not respond before the session window closed.");
 }
 
+async function awaitFundingRecord(address, budgetMs, after = "0") {
+  const deadline = Date.now() + budgetMs;
+  let cursor = after;
+  let lastBeat = 0;
+  while (Date.now() < deadline) {
+    const got = await relay.pollMessages({
+      relayUrl: RELAY_URL, sessionId: SESSION_ID, after: cursor, waitMs: 20_000,
+    });
+    for (const message of got.messages ?? []) {
+      cursor = message.seq;
+    }
+    const selected = selectFundingRecord(got.messages, { address, role: "requestor" });
+    if (selected.status === "proceed") return selected.message;
+    if (selected.status === "already-bound") {
+      stop("ROLE_ALREADY_BOUND",
+        "The payer funded a different requestor: another agent claimed this session first. Nothing was spent.");
+    }
+    if (Date.now() - lastBeat > HEARTBEAT_MS) {
+      lastBeat = Date.now();
+      say("REQUEST_SUBMITTED", "Still working — waiting on the payer. No money has moved.");
+    }
+  }
+  stop("EXPIRED", "The payer did not respond before the session window closed.");
+}
+
 async function main() {
   await resolveRendezvous();
   say("SESSION_STARTED", "Asking to be paid. This is a verification exercise: no money will move.");
@@ -102,7 +130,7 @@ async function main() {
       "Another requestor already joined this session. Only one can be paid per session — ask the payer to open a fresh one.");
   }
 
-  // Our own key, generated here. The operator never sees it and cannot produce it.
+  // Our own key, generated here. The session host never sees it and cannot produce it.
   const privateKey = generatePrivateKey();
   const account = privateKeyToAccount(privateKey);
   const kp = relay.generateEnvelopeKeyPair();
@@ -112,7 +140,7 @@ async function main() {
   say("HANDSHAKE_REQUIRED",
     "The payer will not consider a payment without a verified handshake first. Following its instructions.");
 
-  const funding = await awaitKind("funding_record", WAIT_MS);
+  const funding = await awaitFundingRecord(account.address, WAIT_MS);
   // The record names the address the payer actually funded. Two requestors can
   // still both pass the check above if they claim in the same instant, and the
   // payer serves whichever arrived first -- so this is where that race is
@@ -122,7 +150,7 @@ async function main() {
     stop("ROLE_ALREADY_BOUND",
       "The payer funded a different requestor: another agent claimed this session first. Nothing was spent.");
   }
-  say("FUNDED", "The operator covered our registration gas. Registering an on-chain identity.");
+  say("FUNDED", "The session host covered our registration gas. Registering an on-chain identity.");
 
   const wallet = createWalletClient({ account, chain: sepolia, transport: http(RPC_URL) });
   const tx = await wallet.writeContract({
@@ -160,7 +188,9 @@ async function main() {
   say("REQUEST_SUBMITTED", "Our signed payment request is submitted. Waiting for the payer to open the window.");
 
   const handshake = await awaitKind("handshake_required", WAIT_MS);
-  const { descriptorEnvelope, repositoryPublicKey } = handshake.body;
+  assertHandshakeRepositoryKey({ discovery: DISCOVERY, handshake });
+  const { descriptorEnvelope } = handshake.body;
+  const repositoryPublicKey = DISCOVERY.operatorPublicKey;
   say("PROPOSED", "Received the signed terms. Checking them and recording our acceptance.");
 
   const root = await mkdtemp(join(tmpdir(), "handshake-req-"));
@@ -197,9 +227,9 @@ async function main() {
   say("ACCEPTED", "Our acceptance is recorded on Clockchain and our evidence is delivered.");
 
   // The closing certificate. Until now this side finished blind: the verdict
-  // appeared on the payer's screen and never here. The verifier's signed
-  // certificate is fetched from the session and checked against the operator
-  // key this run's descriptor named -- the same key that gated every earlier
+  // appeared on the payer's screen and never here. The independent checker's
+  // signed certificate is fetched from the session and checked against the
+  // session host key this run's descriptor named -- the same key that gated every earlier
   // step -- so what gets read back is the checker's own signed word, not this
   // side's claim about itself.
   let certificate = null;
@@ -214,17 +244,17 @@ async function main() {
     }
     if (envelope !== null) {
       try {
-        verifyResultEnvelope(envelope, { expectedPublicKey: repositoryPublicKey });
+        verifyResultEnvelope(envelope, { expectedPublicKey: DISCOVERY.operatorPublicKey });
         certificate = envelope;
       } catch (error) {
         // Fail closed on the artifact, honestly: a document that does not
-        // verify against this session's operator key is treated as absent,
+        // verify against this session's host key is treated as absent,
         // and saying so beats pretending it never arrived.
-        say("VERIFYING", `A closing certificate arrived but did NOT verify against this session's operator key (${error?.message ?? "unknown"}). Refusing it.`);
+        say("VERIFYING", `A closing certificate arrived but did NOT verify against this session host key (${error?.message ?? "unknown"}). Refusing it.`);
       }
       break;
     }
-    say("VERIFYING", "Waiting for the independent verifier's signed certificate.");
+    say("VERIFYING", "Waiting for the independent checker's signed certificate.");
     await new Promise((resolve) => setTimeout(resolve, 5_000));
   }
 
@@ -232,8 +262,8 @@ async function main() {
     await writeFile(join(directory, "closing-certificate.json"), JSON.stringify(certificate, null, 2));
     const r = certificate.result;
     process.stdout.write(
-      `\nThe independent verifier's certificate has arrived, and its signature\n` +
-      `verifies against this session's operator key.\n\n` +
+      `\nThe independent checker's certificate has arrived, and its signature\n` +
+      `verifies against this session host key.\n\n` +
       `  Its verdict: ${r.outcome}\n` +
       `  No money moved: ${r.paymentMoved === false}\n` +
       r.anchors.map((a) => `  ${a.kind}  block ${a.blockHeight}  ledger ${a.ledgerId}`).join("\n") +
@@ -244,7 +274,7 @@ async function main() {
   } else {
     process.stdout.write(
       "\nOur side is complete — and that is NOT authorization.\n" +
-      "The verifier's certificate did not arrive within the wait window, so the\n" +
+      "The independent checker's certificate did not arrive within the wait window, so the\n" +
       "outcome was decided on the payer's side. No money has moved at any point.\n" +
       `\nEvidence: ${directory}\n`,
     );

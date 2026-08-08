@@ -9,7 +9,7 @@
   },
   "scripts": {
     "preflight": "CLOCKCHAIN_FUNDING_PASSWORD_FILE=\"${CLOCKCHAIN_FUNDING_PASSWORD_FILE:-$PWD/keys/funding.password}\" node scripts/preflight.mjs",
-    "demo": "CLOCKCHAIN_FUNDING_PASSWORD_FILE=\"${CLOCKCHAIN_FUNDING_PASSWORD_FILE:-$PWD/keys/funding.password}\" HANDSHAKE_RELAY=\"${HANDSHAKE_RELAY:-http://44.249.47.220:8080}\" node bin/operator.mjs",
+    "host": "CLOCKCHAIN_FUNDING_PASSWORD_FILE=\"${CLOCKCHAIN_FUNDING_PASSWORD_FILE:-$PWD/keys/funding.password}\" HANDSHAKE_RELAY=\"${HANDSHAKE_RELAY:-http://44.249.47.220:8080}\" node bin/clockchain-host.mjs",
     "demo:local": "CLOCKCHAIN_FUNDING_PASSWORD_FILE=\"${CLOCKCHAIN_FUNDING_PASSWORD_FILE:-$PWD/keys/funding.password}\" node scripts/run-local-demo.mjs",
     "negative": "node scripts/negative-checks.mjs",
     "test": "node --test --test-concurrency=4 test/*.test.mjs",
