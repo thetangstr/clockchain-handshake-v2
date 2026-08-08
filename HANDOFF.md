@@ -24,7 +24,7 @@ Context behind the plan, if you need it: [docs/two-agent-build.md](docs/two-agen
 | Closing certificate (`src/core/result.mjs`, relay result endpoint, both parties fetch+verify) | ✅ shipped `4d096f1`, live-verified (blocks 3057376/3057397/3057399, agents 9427/9428) |
 | Role-aware seating (`roleAlreadySeated`, unblocks two kits per session) | ✅ shipped `f80aa7a` |
 | Track A (A1–A8): host severance + payer kit + gates G0/G1 | ✅ complete — G0 and G1 live gates passed |
-| Track B (B0–B6): MCP → AWS migration, gate GM | 🟨 B0–B4 complete; B5 attempt 1 rolled back, corrected GM preflight green, retry pending |
+| Track B (B0–B6): MCP → AWS migration, gate GM | 🟨 B0–B5 complete; GM green; B6 relay-fold decision next |
 | P2 / P3 / P4 | ⬜ gated on both tracks |
 
 Both tracks are independent until P2. Work them in parallel if you can; if you must pick
@@ -52,8 +52,8 @@ then do Track A while AWS/DNS steps settle.
 
 1. **GoDaddy visit #1 complete** (plan §B3): `mcp-aws.clockchain.network` now resolves
    publicly to `34.209.199.138`; the production record remains on GCP at TTL 600.
-2. **GoDaddy visit #2** (plan §B5): flip `mcp.clockchain.network` → Elastic IP, in an
-   agreed no-demo window.
+2. **GoDaddy visit #2 complete** (plan §B5): `mcp.clockchain.network` now resolves to
+   the Elastic IP at TTL 600. The exact rollback target remains GCP `136.68.167.2`.
 3. **GCP stays billed/warm** through cutover and until a separate decommission decision.
 
 ## Blockers
@@ -156,6 +156,10 @@ then do Track A while AWS/DNS steps settle.
   all four checks (treasury `1.951` testnet ETH, ledger block `3091391`). Retry
   the cutover only after the rollback record has propagated; run GM from the
   primary data root or pass the real keystore/password paths explicitly.
+  **Resolved 2026-08-08:** after authoritative and public rollback propagation,
+  attempt 2 restored the AWS A record, the corrected GM preflight passed at
+  ledger block `3091503`, and the full demo completed session
+  `64dd961d-25e9-42d9-9dcb-7d30a55dc302`. Production remains on AWS.
 
 ## Evidence
 
@@ -234,6 +238,27 @@ would ask for)*
   SHA-256 `69db64ad68ad141cbdbb93ed4d26053f35c32bca49d458d0f9e8aee43de0b6cb`.
   Production DNS was still `136.68.167.2` throughout B4.
 
+- 2026-08-08 — **B5 / GM complete.** GoDaddy production DNS is
+  `mcp.clockchain.network A 34.209.199.138` at TTL 600. Both authoritative
+  nameservers, Cloudflare, Google, and the local Node resolver returned the AWS
+  EIP; HTTPS health passed with the production-only Let's Encrypt certificate.
+  Post-cutover parity runner commit `95ea2e3` ran from the relay box so it had a
+  fresh resolver and token-mint bucket. Both names hit the shared AWS process;
+  all eight rows passed with reference
+  `handshake-aws-cutover-parity-20260808-002`. Cross-name records
+  `6b9257cf-7650-4d68-9dce-d42d087d42e2` at block `3091221` and
+  `25f3a00a-462c-408d-82b2-a032d1d9af29` at block `3091222` were readable
+  through production. The corrected four-part GM preflight passed at block
+  `3091503`; the full legacy demo then completed session
+  `64dd961d-25e9-42d9-9dcb-7d30a55dc302` with payer agent `9439`, requestor
+  agent `9440`, proposal `3091583` / `02c23920-8d47-4c2e-9fd3-8b0b27047535`,
+  acceptance `3091604` / `79ed7655-d2eb-46fd-8051-6c76b1e711d9`, and
+  acknowledgment `3091625` / `de579f9f-798d-4061-8abf-3d9a4a1009e2`.
+  The independent verifier returned `AUTHORIZED`; both sides verified the
+  signed certificate; `paymentMoved` remained false. Fresh post-gate
+  `npm run verify`: 910/910 tests and all structural invariants passed. GCP
+  remains warm solely as the rollback target.
+
 ## Migration inventory
 
 *(plan §B0's table gets filled in here — every row, even when the answer is "none")*
@@ -287,4 +312,4 @@ sources are `clockchain-developer-tools` commits `610d519` and `11b9162`.
 | Containers | `clockchain-mcp-mcp-1` healthy; `clockchain-mcp-caddy-1` running |
 | Application listeners / SSH | Caddy publishes 80/443; SSH 22 remains source-restricted by the locked security group; no host listener on 8080 |
 | Public HTTPS | `https://mcp-aws.clockchain.network/health` returns `{"status":"ok"}` with a valid hostname-only Let's Encrypt certificate |
-| DNS | GoDaddy authoritative nameservers and public resolvers return `34.209.199.138`; production remains `136.68.167.2` at TTL 600 |
+| DNS | GoDaddy authoritative nameservers and public resolvers return `34.209.199.138` for both test and production names at TTL 600; GCP `136.68.167.2` remains the warm rollback target |
