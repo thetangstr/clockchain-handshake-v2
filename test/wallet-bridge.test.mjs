@@ -18,6 +18,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { gzipSync } from "node:zlib";
 import test from "node:test";
 
 import { recoverMessageAddress } from "viem";
@@ -521,6 +522,46 @@ test("signs only one exact even-length 0x byte string with EIP-191 raw bytes", a
   }
 });
 
+test("signs one canonical gzip-base64url payload as the exact decompressed EIP-191 bytes", async (t) => {
+  const { statePath } = await initializeDeterministicWallet(t);
+  const rawBytes = Buffer.from("Clockchain compact signing payload\n", "utf8");
+  const bytesGzipBase64Url = gzipSync(rawBytes).toString("base64url");
+  const signed = await signExactBytes({
+    statePath,
+    bytesGzipBase64Url,
+    platform: "darwin",
+  });
+
+  assert.equal(signed.address, ADDRESS);
+  assert.equal(
+    signed.bytesSha256,
+    createHash("sha256").update(rawBytes).digest("hex"),
+  );
+  assert.match(signed.signatureHex, /^0x[0-9a-f]{130}$/i);
+  assert.equal(
+    await recoverMessageAddress({
+      message: { raw: `0x${rawBytes.toString("hex")}` },
+      signature: signed.signatureHex,
+    }),
+    ADDRESS,
+  );
+
+  for (const invalid of [
+    {},
+    { bytesHex: "0x00", bytesGzipBase64Url },
+    { bytesGzipBase64Url: "" },
+    { bytesGzipBase64Url: `${bytesGzipBase64Url}=` },
+    { bytesGzipBase64Url: "not+base64url" },
+    { bytesGzipBase64Url: bytesGzipBase64Url.slice(0, -1) },
+    { bytesGzipBase64Url: "A".repeat(100_000) },
+    { bytesGzipBase64Url: gzipSync(Buffer.alloc(300_000)).toString("base64url") },
+  ]) {
+    await rejectSafe(() =>
+      signExactBytes({ statePath, platform: "darwin", ...invalid }),
+    );
+  }
+});
+
 test("registers with the wallet key, persists checkpoints before broadcast, and returns public identity fields", async (t) => {
   const { statePath } = await initializeDeterministicWallet(t);
   const calls = [];
@@ -843,6 +884,34 @@ test("CLI emits one safe JSON object for success and failure", async (t) => {
   assert.match(sign.json.signatureHex, /^0x[0-9a-f]{130}$/i);
   assertNoSecret(sign.stdout);
   assert.equal(sign.stdout.includes(cliPrivateKey), false);
+
+  const compactRaw = Buffer.from("compact CLI payload", "utf8");
+  const compact = gzipSync(compactRaw).toString("base64url");
+  const compactSign = await runCli([
+    "sign",
+    "--state",
+    statePath,
+    "--gzip-base64url",
+    compact,
+  ]);
+  assert.equal(compactSign.code, 0);
+  assert.equal(
+    compactSign.json.bytesSha256,
+    createHash("sha256").update(compactRaw).digest("hex"),
+  );
+  assert.match(compactSign.json.signatureHex, /^0x[0-9a-f]{130}$/i);
+
+  const ambiguous = await runCli([
+    "sign",
+    "--state",
+    statePath,
+    "--bytes",
+    "0x0102",
+    "--gzip-base64url",
+    compact,
+  ]);
+  assert.notEqual(ambiguous.code, 0);
+  assert.equal(ambiguous.stdout, "");
 
   const failure = await runCli(["sign", "--state", statePath, "--bytes", "0x0"]);
   assert.notEqual(failure.code, 0);

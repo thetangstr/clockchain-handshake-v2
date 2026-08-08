@@ -65,11 +65,13 @@ async function main(argv) {
   if (command === "sign") {
     const values = parseOptions(args, {
       bytes: { type: "string" },
+      "gzip-base64url": { type: "string" },
       state: { type: "string" },
     });
     emit(
       await signExactBytes({
-        bytesHex: requireString(values.bytes),
+        bytesGzipBase64Url: values["gzip-base64url"],
+        bytesHex: values.bytes,
         statePath: requireString(values.state),
       }),
     );

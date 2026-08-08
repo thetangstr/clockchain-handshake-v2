@@ -1,7 +1,7 @@
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { wireReportToAnchor } from "../monitor/anchor.mjs";
+import { wireReportToAnchor as parseWireReportAnchor } from "../monitor/anchor.mjs";
 import { validateAnchor } from "../monitor/snapshot.mjs";
 import { payerMandateDigest } from "../core/payer-mandate.mjs";
 import { paymentRequestDigest } from "../core/payment-request.mjs";
@@ -21,6 +21,19 @@ const RETRYABLE_EVIDENCE_CODES = new Set([
   "RENDEZVOUS_UNAVAILABLE",
   "RATE_BLOCKED",
 ]);
+
+function wireReportToAnchor(anchor) {
+  const mapped = parseWireReportAnchor(anchor);
+  return {
+    ...mapped,
+    signedBy: mapped.signedBy === null
+      ? null
+      : {
+        address: mapped.signedBy?.address,
+        agentId: mapped.signedBy?.agentId,
+      },
+  };
+}
 
 export function remainingWaitMinutes({ deadline, now }) {
   return Math.round((deadline - now) / 60_000);

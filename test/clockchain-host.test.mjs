@@ -440,6 +440,61 @@ test("anchor report mapping normalizes wire anchors back to board-shaped anchors
   assert.equal(monitorState.anchors.acknowledgment.blockHeight, "300");
 });
 
+test("anchor report mapping accepts live signer references without relaxing anchor validation", async () => {
+  const monitorState = {
+    anchors: { acceptance: null, acknowledgment: null, proposal: null },
+  };
+  const anchors = {
+    acceptance: anchorToWireReport(transitionToAnchor("acceptance", transition("acceptance", 200), { relayUrl: "http://relay.test" })),
+    acknowledgment: anchorToWireReport(transitionToAnchor("acknowledgment", transition("acknowledgment", 300), { relayUrl: "http://relay.test" })),
+    proposal: anchorToWireReport(transitionToAnchor("proposal", transition("proposal", 100), { relayUrl: "http://relay.test" })),
+  };
+  for (const anchor of Object.values(anchors)) {
+    anchor.signedBy = {
+      ...anchor.signedBy,
+      reference: `eip155:11155111:${anchor.signedBy.address}:${anchor.signedBy.agentId}`,
+    };
+  }
+
+  const ok = await applyAnchorReport({
+    message: { role: "payer", kind: "anchor_report", body: { anchors } },
+    monitorState,
+    relayUrl: "http://relay.test",
+    say: async () => {},
+    transitionToAnchor,
+  });
+
+  assert.equal(ok, true);
+  assert.deepEqual(monitorState.anchors.proposal.signedBy, {
+    address: "0x" + "b".repeat(40),
+    agentId: "22",
+  });
+  assert.deepEqual(monitorState.anchors.acceptance.signedBy, {
+    address: "0x" + "a".repeat(40),
+    agentId: "11",
+  });
+  assert.deepEqual(monitorState.anchors.acknowledgment.signedBy, {
+    address: "0x" + "b".repeat(40),
+    agentId: "22",
+  });
+
+  const malformedPredecessor = structuredClone(anchors);
+  malformedPredecessor.acceptance.terms.predecessor = { blockHeight: "100" };
+  const rejectedState = {
+    anchors: { acceptance: null, acknowledgment: null, proposal: null },
+  };
+  const rejected = await applyAnchorReport({
+    message: { role: "payer", kind: "anchor_report", body: { anchors: malformedPredecessor } },
+    monitorState: rejectedState,
+    relayUrl: "http://relay.test",
+    say: async () => assert.fail("malformed anchor reports must not narrate"),
+    transitionToAnchor,
+  });
+
+  assert.equal(rejected, false);
+  assert.deepEqual(rejectedState.anchors, { acceptance: null, acknowledgment: null, proposal: null });
+});
+
 test("anchor report mapping rejects numeric blockTime on the wire", async () => {
   const monitorState = {
     anchors: { acceptance: null, acknowledgment: null, proposal: null },

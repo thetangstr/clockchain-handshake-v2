@@ -1088,6 +1088,9 @@ test("kit URL and commit are validated before prompt creation", () => {
   assert.match(prompt, /paymentMoved:false/);
   assert.match(prompt, /handshake_submit is signatures only/i);
   assert.match(prompt, /bytesSha256/i);
+  assert.match(prompt, /signingEncoding[^\n]*gzip-base64url/i);
+  assert.match(prompt, /bytesToSignGzipBase64Url/);
+  assert.match(prompt, /--gzip-base64url/);
   assert.match(prompt, /must match/i);
   assert.match(prompt, /do not reconstruct/i);
   assert.match(prompt, /do not write diagnostic scripts/i);

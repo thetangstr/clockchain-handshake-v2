@@ -206,6 +206,9 @@ for (const name of HERMES_PROMPTS) {
     assert.match(text, /node bin\/wallet-bridge\.mjs init/);
     assert.match(text, /node bin\/wallet-bridge\.mjs inspect/);
     assert.match(text, /node bin\/wallet-bridge\.mjs sign/);
+    assert.match(text, /--gzip-base64url/);
+    assert.match(text, /signingEncoding[^\n]*gzip-base64url/i);
+    assert.match(text, /bytesToSignGzipBase64Url/);
     assert.match(text, /bytesSha256/i);
     assert.match(text, /must match/i);
     assert.match(text, /do not reconstruct/i);

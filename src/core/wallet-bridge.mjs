@@ -1,6 +1,7 @@
 import { lstat, readdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { basename, dirname, join } from "node:path";
+import { gunzipSync } from "node:zlib";
 
 import { isHex } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
@@ -22,6 +23,12 @@ const INTENT_SCHEMA = "clockchain.handshake-registration-intent/v1";
 const RECOVERY_SCHEMA = "clockchain.handshake-registration-recovery/v1";
 const PRIVATE_KEY_PATTERN = /^0x[0-9a-fA-F]{64}$/;
 const BYTES_PATTERN = /^0x(?:[0-9a-fA-F]{2})*$/;
+const BASE64URL_PATTERN = /^[A-Za-z0-9_-]+$/;
+const MAX_SIGNING_GZIP_BYTES = 64 * 1024;
+const MAX_SIGNING_GZIP_BASE64URL_CHARS = Math.ceil(
+  (MAX_SIGNING_GZIP_BYTES * 4) / 3,
+);
+const MAX_SIGNING_RAW_BYTES = 256 * 1024;
 
 function fail() {
   throw new Error(BRIDGE_ERROR_MESSAGE);
@@ -55,6 +62,34 @@ function assertDisplayName(value) {
 function assertPrivateKey(value) {
   if (!PRIVATE_KEY_PATTERN.test(value)) fail();
   return value;
+}
+
+function signingBytes({ bytesGzipBase64Url, bytesHex }) {
+  const hasHex = bytesHex !== undefined;
+  const hasGzipBase64Url = bytesGzipBase64Url !== undefined;
+  if (hasHex === hasGzipBase64Url) fail();
+  if (hasHex) {
+    if (typeof bytesHex !== "string" || !BYTES_PATTERN.test(bytesHex)) fail();
+    if (!isHex(bytesHex)) fail();
+    return Buffer.from(bytesHex.slice(2), "hex");
+  }
+  if (
+    typeof bytesGzipBase64Url !== "string" ||
+    !BASE64URL_PATTERN.test(bytesGzipBase64Url) ||
+    bytesGzipBase64Url.length > MAX_SIGNING_GZIP_BASE64URL_CHARS
+  ) {
+    fail();
+  }
+  const compressed = Buffer.from(bytesGzipBase64Url, "base64url");
+  if (
+    compressed.length === 0 ||
+    compressed.length > MAX_SIGNING_GZIP_BYTES ||
+    compressed.toString("base64url") !== bytesGzipBase64Url
+  ) {
+    fail();
+  }
+  const raw = gunzipSync(compressed, { maxOutputLength: MAX_SIGNING_RAW_BYTES });
+  return raw;
 }
 
 function validatePublicRegistration(record, expectedAddress) {
@@ -336,6 +371,7 @@ export async function inspectWallet({
 }
 
 export async function signExactBytes({
+  bytesGzipBase64Url,
   bytesHex,
   platform = process.platform,
   runIcacls,
@@ -343,17 +379,14 @@ export async function signExactBytes({
 } = {}) {
   try {
     const statePath = assertPath(inputStatePath);
-    if (typeof bytesHex !== "string" || !BYTES_PATTERN.test(bytesHex)) fail();
-    if (!isHex(bytesHex)) fail();
+    const rawBytes = signingBytes({ bytesGzipBase64Url, bytesHex });
     const { account } = await readWallet({ platform, runIcacls, statePath });
     const signatureHex = await account.signMessage({
-      message: { raw: bytesHex },
+      message: { raw: `0x${rawBytes.toString("hex")}` },
     });
     return {
       address: account.address,
-      bytesSha256: createHash("sha256")
-        .update(Buffer.from(bytesHex.slice(2), "hex"))
-        .digest("hex"),
+      bytesSha256: createHash("sha256").update(rawBytes).digest("hex"),
       signatureHex,
     };
   } catch (error) {

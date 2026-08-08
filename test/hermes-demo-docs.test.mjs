@@ -42,6 +42,8 @@ test("turnkey guide records canonical MCP, token, relay, and presenter endpoints
     assert.ok(text.includes(tool), `missing tool ${tool}`);
   }
   assert.match(text, /bytesSha256.*must match/is);
+  assert.match(text, /signingEncoding.*gzip-base64url/is);
+  assert.match(text, /bytesToSignGzipBase64Url/is);
 });
 
 test("turnkey guide defines freshness, evidence, cleanup, and rollback without legacy profiles or secrets", async () => {
