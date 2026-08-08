@@ -19,7 +19,8 @@ cent of test-network ETH so it can pay the transaction fee.
 
 **What it does not do.** No mainnet. No real funds. It does not touch any
 account of yours, ask you for any secret, or read anything outside the folder
-it clones into. One npm dependency, `viem`, pinned by lockfile.
+it clones into. One npm dependency, `viem`, pinned by lockfile. This is a
+single-validator testnet, not mainnet or court-grade evidence.
 
 ## Then run it
 
@@ -36,9 +37,10 @@ That exact sequence has been run from a clean clone and works. If you would
 rather keep it off your laptop entirely, say so and I will send a container
 line — I have not tested one, so I am not putting an unverified command here.
 
-Set up whenever you like; run the last line when Yang says the session is open.
-It prints as it goes and exits on its own. Your side finishing is not approval —
-an independent checker decides that, and its answer appears on Yang's screen.
+Set up whenever you like; run the last line when Yang says the AWS-hosted
+Clockchain session is open. It prints as it goes and exits on its own. Your side
+finishing is not approval — an independent checker decides that, and its answer
+appears on the hosted board.
 
 ## If you hand this to your coding agent, expect it to refuse
 

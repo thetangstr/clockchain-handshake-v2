@@ -96,6 +96,12 @@ for (const name of PROMPTS) {
     assert.match(text, /node --version/);
     assert.match(text, /22 or higher/);
   });
+
+  test(`prompts/${name}.md keeps the testnet limitation honest`, async () => {
+    const text = await load(name);
+    assert.match(text, /single-validator testnet/i);
+    assert.match(text, /not .*court-grade/i);
+  });
 }
 
 // The two prompts diverge past this point, and the divergence is the interesting
@@ -127,18 +133,23 @@ test("prompts/requestor.md installs from a clean clone and takes exactly one inp
   );
 });
 
-test("prompts/payer.md runs on the operator's own machine, with nothing to fill in", async () => {
+test("prompts/payer.md installs from a clean clone and takes the hosted discovery URL", async () => {
   const text = await load("payer");
-  assert.ok(
-    !/git clone/.test(text),
-    "payer.md tells the reader to clone, but keys/ is gitignored: that path cannot run",
+  assert.match(
+    text,
+    /git clone -b claude\/handshake-v6 https:\/\/github\.com\/thetangstr\/clockchain-handshake-v2\.git/,
+    "the payer prompt must work for a stranger from a clean public checkout",
   );
-  assert.match(text, /npm run preflight/);
-  assert.match(text, /npm run demo/);
-  // The discovery URL is stable now, so this prompt substitutes nothing. A
-  // placeholder here would reach the reader as literal angle brackets, which is
-  // exactly what happened before.
+  assert.match(text, /npm ci/);
+  assert.match(text, /node bin\/payer\.mjs --discovery-url <DISCOVERY_URL>/);
+  assert.ok(!text.includes("npm run demo"), "the hosted path must not start the legacy demo operator");
+  assert.ok(!text.includes("keys/"), "the hosted path must not require private host keys");
   const distinct = new Set(text.match(PLACEHOLDER) ?? []);
-  assert.deepEqual([...distinct], [], "payer.md must have no placeholder left to fill in");
-  assert.match(text, /nothing else/);
+  assert.deepEqual(
+    [...distinct],
+    ["<DISCOVERY_URL>"],
+    "payer.md must have exactly one placeholder, and it must be the discovery URL",
+  );
+  assert.match(text, /single-validator testnet/i);
+  assert.match(text, /not .*court-grade/i);
 });
