@@ -24,7 +24,7 @@ Context behind the plan, if you need it: [docs/two-agent-build.md](docs/two-agen
 | Closing certificate (`src/core/result.mjs`, relay result endpoint, both parties fetch+verify) | ✅ shipped `4d096f1`, live-verified (blocks 3057376/3057397/3057399, agents 9427/9428) |
 | Role-aware seating (`roleAlreadySeated`, unblocks two kits per session) | ✅ shipped `f80aa7a` |
 | Track A (A1–A8): host severance + payer kit + gates G0/G1 | ✅ complete — G0 and G1 live gates passed |
-| Track B (B0–B6): MCP → AWS migration, gate GM | 🟨 B0–B3 complete; B4 read parity passed, write parity waiting for node-pool recovery |
+| Track B (B0–B6): MCP → AWS migration, gate GM | 🟨 B0–B4 complete; B5 production cutover + GM next |
 | P2 / P3 / P4 | ⬜ gated on both tracks |
 
 Both tracks are independent until P2. Work them in parallel if you can; if you must pick
@@ -134,6 +134,11 @@ then do Track A while AWS/DNS steps settle.
   while block height advanced from `3089947` to `3090227`. No retry or
   `allow_degraded` override was attempted. Resume B4 only after participation is
   greater than zero, then rerun the same idempotent gate.
+  **Resolved 2026-08-08:** Yang explicitly made validator count non-blocking for
+  this parity run. External-repo commit `fb4118b` added an operator-only
+  `--allow-degraded true` option; the default still omits `allow_degraded` and
+  fails closed. The same reconciled reference was rerun once and all eight
+  parity rows passed. The two writes anchored at blocks `3090566` and `3090567`.
 
 ## Evidence
 
@@ -197,6 +202,20 @@ would ask for)*
   resolvers returned the EIP. `https://mcp-aws.clockchain.network/health`
   returned `{"status":"ok"}` with a Let's Encrypt certificate whose only SAN
   is the test hostname (valid through 2026-11-06).
+
+- 2026-08-08 — **B4 complete.** External-repo parity runner commit `fb4118b`
+  compared the live GCP frontend with `mcp-aws.clockchain.network` using known
+  immutable block `3084982` and reference
+  `handshake-aws-parity-20260808-001`. Health, two token mints and quota
+  movement, `get_timestamp`, `get_block`, AWS-write/GCP-read,
+  GCP-write/AWS-read, and normalized write comparison all passed. Yang
+  explicitly authorized `--allow-degraded true` for this run because validator
+  count is not currently a gate; the runner remains fail-closed by default.
+  Both frontends then returned the same exact anchored records:
+  `3ddef6ff-54ec-46c1-9c58-e073b453d854` at block `3090566` and
+  `cbbb5aab-acfe-427f-9a6a-39d371519e1c` at block `3090567`, each with
+  SHA-256 `69db64ad68ad141cbdbb93ed4d26053f35c32bca49d458d0f9e8aee43de0b6cb`.
+  Production DNS was still `136.68.167.2` throughout B4.
 
 ## Migration inventory
 
