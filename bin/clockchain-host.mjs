@@ -301,6 +301,7 @@ async function runOneSession({ token, treasury }) {
     waitMs: 20_000,
     after: identityResult.after,
     buffer: identityResult.buffer,
+    expectedBindings: identityReady,
     heartbeatMs: HEARTBEAT_MS,
     onHeartbeat: async () => say("IDENTITY_REGISTERED", "Still waiting for both parties to finish registration."),
   }).catch((error) => stop(error?.code ?? "EXPIRED", error?.message ?? "The parties did not finish registration in time."));

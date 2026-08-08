@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { transitionToAnchor, anchorToWireReport } from "../src/monitor/anchor.mjs";
+import { generateEnvelopeKeyPair, signEnvelope } from "../src/relay/client.mjs";
 import {
   SessionEnded,
   applyAnchorReport,
@@ -15,6 +16,18 @@ import {
   remainingWaitMinutes,
   runHostLoop,
 } from "../src/roles/host.mjs";
+
+function signedRelayMessage({ keyPair, seq, role, kind, body, senderKey = keyPair.senderKey }) {
+  return signEnvelope({
+    sessionId: "s1",
+    seq,
+    role,
+    kind,
+    body,
+    senderKey,
+    privateKeyPem: keyPair.privateKeyPem,
+  });
+}
 
 function transition(kind, blockHeight) {
   const ledgerIds = {
@@ -122,6 +135,68 @@ test("host intake buffers later same-poll messages for the next role wait", asyn
   assert.equal(ready.messages.requestor.body.agentId, "22");
 });
 
+test("host party intake ignores spoofed readiness that does not match the selected identity binding", async () => {
+  let nowMs = 0;
+  const polls = [];
+  const payerAddress = `0x${"a".repeat(40)}`;
+  const requestorAddress = `0x${"b".repeat(40)}`;
+  const payer = generateEnvelopeKeyPair();
+  const requestor = generateEnvelopeKeyPair();
+  const attacker = generateEnvelopeKeyPair();
+  const batches = [
+    [
+      signedRelayMessage({ keyPair: payer, seq: "1", role: "payer", kind: "identity_ready", body: { address: payerAddress } }),
+      signedRelayMessage({ keyPair: requestor, seq: "2", role: "requestor", kind: "identity_ready", body: { address: requestorAddress } }),
+      signedRelayMessage({ keyPair: attacker, senderKey: payer.senderKey, seq: "3", role: "payer", kind: "party_ready", body: { address: payerAddress, agentId: "999" } }),
+      signedRelayMessage({ keyPair: requestor, seq: "4", role: "requestor", kind: "party_ready", body: { address: `0x${"c".repeat(40)}`, agentId: "888" } }),
+    ],
+    [
+      signedRelayMessage({ keyPair: requestor, seq: "5", role: "requestor", kind: "party_ready", body: { address: requestorAddress, agentId: "007" } }),
+      signedRelayMessage({ keyPair: payer, seq: "6", role: "payer", kind: "party_ready", body: { address: payerAddress, agentId: "42" } }),
+    ],
+  ];
+  const relayClient = {
+    async pollMessages({ after }) {
+      polls.push(after);
+      return { messages: batches.shift() ?? [] };
+    },
+  };
+
+  const identity = await fundIdentitySeats({
+    relayClient,
+    relayUrl: "http://relay.test",
+    sessionId: "s1",
+    roles: ["payer", "requestor"],
+    budgetMs: 1_000,
+    waitMs: 0,
+    now: () => nowMs,
+    sleep: async (ms) => { nowMs += ms; },
+    fundSeat: async () => {},
+  });
+
+  const ready = await awaitRoleMessages({
+    relayClient,
+    relayUrl: "http://relay.test",
+    sessionId: "s1",
+    kind: "party_ready",
+    roles: ["payer", "requestor"],
+    budgetMs: 1_000,
+    waitMs: 0,
+    after: identity.after,
+    buffer: identity.buffer,
+    expectedBindings: identity.messages,
+    now: () => nowMs,
+    sleep: async (ms) => { nowMs += ms; },
+  });
+
+  assert.deepEqual(polls, ["0", "4"]);
+  assert.equal(ready.after, "6");
+  assert.equal(ready.messages.payer.body.agentId, "42");
+  assert.equal(ready.messages.requestor.body.agentId, "7");
+  assert.equal(ready.messages.payer.body.address, payerAddress);
+  assert.equal(ready.messages.requestor.body.address, requestorAddress);
+});
+
 test("host intake keeps the cursor across either-order role arrivals", async () => {
   let nowMs = 0;
   const polls = [];
@@ -157,10 +232,12 @@ test("host intake keeps the cursor across either-order role arrivals", async () 
 test("host funds each identity as soon as that role appears without losing messages posted during funding", async () => {
   let nowMs = 0;
   const events = [];
+  const payer = generateEnvelopeKeyPair();
+  const requestor = generateEnvelopeKeyPair();
   const batches = [
-    [{ seq: "1", role: "payer", kind: "identity_ready", body: { address: "0x" + "1".repeat(40) } }],
+    [signedRelayMessage({ keyPair: payer, seq: "1", role: "payer", kind: "identity_ready", body: { address: "0x" + "1".repeat(40) } })],
     [
-      { seq: "2", role: "requestor", kind: "identity_ready", body: { address: "0x" + "2".repeat(40) } },
+      signedRelayMessage({ keyPair: requestor, seq: "2", role: "requestor", kind: "identity_ready", body: { address: "0x" + "2".repeat(40) } }),
       { seq: "3", role: "payer", kind: "party_ready", body: { agentId: "11" } },
     ],
     [{ seq: "4", role: "requestor", kind: "party_ready", body: { agentId: "22" } }],
@@ -209,6 +286,45 @@ test("host funds each identity as soon as that role appears without losing messa
   });
   assert.equal(ready.messages.payer.body.agentId, "11");
   assert.equal(ready.messages.requestor.body.agentId, "22");
+});
+
+test("host ignores a signed identity with a malformed address before funding the valid seat", async () => {
+  let nowMs = 0;
+  const funded = [];
+  const payer = generateEnvelopeKeyPair();
+  const requestor = generateEnvelopeKeyPair();
+  const payerAddress = `0x${"1".repeat(40)}`;
+  const requestorAddress = `0x${"2".repeat(40)}`;
+  const batches = [
+    [signedRelayMessage({ keyPair: payer, seq: "1", role: "payer", kind: "identity_ready", body: { address: "not-an-address" } })],
+    [
+      signedRelayMessage({ keyPair: payer, seq: "2", role: "payer", kind: "identity_ready", body: { address: payerAddress } }),
+      signedRelayMessage({ keyPair: requestor, seq: "3", role: "requestor", kind: "identity_ready", body: { address: requestorAddress } }),
+    ],
+  ];
+  const relayClient = {
+    async pollMessages() {
+      return { messages: batches.shift() ?? [] };
+    },
+  };
+
+  const result = await fundIdentitySeats({
+    relayClient,
+    relayUrl: "http://relay.test",
+    sessionId: "s1",
+    roles: ["payer", "requestor"],
+    budgetMs: 1_000,
+    waitMs: 0,
+    now: () => nowMs,
+    sleep: async (ms) => { nowMs += ms; },
+    fundSeat: async ({ role, message }) => funded.push([role, message.body.address]),
+  });
+
+  assert.deepEqual(funded, [
+    ["payer", payerAddress],
+    ["requestor", requestorAddress],
+  ]);
+  assert.equal(result.messages.payer.body.address, payerAddress);
 });
 
 test("host loop opens a fresh session after recoverable session endings", async () => {

@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import { wireReportToAnchor } from "../monitor/anchor.mjs";
 import { validateAnchor } from "../monitor/snapshot.mjs";
+import { verifyEnvelope } from "../relay/client.mjs";
 
 export class SessionEnded extends Error {
   constructor(code = "FAILED", message = "The session stopped.") {
@@ -42,6 +43,7 @@ export async function awaitRoleMessages({
   waitMs,
   after = "0",
   buffer = [],
+  expectedBindings = null,
   now = Date.now,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   onHeartbeat = async () => {},
@@ -53,13 +55,21 @@ export async function awaitRoleMessages({
   let cursor = after;
   const deferred = [];
   let lastBeat = 0;
+  const accept = (message) => {
+    if (message?.kind !== kind || !wanted.has(message.role) || messages[message.role] !== undefined) {
+      return null;
+    }
+    if (expectedBindings === null) return message;
+    return bindPartyReady(message, expectedBindings[message.role], sessionId);
+  };
   const consider = (batch) => {
     for (const message of batch ?? []) {
       if (message?.seq !== undefined && Number(message.seq) > Number(cursor)) {
         cursor = message.seq;
       }
-      if (message?.kind === kind && wanted.has(message.role) && messages[message.role] === undefined) {
-        messages[message.role] = message;
+      const accepted = accept(message);
+      if (accepted !== null) {
+        messages[message.role] = accepted;
       } else {
         deferred.push(message);
       }
@@ -82,6 +92,63 @@ export async function awaitRoleMessages({
     await sleep(Math.min(100, Math.max(0, deadline - now())));
   }
   throw new SessionEnded("EXPIRED", `Timed out waiting for ${kind}.`);
+}
+
+function bindPartyReady(message, identityReady, sessionId) {
+  const identityAddress = canonicalAddress(identityReady?.body?.address);
+  const readyAddress = canonicalAddress(message?.body?.address);
+  const agentId = canonicalAgentId(message?.body?.agentId);
+  if (
+    !isVerifiedEnvelope(identityReady, sessionId) ||
+    !isVerifiedEnvelope(message, sessionId) ||
+    identityAddress === null ||
+    readyAddress !== identityAddress ||
+    agentId === null ||
+    message?.senderKey !== identityReady?.senderKey
+  ) {
+    return null;
+  }
+  return {
+    ...message,
+    body: {
+      ...message.body,
+      address: identityAddress,
+      agentId,
+    },
+  };
+}
+
+function bindIdentityReady(message, sessionId) {
+  const address = canonicalAddress(message?.body?.address);
+  if (address === null || !isVerifiedEnvelope(message, sessionId)) return null;
+  return {
+    ...message,
+    body: {
+      ...message.body,
+      address,
+    },
+  };
+}
+
+function isVerifiedEnvelope(message, sessionId) {
+  if (message?.sessionId !== sessionId) return false;
+  try {
+    return verifyEnvelope(message) === true;
+  } catch {
+    return false;
+  }
+}
+
+function canonicalAddress(value) {
+  if (typeof value !== "string") return null;
+  const address = value.toLowerCase();
+  return /^0x[0-9a-f]{40}$/u.test(address) ? address : null;
+}
+
+function canonicalAgentId(value) {
+  const text = typeof value === "bigint" ? value.toString() : String(value ?? "");
+  if (!/^[0-9]+$/u.test(text)) return null;
+  return BigInt(text).toString();
 }
 
 export async function fundIdentitySeats({
@@ -112,11 +179,17 @@ export async function fundIdentitySeats({
       if (message?.seq !== undefined && Number(message.seq) > Number(cursor)) {
         cursor = message.seq;
       }
-      if (message?.kind === "identity_ready" && wanted.has(message.role) && messages[message.role] === undefined) {
-        messages[message.role] = message;
+      const accepted =
+        message?.kind === "identity_ready" &&
+        wanted.has(message.role) &&
+        messages[message.role] === undefined
+          ? bindIdentityReady(message, sessionId)
+          : null;
+      if (accepted !== null) {
+        messages[message.role] = accepted;
         if (!funded.has(message.role)) {
           funded.add(message.role);
-          await fundSeat({ role: message.role, message });
+          await fundSeat({ role: message.role, message: accepted });
         }
       } else {
         deferred.push(message);
