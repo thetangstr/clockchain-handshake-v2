@@ -25,14 +25,16 @@ import { ERC8004_ABI } from "../src/core/registration.mjs";
 import { runPayeeRole } from "../src/core/roles-core.mjs";
 import { REGISTRY_ADDRESS, RPC_URL } from "../src/core/constants.mjs";
 import { selectFundingRecord } from "../src/roles/funding-selection.mjs";
+import { assertHandshakeRepositoryKey } from "../src/roles/payer.mjs";
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) args.set(process.argv[i], process.argv[i + 1]);
 const DISCOVERY_URL = args.get("--discovery-url") ?? process.env.HANDSHAKE_DISCOVERY ?? null;
-// Resolved either from the invitation (the stakeholder path) or from the explicit
-// pair (our own testing escape hatch). Nothing downstream cares which.
-let RELAY_URL = args.get("--relay-url") ?? process.env.HANDSHAKE_RELAY ?? null;
-let SESSION_ID = args.get("--session") ?? process.env.HANDSHAKE_SESSION ?? null;
+// Resolved only from the invitation. The discovery document binds the relay,
+// session, and host key together before this side does role work.
+let RELAY_URL = null;
+let SESSION_ID = null;
+let DISCOVERY = null;
 
 /**
  * Turn the one thing a stakeholder was given into somewhere to dial out to.
@@ -42,7 +44,6 @@ let SESSION_ID = args.get("--session") ?? process.env.HANDSHAKE_SESSION ?? null;
  * the one moment a refusal costs nothing.
  */
 async function resolveRendezvous() {
-  if (RELAY_URL && SESSION_ID) return;
   if (!DISCOVERY_URL) {
     stop("MALFORMED", "This needs one thing: --discovery-url followed by the link the payer sent you.");
   }
@@ -52,8 +53,9 @@ async function resolveRendezvous() {
     onHeartbeat: () => say("SESSION_STARTED", "Still trying the payer's link. No money has moved."),
   });
   if (!found.ok) stop(found.reason, found.sentence);
-  RELAY_URL = found.discovery.relayUrl;
-  SESSION_ID = found.discovery.sessionId;
+  DISCOVERY = found.discovery;
+  RELAY_URL = DISCOVERY.relayUrl;
+  SESSION_ID = DISCOVERY.sessionId;
   say("SESSION_STARTED", "The link checks out. Joining the payer's session.", {
     sessionId: SESSION_ID,
   });
@@ -186,7 +188,9 @@ async function main() {
   say("REQUEST_SUBMITTED", "Our signed payment request is submitted. Waiting for the payer to open the window.");
 
   const handshake = await awaitKind("handshake_required", WAIT_MS);
-  const { descriptorEnvelope, repositoryPublicKey } = handshake.body;
+  assertHandshakeRepositoryKey({ discovery: DISCOVERY, handshake });
+  const { descriptorEnvelope } = handshake.body;
+  const repositoryPublicKey = DISCOVERY.operatorPublicKey;
   say("PROPOSED", "Received the signed terms. Checking them and recording our acceptance.");
 
   const root = await mkdtemp(join(tmpdir(), "handshake-req-"));
@@ -240,7 +244,7 @@ async function main() {
     }
     if (envelope !== null) {
       try {
-        verifyResultEnvelope(envelope, { expectedPublicKey: repositoryPublicKey });
+        verifyResultEnvelope(envelope, { expectedPublicKey: DISCOVERY.operatorPublicKey });
         certificate = envelope;
       } catch (error) {
         // Fail closed on the artifact, honestly: a document that does not
