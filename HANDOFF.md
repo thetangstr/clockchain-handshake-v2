@@ -1,6 +1,6 @@
 # Handoff — two-agent build + AWS migration
 
-**As of:** 2026-08-08 · **Branch:** `codex/handshake-build` · **935 tests pass and all
+**As of:** 2026-08-08 · **Branch:** `codex/handshake-build` · **937 tests pass and all
 structural invariants hold.** The previous handoff (still valid for context, landmines §4, known
 gaps §5, and the stakeholder-prompt lesson §6) is archived at
 [docs/handoff-2026-08-04.md](docs/handoff-2026-08-04.md).

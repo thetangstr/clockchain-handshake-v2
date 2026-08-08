@@ -1,7 +1,7 @@
 /**
- * Shared session construction for the operator and the requestor kit.
+ * Shared session construction for the session host and the requestor kit.
  *
- * The split matters: the operator owns the treasury and the signing key, the
+ * The split matters: the session host owns the treasury and the signing key, the
  * requestor owns nothing but a keypair it generates on its own machine. The only
  * thing that crosses between them is the signed discovery document and, later,
  * the signed session descriptor — both published through the relay, which
@@ -61,7 +61,7 @@ function normalizeHttpUrl(value) {
   return `${url.origin}${url.pathname}`.replace(/\/+$/, "");
 }
 
-/** The single line an operator hands over. Everything else is derived from it. */
+/** The single line a session host shares. Everything else is derived from it. */
 export function stableDiscoveryUrl(relayUrl) {
   return `${String(relayUrl).replace(/\/+$/, "")}/v1/discovery/current`;
 }
@@ -111,7 +111,7 @@ export function readDiscovery(document, { now = Date.now() } = {}) {
     document.operatorPublicKey.length === 0 ||
     document.operatorPublicKey.length > 512
   ) {
-    return malformed("The invitation carries no usable payer key.");
+    return malformed("The invitation carries no usable session host key.");
   }
   const issuedAtMs = wholeMs(document.issuedAtMs);
   const expiresAtMs = wholeMs(document.expiresAtMs);
@@ -137,7 +137,7 @@ export function readDiscovery(document, { now = Date.now() } = {}) {
 /**
  * Fetch and validate the discovery document behind one URL.
  *
- * Retries, because the operator publishes and reads the link out in the same
+ * Retries, because the session host publishes and reads the link out in the same
  * breath and a person pasting it may well arrive first. This is not a human-paced
  * wait — nobody has to act during it — so a short machine-paced budget is correct.
  */
@@ -152,7 +152,7 @@ export async function fetchDiscovery({
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 } = {}) {
   if (normalizeHttpUrl(discoveryUrl) === null) {
-    return malformed("That does not look like a link. Paste the whole thing the payer sent.");
+    return malformed("That does not look like a link. Paste the whole invitation the session host shared.");
   }
   const deadline = now() + budgetMs;
   let attempt = 0;
@@ -282,7 +282,7 @@ export async function buildRequest({ common, expiresAtMs, issuedAtMs, mandateEnv
   });
 }
 
-/** The operator assembles the descriptor once both signed artifacts exist. */
+/** The session host assembles the descriptor once both signed artifacts exist. */
 export function buildDescriptor({ common, mandateEnvelope, requestEnvelope, repositorySha, sessionUuid }) {
   return {
     amountOptions: [common.amount],
@@ -402,7 +402,7 @@ export async function buildSession({
 export const BUSINESS_STAGE = Object.freeze({
   ACCEPTED: "The requestor accepted the exact terms, and that acceptance is recorded.",
   ACKNOWLEDGED: "The payer acknowledged. All three steps are now on the ledger.",
-  FUNDED: "The operator covered testnet gas so identities can be registered.",
+  FUNDED: "The session host covered testnet gas so identities can be registered.",
   HANDSHAKE_REQUIRED:
     "The payer will not consider a payment without a verified handshake first.",
   IDENTITY_REGISTERED: "A fresh on-chain identity was registered for this run.",
@@ -410,7 +410,7 @@ export const BUSINESS_STAGE = Object.freeze({
   REQUEST_SUBMITTED: "The requestor asked to be paid.",
   SESSION_STARTED: "A new authorization session is open. No money will move.",
   TERMS_PUBLISHED: "The signed terms are published and the session is open.",
-  VERIFYING: "An independent verifier is re-checking every piece of evidence.",
+  VERIFYING: "The independent checker is re-checking every piece of evidence.",
 });
 
 /**
@@ -456,7 +456,7 @@ export async function postNext(relay, { relayUrl, sessionId, role, kind, body, k
  *
  * The prompt file ships with a <DISCOVERY_URL> placeholder, which means a human
  * has to find it and replace it correctly under time pressure in front of an
- * audience. Emitting the finished text removes that step: the operator sends one
+ * audience. Emitting the finished text removes that step: the session host sends one
  * block, the stakeholder pastes one block, and there is nothing to edit.
  */
 export function requestorPromptFor(discoveryUrl) {

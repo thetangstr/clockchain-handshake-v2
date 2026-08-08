@@ -6,6 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  BUSINESS_STAGE,
   DISCOVERY_SCHEMA,
   discoveryUrlFor,
   fetchDiscovery,
@@ -46,6 +47,21 @@ test("a trailing slash on the relay url does not produce a doubled path", () => 
     discoveryUrlFor({ relayUrl: result.discovery.relayUrl, sessionId: result.discovery.sessionId }),
     "http://relay.invalid:8080/v1/discovery/0a2f1e6c-7b4d-4a11-9d3e-2c5b8f0a1e77",
   );
+});
+
+test("audience-facing session copy names the host and checker, not the retired operator", () => {
+  assert.match(BUSINESS_STAGE.FUNDED, /session host/i);
+  assert.match(BUSINESS_STAGE.VERIFYING, /independent checker/i);
+  assert.doesNotMatch(BUSINESS_STAGE.FUNDED, /operator/i);
+  assert.doesNotMatch(BUSINESS_STAGE.VERIFYING, /verifier/i);
+});
+
+test("a missing discovery key is described as the session host key", () => {
+  const result = readDiscovery(validDocument({ operatorPublicKey: "" }), { now: NOW });
+
+  assert.equal(result.ok, false);
+  assert.match(result.sentence, /session host key/i);
+  assert.doesNotMatch(result.sentence, /payer key|operator key/i);
 });
 
 test("discoveryUrlFor is the address the relay actually serves", () => {
