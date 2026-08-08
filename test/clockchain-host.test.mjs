@@ -17,6 +17,19 @@ import {
   runHostLoop,
 } from "../src/roles/host.mjs";
 
+const CLOCKCHAIN_HOST_SOURCE = await readFile(
+  new URL("../bin/clockchain-host.mjs", import.meta.url),
+  "utf8",
+);
+
+function sourceBetween(source, start, end) {
+  const startIndex = source.indexOf(start);
+  const endIndex = source.indexOf(end, startIndex + start.length);
+  assert.notEqual(startIndex, -1, `missing source marker: ${start}`);
+  assert.notEqual(endIndex, -1, `missing source marker: ${end}`);
+  return source.slice(startIndex, endIndex);
+}
+
 function signedRelayMessage({ keyPair, seq, role, kind, body, senderKey = keyPair.senderKey }) {
   return signEnvelope({
     sessionId: "s1",
@@ -380,7 +393,11 @@ test("anchor report mapping is best effort and narrates only when report is usab
   assert.equal(monitorState.anchors.proposal.blockHeight, "100");
   assert.equal(monitorState.anchors.acceptance.blockHeight, "200");
   assert.equal(monitorState.anchors.acknowledgment.blockHeight, "300");
-  assert.deepEqual(said.map(([stage]) => stage), ["ACCEPTED", "ACKNOWLEDGED"]);
+  assert.deepEqual(said.map(([stage]) => stage), [
+    "PROPOSED",
+    "ACCEPTED",
+    "ACKNOWLEDGED",
+  ]);
 
   const before = structuredClone(monitorState.anchors);
   const bad = await applyAnchorReport({
@@ -485,6 +502,110 @@ test("rejected anchor reports preserve the original no-report evidence deadline"
     nowMs: 4 * 60_000,
     evidenceAfterReportMs: 5 * 60_000,
   }), 9 * 60_000);
+});
+
+test("host monitor narration advances only after the named protocol artifact exists", () => {
+  const saySource = sourceBetween(
+    CLOCKCHAIN_HOST_SOURCE,
+    "async function say(",
+    "/** Republish",
+  );
+  assert.doesNotMatch(saySource, /bumpHeartbeat/);
+
+  const refreshSource = sourceBetween(
+    CLOCKCHAIN_HOST_SOURCE,
+    "async function refresh(",
+    "/** Publish a final FAILED",
+  );
+  assert.match(
+    refreshSource,
+    /lastPublishedStage \?\? "SESSION_STARTED"/,
+  );
+  assert.match(refreshSource, /await publishSnapshot\(stage\)/);
+  assert.doesNotMatch(refreshSource, /stageHistory/);
+  assert.doesNotMatch(refreshSource, /bumpHeartbeat/);
+
+  assert.equal(
+    CLOCKCHAIN_HOST_SOURCE.match(/await say\("TERMS_PUBLISHED"/g)?.length,
+    1,
+  );
+  assert.equal(
+    CLOCKCHAIN_HOST_SOURCE.match(/await say\("REQUEST_SUBMITTED"/g)?.length,
+    1,
+  );
+  assert.doesNotMatch(CLOCKCHAIN_HOST_SOURCE, /await say\("FUNDED"/);
+  assert.doesNotMatch(
+    CLOCKCHAIN_HOST_SOURCE,
+    /await say\("IDENTITY_REGISTERED"/,
+  );
+
+  const mandateIndex = CLOCKCHAIN_HOST_SOURCE.indexOf(
+    "const mandateBody = mandateBodyFrom",
+  );
+  const termsIndex = CLOCKCHAIN_HOST_SOURCE.indexOf(
+    'await say("TERMS_PUBLISHED"',
+  );
+  const requestIndex = CLOCKCHAIN_HOST_SOURCE.indexOf(
+    "const requestEnvelope = submitted.message.body.requestEnvelope",
+  );
+  const submittedIndex = CLOCKCHAIN_HOST_SOURCE.indexOf(
+    'await say("REQUEST_SUBMITTED"',
+  );
+  assert.ok(mandateIndex >= 0 && mandateIndex < termsIndex);
+  assert.ok(requestIndex >= 0 && requestIndex < submittedIndex);
+
+  const fundingIndex = CLOCKCHAIN_HOST_SOURCE.indexOf(
+    "monitorState.funding = { atMs: Date.now(), funded: true }",
+  );
+  const fundingRefreshIndex = CLOCKCHAIN_HOST_SOURCE.indexOf(
+    'await refresh("Both parties are funded',
+  );
+  const identitiesIndex = CLOCKCHAIN_HOST_SOURCE.indexOf(
+    "monitorState.identities = {",
+  );
+  const identitiesRefreshIndex = CLOCKCHAIN_HOST_SOURCE.indexOf(
+    'await refresh("Both parties registered',
+  );
+  assert.ok(fundingIndex >= 0 && fundingIndex < fundingRefreshIndex);
+  assert.ok(identitiesIndex >= 0 && identitiesIndex < identitiesRefreshIndex);
+
+  const waitForOne = sourceBetween(
+    CLOCKCHAIN_HOST_SOURCE,
+    "async function awaitOneRoleMessage(",
+    "async function fundSeat(",
+  );
+  assert.match(waitForOne, /onHeartbeat:[\s\S]*await refresh\(/);
+  assert.doesNotMatch(waitForOne, /onHeartbeat:[\s\S]*await say\(/);
+  assert.match(
+    waitForOne,
+    /bumpHeartbeat\(role === "requestor" \? "payee" : role\)/,
+  );
+
+  const identityWait = sourceBetween(
+    CLOCKCHAIN_HOST_SOURCE,
+    "const identityResult = await fundIdentitySeats(",
+    "const identityReady = identityResult.messages",
+  );
+  const registrationWait = sourceBetween(
+    CLOCKCHAIN_HOST_SOURCE,
+    "const readyResult = await awaitRoleMessages(",
+    "const partyReady = readyResult.messages",
+  );
+  assert.match(identityWait, /onHeartbeat: async \(\) => refresh\(/);
+  assert.doesNotMatch(identityWait, /onHeartbeat:[\s\S]*say\(/);
+  assert.match(registrationWait, /onHeartbeat: async \(\) => refresh\(/);
+  assert.doesNotMatch(registrationWait, /onHeartbeat:[\s\S]*say\(/);
+});
+
+test("host verifier remains the only source of the published verdict", () => {
+  const verifierIndex = CLOCKCHAIN_HOST_SOURCE.indexOf(
+    "const verdict = await verifyBilateralAuthorization",
+  );
+  const assignment =
+    "monitorState.verdict = { outcome: verdict.outcome, paymentMoved: verdict.paymentMoved }";
+  const assignmentIndex = CLOCKCHAIN_HOST_SOURCE.indexOf(assignment);
+  assert.ok(verifierIndex >= 0 && verifierIndex < assignmentIndex);
+  assert.equal(CLOCKCHAIN_HOST_SOURCE.split(assignment).length - 1, 1);
 });
 
 test("dual evidence download polls payer and payee together and writes separate private packages", async () => {

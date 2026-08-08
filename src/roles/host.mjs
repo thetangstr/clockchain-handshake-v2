@@ -256,6 +256,7 @@ export async function applyAnchorReport({
     validateAnchor("acceptance", anchors.acceptance);
     validateAnchor("acknowledgment", anchors.acknowledgment);
     monitorState.anchors = { ...monitorState.anchors, ...anchors };
+    await say("PROPOSED", "The payer's proposal is recorded on Clockchain.");
     await say("ACCEPTED", "The requestor accepted the exact terms, and that acceptance is recorded.");
     await say("ACKNOWLEDGED", "All three steps are recorded on Clockchain in order.");
     return true;

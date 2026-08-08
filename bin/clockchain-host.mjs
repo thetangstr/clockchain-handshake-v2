@@ -147,9 +147,17 @@ async function publishSnapshot(stage, { reasonCode = null } = {}) {
 async function say(stage, sentence, extra = {}) {
   logSay(stage, sentence, extra);
   if (STATUSES.includes(stage)) {
-    bumpHeartbeat("payer");
     await publishSnapshot(stage);
   }
+}
+
+/** Republish the last real stage while narrating setup or waiting activity.
+ * `publishSnapshot` de-duplicates the unchanged stage, so this refreshes facts
+ * and timestamps without inventing a business transition. */
+async function refresh(sentence, extra = {}) {
+  const stage = lastPublishedStage ?? "SESSION_STARTED";
+  logSay(stage, sentence, extra);
+  await publishSnapshot(stage);
 }
 
 /** Publish a final FAILED snapshot with the named public reason, then throw a
@@ -173,14 +181,15 @@ async function awaitOneRoleMessage(sessionId, { kind, role, after = "0", buffer 
     heartbeatMs: HEARTBEAT_MS,
     onHeartbeat: async ({ deadline, now }) => {
       const mins = remainingWaitMinutes({ deadline, now });
-      await say("REQUEST_SUBMITTED", `Still waiting for ${role} ${kind}. ${mins} minutes remain in the window.`);
+      await refresh(`Still waiting for ${role} ${kind}. ${mins} minutes remain in the window.`);
     },
   });
+  bumpHeartbeat(role === "requestor" ? "payee" : role);
   return { after: result.after, buffer: result.buffer, message: result.messages[role] };
 }
 
 async function fundSeat({ treasuryWallet, sessionId, role, address, keyPair }) {
-  await say("FUNDED", `Covering testnet gas so the ${role} can register an identity.`, { address });
+  await refresh(`Covering testnet gas so the ${role} can register an identity.`, { address });
   const fundTx = await treasuryWallet.sendTransaction({ to: address, value: FUND });
   await publicClient.waitForTransactionReceipt({ hash: fundTx, timeout: 180_000 });
   await postNext(relay, {
@@ -261,7 +270,7 @@ async function runOneSession({ token, treasury }) {
     `  ${relayBase}/monitor/current\n\n` +
     `  (this run specifically: ${relayBase}/monitor/${encodeURIComponent(sessionId)})\n\n`,
   );
-  await say("TERMS_PUBLISHED", "Session published. Waiting for the payer and requestor to appear.");
+  await refresh("Session published. Waiting for the payer and requestor to appear.");
 
   const opKp = relay.generateEnvelopeKeyPair();
   const treasuryWallet = createWalletClient({ account: treasury.account, chain: sepolia, transport: http(RPC_URL) });
@@ -275,21 +284,22 @@ async function runOneSession({ token, treasury }) {
     waitMs: 20_000,
     fundSeat: async ({ role, message }) => {
       const address = String(message.body.address).toLowerCase();
+      bumpHeartbeat(role === "requestor" ? "payee" : role);
       await fundSeat({ treasuryWallet, sessionId, role, address, keyPair: opKp });
     },
     heartbeatMs: HEARTBEAT_MS,
-    onHeartbeat: async () => say("REQUEST_SUBMITTED", "Still waiting for both parties to bring their own identities."),
+    onHeartbeat: async () => refresh("Still waiting for both parties to bring their own identities."),
   }).catch((error) => stop(error?.code ?? "EXPIRED", error?.message ?? "The parties did not appear in time."));
   const identityReady = identityResult.messages;
   const payerAddress = String(identityReady.payer.body.address).toLowerCase();
   const requestorAddress = String(identityReady.requestor.body.address).toLowerCase();
-  await say("REQUEST_SUBMITTED", "Both parties appeared with their own fresh identity keys.", {
+  await refresh("Both parties appeared with their own fresh identity keys.", {
     payer: payerAddress,
     requestor: requestorAddress,
   });
 
   monitorState.funding = { atMs: Date.now(), funded: true };
-  await say("FUNDED", "Both parties are funded and registering their own identities.");
+  await refresh("Both parties are funded and registering their own identities.");
 
   const readyResult = await awaitRoleMessages({
     relayClient: relay,
@@ -303,7 +313,7 @@ async function runOneSession({ token, treasury }) {
     buffer: identityResult.buffer,
     expectedBindings: identityReady,
     heartbeatMs: HEARTBEAT_MS,
-    onHeartbeat: async () => say("IDENTITY_REGISTERED", "Still waiting for both parties to finish registration."),
+    onHeartbeat: async () => refresh("Still waiting for both parties to finish registration."),
   }).catch((error) => stop(error?.code ?? "EXPIRED", error?.message ?? "The parties did not finish registration in time."));
   const partyReady = readyResult.messages;
   const payerAgentId = String(partyReady.payer.body.agentId);
@@ -314,7 +324,8 @@ async function runOneSession({ token, treasury }) {
       payee: { address: requestorAddress, agentId: requestorAgentId },
     };
   }
-  await say("IDENTITY_REGISTERED", "Both parties registered on-chain identities.");
+  bumpHeartbeat("payer", "payee");
+  await refresh("Both parties registered on-chain identities.");
 
   const mandateResult = await awaitOneRoleMessage(sessionId, {
     kind: "mandate",
@@ -386,13 +397,13 @@ async function runOneSession({ token, treasury }) {
     sessionId,
     root,
     deadlineMs: evidenceDeadlineMs,
-    onWaiting: async () => say("EVIDENCE_RECEIVED", "Waiting for both parties' evidence to arrive."),
+    onWaiting: async () => refresh("Waiting for both parties' evidence to arrive."),
   }).catch((error) => stop(error?.code ?? "MISSING", error?.message ?? "Both evidence packages did not arrive in time."));
   bumpHeartbeat("payer", "payee");
   await say("EVIDENCE_RECEIVED", "Both parties' evidence has arrived. Verifying now, while the window is open.");
 
-  await say("VERIFYING", "The session host's independent checker is re-checking every piece of evidence from scratch.");
   bumpHeartbeat("verifier");
+  await say("VERIFYING", "The session host's independent checker is re-checking every piece of evidence from scratch.");
   const verdict = await verifyBilateralAuthorization({
     clockchain: createMcpClient({ token }),
     descriptorEnvelope: envelope,
