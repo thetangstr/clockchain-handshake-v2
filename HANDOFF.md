@@ -1,18 +1,16 @@
 # Handoff — two-agent build + AWS migration
 
-**As of:** 2026-08-08 · **Branch:** `codex/handshake-build` · **914 tests pass and all
+**As of:** 2026-08-08 · **Branch:** `codex/handshake-build` · **935 tests pass and all
 structural invariants hold.** The previous handoff (still valid for context, landmines §4, known
 gaps §5, and the stakeholder-prompt lesson §6) is archived at
 [docs/handoff-2026-08-04.md](docs/handoff-2026-08-04.md).
 
 ## What you are executing
 
-**[docs/two-agent-execution-plan.md](docs/two-agent-execution-plan.md).** That document
-is the work. Every design decision in it is already made and validated; your job is to
-execute it task by task, in order, passing each Verify block before moving on. Its §0
-executor contract binds you; its §6 pitfall register is fifteen ways this exact system
-has already failed. Do not redesign. When a STOP trigger fires, write it into §Blockers
-below and stop.
+**[docs/two-agent-execution-plan.md](docs/two-agent-execution-plan.md)** is now a
+historical execution record. P4 passed on 2026-08-08 and the live system is on the
+hosted stranger path. Use this handoff as the current state of truth; keep the plan
+files for rationale and pitfall history, not as unexecuted work.
 
 Context behind the plan, if you need it: [docs/two-agent-build.md](docs/two-agent-build.md)
 (locked decisions D1–D5, verified infrastructure map, phase rationale).
@@ -25,11 +23,10 @@ Context behind the plan, if you need it: [docs/two-agent-build.md](docs/two-agen
 | Role-aware seating (`roleAlreadySeated`, unblocks two kits per session) | ✅ shipped `f80aa7a` |
 | Track A (A1–A8): host severance + payer kit + gates G0/G1 | ✅ complete — G0 and G1 live gates passed |
 | Track B (B0–B6): MCP → AWS migration, gate GM | ✅ complete — GM green; B6 explicitly deferred under its plan branch |
-| P2 / P3 / P4 | ✅ P2 + G2 complete · ✅ P3 + G3 complete · ⬜ P4 board/page/cutover next |
+| P2 / P3 / P4 | ✅ P2 + G2 complete · ✅ P3 + G3 complete · ✅ P4 complete |
 
-Both tracks are independent until P2. Work them in parallel if you can; if you must pick
-one, Track B's first steps (B0–B2) have the longest external waits — start them first,
-then do Track A while AWS/DNS steps settle.
+The implementation tracks are complete. The active path is the AWS session host plus
+public discovery URL, with payer/requestor kits joining from a clean clone.
 
 ## Environment facts you'll need on day one
 
@@ -37,7 +34,7 @@ then do Track A while AWS/DNS steps settle.
   = tests + invariants; it gates every commit.
 - `keys/` is gitignored and exists only on this laptop: funding wallet keystore +
   password file + Clockchain token. Treasury `0x157a377e…dce` had ~2.09 testnet ETH on
-  08-04; **the new host funds two seats per run (~0.02 + gas)** — check balance in
+  08-04; **the session host funds two seats per run (~0.02 + gas)** — check balance in
   `npm run preflight` before gate runs.
 - Relay box: `ssh -i ~/.ssh/handshake-relay.pem ubuntu@44.249.47.220`, code at
   `/opt/handshake/app`, service `handshake-relay`. Deploy = rsync + restart (exact
@@ -54,7 +51,18 @@ then do Track A while AWS/DNS steps settle.
    publicly to `34.209.199.138`; the production record remains on GCP at TTL 600.
 2. **GoDaddy visit #2 complete** (plan §B5): `mcp.clockchain.network` now resolves to
    the Elastic IP at TTL 600. The exact rollback target remains GCP `136.68.167.2`.
-3. **GCP stays billed/warm** through cutover and until a separate decommission decision.
+3. **GCP stays billed/warm** until a separate decommission decision.
+
+## Waiting / follow-up
+
+- P4 is complete. The final live gate used the production relay and already-running
+  AWS session host; no operator/laptop host was in the request path.
+- Production relay is deployed and remains the active stranger path. B6 relay-fold work
+  stays deferred as a separate maintenance decision.
+- Validator count is non-blocking per Yang's 2026-08-08 direction. Production-only
+  `HANDSHAKE_ALLOW_DEGRADED=true` remains in the deployed environment; source and
+  deployment-wrapper defaults stay fail-closed.
+- GCP remains warm solely as a rollback/decommission topic.
 
 ## Blockers
 
@@ -331,6 +339,23 @@ would ask for)*
   `HANDSHAKE_ALLOW_DEGRADED=true` because validator count is temporarily
   non-blocking; source and deployment-wrapper defaults remain fail-closed.
 
+- 2026-08-08 — **P4 live stranger gate complete.** A clean clone of branch
+  `codex/handshake-build` at SHA
+  `f599cc2e1bf22888ab8cb583a0a9a272636827be` completed session
+  `dc9117e8-8f5a-41ed-a425-78d35da5b8eb` against the production relay with no
+  operator/laptop host. Payer agent `9447`
+  (`0xE356F056E19bb669930bdC3Bf0B033F991381242`) and requestor agent `9448`
+  (`0x7fe49d91EA2703689B7E33b4170192270E1fCd7c`) anchored proposal `3101570` /
+  `809a17fb-34b0-4784-b476-702506b06680`, acceptance `3101590` /
+  `73c361a1-e592-40ee-b197-1005f357692b`, and acknowledgment `3101592` /
+  `851d8e83-7b81-4ac6-b5eb-730e17d3f507`; session digest
+  `e890b228555c5e6953d077af8008e5ef441cbffda56aa8b902fc1c72964d1ff7`.
+  The session host returned `AUTHORIZED`; `paymentMoved=false`; both certificates
+  verified; the production relay deployed path was the only host path. At
+  `EVIDENCE_RECEIVED`, the verdict was `null`. Final browser board checks:
+  exact label true, `[object Object]` false, AUTHORIZED/payment-false true. The
+  host reopened next session after completion.
+
 ## Migration inventory
 
 *(plan §B0's table gets filled in here — every row, even when the answer is "none")*
@@ -407,3 +432,17 @@ sources are `clockchain-developer-tools` commits `610d519` and `11b9162`.
 | Runtime state | Named volume `clockchain-mcp_mcp_state` mounted at `/app/state`; `handshake.json` mode 0600; completed G3 state has `certificate_verified=true` and no raw principal/session/role or forbidden secret-shaped fields |
 | Validator policy | Source and wrapper default `HANDSHAKE_ALLOW_DEGRADED=false`; production-only systemd drop-in sets it to `true` under Yang's temporary validator-count exception |
 | G3 certificate | Session `fc623ec9-bad8-458c-91d6-f8df94612ecb`; payer/requestor agents `9446`/`9445`; blocks `3100017`/`3100034`/`3100039`; `AUTHORIZED`; `paymentMoved=false` |
+
+### P4 stranger-gate cutover (2026-08-08)
+
+| Item | Value / evidence |
+|---|---|
+| Clean-clone source | `codex/handshake-build` / `f599cc2e1bf22888ab8cb583a0a9a272636827be` |
+| Hosted path | Already-running AWS session host plus production relay; no operator/laptop host in the request path |
+| Session | `dc9117e8-8f5a-41ed-a425-78d35da5b8eb` |
+| Parties | Payer agent `9447` / `0xE356F056E19bb669930bdC3Bf0B033F991381242`; requestor agent `9448` / `0x7fe49d91EA2703689B7E33b4170192270E1fCd7c` |
+| Anchors | Proposal `3101570` / `809a17fb-34b0-4784-b476-702506b06680`; acceptance `3101590` / `73c361a1-e592-40ee-b197-1005f357692b`; acknowledgment `3101592` / `851d8e83-7b81-4ac6-b5eb-730e17d3f507` |
+| Session digest | `e890b228555c5e6953d077af8008e5ef441cbffda56aa8b902fc1c72964d1ff7` |
+| Certificate and board | Both certificates verified; `AUTHORIZED`; `paymentMoved=false`; at `EVIDENCE_RECEIVED` verdict was `null`; final browser board exact label true, `[object Object]` false, AUTHORIZED/payment-false true |
+| Runtime policy | Production-only `HANDSHAKE_ALLOW_DEGRADED=true`; source default fail-closed; validator count non-blocking per Yang |
+| Continuity | Host reopened next session |
