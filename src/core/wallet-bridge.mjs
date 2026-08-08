@@ -1,4 +1,12 @@
-import { readdir } from "node:fs/promises";
+import {
+  chmod,
+  link,
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  unlink,
+} from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 import { isHex } from "viem";
@@ -118,6 +126,84 @@ function assertOmitsPrivateKey(value, privateKey) {
   }
 }
 
+async function captureParentIdentity(statePath, { platform, runIcacls }) {
+  const parent = dirname(statePath);
+  await preparePrivateDirectory({
+    path: parent,
+    platform,
+    runIcacls,
+  });
+  const stats = await lstat(parent);
+  if (!stats.isDirectory() || stats.isSymbolicLink()) fail();
+  return Object.freeze({
+    dev: stats.dev,
+    ino: stats.ino,
+    path: parent,
+  });
+}
+
+async function verifyParentIdentity(identity) {
+  const stats = await lstat(identity.path);
+  if (
+    !stats.isDirectory() ||
+    stats.isSymbolicLink() ||
+    stats.dev !== identity.dev ||
+    stats.ino !== identity.ino
+  ) {
+    fail();
+  }
+}
+
+function pinnedFileSystem(parentIdentity) {
+  const wrap = (operation) => async (...args) => {
+    await verifyParentIdentity(parentIdentity);
+    const result = await operation(...args);
+    await verifyParentIdentity(parentIdentity);
+    return result;
+  };
+  return Object.freeze({
+    chmod: wrap(chmod),
+    link: wrap(link),
+    lstat: wrap(lstat),
+    mkdir: wrap(mkdir),
+    open: async (...args) => {
+      await verifyParentIdentity(parentIdentity);
+      const handle = await open(...args);
+      await verifyParentIdentity(parentIdentity);
+      return {
+        chmod: async (...handleArgs) => {
+          await verifyParentIdentity(parentIdentity);
+          const result = await handle.chmod(...handleArgs);
+          await verifyParentIdentity(parentIdentity);
+          return result;
+        },
+        close: (...handleArgs) => handle.close(...handleArgs),
+        readFile: async (...handleArgs) => {
+          await verifyParentIdentity(parentIdentity);
+          return await handle.readFile(...handleArgs);
+        },
+        stat: async (...handleArgs) => {
+          await verifyParentIdentity(parentIdentity);
+          return await handle.stat(...handleArgs);
+        },
+        sync: async (...handleArgs) => {
+          await verifyParentIdentity(parentIdentity);
+          const result = await handle.sync(...handleArgs);
+          await verifyParentIdentity(parentIdentity);
+          return result;
+        },
+        writeFile: async (...handleArgs) => {
+          await verifyParentIdentity(parentIdentity);
+          const result = await handle.writeFile(...handleArgs);
+          await verifyParentIdentity(parentIdentity);
+          return result;
+        },
+      };
+    },
+    unlink: wrap(unlink),
+  });
+}
+
 function checkpointName(statePath, sequence) {
   return `.${basename(statePath)}.checkpoint-${String(sequence).padStart(6, "0")}.json`;
 }
@@ -132,32 +218,37 @@ function checkpointPattern(statePath) {
 }
 
 async function latestCheckpoint({ platform, runIcacls, statePath }) {
-  await preparePrivateDirectory({
-    path: dirname(statePath),
+  const parentIdentity = await captureParentIdentity(statePath, {
     platform,
     runIcacls,
   });
   const pattern = checkpointPattern(statePath);
+  await verifyParentIdentity(parentIdentity);
   const entries = await readdir(dirname(statePath));
+  await verifyParentIdentity(parentIdentity);
   const sequences = entries
     .map((entry) => pattern.exec(entry)?.[1])
     .filter((entry) => entry !== undefined)
     .map((entry) => Number(entry))
     .sort((left, right) => right - left);
   for (const sequence of sequences) {
+    await verifyParentIdentity(parentIdentity);
     const text = await readPrivateText({
+      fileSystem: pinnedFileSystem(parentIdentity),
       path: checkpointPath(statePath, sequence),
       platform,
       runIcacls,
     });
+    await verifyParentIdentity(parentIdentity);
     const record = JSON.parse(text);
     publicRegistration(record);
-    return { record, sequence };
+    return { parentIdentity, record, sequence };
   }
-  return { record: null, sequence: 0 };
+  return { parentIdentity, record: null, sequence: 0 };
 }
 
 async function persistCheckpoint({
+  parentIdentity,
   platform,
   record,
   runIcacls,
@@ -165,20 +256,30 @@ async function persistCheckpoint({
   statePath,
 }) {
   const target = checkpointPath(statePath, sequence);
+  await verifyParentIdentity(parentIdentity);
   await writePrivateFile({
     bytes: jsonBytes(record),
+    fileSystem: pinnedFileSystem(parentIdentity),
     path: target,
     platform,
     runIcacls,
   });
+  await verifyParentIdentity(parentIdentity);
 }
 
 async function readWallet({ platform, runIcacls, statePath }) {
+  const parentIdentity = await captureParentIdentity(statePath, {
+    platform,
+    runIcacls,
+  });
+  await verifyParentIdentity(parentIdentity);
   const text = await readPrivateText({
+    fileSystem: pinnedFileSystem(parentIdentity),
     path: statePath,
     platform,
     runIcacls,
   });
+  await verifyParentIdentity(parentIdentity);
   const wallet = JSON.parse(text);
   if (
     wallet?.schema !== WALLET_SCHEMA ||
@@ -189,7 +290,7 @@ async function readWallet({ platform, runIcacls, statePath }) {
   }
   const account = privateKeyToAccount(wallet.privateKey);
   if (account.address !== wallet.address) fail();
-  return { account, wallet };
+  return { account, parentIdentity, wallet };
 }
 
 export async function initializeWallet({
@@ -200,13 +301,13 @@ export async function initializeWallet({
 } = {}) {
   try {
     const statePath = assertPath(inputStatePath);
-    await preparePrivateDirectory({
-      path: dirname(statePath),
+    const parentIdentity = await captureParentIdentity(statePath, {
       platform,
       runIcacls,
     });
     if (typeof createPrivateKey !== "function") fail();
     const privateKey = assertPrivateKey(createPrivateKey());
+    await verifyParentIdentity(parentIdentity);
     const account = privateKeyToAccount(privateKey);
     const wallet = {
       schema: WALLET_SCHEMA,
@@ -215,10 +316,12 @@ export async function initializeWallet({
     };
     await writePrivateFile({
       bytes: jsonBytes(wallet),
+      fileSystem: pinnedFileSystem(parentIdentity),
       path: statePath,
       platform,
       runIcacls,
     });
+    await verifyParentIdentity(parentIdentity);
     return { address: account.address };
   } catch (error) {
     sanitize(error);
@@ -291,7 +394,7 @@ export async function registerWalletIdentity({
       runIcacls,
       statePath,
     });
-    const { record, sequence } = await latestCheckpoint({
+    const { parentIdentity, record, sequence } = await latestCheckpoint({
       platform,
       runIcacls,
       statePath,
@@ -301,6 +404,7 @@ export async function registerWalletIdentity({
       publicRegistration(checkpoint);
       assertOmitsPrivateKey(checkpoint, wallet.privateKey);
       await persistCheckpoint({
+        parentIdentity,
         platform,
         record: checkpoint,
         runIcacls,

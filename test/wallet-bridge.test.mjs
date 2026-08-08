@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { renameSync, symlinkSync } from "node:fs";
 import {
   chmod,
   link,
   lstat,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
+  rename,
   rm,
   symlink,
 } from "node:fs/promises";
@@ -48,6 +51,15 @@ async function initializeDeterministicWallet(t) {
     generatePrivateKey: () => PRIVATE_KEY,
   });
   return { root, statePath, result };
+}
+
+async function readOptional(path) {
+  try {
+    return await readFile(path, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return "";
+    throw error;
+  }
 }
 
 function scan(value) {
@@ -199,6 +211,62 @@ test("fails closed for relative, root, symlink, hard-linked, and permissive wall
   );
 });
 
+test("fails closed when initialization parent is swapped for a symlink before writing the private key", async (t) => {
+  const { root, statePath } = await temporaryState(t);
+  const originalParent = dirname(statePath);
+  const redirectedParent = join(root, "redirected");
+  const displacedParent = join(root, "party-displaced");
+  await mkdir(originalParent, { mode: 0o700, recursive: true });
+  await mkdir(redirectedParent, { mode: 0o700 });
+
+  await rejectSafe(() =>
+    initializeWallet({
+      statePath,
+      platform: "darwin",
+      generatePrivateKey: () => {
+        renameSync(originalParent, displacedParent);
+        symlinkSync(redirectedParent, originalParent);
+        return PRIVATE_KEY;
+      },
+    }),
+  );
+
+  assert.equal(
+    (await readOptional(join(redirectedParent, "wallet.json"))).includes(
+      PRIVATE_KEY,
+    ),
+    false,
+  );
+  assert.equal(
+    (await readOptional(join(redirectedParent, "wallet.json"))).includes(
+      PRIVATE_KEY.slice(2),
+    ),
+    false,
+  );
+});
+
+test("fails closed when an existing wallet parent is replaced by a symlink before reading", async (t) => {
+  const { root, statePath } = await initializeDeterministicWallet(t);
+  const originalParent = dirname(statePath);
+  const displacedParent = join(root, "party-displaced");
+  await rename(originalParent, displacedParent);
+  await symlink(displacedParent, originalParent);
+
+  await rejectSafe(() =>
+    inspectWallet({
+      statePath,
+      platform: "darwin",
+    }),
+  );
+  await rejectSafe(() =>
+    signExactBytes({
+      statePath,
+      bytesHex: "0x00",
+      platform: "darwin",
+    }),
+  );
+});
+
 test("inspects only public address and registration state", async (t) => {
   const { statePath } = await initializeDeterministicWallet(t);
 
@@ -327,6 +395,45 @@ test("registers with the wallet key, persists checkpoints before broadcast, and 
     },
   );
   assertNoSecret(registered);
+});
+
+test("fails closed when registration checkpoint parent is swapped for a symlink before persistence", async (t) => {
+  const { root, statePath } = await initializeDeterministicWallet(t);
+  const originalParent = dirname(statePath);
+  const redirectedParent = join(root, "redirected");
+  const displacedParent = join(root, "party-displaced");
+  await mkdir(redirectedParent, { mode: 0o700 });
+
+  await rejectSafe(() =>
+    registerWalletIdentity({
+      statePath,
+      displayName: "Hermes party",
+      platform: "darwin",
+      registration: {
+        registerIdentity: async ({ onCheckpoint }) => {
+          await rename(originalParent, displacedParent);
+          await symlink(redirectedParent, originalParent);
+          await onCheckpoint({
+            schema: "clockchain.handshake-registration-intent/v1",
+            chainId: 11155111,
+            registryAddress: "0x8004A818BFB912233c491871b3d84c89A494BD9e",
+            registryNamespace:
+              "eip155:11155111:0x8004A818BFB912233c491871b3d84c89A494BD9e",
+            address: ADDRESS,
+            displayName: "Hermes party",
+            registerNonce: 0,
+            registerCalldata: "0x1234",
+            registerGas: "226000",
+            maxFeePerGas: "2",
+            maxPriorityFeePerGas: "1",
+          });
+        },
+      },
+    }),
+  );
+
+  const redirectedEntries = await readdir(redirectedParent);
+  assert.deepEqual(redirectedEntries, []);
 });
 
 test("resumes durable recovery records with finalization instead of registering again", async (t) => {
