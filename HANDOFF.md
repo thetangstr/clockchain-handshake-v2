@@ -74,4 +74,16 @@ would ask for)*
 
 *(plan §B0's table gets filled in here — every row, even when the answer is "none")*
 
-— not started —
+Inventory source: `clockchain-developer-tools` commit
+`bef177bdf93f1d36fbbe0a2a787121518eb3d3eb` (2026-08-07).
+
+| Question | Answer |
+|---|---|
+| Language/runtime + listen port | TypeScript / Node ESM. The container runs Node 20 and `packages/mcp-server/dist/index.js`. HTTP listens on `PORT`, then `MCP_PORT`, then `3000`; Cloud Run and the Dockerfile use `8080`. |
+| How does it reach the chain node (`node.clockchain.network`)? Pull or push? | Outbound request/response from MCP to `CLOCKCHAIN_ENDPOINT` (default `https://node.clockchain.network`): GETs for reads and POSTs for writes. The node does not push inbound to MCP. |
+| Where do token quotas live (memory / file / external store)? | Static tokens are configuration; self-serve tokens are stateless HMAC tokens. Mint quotas and log-credit budgets are in-memory, per-process maps. |
+| Where do receipts/ledger ids live? | The caller receives receipt payloads; ledger records and ids live on Clockchain and are read through its `/ledger` / chain APIs. The MCP has no receipt database. |
+| Env vars + secrets the container needs (names, where GCP stores them) | Required core values: `CLOCKCHAIN_API_KEY`, `CLOCKCHAIN_CLIENT_ID`, `CLOCKCHAIN_WALLET_ID`; hosted configuration also sets `MCP_TRANSPORT`, `MCP_REQUIRE_AUTH`, `MCP_RATE_PER_MIN`, `MCP_LOG_BUDGET`, `MCP_TOKEN_MINT_PER_HOUR`, `MCP_TOKEN_TTL_DAYS`, and `CLOCKCHAIN_ENDPOINT`. Optional chain settings: `EVM_RPC_URL`, `ERC8004_CHAIN`, `ERC8004_REGISTRY_ADDRESS`. GCP Secret Manager supplies `clockchain-api-key`, `mcp-auth-tokens`, and `mcp-token-signing-secret`; B1 replaces those with SSM SecureStrings. |
+| Does it use ANY GCP-managed service (Firestore, GCS, Cloud SQL, Memorystore, Pub/Sub)? | Deployment uses Cloud Run, Cloud Build, Artifact Registry, Secret Manager, Cloud Armor, and Cloud Logging/Monitoring. It uses none of Firestore, GCS, Cloud SQL, Memorystore, Pub/Sub, or any other application datastore. Default session/account state is memory; optional `MCP_SESSION_FILE` is local JSON; the documented DynamoDB store is not implemented. The B0 stateful-data STOP trigger did not fire. |
+| Does it stream (SSE/websocket) on the MCP endpoint? | Streamable HTTP can return SSE and clients advertise `application/json, text/event-stream`. No websocket server was found. |
+| Health endpoint | Unauthenticated `GET /health` and `GET /healthz`, returning `{"status":"ok"}` before auth or gateway access. |
