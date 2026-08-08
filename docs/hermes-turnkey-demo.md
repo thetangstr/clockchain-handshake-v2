@@ -49,6 +49,12 @@ The MCP transport exposes exactly these Handshake tools to each demo agent:
 4. `handshake_submit`
 5. `handshake_get_certificate`
 
+Every signing response includes both `bytesToSignHex` and `bytesSha256`. The
+local wallet bridge recomputes `bytesSha256` from the exact bytes it signs; the
+two digests must match before an agent submits the signature. A mismatch is
+retried from `handshake_next` without reconstructing the payload or opening a
+diagnostic loop.
+
 The relay is a separate protocol service, not an MCP REST surface:
 
 | Endpoint | Purpose |

@@ -1087,6 +1087,11 @@ test("kit URL and commit are validated before prompt creation", () => {
   assert.match(prompt, /git clone .* \.\/handshake-kit/i);
   assert.match(prompt, /paymentMoved:false/);
   assert.match(prompt, /handshake_submit is signatures only/i);
+  assert.match(prompt, /bytesSha256/i);
+  assert.match(prompt, /must match/i);
+  assert.match(prompt, /do not reconstruct/i);
+  assert.match(prompt, /do not write diagnostic scripts/i);
+  assert.match(prompt, /SIGNATURE_ROLE_MISMATCH.*handshake_next.*sign again.*resubmit/i);
   assert.match(prompt, /retryAfterMs/i);
   assert.match(prompt, /start at 5 seconds/i);
   assert.match(prompt, /back off to at most 15 seconds/i);

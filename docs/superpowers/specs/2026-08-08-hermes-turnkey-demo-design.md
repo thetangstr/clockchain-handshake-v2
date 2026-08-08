@@ -95,7 +95,7 @@ Each role follows this loop:
 
 1. Call `handshake_join(role)` and retain the returned session id.
 2. Call `handshake_next(sessionId, role)`.
-3. If `bytesToSignHex` is returned, sign those exact bytes with the role’s local EIP-191 wallet and submit only `signatureHex` through `handshake_submit`.
+3. If `bytesToSignHex` is returned, sign those exact bytes with the role’s local EIP-191 wallet, require the bridge-computed `bytesSha256` to match the MCP response, and submit only `signatureHex` through `handshake_submit`.
 4. If `needed` is `funding_record`, wait and call `handshake_next` again.
 5. If `needed` is `erc8004_identity`, use the same local wallet to register on Sepolia, then continue.
 6. Continue until the party-result signature and evidence upload are complete.

@@ -1,4 +1,5 @@
 import { lstat, readdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 
 import { isHex } from "viem";
@@ -350,6 +351,9 @@ export async function signExactBytes({
     });
     return {
       address: account.address,
+      bytesSha256: createHash("sha256")
+        .update(Buffer.from(bytesHex.slice(2), "hex"))
+        .digest("hex"),
       signatureHex,
     };
   } catch (error) {

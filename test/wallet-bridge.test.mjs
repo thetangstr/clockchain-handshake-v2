@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, renameSync, symlinkSync } from "node:fs";
 import {
   chmod,
@@ -490,15 +491,20 @@ test("fails closed when checkpoint fields embed private-key bytes inside longer 
 
 test("signs only one exact even-length 0x byte string with EIP-191 raw bytes", async (t) => {
   const { statePath } = await initializeDeterministicWallet(t);
+  const bytesHex = "0x000102feff";
   const signed = await signExactBytes({
     statePath,
-    bytesHex: "0x000102feff",
+    bytesHex,
     platform: "darwin",
   });
 
   assert.equal(signed.address, ADDRESS);
+  assert.equal(
+    signed.bytesSha256,
+    createHash("sha256").update(Buffer.from(bytesHex.slice(2), "hex")).digest("hex"),
+  );
   assert.match(signed.signatureHex, /^0x[0-9a-f]{130}$/i);
-  assert.deepEqual(Object.keys(signed).sort(), ["address", "signatureHex"]);
+  assert.deepEqual(Object.keys(signed).sort(), ["address", "bytesSha256", "signatureHex"]);
   assertNoSecret(signed);
   assert.equal(
     await recoverMessageAddress({
@@ -830,6 +836,10 @@ test("CLI emits one safe JSON object for success and failure", async (t) => {
   const sign = await runCli(["sign", "--state", statePath, "--bytes", "0x0102"]);
   assert.equal(sign.code, 0);
   assert.equal(sign.json.address, init.json.address);
+  assert.equal(
+    sign.json.bytesSha256,
+    createHash("sha256").update(Buffer.from("0102", "hex")).digest("hex"),
+  );
   assert.match(sign.json.signatureHex, /^0x[0-9a-f]{130}$/i);
   assertNoSecret(sign.stdout);
   assert.equal(sign.stdout.includes(cliPrivateKey), false);
