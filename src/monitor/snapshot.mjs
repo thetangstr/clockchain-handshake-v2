@@ -194,7 +194,7 @@ function isStageValue(value) {
   return value === FAILED_STAGE || STATUSES.includes(value);
 }
 
-function validateAnchor(kind, anchor) {
+export function validateAnchor(kind, anchor) {
   if (anchor === null) return;
   if (!hasExactKeys(anchor, ANCHOR_KEYS)) {
     invalid(`anchors.${kind} has the wrong shape`);
