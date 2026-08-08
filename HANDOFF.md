@@ -59,7 +59,19 @@ then do Track A while AWS/DNS steps settle.
 
 *(append dated entries here; format: what you ran, what you expected, what you saw)*
 
-— none yet —
+- 2026-08-07 — A3 legacy live verification initially appeared blocked before
+  session creation, but both earlier failures shared the same unsupported
+  environment-variable mistake: `HANDSHAKE_KEYSTORE` is ignored by
+  `bin/operator.mjs`; the operator needs `--keystore`. The corrected local-relay
+  run used `HANDSHAKE_RELAY=http://127.0.0.1:18788
+  CLOCKCHAIN_FUNDING_PASSWORD_FILE=/Volumes/mac_studio_ssd/Projects/handshake/keys/funding.password
+  npm run demo -- --keystore
+  /Volumes/mac_studio_ssd/Projects/handshake/keys/funding-wallet.json`, then
+  `bin/requestor.mjs` against the local discovery URL. The legacy operator's
+  untagged funding record was accepted, the requestor registered identity
+  `9430`, and the verifier completed `AUTHORIZED` for session
+  `4408a633-55f2-438a-8824-7c46bc4db255`. Blocks: proposal `3080317`,
+  acceptance `3080337`, acknowledgment `3080339`.
 
 ## Evidence
 

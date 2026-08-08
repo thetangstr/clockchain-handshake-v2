@@ -24,6 +24,7 @@ import { createMcpClient, mintDemoToken } from "../src/core/clockchain.mjs";
 import { ERC8004_ABI } from "../src/core/registration.mjs";
 import { runPayeeRole } from "../src/core/roles-core.mjs";
 import { REGISTRY_ADDRESS, RPC_URL } from "../src/core/constants.mjs";
+import { selectFundingRecord } from "../src/roles/funding-selection.mjs";
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) args.set(process.argv[i], process.argv[i + 1]);
@@ -85,6 +86,31 @@ async function awaitKind(kind, budgetMs, after = "0") {
   stop("EXPIRED", "The payer did not respond before the session window closed.");
 }
 
+async function awaitFundingRecord(address, budgetMs, after = "0") {
+  const deadline = Date.now() + budgetMs;
+  let cursor = after;
+  let lastBeat = 0;
+  while (Date.now() < deadline) {
+    const got = await relay.pollMessages({
+      relayUrl: RELAY_URL, sessionId: SESSION_ID, after: cursor, waitMs: 20_000,
+    });
+    for (const message of got.messages ?? []) {
+      cursor = message.seq;
+    }
+    const selected = selectFundingRecord(got.messages, { address, role: "requestor" });
+    if (selected.status === "proceed") return selected.message;
+    if (selected.status === "already-bound") {
+      stop("ROLE_ALREADY_BOUND",
+        "The payer funded a different requestor: another agent claimed this session first. Nothing was spent.");
+    }
+    if (Date.now() - lastBeat > HEARTBEAT_MS) {
+      lastBeat = Date.now();
+      say("REQUEST_SUBMITTED", "Still working — waiting on the payer. No money has moved.");
+    }
+  }
+  stop("EXPIRED", "The payer did not respond before the session window closed.");
+}
+
 async function main() {
   await resolveRendezvous();
   say("SESSION_STARTED", "Asking to be paid. This is a verification exercise: no money will move.");
@@ -112,7 +138,7 @@ async function main() {
   say("HANDSHAKE_REQUIRED",
     "The payer will not consider a payment without a verified handshake first. Following its instructions.");
 
-  const funding = await awaitKind("funding_record", WAIT_MS);
+  const funding = await awaitFundingRecord(account.address, WAIT_MS);
   // The record names the address the payer actually funded. Two requestors can
   // still both pass the check above if they claim in the same instant, and the
   // payer serves whichever arrived first -- so this is where that race is
