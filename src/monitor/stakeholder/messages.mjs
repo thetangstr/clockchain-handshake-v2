@@ -16,7 +16,6 @@ import {
   msSinceUpdate,
   reasonSentence,
   ROLE_NAMES,
-  STATUSES,
   stageSentence,
 } from "../snapshot.mjs";
 
@@ -25,55 +24,33 @@ import {
 export const NO_MONEY_MOVED_SENTENCE =
   "No money has moved. This is an authorization check only.";
 
-// The five-step plain-English narration. Internal statuses fold into these
-// five rows; a raw status code is never rendered. Grouping rationale:
-//   - TERMS_PUBLISHED is preceded by session/rehearsal setup that has nothing
-//     to show yet, so those fold into "not started" for step 1.
-//   - PROPOSED is the anchored, on-the-record version of the same payment
-//     request the requestor already submitted off-chain, so it completes
-//     step 2 rather than opening a step of its own.
-//   - HANDSHAKE_REQUIRED / IDENTITY_REGISTERED / FUNDED are pre-handshake
-//     setup that happens around request submission; they fold into step 2 as
-//     "still working on it" detail rather than getting their own row.
+// The five-step plain-English narration. These are display rows, not ownership
+// buckets for the wire-status enum. Completion is derived below from the exact
+// artifact named by each row; setup statuses never turn a business claim green.
 export const TIMELINE_STEPS = Object.freeze([
   Object.freeze({
     id: "terms_published",
     label: "Payer published the payment terms",
-    statuses: Object.freeze([
-      "SESSION_STARTED",
-      "REHEARSAL_PASSED",
-      "TERMS_PUBLISHED",
-    ]),
     activeRole: "payer",
   }),
   Object.freeze({
     id: "request_submitted",
     label: "Requestor submitted a payment request",
-    statuses: Object.freeze([
-      "REQUEST_SUBMITTED",
-      "HANDSHAKE_REQUIRED",
-      "IDENTITY_REGISTERED",
-      "FUNDED",
-      "PROPOSED",
-    ]),
     activeRole: "payee",
   }),
   Object.freeze({
     id: "accepted",
     label: "Requestor accepted the exact terms",
-    statuses: Object.freeze(["ACCEPTED"]),
     activeRole: "payee",
   }),
   Object.freeze({
     id: "acknowledged",
     label: "Payer acknowledged",
-    statuses: Object.freeze(["ACKNOWLEDGED"]),
     activeRole: "payer",
   }),
   Object.freeze({
     id: "verifying",
     label: "Clockchain — session host & independent checker.",
-    statuses: Object.freeze(["EVIDENCE_RECEIVED", "VERIFYING"]),
     activeRole: "verifier",
   }),
 ]);
@@ -105,31 +82,29 @@ export const VERDICT_MESSAGES = Object.freeze({
     "AUTHORIZED — the independent checker confirmed the handshake. No money has moved.",
 });
 
-/** True if the union of every step's statuses is exactly STATUSES, with no
- * gaps and no duplicates. Used by tests to keep the timeline complete as the
- * status vocabulary evolves. */
-export function timelineCoversAllStatuses() {
-  const covered = TIMELINE_STEPS.flatMap((step) => step.statuses);
-  const uniqueCovered = new Set(covered);
-  if (uniqueCovered.size !== covered.length) return false;
-  if (uniqueCovered.size !== STATUSES.length) return false;
-  return STATUSES.every((status) => uniqueCovered.has(status));
+function hasStage(snapshot, status) {
+  return snapshot.currentStage === status || snapshot.stageHistory.some(
+    (entry) => entry.status === status,
+  );
 }
 
-function stepIndexForStatus(status) {
-  return TIMELINE_STEPS.findIndex((step) => step.statuses.includes(status));
-}
-
-/** The last status actually reached, even if the run has since failed. */
-export function lastProgressStatus(snapshot) {
-  if (snapshot.currentStage !== FAILED_STAGE) {
-    return snapshot.currentStage;
-  }
-  for (let i = snapshot.stageHistory.length - 1; i >= 0; i -= 1) {
-    const entry = snapshot.stageHistory[i];
-    if (STATUSES.includes(entry.status)) return entry.status;
-  }
-  return null;
+/** Exact facts used by the projector. Later facts deliberately do not imply
+ * earlier ones: a verdict cannot create a missing receipt, and readiness
+ * fields cannot create a mandate or payment request. */
+export function deriveProgressFacts(snapshot) {
+  return Object.freeze({
+    termsPublished: hasStage(snapshot, "TERMS_PUBLISHED"),
+    requestSubmitted: hasStage(snapshot, "REQUEST_SUBMITTED"),
+    fundingReady: snapshot.funding?.funded === true,
+    identitiesReady:
+      snapshot.identities?.payer != null && snapshot.identities?.payee != null,
+    proposalRecorded: snapshot.anchors?.proposal != null,
+    acceptanceRecorded: snapshot.anchors?.acceptance != null,
+    acknowledgmentRecorded: snapshot.anchors?.acknowledgment != null,
+    evidenceReceived: hasStage(snapshot, "EVIDENCE_RECEIVED"),
+    verificationStarted: hasStage(snapshot, "VERIFYING"),
+    verdictPublished: snapshot.verdict != null,
+  });
 }
 
 /**
@@ -137,42 +112,29 @@ export function lastProgressStatus(snapshot) {
  * state of "done" | "active" | "failed" | "pending".
  */
 export function buildTimelineView(snapshot) {
-  const reached = lastProgressStatus(snapshot);
-  const reachedIndex = reached === null ? -1 : stepIndexForStatus(reached);
+  const facts = deriveProgressFacts(snapshot);
   const failed = snapshot.currentStage === FAILED_STAGE;
-  const decided = snapshot.verdict !== null && snapshot.verdict !== undefined;
-
-  // A step finishes only once its LAST status is reached. Grouping several
-  // statuses under one row means the earlier ones are that row still in
-  // progress: SESSION_STARTED is not "the payer published the terms", and a run
-  // that has only just opened must show nothing finished at all -- a green row
-  // for something that has not happened is the one thing an evidence demo
-  // cannot afford on a projector.
-  //
-  // The last step is the exception, in the other direction: VERIFYING is where
-  // a snapshot rests while the checker works, so that row finishes on the
-  // verdict and never before it.
-  const lastStepIndex = TIMELINE_STEPS.length - 1;
-  const finishedItsStep =
-    reachedIndex !== -1 &&
-    reachedIndex !== lastStepIndex &&
-    reached === TIMELINE_STEPS[reachedIndex].statuses[
-      TIMELINE_STEPS[reachedIndex].statuses.length - 1
-    ];
-  const activeIndex = finishedItsStep
-    ? reachedIndex + 1
-    : reachedIndex === -1
-      ? 0
-      : reachedIndex;
+  const completed = [
+    facts.termsPublished,
+    facts.requestSubmitted,
+    facts.acceptanceRecorded,
+    facts.acknowledgmentRecorded,
+    facts.verdictPublished,
+  ];
+  const firstIncomplete = completed.findIndex((complete) => !complete);
+  const checkerIsWorking =
+    !facts.verdictPublished &&
+    (facts.evidenceReceived || facts.verificationStarted);
+  const activeIndex = checkerIsWorking && !failed
+    ? TIMELINE_STEPS.length - 1
+    : firstIncomplete;
 
   return TIMELINE_STEPS.map((step, index) => {
     let state;
-    if (decided) {
+    if (completed[index]) {
       state = "done";
     } else if (failed) {
-      state = index < reachedIndex ? "done" : index === reachedIndex ? "failed" : "pending";
-    } else if (index < activeIndex) {
-      state = "done";
+      state = index === activeIndex ? "failed" : "pending";
     } else if (index === activeIndex) {
       state = "active";
     } else {
@@ -192,10 +154,20 @@ export function buildTimelineView(snapshot) {
  * no step is actively in progress (finished or failed).
  */
 export function buildFreshnessView(snapshot, nowMs) {
+  const facts = deriveProgressFacts(snapshot);
   const activeStep = buildTimelineView(snapshot).find(
     (row) => row.state === "active",
   );
   if (!activeStep) return null;
+  if (activeStep.id === "terms_published") {
+    if (!facts.fundingReady) {
+      return "Payer and Requestor are joining with fresh local keys.";
+    }
+    if (!facts.identitiesReady) {
+      return "Both seats are funded — the independent agents are registering identities.";
+    }
+    return "Both independent agents are ready — waiting for the Payer's signed terms.";
+  }
   const stepDef = TIMELINE_STEPS.find((step) => step.id === activeStep.id);
   const heartbeatEntry = snapshot.heartbeat[stepDef.activeRole];
   const sinceMs = msSinceHeartbeat(heartbeatEntry, nowMs);
