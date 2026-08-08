@@ -1,7 +1,7 @@
 # Handoff — two-agent build + AWS migration
 
-**As of:** 2026-08-07 · **Branch:** `main` · **872 tests pass, all 10 structural
-invariants hold.** The previous handoff (still valid for context, landmines §4, known
+**As of:** 2026-08-07 · **Branch:** `codex/handshake-build` · **908 tests pass and all
+structural invariants hold.** The previous handoff (still valid for context, landmines §4, known
 gaps §5, and the stakeholder-prompt lesson §6) is archived at
 [docs/handoff-2026-08-04.md](docs/handoff-2026-08-04.md).
 
@@ -23,8 +23,8 @@ Context behind the plan, if you need it: [docs/two-agent-build.md](docs/two-agen
 |---|---|
 | Closing certificate (`src/core/result.mjs`, relay result endpoint, both parties fetch+verify) | ✅ shipped `4d096f1`, live-verified (blocks 3057376/3057397/3057399, agents 9427/9428) |
 | Role-aware seating (`roleAlreadySeated`, unblocks two kits per session) | ✅ shipped `f80aa7a` |
-| Track A (A1–A8): host severance + payer kit + gates G0/G1 | ⬜ next — start at A1 |
-| Track B (B0–B6): MCP → AWS migration, gate GM | ⬜ parallel — start at B0 |
+| Track A (A1–A8): host severance + payer kit + gates G0/G1 | ✅ complete — G0 and G1 live gates passed |
+| Track B (B0–B6): MCP → AWS migration, gate GM | 🟨 B0–B2 complete; B3 underway, waiting for `mcp-aws` DNS |
 | P2 / P3 / P4 | ⬜ gated on both tracks |
 
 Both tracks are independent until P2. Work them in parallel if you can; if you must pick
@@ -33,7 +33,7 @@ then do Track A while AWS/DNS steps settle.
 
 ## Environment facts you'll need on day one
 
-- Run everything from `/Users/Kailor/Documents/Projects/handshake`. `npm run verify`
+- Run everything from `/Volumes/mac_studio_ssd/Projects/handshake`. `npm run verify`
   = tests + invariants; it gates every commit.
 - `keys/` is gitignored and exists only on this laptop: funding wallet keystore +
   password file + Clockchain token. Treasury `0x157a377e…dce` had ~2.09 testnet ETH on
@@ -43,14 +43,16 @@ then do Track A while AWS/DNS steps settle.
   `/opt/handshake/app`, service `handshake-relay`. Deploy = rsync + restart (exact
   commands in plan §A7).
 - AWS: account `570035913370`, IAM user `Yang`, CLI signed in, region us-west-2.
-- Clockchain MCP source: `github.com/thetangstr/clockchain-developer-tools` — clone it
-  (plan §B0); it is not on this machine yet.
+- Clockchain MCP source: `github.com/thetangstr/clockchain-developer-tools`; migration
+  branch/worktree is `codex/aws-migration` at
+  `/Users/Kailor/.config/superpowers/worktrees/clockchain-developer-tools/codex-aws-migration`.
 - Token mints: 10/hour/IP. Budget them around gates.
 
 ## Waiting on Yang (the only external dependencies)
 
-1. **GoDaddy visit #1** (plan §B3): add `mcp-aws.clockchain.network` A-record → the new
-   Elastic IP, and lower TTL on `mcp.clockchain.network` to 600. Ask once B2 yields the IP.
+1. **GoDaddy visit #1** (plan §B3): the production `mcp.clockchain.network` TTL is now
+   600. Still add `mcp-aws.clockchain.network` A-record → `34.209.199.138`; it does not
+   yet resolve publicly.
 2. **GoDaddy visit #2** (plan §B5): flip `mcp.clockchain.network` → Elastic IP, in an
    agreed no-demo window.
 3. **GCP stays billed/warm** through cutover and until a separate decommission decision.
@@ -73,6 +75,36 @@ then do Track A while AWS/DNS steps settle.
   `4408a633-55f2-438a-8824-7c46bc4db255`. Blocks: proposal `3080317`,
   acceptance `3080337`, acknowledgment `3080339`.
 
+- 2026-08-07 — B2's instance-role verification failed the plan's literal
+  `~/.aws`-absent check twice. We ran
+  `aws ssm get-parameter --name /clockchain/mcp/PING --region us-west-2` as
+  `ubuntu` on `i-0d6765d143da7e1ea`, expected the role-authenticated read to
+  leave `/home/ubuntu/.aws` absent, and saw AWS CLI v2.36.19 create only
+  `/home/ubuntu/.aws/cli/cache/session.db` (20 KiB). No `credentials` or
+  `config` file exists, and the live role policy is correctly limited to
+  `ssm:GetParameter` on `/clockchain/mcp/*`. Track B is paused at B2 while the
+  cache behavior is resolved without introducing long-lived credentials.
+  **Resolved the same day:** AWS CLI v2's own `session.db` cache was the only
+  writer. Bootstrap commit `11b9162` wraps the literal `aws` command with a
+  disposable HOME, removes it on exit, and performs a fail-closed PING read as
+  `ubuntu`. The same wrapper is live on `i-0d6765d143da7e1ea`; the exact PING
+  read passed through the instance role and `/home/ubuntu/.aws` remained absent
+  before and after. B2 is green.
+
+- 2026-08-07 — G0 attempt 1 stopped after both roles completed their ledger
+  work but before host verification. We ran a local relay on `127.0.0.1:18789`,
+  `npm run host`, `bin/payer.mjs`, and `bin/requestor.mjs` against session
+  `9938db62-818b-4b5f-b2a6-a5fbfde9f67a`; expected the payer to post
+  `anchor_report` and the host to fetch both evidence packages. The payer and
+  requestor registered agents `9431` / `9432` and anchored blocks `3083414`,
+  `3083435`, `3083437`, but the mailbox ended at `watching` with no
+  `anchor_report`. Reproducing the report locally showed `postNext` failed
+  `ENVELOPE_SIGNING`: board anchors contain numeric `blockTime`, while the
+  canonical message preimage permits strings only. The report's best-effort
+  catch intentionally hid that narration failure; the host therefore kept its
+  12-minute report wait instead of beginning evidence verification. No
+  certificate or verifier result was produced; the four processes were stopped.
+
 ## Evidence
 
 *(gate results land here: gate id, date, session id, block heights, anything a skeptic
@@ -81,6 +113,42 @@ would ask for)*
 - 2026-08-07 — certificate path (pre-G0 live run): session verified end-to-end, operator
   published certificate, requestor + independent third read both verified it against the
   descriptor key. Blocks 3057376 / 3057397 / 3057399, agents 9427 / 9428.
+
+- 2026-08-07 — **G0 passed** on local relay `127.0.0.1:18789`: host, payer kit,
+  and requestor kit completed session `1889569c-6eeb-4672-8d02-3843c9579ec1`.
+  Payer agent `9433` and requestor agent `9434` anchored proposal `3084524`,
+  acceptance `3084545`, and acknowledgment `3084547`. The host's independent
+  verifier printed `AUTHORIZED` with `paymentMoved: false`; both kits fetched,
+  verified, and saved the signed closing certificate without self-adjudicating.
+  The host then opened fresh session `4316566f-142f-48f1-bd5c-ee0ab87a949f`,
+  and both discovery/current and monitor/current followed it. Fresh post-gate
+  `npm run verify`: 908/908 tests and all structural invariants passed.
+
+- 2026-08-07 — required legacy compatibility run passed after G0. `npm run demo`
+  plus the requestor kit completed session
+  `7bab845d-6396-4d01-8b41-2994f436d9af`; payer agent `9435`, requestor agent
+  `9436`, blocks `3084711` / `3084732` / `3084734`. The independent verifier
+  printed `AUTHORIZED`, the requestor verified and saved the certificate, and
+  `paymentMoved` remained false.
+
+- 2026-08-07 — **G1 passed** on the deployed relay at `44.249.47.220:8080`.
+  The laptop host, remote payer kit, and laptop requestor kit completed session
+  `d7bfb225-b812-4c52-beb1-2970abc9e660`; payer agent `9437`, requestor agent
+  `9438`, blocks `3084959` / `3084968` / `3084982`. The host verifier printed
+  `AUTHORIZED`; both kits verified and saved the signed closing certificate;
+  `paymentMoved` remained false. The host reopened fresh session
+  `736784e4-0212-40ad-a6b0-e19d7536d085`, and discovery/current plus
+  monitor/current followed it. The rendered production monitor showed all three
+  receipts, both identities in technical evidence, no `[object Object]`, and the
+  verifier-owned verdict.
+
+- 2026-08-07 — G1 payer race passed in the same session. Concurrent remote
+  payer candidates published addresses `0xf3ac7090c2ddfd64cbfe0cd58cad588ad58a7866`
+  and `0x5ae346c88ba4372406c048b8a05c2171ee957f85`. The host funded only the
+  first address. The loser exited `ROLE_ALREADY_BOUND` on the seat-tagged
+  payer funding record, printed “Nothing was spent,” and never published
+  `party_ready` or registered an identity; only winner agent `9437` appears in
+  the session roster.
 
 ## Migration inventory
 
@@ -117,8 +185,10 @@ Inventory source: `clockchain-developer-tools` commit
 | Instance profile | `arn:aws:iam::570035913370:instance-profile/clockchain-mcp-instance-profile` |
 | Inline role policy | `clockchain-mcp-ssm-parameter-read`: `ssm:GetParameter` on `arn:aws:ssm:us-west-2:570035913370:parameter/clockchain/mcp/*` only |
 | SSM verification parameter | `/clockchain/mcp/PING` (`SecureString`, `alias/aws/ssm`) |
+| SSM application secrets | `/clockchain/mcp/CLOCKCHAIN_API_KEY`, `/clockchain/mcp/MCP_AUTH_TOKENS`, `/clockchain/mcp/MCP_TOKEN_SIGNING_SECRET` (`SecureString`; byte-for-byte hashes verified against their GCP Secret Manager sources without exposing values) |
 
 Bootstrap evidence: cloud-init completed; Docker, Compose, AWS CLI v2, git, and jq are
 installed; `docker run --rm hello-world` passed; the instance read the PING parameter
-through its role; `/home/ubuntu/.aws` is absent; IMDSv2 is required with hop limit 2.
-Provisioning source is `clockchain-developer-tools` commit `6da3fc9`.
+through its role; `/home/ubuntu/.aws` remains absent after the literal read; no long-lived
+AWS credentials or config file exists; IMDSv2 is required with hop limit 2. Provisioning
+sources are `clockchain-developer-tools` commits `610d519` and `11b9162`.

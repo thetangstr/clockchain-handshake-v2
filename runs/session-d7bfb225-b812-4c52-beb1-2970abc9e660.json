@@ -1,0 +1,204 @@
+{
+  "descriptorEnvelope": {
+    "descriptor": {
+      "amountOptions": [
+        {
+          "currency": "USD",
+          "value": "100"
+        }
+      ],
+      "chainId": "11155111",
+      "expirySeconds": "600",
+      "mandateDigest": "48f74f4a88c54b8fa8766dcc2b71c51da8dd75b749e65129eea59b68c735b602",
+      "namespace": "cbv1",
+      "payee": {
+        "address": "0x494fd45e55bc374fcc1d39fe2161896c8951249e",
+        "agentId": "9438",
+        "displayName": "Requestor",
+        "role": "payee"
+      },
+      "payer": {
+        "address": "0xf3ac7090c2ddfd64cbfe0cd58cad588ad58a7866",
+        "agentId": "9437",
+        "displayName": "Payer",
+        "role": "payer"
+      },
+      "paymentMoved": false,
+      "promptSha256": "f389b1c68166d9bf166f9a28ab8dde67c647fa64a2d243e067769b2a50f90823",
+      "protocol": "clockchain.bilateral-authorization/v1",
+      "protocolVersion": "1",
+      "registry": "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+      "repositorySha": "0000000000000000000000000000000000000000",
+      "requestDigest": "8eda0745c7752da95a9321a7dbe77b6c349105e6dc0a29c8eb23f9b3b4b401b2",
+      "schema": "clockchain.bilateral-session-descriptor/v2",
+      "sessionId": "065f006f548741238eb2ddcdaf9245a0",
+      "settlement": "not-executed"
+    },
+    "operator": {
+      "algorithm": "ed25519",
+      "keyId": "bilateral-demo-2026-07-28",
+      "publicKey": "7TabxyuoJvQ+qRkpZWEjTevvgs5iULbuf728kb3U+kA=",
+      "signature": "fXQmNCsgi++tS9bcxvmuZwOYOyWpsXRkI0gz8MLHdXPrler7C+w/TT72IjW5o9XuHFbZQnbG0kytVDgKxSDzDQ=="
+    }
+  },
+  "mandateEnvelope": {
+    "mandate": {
+      "amount": {
+        "currency": "USD",
+        "value": "100"
+      },
+      "expiresAtMs": "1786170685979",
+      "intakeDigest": "6a2ef3b9e4f0f32b18b297b785871d7ac2b54a51e1b1b8e257cf9d4dd279b42c",
+      "intakeRequestId": "9a9f674f-3c6b-4c21-9221-9ad5223b0d17",
+      "invoiceReferencePrefix": "INV-",
+      "issuedAtMs": "1786167985979",
+      "payee": {
+        "address": "0x494fd45e55bc374fcc1d39fe2161896c8951249e",
+        "agentId": "9438"
+      },
+      "payer": {
+        "address": "0xf3ac7090c2ddfd64cbfe0cd58cad588ad58a7866",
+        "agentId": "9437"
+      },
+      "paymentMoved": false,
+      "protocol": "clockchain.bilateral-authorization/v1",
+      "purpose": "Invoice settlement",
+      "releaseId": "handshake-v6",
+      "repositorySha": "0000000000000000000000000000000000000000",
+      "requestEndpoint": "/v1/sessions/065f006f-5487-4123-8eb2-ddcdaf9245a0/payment-requests",
+      "schema": "clockchain.bilateral-payer-mandate/v1",
+      "sessionId": "065f006f-5487-4123-8eb2-ddcdaf9245a0",
+      "subjectRun": "stakeholder"
+    },
+    "schema": "clockchain.bilateral-payer-mandate-envelope/v1",
+    "signature": {
+      "address": "0xf3ac7090c2ddfd64cbfe0cd58cad588ad58a7866",
+      "algorithm": "eip191",
+      "value": "0xbab0a49d53d6b76a8a3628f9223785877ecd4d36d8be2b71995fc442de9901e96b5aa34aca274e00520452da3b99494b81091c2b94c573a877e12723ec06ef271b"
+    }
+  },
+  "requestEnvelope": {
+    "request": {
+      "amount": {
+        "currency": "USD",
+        "value": "100"
+      },
+      "createdAtMs": "1786167985979",
+      "expiresAtMs": "1786170685979",
+      "intakeDigest": "6a2ef3b9e4f0f32b18b297b785871d7ac2b54a51e1b1b8e257cf9d4dd279b42c",
+      "intakeRequestId": "9a9f674f-3c6b-4c21-9221-9ad5223b0d17",
+      "invoiceReference": "INV-0001",
+      "mandateDigest": "48f74f4a88c54b8fa8766dcc2b71c51da8dd75b749e65129eea59b68c735b602",
+      "payee": {
+        "address": "0x494fd45e55bc374fcc1d39fe2161896c8951249e",
+        "agentId": "9438"
+      },
+      "payer": {
+        "address": "0xf3ac7090c2ddfd64cbfe0cd58cad588ad58a7866",
+        "agentId": "9437"
+      },
+      "paymentMoved": false,
+      "protocol": "clockchain.bilateral-authorization/v1",
+      "purpose": "Invoice settlement",
+      "releaseId": "handshake-v6",
+      "repositorySha": "0000000000000000000000000000000000000000",
+      "requestId": "12188d74-d78e-4d34-87e9-aa8e4c38915b",
+      "schema": "clockchain.bilateral-payment-request/v1",
+      "sessionId": "065f006f-5487-4123-8eb2-ddcdaf9245a0",
+      "subjectRun": "stakeholder"
+    },
+    "schema": "clockchain.bilateral-payment-request-envelope/v1",
+    "signature": {
+      "address": "0x494fd45e55bc374fcc1d39fe2161896c8951249e",
+      "algorithm": "eip191",
+      "value": "0xc6c747b064b68456601331039fdb30ece0e4fcb72872b23b6e001adf1d0f7f6e06fcd70ae6297580cbc0fba4a733b5378b95a760c8fd9d8324c7fff9379622301c"
+    }
+  },
+  "repositoryPublicKey": "7TabxyuoJvQ+qRkpZWEjTevvgs5iULbuf728kb3U+kA=",
+  "payerDirectory": "/var/folders/sn/6l8ydbhs2zz4tq9906g3f3d40000gn/T/handshake-host-3h7J1C/payer",
+  "payeeDirectory": "/var/folders/sn/6l8ydbhs2zz4tq9906g3f3d40000gn/T/handshake-host-3h7J1C/payee",
+  "outcome": "AUTHORIZED",
+  "anchors": [
+    {
+      "anchoredHash": "0f00532393812fc761d28831c82540f8f2cd72a8a7b697da4b24c1aecd445c44",
+      "blockHeight": "3084959",
+      "blockTimeRaw": "2026-08-08T05:46:40.063354176Z",
+      "digest": "0f00532393812fc761d28831c82540f8f2cd72a8a7b697da4b24c1aecd445c44",
+      "kind": "proposal",
+      "ledgerId": "9208c696-905b-44ce-9fb5-e5d366a2cf86",
+      "upperBoundMs": null
+    },
+    {
+      "anchoredHash": "9db5d221d17019df7ff23870bdad9ed0b275046bfc5b710952cbf763d3cb0496",
+      "blockHeight": "3084968",
+      "blockTimeRaw": "2026-08-08T05:46:49.278201048Z",
+      "digest": "9db5d221d17019df7ff23870bdad9ed0b275046bfc5b710952cbf763d3cb0496",
+      "kind": "acceptance",
+      "ledgerId": "446bc71a-9e60-487a-a506-85459f6e7676",
+      "upperBoundMs": "1786168010300"
+    },
+    {
+      "anchoredHash": "ef7ea0d7dd509f135f78200fa1c8a4923e84782cb3cb6630057a523b9f42b1fe",
+      "blockHeight": "3084982",
+      "blockTimeRaw": "2026-08-08T05:47:03.604924524Z",
+      "digest": "ef7ea0d7dd509f135f78200fa1c8a4923e84782cb3cb6630057a523b9f42b1fe",
+      "kind": "acknowledgment",
+      "ledgerId": "b4be163c-1738-4d1b-ac8c-2387c1a2f5a1",
+      "upperBoundMs": "1786168024628"
+    }
+  ],
+  "resultEnvelope": {
+    "result": {
+      "anchors": [
+        {
+          "blockHeight": "3084959",
+          "blockTimeRaw": "2026-08-08T05:46:40.063354176Z",
+          "digest": "0f00532393812fc761d28831c82540f8f2cd72a8a7b697da4b24c1aecd445c44",
+          "kind": "proposal",
+          "ledgerId": "9208c696-905b-44ce-9fb5-e5d366a2cf86"
+        },
+        {
+          "blockHeight": "3084968",
+          "blockTimeRaw": "2026-08-08T05:46:49.278201048Z",
+          "digest": "9db5d221d17019df7ff23870bdad9ed0b275046bfc5b710952cbf763d3cb0496",
+          "kind": "acceptance",
+          "ledgerId": "446bc71a-9e60-487a-a506-85459f6e7676"
+        },
+        {
+          "blockHeight": "3084982",
+          "blockTimeRaw": "2026-08-08T05:47:03.604924524Z",
+          "digest": "ef7ea0d7dd509f135f78200fa1c8a4923e84782cb3cb6630057a523b9f42b1fe",
+          "kind": "acknowledgment",
+          "ledgerId": "b4be163c-1738-4d1b-ac8c-2387c1a2f5a1"
+        }
+      ],
+      "disclaimer": "Single-validator testnet: anchored and independently re-verifiable; not mainnet, court-grade, consensus-secure, or trustless.",
+      "issuedAtMs": "1786168040690",
+      "outcome": "AUTHORIZED",
+      "parties": {
+        "payee": {
+          "address": "0x494fd45e55bc374fcc1d39fe2161896c8951249e",
+          "agentId": "9438",
+          "reference": "eip155:11155111:0x8004a818bfb912233c491871b3d84c89a494bd9e:9438"
+        },
+        "payer": {
+          "address": "0xf3ac7090c2ddfd64cbfe0cd58cad588ad58a7866",
+          "agentId": "9437",
+          "reference": "eip155:11155111:0x8004a818bfb912233c491871b3d84c89a494bd9e:9437"
+        }
+      },
+      "paymentMoved": false,
+      "schema": "clockchain.handshake-result/v1",
+      "sessionDigest": "cce44997ada21eb57641da452b58401091d3f802ef280a907efb373e4348a96f",
+      "sessionId": "d7bfb225-b812-4c52-beb1-2970abc9e660",
+      "subjectRun": "stakeholder"
+    },
+    "signer": {
+      "algorithm": "ed25519",
+      "keyId": "bilateral-demo-2026-07-28",
+      "publicKey": "7TabxyuoJvQ+qRkpZWEjTevvgs5iULbuf728kb3U+kA=",
+      "signature": "Wmx+zR8rFZbKxjA5fkq5Hm+FGabcnTQuPOw54NI5eYavyboHqGB4nOT8F0NnOZuSYgcUsnuPH+Mj22pu5TIyBA=="
+    }
+  },
+  "paymentMoved": false
+}
