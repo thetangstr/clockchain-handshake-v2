@@ -1,6 +1,6 @@
 # Handoff — two-agent build + AWS migration
 
-**As of:** 2026-08-07 · **Branch:** `codex/handshake-build` · **910 tests pass and all
+**As of:** 2026-08-08 · **Branch:** `codex/handshake-build` · **910 tests pass and all
 structural invariants hold.** The previous handoff (still valid for context, landmines §4, known
 gaps §5, and the stakeholder-prompt lesson §6) is archived at
 [docs/handoff-2026-08-04.md](docs/handoff-2026-08-04.md).
@@ -24,7 +24,7 @@ Context behind the plan, if you need it: [docs/two-agent-build.md](docs/two-agen
 | Closing certificate (`src/core/result.mjs`, relay result endpoint, both parties fetch+verify) | ✅ shipped `4d096f1`, live-verified (blocks 3057376/3057397/3057399, agents 9427/9428) |
 | Role-aware seating (`roleAlreadySeated`, unblocks two kits per session) | ✅ shipped `f80aa7a` |
 | Track A (A1–A8): host severance + payer kit + gates G0/G1 | ✅ complete — G0 and G1 live gates passed |
-| Track B (B0–B6): MCP → AWS migration, gate GM | 🟨 B0–B2 complete; B3 service deployed, public TLS/B4 waiting for `mcp-aws` DNS |
+| Track B (B0–B6): MCP → AWS migration, gate GM | 🟨 B0–B3 complete; B4 read parity passed, write parity waiting for node-pool recovery |
 | P2 / P3 / P4 | ⬜ gated on both tracks |
 
 Both tracks are independent until P2. Work them in parallel if you can; if you must pick
@@ -48,11 +48,10 @@ then do Track A while AWS/DNS steps settle.
   `/Users/Kailor/.config/superpowers/worktrees/clockchain-developer-tools/codex-aws-migration`.
 - Token mints: 10/hour/IP. Budget them around gates.
 
-## Waiting on Yang (the only external dependencies)
+## External dependencies
 
-1. **GoDaddy visit #1** (plan §B3): the production `mcp.clockchain.network` TTL is now
-   600. Still add `mcp-aws.clockchain.network` A-record → `34.209.199.138`; it does not
-   yet resolve publicly.
+1. **GoDaddy visit #1 complete** (plan §B3): `mcp-aws.clockchain.network` now resolves
+   publicly to `34.209.199.138`; the production record remains on GCP at TTL 600.
 2. **GoDaddy visit #2** (plan §B5): flip `mcp.clockchain.network` → Elastic IP, in an
    agreed no-demo window.
 3. **GCP stays billed/warm** through cutover and until a separate decommission decision.
@@ -121,6 +120,20 @@ then do Track A while AWS/DNS steps settle.
   Elastic IP and redirects that hostname to HTTPS, then ACME reports the missing
   A/AAAA record. No certificate attempt was made for the production hostname.
   Add the waiting A record to resume B3 and run B4; do not change production DNS.
+  **Resolved 2026-08-08:** the A record was added through GoDaddy's API, both
+  authoritative and public resolvers returned `34.209.199.138`, and Caddy
+  obtained the test-host certificate after its pre-DNS ACME backoff was reset.
+
+- 2026-08-08 — B4 live parity passed `/health`, both token mints and quota
+  movement, `get_timestamp`, and known-height `get_block`. The first AWS
+  `log_action` then returned a tool error. The MCP container's direct `/getTime`
+  read showed the shared Clockchain node at `0.0%` participation, so the
+  truthful-anchoring guard refused the write before `/log`; an exact
+  `searchAsset` reconciliation for `handshake-aws-parity-20260808-001` returned
+  zero records. Twenty fresh condition polls over five minutes stayed at 0%
+  while block height advanced from `3089947` to `3090227`. No retry or
+  `allow_degraded` override was attempted. Resume B4 only after participation is
+  greater than zero, then rerun the same idempotent gate.
 
 ## Evidence
 
@@ -178,6 +191,13 @@ would ask for)*
   HTTP request returned Caddy's HTTPS redirect, proving the security-group and
   listener path before DNS.
 
+- 2026-08-08 — **B3 complete.** GoDaddy API write created
+  `mcp-aws.clockchain.network A 34.209.199.138` at TTL 600 without changing the
+  production record. Both GoDaddy nameservers plus Cloudflare and Google public
+  resolvers returned the EIP. `https://mcp-aws.clockchain.network/health`
+  returned `{"status":"ok"}` with a Let's Encrypt certificate whose only SAN
+  is the test hostname (valid through 2026-11-06).
+
 ## Migration inventory
 
 *(plan §B0's table gets filled in here — every row, even when the answer is "none")*
@@ -221,7 +241,7 @@ through its role; `/home/ubuntu/.aws` remains absent after the literal read; no 
 AWS credentials or config file exists; IMDSv2 is required with hop limit 2. Provisioning
 sources are `clockchain-developer-tools` commits `610d519` and `11b9162`.
 
-### B3 deployed stack (2026-08-07)
+### B3 deployed stack (2026-08-08)
 
 | Item | Value / evidence |
 |---|---|
@@ -230,5 +250,5 @@ sources are `clockchain-developer-tools` commits `610d519` and `11b9162`.
 | Service | `clockchain-mcp.service`: active, `Result=success`, `ExecMainStatus=0` |
 | Containers | `clockchain-mcp-mcp-1` healthy; `clockchain-mcp-caddy-1` running |
 | Application listeners / SSH | Caddy publishes 80/443; SSH 22 remains source-restricted by the locked security group; no host listener on 8080 |
-| Public pre-DNS probe | `http://mcp-aws.clockchain.network/health` forced to the EIP returns `308` to HTTPS |
-| Remaining B3 gate | Public A record and ACME certificate for `mcp-aws.clockchain.network` |
+| Public HTTPS | `https://mcp-aws.clockchain.network/health` returns `{"status":"ok"}` with a valid hostname-only Let's Encrypt certificate |
+| DNS | GoDaddy authoritative nameservers and public resolvers return `34.209.199.138`; production remains `136.68.167.2` at TTL 600 |
