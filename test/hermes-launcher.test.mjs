@@ -486,6 +486,49 @@ test("mints two distinct tokens only after both pre-provision manifests exist an
   assert.deepEqual(h.calls.cleaned.sort(), [join(root, "roles", "payer"), join(root, "roles", "requestor")].sort());
 });
 
+test("requestor prepare failure removes payer clean room before retaining sanitized evidence", async (t) => {
+  const root = await tempRoot(t);
+  const h = harness(root, t);
+  h.options.prepareHermesCleanRoom = async ({ role }) => {
+    if (role === "requestor") throw new Error("simulated requestor prepare failure");
+    const room = await makePrepared(root, role);
+    h.calls.prepared.push({ role, room });
+    return room;
+  };
+
+  await assert.rejects(runHermesDemo(h.options), /Hermes demo failed safely/);
+
+  assert.deepEqual(h.calls.prepared.map((entry) => entry.role), ["payer"]);
+  assert.deepEqual(h.calls.minted, []);
+  assert.deepEqual(h.calls.credentialReads, []);
+  assert.deepEqual(h.calls.provisioned, []);
+  assert.deepEqual(h.calls.spawns, []);
+  assert.deepEqual(h.calls.cleaned.sort(), [join(root, "roles", "payer"), join(root, "roles", "requestor")].sort());
+  await assert.rejects(readdir(join(root, "roles", "payer")), /ENOENT/);
+  await assert.rejects(readdir(join(root, "roles", "requestor")), /ENOENT/);
+
+  const retained = await readFile(join(root, "evidence", "failure.json"), "utf8");
+  assert.equal(retained.includes(root), false);
+  assert.equal(retained.includes(TOKEN_A), false);
+  assert.equal(retained.includes(TOKEN_B), false);
+  assert.equal(retained.includes(INFERENCE_SECRET), false);
+  assert.equal(retained.includes("simulated requestor prepare failure"), false);
+  const evidence = JSON.parse(retained);
+  assert.equal(evidence.phase, "prepare");
+  assert.deepEqual(evidence.cleanup, { payerRemoved: true, requestorRemoved: true });
+  assert.equal(evidence.agents.payer.reason, "not_started");
+  assert.equal(evidence.agents.requestor.reason, "not_started");
+  assert.equal(evidence.cleanRooms.payer.preProvision.role, "payer");
+  assert.equal(evidence.cleanRooms.payer.preProvision.tokensPresent, false);
+  assert.equal(evidence.cleanRooms.requestor.preProvision, null);
+  assert.equal(evidence.cleanRooms.payer.prePrompt, null);
+  assert.equal(evidence.cleanRooms.requestor.prePrompt, null);
+  const checkpoint = JSON.parse(await readFile(join(root, "evidence", "checkpoint.json"), "utf8"));
+  assert.equal(checkpoint.phase, "prepare");
+  assert.equal(checkpoint.agents.payer.status, "not_started");
+  assert.equal(checkpoint.agents.requestor.status, "not_started");
+});
+
 test("-z receives prompt text, both prompts are built before spawn, and both children are spawned before awaiting", async (t) => {
   const root = await tempRoot(t);
   const h = harness(root, t);

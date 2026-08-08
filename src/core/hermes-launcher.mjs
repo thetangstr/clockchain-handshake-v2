@@ -1005,6 +1005,7 @@ export async function runHermesDemo(options = {}) {
     const provisionHermesCleanRoom = options.provisionHermesCleanRoom ?? loaded.provisionHermesCleanRoom;
     phase = "prepare";
     prepared = {};
+    cleanupState = { cleanRoom, keepCleanrooms, localDebug, provisioned: prepared, runRoot: cleanRunRoot };
     for (const cleanRole of ROLES) {
       prepared[cleanRole] = await validatePrepared({
         role: cleanRole,
@@ -1019,7 +1020,6 @@ export async function runHermesDemo(options = {}) {
         runRoot: cleanRunRoot,
       });
     }
-    cleanupState = { cleanRoom, keepCleanrooms, localDebug, provisioned: prepared, runRoot: cleanRunRoot };
     if (dryRun === true) {
       return Object.freeze({
         dryRun: true,
