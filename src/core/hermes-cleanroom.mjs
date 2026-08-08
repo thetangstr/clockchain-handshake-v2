@@ -54,6 +54,8 @@ const PROVIDER_KEY_NAMES = Object.freeze(["KIMI_API_KEY", "KIMI_CODING_API_KEY"]
 const SECRET_KEY_PATTERN = /(?:KEY|TOKEN|SECRET|AUTH|PASSWORD|CREDENTIAL)/i;
 const CLOCKCHAIN_TOKEN_PATTERN = /^cc_([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{16,})$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const CLOCKCHAIN_DEMO_TOKEN_KEYS = Object.freeze(["exp", "iat", "jti", "tier", "v"]);
+const CLOCKCHAIN_DEMO_TOKEN_KEYS_WITH_SUB = Object.freeze(["exp", "iat", "jti", "sub", "tier", "v"]);
 const ABSOLUTE_PATH_FRAGMENT =
   /(?:^|[\s"'=:,(])\/(?:Users|Volumes|private|tmp|var|etc|opt|home)\/[A-Za-z0-9._~@%+,:=-][A-Za-z0-9._~@%+/,:=-]*/;
 const SECRET_STRING_PATTERNS = Object.freeze([
@@ -138,9 +140,15 @@ async function assertPrivateDirectory(path) {
   if (process.platform !== "win32" && (stats.mode & 0o777) !== 0o700) fail();
 }
 
+async function assertExistingDirectoryNoSymlink(path) {
+  const stats = await lstat(path);
+  if (!stats.isDirectory() || stats.isSymbolicLink()) fail();
+}
+
 async function createPrivateDirectory(path) {
   const parent = dirname(path);
   if ((await lstatOptional(parent)) === undefined) await createPrivateDirectory(parent);
+  else await assertExistingDirectoryNoSymlink(parent);
   await mkdir(path, { mode: 0o700, recursive: false });
   if (process.platform !== "win32") await chmod(path, 0o700);
   await assertPrivateDirectory(path);
@@ -548,7 +556,7 @@ function assertSecretString(value) {
   return value;
 }
 
-function decodeJti(token) {
+function parseClockchainDemoTokenPayload(token) {
   const match = CLOCKCHAIN_TOKEN_PATTERN.exec(assertSecretString(token));
   if (match === null) fail();
   let payload;
@@ -557,11 +565,16 @@ function decodeJti(token) {
   } catch {
     fail();
   }
+  const keys = Object.keys(payload ?? {}).sort();
+  const allowedKeys = Object.hasOwn(payload ?? {}, "sub")
+    ? CLOCKCHAIN_DEMO_TOKEN_KEYS_WITH_SUB
+    : CLOCKCHAIN_DEMO_TOKEN_KEYS;
   if (
     payload === null ||
     typeof payload !== "object" ||
+    JSON.stringify(keys) !== JSON.stringify(allowedKeys) ||
     payload.v !== 1 ||
-    payload.aud !== "demo" ||
+    payload.tier !== "demo" ||
     typeof payload.jti !== "string" ||
     !UUID_PATTERN.test(payload.jti) ||
     !Number.isSafeInteger(payload.iat) ||
@@ -575,11 +588,18 @@ function decodeJti(token) {
   ) {
     fail();
   }
-  return payload.jti;
+  return Object.freeze({
+    exp: payload.exp,
+    iat: payload.iat,
+    jti: payload.jti,
+    sub: payload.sub,
+    tier: "demo",
+    v: 1,
+  });
 }
 
-function fingerprintToken(token) {
-  return createHash("sha256").update(`jti:${decodeJti(token)}`).digest("hex");
+export function fingerprintClockchainDemoToken(token) {
+  return createHash("sha256").update(`jti:${parseClockchainDemoTokenPayload(token).jti}`).digest("hex");
 }
 
 function buildConfig(paths) {
@@ -910,7 +930,7 @@ export async function provisionHermesCleanRoom({
     const providerSecret = assertSecretString(inferenceKeyValue ?? providerKeyValue);
     const mcpToken = assertSecretString(clockchainMcpToken);
     if (peerClockchainMcpToken !== undefined && peerClockchainMcpToken === mcpToken) fail();
-    const principalFingerprint = fingerprintToken(mcpToken);
+    const principalFingerprint = fingerprintClockchainDemoToken(mcpToken);
     const paths = preparedRoom.paths;
     const config = buildConfig(paths);
     configPath = paths.config;

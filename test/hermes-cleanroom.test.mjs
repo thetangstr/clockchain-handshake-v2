@@ -18,6 +18,7 @@ import { test } from "node:test";
 
 import {
   assertPublicCleanRoomEvidence,
+  fingerprintClockchainDemoToken,
   prepareHermesCleanRoom,
   provisionHermesCleanRoom,
 } from "../src/core/hermes-cleanroom.mjs";
@@ -54,11 +55,11 @@ const UUIDS = Object.freeze({
 
 function clockchainToken(jti) {
   const payload = {
-    aud: "demo",
     exp: 2_000_000_000,
     iat: 1_700_000_000,
     jti,
     sub: "optional-public-subject",
+    tier: "demo",
     v: 1,
   };
   return `cc_${Buffer.from(JSON.stringify(payload)).toString("base64url")}.hmacsignature000000`;
@@ -384,6 +385,15 @@ test("prepare rejects unexpected profile entries, symlinks, preexisting content,
     prepareHermesCleanRoom({ ...basePrepare(root, install), role: "payer", runRoot: symlinkRun }),
     /Clean room preparation failed safely/,
   );
+  const symlinkParentTarget = join(root, "symlink-parent-target");
+  await mkdir(symlinkParentTarget, { mode: 0o700 });
+  const symlinkParent = join(root, "symlink-parent");
+  await symlink(symlinkParentTarget, symlinkParent);
+  await assert.rejects(
+    prepareHermesCleanRoom({ ...basePrepare(root, install), role: "payer", runRoot: join(symlinkParent, "run") }),
+    /Clean room preparation failed safely/,
+  );
+  await assert.rejects(readdir(join(symlinkParentTarget, "run")), /ENOENT/);
   const dirtyRun = join(root, "dirty-run");
   await mkdir(join(dirtyRun, "roles", "payer"), { recursive: true, mode: 0o700 });
   await writeFile(join(dirtyRun, "roles", "payer", "old-session"), "prior");
@@ -430,10 +440,13 @@ test("provision rejects bad provider names, malformed tokens, equal peer tokens,
     /Clean room preparation failed safely/,
   );
   for (const payload of [
-    { aud: "prod", exp: 2_000_000_000, iat: 1_700_000_000, jti: UUIDS.payer, v: 1 },
-    { aud: "demo", exp: 2_000_000_000, iat: 1_700_000_000, jti: "not-a-uuid", v: 1 },
-    { aud: "demo", exp: 1_700_000_000, iat: 1_700_000_000, jti: UUIDS.payer, v: 1 },
-    { aud: "demo", exp: 2_000_000_000, iat: 1_700_000_000, jti: UUIDS.payer, v: 2 },
+    { aud: "demo", exp: 2_000_000_000, iat: 1_700_000_000, jti: UUIDS.payer, v: 1 },
+    { exp: 2_000_000_000, iat: 1_700_000_000, jti: UUIDS.payer, tier: "prod", v: 1 },
+    { exp: 2_000_000_000, iat: 1_700_000_000, jti: "not-a-uuid", tier: "demo", v: 1 },
+    { exp: 1_700_000_000, iat: 1_700_000_000, jti: UUIDS.payer, tier: "demo", v: 1 },
+    { exp: 2_000_000_000, iat: 1_700_000_000, jti: UUIDS.payer, tier: "demo", v: 2 },
+    { extra: true, exp: 2_000_000_000, iat: 1_700_000_000, jti: UUIDS.payer, tier: "demo", v: 1 },
+    { exp: 2_000_000_000, iat: 1_700_000_000, jti: UUIDS.payer, sub: "", tier: "demo", v: 1 },
   ]) {
     await assert.rejects(
       provisionHermesCleanRoom({
@@ -477,6 +490,20 @@ test("provision rejects bad provider names, malformed tokens, equal peer tokens,
         shutdownCalled: true,
       }),
     }),
+    /Clean room preparation failed safely/,
+  );
+});
+
+test("Clockchain demo token fingerprint uses the real tier payload shape and rejects aud", () => {
+  assert.equal(fingerprintClockchainDemoToken(clockchainToken(UUIDS.payer)), jtiFingerprint(UUIDS.payer));
+  assert.throws(
+    () => fingerprintClockchainDemoToken(clockchainTokenWithPayload({
+      aud: "demo",
+      exp: 2_000_000_000,
+      iat: 1_700_000_000,
+      jti: UUIDS.payer,
+      v: 1,
+    })),
     /Clean room preparation failed safely/,
   );
 });
