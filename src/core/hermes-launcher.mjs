@@ -72,6 +72,22 @@ const EXPECTED_USAGE_PROVIDER = "minimax-cn";
 const COST_STATUS_VALUES = Object.freeze([null, "estimated", "exact", "unknown"]);
 const COST_SOURCE_VALUES = Object.freeze([null, "none", "official_docs_snapshot", "subagent"]);
 const SERVICE_TIER_VALUES = Object.freeze([null, "", "default", "flex", "priority"]);
+const CHECKPOINT_PHASES = Object.freeze([
+  "inputs",
+  "kit",
+  "services",
+  "prepare",
+  "credential",
+  "mint",
+  "provision",
+  "launch",
+  "agents",
+  "relay",
+  "usage",
+  "post_run",
+  "cleanup",
+  "evidence",
+]);
 
 function fail() {
   throw new Error(SAFE_ERROR);
@@ -875,6 +891,36 @@ async function cleanupSnapshot(runRoot) {
   return Object.freeze(cleanup);
 }
 
+function checkpointAgent(outcome) {
+  if (outcome === undefined) {
+    return Object.freeze({ reason: "not_started", result: null, status: "not_started" });
+  }
+  const reason = typeof outcome.diagnostic?.reason === "string" && /^[a-z_]{1,32}$/.test(outcome.diagnostic.reason)
+    ? outcome.diagnostic.reason
+    : "unknown";
+  if (outcome.ok !== true) {
+    return Object.freeze({ reason, result: null, status: "failed" });
+  }
+  return Object.freeze({ reason, result: outcome.result, status: "completed" });
+}
+
+function failureCheckpoint({ childOutcomes, cleanup, phase, runId: cleanRunId, timedOut }) {
+  const outcomes = Object.fromEntries(childOutcomes.map((entry) => [entry.role, entry]));
+  const checkpoint = Object.freeze({
+    agents: Object.freeze(Object.fromEntries(ROLES.map((cleanRole) => [cleanRole, checkpointAgent(outcomes[cleanRole])]))),
+    cleanup: Object.freeze({
+      payerRemoved: cleanup?.payerRemoved === true,
+      requestorRemoved: cleanup?.requestorRemoved === true,
+    }),
+    paymentMoved: false,
+    phase: CHECKPOINT_PHASES.includes(phase) ? phase : "unknown",
+    runId: cleanRunId,
+    schema: "clockchain.hermes-demo-checkpoint/v1",
+    timedOut: timedOut === true,
+  });
+  return checkpoint;
+}
+
 export async function runHermesDemo(options = {}) {
   const children = [];
   let agentTimedOut = false;
@@ -1146,8 +1192,22 @@ export async function runHermesDemo(options = {}) {
     }
   }
 
+  let checkpointEvidencePath = null;
   let failureEvidencePath = null;
   if (failureError !== null && cleanRunRoot !== undefined && cleanRunId !== undefined && runRootReady === true) {
+    try {
+      const checkpoint = failureCheckpoint({
+        childOutcomes,
+        cleanup: cleanupReport,
+        phase,
+        runId: cleanRunId,
+        timedOut: agentTimedOut,
+      });
+      checkpointEvidencePath = join(cleanRunRoot, "evidence", "checkpoint.json");
+      await finalizeEvidence({ canaries: evidenceCanaries, evidence: checkpoint, evidencePath: checkpointEvidencePath });
+    } catch {
+      checkpointEvidencePath = null;
+    }
     try {
       const outcomes = Object.fromEntries(childOutcomes.map((entry) => [entry.role, entry]));
       const agents = Object.freeze(Object.fromEntries(ROLES.map((cleanRole) => {
@@ -1186,9 +1246,13 @@ export async function runHermesDemo(options = {}) {
       failureEvidencePath = null;
     }
   }
-  if (failureEvidencePath !== null) {
+  const retainedFailurePath = failureEvidencePath ?? checkpointEvidencePath;
+  if (retainedFailurePath !== null) {
     const error = new Error(SAFE_ERROR);
-    Object.defineProperty(error, "failureEvidencePath", { value: failureEvidencePath });
+    Object.defineProperty(error, "failureEvidencePath", { value: retainedFailurePath });
+    if (checkpointEvidencePath !== null) {
+      Object.defineProperty(error, "checkpointEvidencePath", { value: checkpointEvidencePath });
+    }
     throw error;
   }
   sanitize(failureError);

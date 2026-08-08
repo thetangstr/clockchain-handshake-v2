@@ -636,6 +636,74 @@ test("relay verified result is authoritative for digest, parties, receipts, outc
   }
 });
 
+test("post-agent validation failures retain their safe phase after cleanup", async (t) => {
+  const cases = [
+    {
+      expectedPhase: "relay",
+      options: { outputs: { payer: terminal("payer", { certificateDigest: "e".repeat(64) }) } },
+    },
+    {
+      expectedPhase: "usage",
+      options: { usage: { payer: hermesUsage({ model: "other" }) } },
+    },
+    {
+      expectedPhase: "post_run",
+      options: { extra: { inspectPostRun: async () => { throw new Error("simulated post-run rejection"); } } },
+    },
+  ];
+  for (const entry of cases) {
+    const root = await tempRoot(t);
+    const h = harness(root, t, entry.options);
+    let failure;
+    try {
+      await runHermesDemo(h.options);
+    } catch (error) {
+      failure = error;
+    }
+    const evidencePath = join(root, "evidence", "failure.json");
+    assert.equal(failure?.failureEvidencePath, evidencePath);
+    const evidence = JSON.parse(await readFile(evidencePath, "utf8"));
+    assert.equal(evidence.phase, entry.expectedPhase);
+    assert.deepEqual(evidence.cleanup, { payerRemoved: true, requestorRemoved: true });
+  }
+});
+
+test("post-agent checkpoint survives when rich failure evidence is rejected", async (t) => {
+  const root = await tempRoot(t);
+  const h = harness(root, t, {
+    manifestOverrides: {
+      payer: { prePrompt: { opaqueProbe: INFERENCE_SECRET } },
+    },
+    outputs: {
+      payer: terminal("payer", { certificateDigest: "e".repeat(64) }),
+    },
+  });
+
+  let failure;
+  try {
+    await runHermesDemo(h.options);
+  } catch (error) {
+    failure = error;
+  }
+
+  const checkpointPath = join(root, "evidence", "checkpoint.json");
+  assert.match(failure?.message ?? "", /Hermes demo failed safely/);
+  assert.equal(failure?.failureEvidencePath, checkpointPath);
+  assert.equal(failure?.checkpointEvidencePath, checkpointPath);
+  const retained = await readFile(checkpointPath, "utf8");
+  assert.equal(retained.includes(INFERENCE_SECRET), false);
+  assert.equal(retained.includes(root), false);
+  const checkpoint = JSON.parse(retained);
+  assert.equal(checkpoint.schema, "clockchain.hermes-demo-checkpoint/v1");
+  assert.equal(checkpoint.phase, "relay");
+  assert.equal(checkpoint.paymentMoved, false);
+  assert.deepEqual(checkpoint.cleanup, { payerRemoved: true, requestorRemoved: true });
+  assert.equal(checkpoint.agents.payer.status, "completed");
+  assert.equal(checkpoint.agents.payer.result.certificateDigest, "e".repeat(64));
+  assert.equal(checkpoint.agents.requestor.status, "completed");
+  assert.equal(checkpoint.agents.requestor.result.certificateDigest, CERT_DIGEST);
+});
+
 test("checksum-style output addresses are normalized for comparison and evidence", async (t) => {
   const root = await tempRoot(t);
   const relayResult = certificateResult({
