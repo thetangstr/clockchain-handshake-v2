@@ -24,8 +24,8 @@ Context behind the plan, if you need it: [docs/two-agent-build.md](docs/two-agen
 | Closing certificate (`src/core/result.mjs`, relay result endpoint, both parties fetch+verify) | ✅ shipped `4d096f1`, live-verified (blocks 3057376/3057397/3057399, agents 9427/9428) |
 | Role-aware seating (`roleAlreadySeated`, unblocks two kits per session) | ✅ shipped `f80aa7a` |
 | Track A (A1–A8): host severance + payer kit + gates G0/G1 | ✅ complete — G0 and G1 live gates passed |
-| Track B (B0–B6): MCP → AWS migration, gate GM | 🟨 B0–B5 complete; GM green; B6 relay-fold decision next |
-| P2 / P3 / P4 | ⬜ gated on both tracks |
+| Track B (B0–B6): MCP → AWS migration, gate GM | ✅ complete — GM green; B6 explicitly deferred under its plan branch |
+| P2 / P3 / P4 | ⬜ P2 host deployment next |
 
 Both tracks are independent until P2. Work them in parallel if you can; if you must pick
 one, Track B's first steps (B0–B2) have the longest external waits — start them first,
@@ -258,6 +258,15 @@ would ask for)*
   signed certificate; `paymentMoved` remained false. Fresh post-gate
   `npm run verify`: 910/910 tests and all structural invariants passed. GCP
   remains warm solely as the rollback target.
+
+- 2026-08-08 — **B6 decision: defer the relay fold.** The existing Lightsail
+  relay is healthy (`NRestarts=0`, about 19 MiB resident), and its 39 JSONL
+  journals total only 1.6 MiB, but a correct move still requires a write freeze,
+  exact state transfer, a cross-repository relay image/compose path, Caddy and
+  installer changes, and another production DNS change beyond the two batched
+  MCP visits. None of that improves G2 or G3: the P2 host can use the existing
+  relay through `HANDSHAKE_RELAY`, and the plan explicitly accepts Lightsail as
+  the end state. Revisit only as a separate post-P4 maintenance change.
 
 ## Migration inventory
 
