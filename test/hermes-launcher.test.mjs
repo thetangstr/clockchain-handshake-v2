@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, realpath, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { EventEmitter } from "node:events";
@@ -815,6 +815,23 @@ test("dry-run checks public services and prepares zero-state rooms without a pro
     relayHealth: true,
   });
   assert.deepEqual(h.calls.prepared.map((entry) => entry.role), ["payer", "requestor"]);
+  assert.equal(h.calls.minted.length, 0);
+  assert.equal(h.calls.spawns.length, 0);
+});
+
+test("dry-run securely creates a missing runs parent beneath an existing private operator root", async (t) => {
+  const operatorRoot = await tempRoot(t);
+  const root = join(operatorRoot, "runs", RUN_ID);
+  const h = harness(root, t, {
+    inferenceKeyValue: undefined,
+    extra: { dryRun: true },
+  });
+
+  const result = await runHermesDemo(h.options);
+
+  assert.equal(result.dryRun, true);
+  assert.equal((await lstat(join(operatorRoot, "runs"))).mode & 0o777, 0o700);
+  assert.equal((await lstat(root)).mode & 0o777, 0o700);
   assert.equal(h.calls.minted.length, 0);
   assert.equal(h.calls.spawns.length, 0);
 });

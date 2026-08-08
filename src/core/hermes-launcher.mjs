@@ -797,6 +797,9 @@ export async function runHermesDemo(options = {}) {
       kitCommit: cleanKitCommit,
       relayUrl: relayUrl ?? DEFAULT_RELAY_URL,
     }));
+    if (await pathExists(cleanRunRoot) === false) {
+      await preparePrivateDirectory({ path: dirname(cleanRunRoot) });
+    }
     await preparePrivateDirectory({ path: cleanRunRoot });
     const loaded = await loadDefaultCleanRoomFunctions();
     const prepareHermesCleanRoom = options.prepareHermesCleanRoom ?? loaded.prepareHermesCleanRoom;
