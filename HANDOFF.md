@@ -24,7 +24,7 @@ Context behind the plan, if you need it: [docs/two-agent-build.md](docs/two-agen
 | Closing certificate (`src/core/result.mjs`, relay result endpoint, both parties fetch+verify) | ✅ shipped `4d096f1`, live-verified (blocks 3057376/3057397/3057399, agents 9427/9428) |
 | Role-aware seating (`roleAlreadySeated`, unblocks two kits per session) | ✅ shipped `f80aa7a` |
 | Track A (A1–A8): host severance + payer kit + gates G0/G1 | ✅ complete — G0 and G1 live gates passed |
-| Track B (B0–B6): MCP → AWS migration, gate GM | 🟨 B0–B4 complete; B5 production cutover + GM next |
+| Track B (B0–B6): MCP → AWS migration, gate GM | 🟨 B0–B4 complete; B5 attempt 1 rolled back, corrected GM preflight green, retry pending |
 | P2 / P3 / P4 | ⬜ gated on both tracks |
 
 Both tracks are independent until P2. Work them in parallel if you can; if you must pick
@@ -139,6 +139,23 @@ then do Track A while AWS/DNS steps settle.
   `--allow-degraded true` option; the default still omits `allow_degraded` and
   fails closed. The same reconciled reference was rerun once and all eight
   parity rows passed. The two writes anchored at blocks `3090566` and `3090567`.
+
+- 2026-08-08 — B5 attempt 1 flipped production DNS to `34.209.199.138`; public
+  resolvers, HTTPS health, and the production-host certificate all passed. The
+  first local post-cutover parity run stopped before writes because macOS still
+  resolved the production name to cached GCP while the test name resolved to
+  AWS. A fresh-source rerun from the relay box proved both names reached the
+  shared AWS process and passed all eight rows; records
+  `6b9257cf-7650-4d68-9dce-d42d087d42e2` / block `3091221` and
+  `25f3a00a-462c-408d-82b2-a032d1d9af29` / block `3091222` anchored. GM then
+  stopped at `npm run preflight`: the isolated worktree's `keys/*` entries are
+  symlinks, which the hardened wallet loader correctly rejects. Per B5, the
+  production A record was immediately rolled back to GCP `136.68.167.2` at TTL
+  600 before diagnosis. The actual files in the primary repo are private regular
+  files; rerunning the same preflight code with that repo as its data root passed
+  all four checks (treasury `1.951` testnet ETH, ledger block `3091391`). Retry
+  the cutover only after the rollback record has propagated; run GM from the
+  primary data root or pass the real keystore/password paths explicitly.
 
 ## Evidence
 
