@@ -128,10 +128,7 @@ if (code.includes("tools.mcp_tool") && code.includes("discover_mcp_tools") && co
   writeFileSync(join(process.env.HERMES_HOME, ".mcp-discovery.lock"), "lock");
   process.stderr.write("masked noisy discovery stderr");
   process.stdout.write(JSON.stringify({
-    prompts_enabled: false,
-    resources_enabled: false,
     registered_tools: ${JSON.stringify(REGISTERED_TOOLS)},
-    servers: [{ enabled: true, name: "clockchain", url: "${CLOCKCHAIN_URL}" }],
     shutdown_called: true
   }));
   process.exit(0);
@@ -147,10 +144,11 @@ process.stdout.write(JSON.stringify({
   },
   dotenv_empty: Object.fromEntries(emptyKeys.map((key) => [key, process.env[key] === ""])),
   managed_absent: process.env.HERMES_MANAGED_PRESENT !== "1",
+  loaded_count: 1,
+  loaded_role_env: true,
   observed_empty_keys: emptyKeys,
   probe_vars_present: Object.keys(process.env).filter((key) => key.startsWith("HERMES_")).sort(),
   role_env_comment_only: envText.split(/\\r?\\n/).every((line) => line.trim() === "" || line.trim().startsWith("#")),
-  sanitizer_neutralized: true,
   terminal_sanitizer_removed_auxiliary: !sanitizedKeys.includes("AUXILIARY_CLOCKCHAIN_MCP_API_KEY"),
   terminal_sanitizer_removed_provider: !sanitizedKeys.includes(process.env.HERMES_PROVIDER_KEY_NAME)
 }));
@@ -226,8 +224,10 @@ test("prepare and provision are split so both rooms can be prepared before any s
   await assert.rejects(readFile(join(payer.paths.hermesHome, "sessions")), /ENOENT/);
 
   const preProvision = await readJson(payer.manifests.preProvisionPath);
+  assert.deepEqual(Object.keys(preProvision).sort(), ["hermes", "kitCommit", "paths", "phase", "role", "tokensPresent", "zeroState"]);
   assert.equal(preProvision.phase, "pre-provision");
   assert.equal(Object.hasOwn(preProvision, "principalFingerprint"), false);
+  assert.equal(preProvision.tokensPresent, false);
   assert.equal(preProvision.hermes.binary, "test-fixture");
   assert.equal(preProvision.hermes.installRoot, "test-fixture");
   assert.equal(preProvision.hermes.packageVersion, "0.19.1");
@@ -284,14 +284,31 @@ test("prepare and provision are split so both rooms can be prepared before any s
   assert.equal(Object.hasOwn(provisioned.env, "MOONSHOT_API_KEY"), false);
   assert.equal(provisioned.probes.envLoader.terminalSanitizerRemovedAuxiliary, true);
   assert.equal(provisioned.probes.envLoader.terminalSanitizerRemovedProvider, true);
+  assert.equal(provisioned.probes.envLoader.loadedCount, 1);
+  assert.equal(provisioned.probes.envLoader.loadedRoleEnv, true);
+  assert.deepEqual(provisioned.probes.envLoader.observedEmptyKeys, ["CLOCKCHAIN_TOKEN", "OPENAI_API_KEY"]);
   assert.equal(provisioned.probes.mcp.shutdownCalled, true);
   assert.deepEqual(provisioned.probes.mcp.registeredTools, REGISTERED_TOOLS);
   await assert.rejects(readFile(join(payer.paths.hermesHome, ".mcp-discovery.lock")), /ENOENT/);
 
   const prePrompt = await readJson(provisioned.manifests.prePromptPath);
+  assert.deepEqual(Object.keys(prePrompt).sort(), [
+    "envProbe",
+    "hermes",
+    "kitCommit",
+    "mcp",
+    "paths",
+    "phase",
+    "principalFingerprint",
+    "retainedEvidencePath",
+    "role",
+    "tokensPresent",
+    "zeroState",
+  ]);
   assert.equal(prePrompt.phase, "pre-prompt");
   assert.deepEqual(Object.keys(provisioned.env).filter((key) => key.startsWith("HERMES_")), ["HERMES_HOME"]);
   assert.equal(prePrompt.principalFingerprint, jtiFingerprint(UUIDS.payer));
+  assert.deepEqual(Object.keys(prePrompt.mcp).sort(), ["registeredTools", "shutdownCalled"]);
   assert.deepEqual(prePrompt.mcp.registeredTools, REGISTERED_TOOLS);
   assert.equal(prePrompt.zeroState.clean, true);
   const retained = `${await readFile(payer.manifests.preProvisionPath, "utf8")}\n${await readFile(join(payer.runRoot, prePrompt.retainedEvidencePath), "utf8")}`;
@@ -462,26 +479,41 @@ test("provision rejects bad provider names, malformed tokens, equal peer tokens,
     provisionHermesCleanRoom({ room, ...providerInput(UUIDS.same), clockchainMcpToken: token, peerClockchainMcpToken: token }),
     /Clean room preparation failed safely/,
   );
-  await assert.rejects(
-    provisionHermesCleanRoom({
-      room,
-      ...providerInput("bad-env-probe"),
-      probeEnvLoader: async () => ({
-        allowedSecretKeysPresent: { KIMI_API_KEY: true, AUXILIARY_CLOCKCHAIN_MCP_API_KEY: false },
-        dotenvEmpty: {},
-        managedAbsent: true,
-        roleEnvCommentOnly: true,
-        sanitizerNeutralized: true,
-        terminalSanitizerRemovedAuxiliary: true,
-        terminalSanitizerRemovedProvider: true,
+  const validEnvProbe = {
+    allowedSecretKeysPresent: { KIMI_API_KEY: true, AUXILIARY_CLOCKCHAIN_MCP_API_KEY: true },
+    dotenvEmpty: { CLOCKCHAIN_TOKEN: true, OPENAI_API_KEY: true },
+    loadedCount: 1,
+    loadedRoleEnv: true,
+    managedAbsent: true,
+    observedEmptyKeys: ["CLOCKCHAIN_TOKEN", "OPENAI_API_KEY"],
+    roleEnvCommentOnly: true,
+    terminalSanitizerRemovedAuxiliary: true,
+    terminalSanitizerRemovedProvider: true,
+  };
+  for (const badProbe of [
+    { ...validEnvProbe, allowedSecretKeysPresent: { KIMI_API_KEY: true } },
+    { ...validEnvProbe, allowedSecretKeysPresent: { KIMI_API_KEY: true, AUXILIARY_CLOCKCHAIN_MCP_API_KEY: false } },
+    { ...validEnvProbe, dotenvEmpty: { CLOCKCHAIN_TOKEN: true } },
+    { ...validEnvProbe, loadedCount: 0 },
+    { ...validEnvProbe, loadedRoleEnv: false },
+    { ...validEnvProbe, observedEmptyKeys: ["CLOCKCHAIN_TOKEN"] },
+    { ...validEnvProbe, roleEnvCommentOnly: false },
+    { ...validEnvProbe, terminalSanitizerRemovedAuxiliary: false },
+    { ...validEnvProbe, terminalSanitizerRemovedProvider: false },
+  ]) {
+    await assert.rejects(
+      provisionHermesCleanRoom({
+        room,
+        ...providerInput(UUIDS.payer),
+        probeEnvLoader: async () => badProbe,
       }),
-    }),
-    /Clean room preparation failed safely/,
-  );
+      /Clean room preparation failed safely/,
+    );
+  }
   await assert.rejects(
     provisionHermesCleanRoom({
       room,
-      ...providerInput("bad-mcp"),
+      ...providerInput(UUIDS.payer),
       discoverMcp: async () => ({
         promptsEnabled: false,
         registeredTools: [...REGISTERED_TOOLS, "mcp__clockchain__handshake_debug"],

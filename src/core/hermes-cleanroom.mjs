@@ -672,19 +672,34 @@ function normalizeEnvProbe(result, { dotenvKeys, providerKeyName }) {
   if (result === null || typeof result !== "object") fail();
   const present = result.allowedSecretKeysPresent ?? result.allowed_secret_keys_present;
   const empty = result.dotenvEmpty ?? result.dotenv_empty;
-  if (present?.[providerKeyName] !== true || present?.AUXILIARY_CLOCKCHAIN_MCP_API_KEY !== true) fail();
-  if (empty === null || typeof empty !== "object") fail();
-  for (const key of dotenvKeys) {
-    if (key !== providerKeyName && empty[key] !== true) fail();
+  const loadedCount = result.loadedCount ?? result.loaded_count;
+  const loadedRoleEnv = result.loadedRoleEnv ?? result.loaded_role_env;
+  const observedEmptyKeys = result.observedEmptyKeys ?? result.observed_empty_keys;
+  const expectedEmptyKeys = dotenvKeys.filter((key) => key !== providerKeyName);
+  if (
+    present === null ||
+    typeof present !== "object" ||
+    !sameStrings(Object.keys(present), [providerKeyName, "AUXILIARY_CLOCKCHAIN_MCP_API_KEY"]) ||
+    present[providerKeyName] !== true ||
+    present.AUXILIARY_CLOCKCHAIN_MCP_API_KEY !== true
+  ) {
+    fail();
   }
+  if (!Number.isSafeInteger(loadedCount) || loadedCount < 1 || loadedRoleEnv !== true) fail();
+  if (!Array.isArray(observedEmptyKeys) || !sameStrings(observedEmptyKeys, expectedEmptyKeys)) fail();
+  if (empty === null || typeof empty !== "object") fail();
+  if (!sameStrings(Object.keys(empty), expectedEmptyKeys)) fail();
+  for (const key of expectedEmptyKeys) if (empty[key] !== true) fail();
   if ((result.managedAbsent ?? result.managed_absent) !== true) fail();
   if ((result.roleEnvCommentOnly ?? result.role_env_comment_only) !== true) fail();
-  if ((result.sanitizerNeutralized ?? result.sanitizer_neutralized) !== true) fail();
   if ((result.terminalSanitizerRemovedAuxiliary ?? result.terminal_sanitizer_removed_auxiliary) !== true) fail();
   if ((result.terminalSanitizerRemovedProvider ?? result.terminal_sanitizer_removed_provider) !== true) fail();
   return Object.freeze({
-    dotenvEmpty: Object.freeze(Object.fromEntries(dotenvKeys.map((key) => [key, key === providerKeyName || empty[key] === true]))),
+    dotenvEmpty: Object.freeze(Object.fromEntries(expectedEmptyKeys.map((key) => [key, true]))),
+    loadedCount,
+    loadedRoleEnv: true,
     managedAbsent: true,
+    observedEmptyKeys: Object.freeze(sorted(observedEmptyKeys)),
     roleEnvCommentOnly: true,
     terminalSanitizerRemovedAuxiliary: true,
     terminalSanitizerRemovedProvider: true,
@@ -705,17 +720,18 @@ async function defaultProbeEnvLoader({ dotenvKeys, env, hermesInstallRoot, provi
     "loaded=[]",
     "with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):",
     "    loaded=[str(path) for path in load_hermes_dotenv(hermes_home=os.environ['HERMES_HOME'])]",
-    "    sanitized=_sanitize_subprocess_env(os.environ, {})",
-    "env_text=Path(os.environ['HERMES_HOME'], '.env').read_text(encoding='utf8')",
+    "    sanitized=_sanitize_subprocess_env(dict(os.environ), {})",
+    "role_env=Path(os.environ['HERMES_HOME'], '.env')",
+    "env_text=role_env.read_text(encoding='utf8')",
     "comment_only=all((not line.strip()) or line.strip().startswith('#') for line in env_text.splitlines())",
     "print(json.dumps({",
     "'allowed_secret_keys_present':{provider:bool(os.environ.get(provider)),'AUXILIARY_CLOCKCHAIN_MCP_API_KEY':bool(os.environ.get('AUXILIARY_CLOCKCHAIN_MCP_API_KEY'))},",
     "'dotenv_empty':{key:os.environ.get(key,'')=='' for key in empty},",
     "'managed_absent':os.environ.get('HERMES_MANAGED_PRESENT')!='1',",
     "'loaded_count':len(loaded),",
+    "'loaded_role_env':str(role_env) in loaded,",
     "'observed_empty_keys':empty,",
     "'role_env_comment_only':comment_only,",
-    "'sanitizer_neutralized':True,",
     "'terminal_sanitizer_removed_auxiliary':'AUXILIARY_CLOCKCHAIN_MCP_API_KEY' not in sanitized,",
     "'terminal_sanitizer_removed_provider':provider not in sanitized}))",
   ].join("\n");
@@ -726,24 +742,18 @@ async function defaultProbeEnvLoader({ dotenvKeys, env, hermesInstallRoot, provi
 function normalizeMcpDiscovery(result) {
   if (result === null || typeof result !== "object") fail();
   const registeredTools = result.registeredTools ?? result.registered_tools;
-  const resourcesEnabled = result.resourcesEnabled ?? result.resources_enabled;
-  const promptsEnabled = result.promptsEnabled ?? result.prompts_enabled;
   const shutdownCalled = result.shutdownCalled ?? result.shutdown_called;
-  if (!Array.isArray(result.servers) || result.servers.length !== 1) fail();
-  const [server] = result.servers;
-  if (server?.enabled !== true || server?.name !== "clockchain" || server?.url !== CLOCKCHAIN_URL) fail();
-  if (resourcesEnabled !== false || promptsEnabled !== false || shutdownCalled !== true) fail();
+  if (shutdownCalled !== true) fail();
   if (
     !Array.isArray(registeredTools) ||
     JSON.stringify(registeredTools) !== JSON.stringify(REGISTERED_CLOCKCHAIN_TOOLS)
   ) {
     fail();
   }
+  // Hermes discovery exposes registered tool names. Static server URL/resources/prompts
+  // are proven separately by the generated config, not inferred from discovery.
   return Object.freeze({
-    promptsEnabled: false,
     registeredTools: REGISTERED_CLOCKCHAIN_TOOLS,
-    resourcesEnabled: false,
-    servers: Object.freeze([{ enabled: true, name: "clockchain", url: CLOCKCHAIN_URL }]),
     shutdownCalled: true,
   });
 }
@@ -759,8 +769,7 @@ async function defaultDiscoverMcp({ env, hermesInstallRoot }) {
     "finally:",
     "    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):",
     "        shutdown_mcp_servers()",
-    "print(json.dumps({'servers':[{'enabled':True,'name':'clockchain','url':'https://mcp.clockchain.network/mcp'}],",
-    "'registered_tools':tools,'resources_enabled':False,'prompts_enabled':False,'shutdown_called':True}))",
+    "print(json.dumps({'registered_tools':tools,'shutdown_called':True}))",
   ].join("\n");
   const { stdout } = await commandRunner(python, ["-c", script], { env, timeout: 10_000 });
   return normalizeMcpDiscovery(JSON.parse(stdout));
@@ -885,6 +894,7 @@ export async function prepareHermesCleanRoom({
       hermes,
       kitCommit,
       paths: publicPaths({ paths, runRoot: cleanRunRoot }),
+      tokensPresent: false,
       zeroState,
     });
     assertPublicCleanRoomEvidence(preProvision, [cleanRunRoot, cleanInstallRoot]);
