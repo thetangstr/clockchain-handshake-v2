@@ -80,6 +80,25 @@ const RETAINED_PROFILE_ENTRIES = Object.freeze([
   "home",
   "skills",
 ]);
+const MCP_DISCOVERY_PERSISTENT_ENTRIES = Object.freeze([
+  ...RETAINED_PROFILE_ENTRIES,
+  "config.yaml",
+]);
+const MCP_DISCOVERY_EMPTY_DIRS = Object.freeze([
+  "audio_cache",
+  "cron",
+  "hooks",
+  "image_cache",
+  "memories",
+  "pairing",
+  "sessions",
+]);
+const MCP_DISCOVERY_TRANSIENT_ENTRIES = Object.freeze([
+  ".mcp-discovery.lock",
+  "SOUL.md",
+  ...MCP_DISCOVERY_EMPTY_DIRS,
+  "logs",
+]);
 
 function fail() {
   throw new Error("Clean room preparation failed safely.");
@@ -424,6 +443,38 @@ async function hardenDirectoryTree(path) {
   }
   if (!stats.isFile()) fail();
   if (process.platform !== "win32") await chmod(path, 0o600);
+}
+
+async function assertEmptyPrivateDirectory(path) {
+  const stats = await lstat(path);
+  if (!stats.isDirectory() || stats.isSymbolicLink()) fail();
+  if (process.platform !== "win32" && (stats.mode & 0o777) !== 0o700) fail();
+  if ((await readdir(path)).length !== 0) fail();
+}
+
+async function cleanupMcpDiscoveryArtifacts(hermesHome) {
+  const entries = sorted(await readdir(hermesHome));
+  const extras = entries.filter((entry) => !MCP_DISCOVERY_PERSISTENT_ENTRIES.includes(entry));
+  if (extras.length === 0) return;
+  if (!sameStrings(extras, MCP_DISCOVERY_TRANSIENT_ENTRIES)) fail();
+  for (const name of MCP_DISCOVERY_EMPTY_DIRS) {
+    await assertEmptyPrivateDirectory(join(hermesHome, name));
+  }
+  const logs = join(hermesHome, "logs");
+  const logStats = await lstat(logs);
+  if (!logStats.isDirectory() || logStats.isSymbolicLink()) fail();
+  if (process.platform !== "win32" && (logStats.mode & 0o777) !== 0o700) fail();
+  if (!sameStrings(await readdir(logs), ["curator"])) fail();
+  await assertEmptyPrivateDirectory(join(logs, "curator"));
+  const soul = await lstat(join(hermesHome, "SOUL.md"));
+  if (!soul.isFile() || soul.isSymbolicLink() || soul.size < 1 || soul.size > 4_096) fail();
+  if (process.platform !== "win32" && (soul.mode & 0o777) !== 0o600) fail();
+  const lock = await lstat(join(hermesHome, ".mcp-discovery.lock"));
+  if (!lock.isFile() || lock.isSymbolicLink() || lock.size !== 0) fail();
+  for (const name of MCP_DISCOVERY_TRANSIENT_ENTRIES) {
+    await rm(join(hermesHome, name), { force: true, recursive: true });
+  }
+  if (!sameStrings(await readdir(hermesHome), MCP_DISCOVERY_PERSISTENT_ENTRIES)) fail();
 }
 
 async function validateAndPromoteProfile({ paths }) {
@@ -968,7 +1019,7 @@ export async function provisionHermesCleanRoom({
       hermesHome: paths.hermesHome,
       hermesInstallRoot: preparedRoom.hermesInstallRoot,
     }));
-    await rm(join(paths.hermesHome, ".mcp-discovery.lock"), { force: true });
+    await cleanupMcpDiscoveryArtifacts(paths.hermesHome);
     const expected = await expectedTree({
       includeConfig: true,
       includePreProvision: true,

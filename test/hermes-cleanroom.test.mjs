@@ -116,7 +116,7 @@ writeFileSync(join(profile, ".no-bundled-skills"), "\\n");
 `, { mode: 0o755 });
   await chmod(hermesBinary, 0o755);
   await writeFile(python, `#!/usr/bin/env node
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 if (process.argv[2] !== "-c") process.exit(51);
 const code = process.argv[3] || "";
@@ -125,7 +125,11 @@ if (code.includes("hermes_cli.config_defaults") && code.includes("DEFAULT_CONFIG
   process.exit(0);
 }
 if (code.includes("tools.mcp_tool") && code.includes("discover_mcp_tools") && code.includes("shutdown_mcp_servers")) {
-  writeFileSync(join(process.env.HERMES_HOME, ".mcp-discovery.lock"), "lock");
+  for (const dir of ["audio_cache", "cron", "hooks", "image_cache", "logs/curator", "memories", "pairing", "sessions"]) {
+    mkdirSync(join(process.env.HERMES_HOME, dir), { recursive: true, mode: 0o700 });
+  }
+  writeFileSync(join(process.env.HERMES_HOME, "SOUL.md"), "default generated rules\\n", { mode: 0o600 });
+  writeFileSync(join(process.env.HERMES_HOME, ".mcp-discovery.lock"), "");
   process.stderr.write("masked noisy discovery stderr");
   process.stdout.write(JSON.stringify({
     registered_tools: ${JSON.stringify(REGISTERED_TOOLS)},
@@ -357,6 +361,152 @@ test("production default adapters use fake executable and venv-python contracts"
   assert.equal(provisioned.probes.envLoader.roleEnvCommentOnly, true);
   assert.equal(provisioned.env.KIMI_CODING_API_KEY, "kimi-provider-secret-22222222222222222222");
   assert.equal(provisioned.env.KIMI_API_KEY, "");
+});
+
+test("provision removes only the pinned empty artifacts created by live MCP discovery", async (t) => {
+  const root = await temporaryRoot(t);
+  const install = await makeFakeHermesInstall(root);
+  const room = await prepareHermesCleanRoom({ ...basePrepare(root, install), role: "payer" });
+  const discoveryArtifacts = async ({ hermesHome }) => {
+    for (const directory of [
+      "audio_cache",
+      "cron",
+      "hooks",
+      "image_cache",
+      "logs/curator",
+      "memories",
+      "pairing",
+      "sessions",
+    ]) {
+      await mkdir(join(hermesHome, directory), { recursive: true, mode: 0o700 });
+    }
+    await writeFile(join(hermesHome, "SOUL.md"), "default generated rules\n", { mode: 0o600 });
+    await writeFile(join(hermesHome, ".mcp-discovery.lock"), "", { mode: 0o644 });
+    return { registeredTools: REGISTERED_TOOLS, shutdownCalled: true };
+  };
+
+  const provisioned = await provisionHermesCleanRoom({
+    room,
+    ...providerInput(UUIDS.payer),
+    discoverMcp: discoveryArtifacts,
+  });
+
+  assert.deepEqual((await readdir(provisioned.paths.hermesHome)).sort(), [
+    ".env",
+    ".no-bundled-skills",
+    "config.yaml",
+    "home",
+    "skills",
+  ]);
+  assert.equal((await readJson(provisioned.manifests.prePromptPath)).zeroState.clean, true);
+
+  const dirtyRoom = await prepareHermesCleanRoom({ ...basePrepare(root, install), role: "requestor" });
+  await assert.rejects(
+    provisionHermesCleanRoom({
+      room: dirtyRoom,
+      ...providerInput(UUIDS.retained),
+      discoverMcp: async (input) => {
+        const result = await discoveryArtifacts(input);
+        await writeFile(join(input.hermesHome, "logs", "unexpected.log"), "state");
+        return result;
+      },
+    }),
+    /Clean room preparation failed safely/,
+  );
+
+  const rejectionCases = [
+    {
+      name: "missing required artifact",
+      mutate: async ({ hermesHome }) => rm(join(hermesHome, "sessions"), { recursive: true }),
+    },
+    {
+      name: "partial artifact set",
+      mutate: async ({ hermesHome }) => {
+        for (const entry of [
+          "SOUL.md",
+          "audio_cache",
+          "cron",
+          "hooks",
+          "image_cache",
+          "logs",
+          "memories",
+          "pairing",
+          "sessions",
+        ]) {
+          await rm(join(hermesHome, entry), { force: true, recursive: true });
+        }
+      },
+    },
+    {
+      name: "nonempty allowed directory",
+      mutate: async ({ hermesHome }) => writeFile(join(hermesHome, "audio_cache", "state"), "state"),
+    },
+    {
+      name: "nonempty curator log directory",
+      mutate: async ({ hermesHome }) => writeFile(join(hermesHome, "logs", "curator", "state"), "state"),
+    },
+    {
+      name: "symlinked transient directory",
+      mutate: async ({ hermesHome, root: caseRoot }) => {
+        const external = join(caseRoot, "external-directory");
+        await mkdir(external, { mode: 0o700 });
+        await rm(join(hermesHome, "audio_cache"), { recursive: true });
+        await symlink(external, join(hermesHome, "audio_cache"), "dir");
+      },
+    },
+    {
+      name: "symlinked transient file",
+      mutate: async ({ hermesHome, root: caseRoot }) => {
+        const external = join(caseRoot, "external-soul.md");
+        await writeFile(external, "external rules\n", { mode: 0o600 });
+        await rm(join(hermesHome, "SOUL.md"));
+        await symlink(external, join(hermesHome, "SOUL.md"));
+      },
+    },
+    {
+      name: "wrong SOUL mode",
+      mutate: async ({ hermesHome }) => chmod(join(hermesHome, "SOUL.md"), 0o644),
+    },
+    {
+      name: "empty SOUL file",
+      mutate: async ({ hermesHome }) => writeFile(join(hermesHome, "SOUL.md"), ""),
+    },
+    {
+      name: "oversize SOUL file",
+      mutate: async ({ hermesHome }) => writeFile(join(hermesHome, "SOUL.md"), "x".repeat(4_097)),
+    },
+    {
+      name: "wrong transient directory mode",
+      mutate: async ({ hermesHome }) => chmod(join(hermesHome, "sessions"), 0o755),
+    },
+    {
+      name: "nonempty discovery lock",
+      mutate: async ({ hermesHome }) => writeFile(join(hermesHome, ".mcp-discovery.lock"), "lock"),
+    },
+  ];
+
+  for (const [index, rejection] of rejectionCases.entries()) {
+    await t.test(`rejects ${rejection.name}`, async (caseTest) => {
+      const caseRoot = await temporaryRoot(caseTest);
+      const caseInstall = await makeFakeHermesInstall(caseRoot);
+      const caseRoom = await prepareHermesCleanRoom({
+        ...basePrepare(caseRoot, caseInstall),
+        role: "payer",
+      });
+      await assert.rejects(
+        provisionHermesCleanRoom({
+          room: caseRoom,
+          ...providerInput(`70000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`),
+          discoverMcp: async (input) => {
+            const result = await discoveryArtifacts(input);
+            await rejection.mutate({ ...input, root: caseRoot });
+            return result;
+          },
+        }),
+        /Clean room preparation failed safely/,
+      );
+    });
+  }
 });
 
 test("prepare rejects non-Mac-compatible Hermes detection and cleans partial role roots", async (t) => {
