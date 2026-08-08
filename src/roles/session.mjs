@@ -211,6 +211,7 @@ export function stop(reason, sentence) {
  * validates locally and fails at the verifier, which is the worst place to learn.
  */
 export async function buildMandate({
+  issuedAtMs: injectedIssuedAtMs,
   payerAccount,
   payerAgentId,
   requestorAddress,
@@ -220,7 +221,10 @@ export async function buildMandate({
 }) {
   const sessionUuid = randomUUID();
   const intakeRequestId = randomUUID();
-  const issuedAtMs = Date.now();
+  const issuedAtMs = injectedIssuedAtMs === undefined ? Date.now() : wholeMs(injectedIssuedAtMs);
+  if (issuedAtMs === null) {
+    throw new TypeError("issuedAtMs must be a safe integer millisecond value.");
+  }
   const expiresAtMs = issuedAtMs + 45 * 60_000;
   const amount = { currency: "USD", value: "100" };
   const intakeDigest = createHash("sha256").update(intakeRequestId).digest("hex");
