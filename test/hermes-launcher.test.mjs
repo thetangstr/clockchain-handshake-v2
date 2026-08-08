@@ -1103,6 +1103,18 @@ test("kit URL and commit are validated before prompt creation", () => {
   assert.doesNotMatch(prompt, /submit the public registration fields/i);
 });
 
+test("generated role prompts keep every coordinator dependency in the retry loop", () => {
+  const payer = buildHermesPrompt({ role: "payer", kitUrl: KIT_URL, kitCommit: KIT_COMMIT });
+  const requestor = buildHermesPrompt({ role: "requestor", kitUrl: KIT_URL, kitCommit: KIT_COMMIT });
+  for (const prompt of [payer, requestor]) {
+    for (const needed of ["funding_record", "handshake_required", "clockchain_confirmation", "counterpart_transition"]) {
+      assert.match(prompt, new RegExp(`needed[^\\n]*${needed}`, "i"));
+    }
+  }
+  assert.match(payer, /requestor_identity_ready.*wait for (?:the )?Requestor.*handshake_next/is);
+  assert.match(requestor, /payer_mandate.*wait for (?:the )?Payer.*handshake_next/is);
+});
+
 test("credential reader accepts exactly one supported env var or one private file and never searches", async (t) => {
   assert.deepEqual(
     await readInferenceCredential({ env: { MINIMAX_CN_API_KEY: INFERENCE_SECRET } }),

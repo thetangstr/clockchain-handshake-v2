@@ -247,6 +247,18 @@ test("Hermes payer authors mandate only and never authors the payment request", 
   assert.doesNotMatch(text, /author the request only/i);
 });
 
+test("Hermes role prompts treat every coordinator dependency as waiting, not cross-role authorship", async () => {
+  const payer = await loadHermes("hermes-payer");
+  const requestor = await loadHermes("hermes-requestor");
+  for (const text of [payer, requestor]) {
+    for (const needed of ["funding_record", "handshake_required", "clockchain_confirmation", "counterpart_transition"]) {
+      assert.match(text, new RegExp(`needed[^\\n]*${needed}`, "i"));
+    }
+  }
+  assert.match(payer, /requestor_identity_ready.*wait for (?:the )?Requestor.*handshake_next/is);
+  assert.match(requestor, /payer_mandate.*wait for (?:the )?Payer.*handshake_next/is);
+});
+
 test("Hermes requestor authors payment request only and never authors the mandate", async () => {
   const text = await loadHermes("hermes-requestor");
   assert.match(text, /author the payment request only/i);
