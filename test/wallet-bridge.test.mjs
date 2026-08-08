@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { renameSync, symlinkSync } from "node:fs";
+import { chmodSync, renameSync, symlinkSync } from "node:fs";
 import {
   chmod,
   link,
@@ -245,6 +245,27 @@ test("fails closed when initialization parent is swapped for a symlink before wr
   );
 });
 
+test("fails closed when initialization parent becomes permissive before writing the private key", async (t) => {
+  const { statePath } = await temporaryState(t);
+  const originalParent = dirname(statePath);
+  await mkdir(originalParent, { mode: 0o700, recursive: true });
+
+  await rejectSafe(() =>
+    initializeWallet({
+      statePath,
+      platform: "darwin",
+      generatePrivateKey: () => {
+        chmodSync(originalParent, 0o755);
+        return PRIVATE_KEY;
+      },
+    }),
+  );
+
+  const stateText = await readOptional(statePath);
+  assert.equal(stateText.includes(PRIVATE_KEY), false);
+  assert.equal(stateText.includes(PRIVATE_KEY.slice(2)), false);
+});
+
 test("fails closed when an existing wallet parent is replaced by a symlink before reading", async (t) => {
   const { root, statePath } = await initializeDeterministicWallet(t);
   const originalParent = dirname(statePath);
@@ -434,6 +455,43 @@ test("fails closed when registration checkpoint parent is swapped for a symlink 
 
   const redirectedEntries = await readdir(redirectedParent);
   assert.deepEqual(redirectedEntries, []);
+});
+
+test("fails closed when registration checkpoint parent becomes permissive before persistence", async (t) => {
+  const { statePath } = await initializeDeterministicWallet(t);
+  const originalParent = dirname(statePath);
+
+  await rejectSafe(() =>
+    registerWalletIdentity({
+      statePath,
+      displayName: "Hermes party",
+      platform: "darwin",
+      registration: {
+        registerIdentity: async ({ onCheckpoint }) => {
+          await chmod(originalParent, 0o755);
+          await onCheckpoint({
+            schema: "clockchain.handshake-registration-intent/v1",
+            chainId: 11155111,
+            registryAddress: "0x8004A818BFB912233c491871b3d84c89A494BD9e",
+            registryNamespace:
+              "eip155:11155111:0x8004A818BFB912233c491871b3d84c89A494BD9e",
+            address: ADDRESS,
+            displayName: "Hermes party",
+            registerNonce: 0,
+            registerCalldata: "0x1234",
+            registerGas: "226000",
+            maxFeePerGas: "2",
+            maxPriorityFeePerGas: "1",
+          });
+        },
+      },
+    }),
+  );
+
+  const checkpointEntries = (await readdir(originalParent)).filter((entry) =>
+    entry.includes("checkpoint"),
+  );
+  assert.deepEqual(checkpointEntries, []);
 });
 
 test("resumes durable recovery records with finalization instead of registering again", async (t) => {

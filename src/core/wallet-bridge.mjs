@@ -134,23 +134,49 @@ async function captureParentIdentity(statePath, { platform, runIcacls }) {
     runIcacls,
   });
   const stats = await lstat(parent);
-  if (!stats.isDirectory() || stats.isSymbolicLink()) fail();
+  verifyParentStats(stats, { platform });
   return Object.freeze({
     dev: stats.dev,
     ino: stats.ino,
     path: parent,
+    platform,
+    runIcacls,
   });
+}
+
+function verifyParentStats(stats, { platform }) {
+  if (
+    !stats.isDirectory() ||
+    stats.isSymbolicLink()
+  ) {
+    fail();
+  }
+  if (platform !== "win32") {
+    if (
+      typeof process.getuid === "function" &&
+      stats.uid !== process.getuid()
+    ) {
+      fail();
+    }
+    if ((stats.mode & 0o777) !== 0o700) {
+      fail();
+    }
+  }
 }
 
 async function verifyParentIdentity(identity) {
   const stats = await lstat(identity.path);
-  if (
-    !stats.isDirectory() ||
-    stats.isSymbolicLink() ||
-    stats.dev !== identity.dev ||
-    stats.ino !== identity.ino
-  ) {
-    fail();
+  verifyParentStats(stats, identity);
+  if (stats.dev !== identity.dev || stats.ino !== identity.ino) fail();
+  if (identity.platform === "win32") {
+    await preparePrivateDirectory({
+      path: identity.path,
+      platform: identity.platform,
+      runIcacls: identity.runIcacls,
+    });
+    const verified = await lstat(identity.path);
+    verifyParentStats(verified, identity);
+    if (verified.dev !== identity.dev || verified.ino !== identity.ino) fail();
   }
 }
 
