@@ -695,6 +695,100 @@ test("public verify endpoint returns the ledger's cross-party verdict for a know
   assert.match(verified.body.source, /Verified on Clockchain by the demo relay/i);
 });
 
+test("public verify endpoint rejects success-shaped results bound to a different receipt", async (t) => {
+  const cases = [
+    {
+      name: "ledger id",
+      ledgerId: "00000000-0000-4000-8000-000000000011",
+      onChain: { ledgerId: "00000000-0000-4000-8000-000000000099" },
+    },
+    {
+      name: "block height",
+      ledgerId: "00000000-0000-4000-8000-000000000012",
+      onChain: { blockHeight: "3375699" },
+    },
+    {
+      name: "anchored hash",
+      ledgerId: "00000000-0000-4000-8000-000000000013",
+      onChain: { anchoredHash: "f".repeat(64) },
+    },
+  ];
+
+  for (const mismatch of cases) {
+    await t.test(mismatch.name, async (t) => {
+      const { stateDir } = await startServer(t);
+      const anchoredHash = "2".repeat(64);
+      const fakeClient = {
+        async verifyCrossParty({ ledgerId, blockHeight, hash }) {
+          return {
+            onChain: {
+              anchoredHash: hash,
+              blockHeight,
+              keyless: true,
+              ledgerId,
+              verifiedAgainst: "on-chain block",
+              ...mismatch.onChain,
+            },
+          };
+        },
+      };
+
+      const server = await createRelayServer({ stateDir, ledgerClient: fakeClient });
+      const port = await listen(server);
+      const url = `http://127.0.0.1:${port}`;
+      t.after(() => new Promise((resolve) => server.close(resolve)));
+
+      const created = await postJson(`${url}/v1/sessions`, {});
+      assert.equal(created.status, 201);
+      const sessionId = created.body.sessionId;
+
+      const snapshot = buildSnapshot({
+        anchors: {
+          proposal: null,
+          acceptance: {
+            blockHeight: "3375604",
+            blockTime: Date.now(),
+            explorerUrl: "http://relay.local/v1/blocks/3375604",
+            kind: "acceptance",
+            ledgerId: mismatch.ledgerId,
+            receipt: { anchoredHash, digest: anchoredHash },
+            signedBy: { address: "0x1111111111111111111111111111111111111111", agentId: "1" },
+            terms: {
+              currency: "USD",
+              expirySeconds: "600",
+              predecessor: null,
+              sequence: "2",
+              sessionDigest: "c".repeat(64),
+              value: "100",
+            },
+          },
+          acknowledgment: null,
+        },
+        currentStage: "ACCEPTED",
+        funding: null,
+        heartbeat: {
+          payer: { lastSeenMs: Date.now() },
+          payee: { lastSeenMs: Date.now() },
+          verifier: null,
+        },
+        identities: null,
+        sessionId,
+        stageHistory: [{ atMs: Date.now(), status: "ACCEPTED" }],
+        subjectRun: "stakeholder",
+        updatedAtMs: Date.now(),
+        verdict: null,
+      });
+
+      const putResponse = await putJson(`${url}/v1/sessions/${sessionId}/snapshot`, snapshot);
+      assert.equal(putResponse.status, 200);
+
+      const failed = await getJson(`${url}/v1/verify/${mismatch.ledgerId}`);
+      assert.equal(failed.status, 502);
+      assert.equal(failed.body.error, "LEDGER_VERIFY_FAILED");
+    });
+  }
+});
+
 test("public verify endpoint surfaces a ledger failure as a named gateway error", async (t) => {
   const { stateDir } = await startServer(t);
   const ledgerId = "00000000-0000-4000-8000-000000000002";

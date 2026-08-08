@@ -26,6 +26,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 
+import { assertCrossPartyVerification } from "../core/clockchain.mjs";
 import { PARTY_ROLES } from "../core/evidence.mjs";
 import { validateSnapshot } from "../monitor/snapshot.mjs";
 import { ResultError, validateResultEnvelope } from "../core/result.mjs";
@@ -867,6 +868,11 @@ async function handleVerify(sessions, ledgerId, injectedClient) {
   }
 
   let result;
+  const expected = {
+    anchoredHash: anchor.receipt?.anchoredHash ?? null,
+    blockHeight: anchor.blockHeight,
+    ledgerId,
+  };
   try {
     const client = await ledgerClientFor(injectedClient);
     result = await client.verifyCrossParty({
@@ -874,6 +880,7 @@ async function handleVerify(sessions, ledgerId, injectedClient) {
       blockHeight: anchor.blockHeight,
       hash: anchor.receipt?.anchoredHash ?? null,
     });
+    assertCrossPartyVerification(result, expected);
   } catch (error) {
     throw new RelayError(
       `Could not verify that receipt on the ledger: ${error?.message ?? error}`,
@@ -887,8 +894,8 @@ async function handleVerify(sessions, ledgerId, injectedClient) {
     paymentMoved: false,
     ledgerId,
     blockHeight: anchor.blockHeight,
-    anchoredHash: anchor.receipt?.anchoredHash ?? null,
-    verified: result?.onChain?.verifiedAgainst === "on-chain block" && result?.onChain?.keyless === true,
+    anchoredHash: expected.anchoredHash,
+    verified: true,
     source: "Verified on Clockchain by the demo relay. The ledger's own endpoint requires a token.",
   };
   blockCache.set(`verify:${ledgerId}`, body);
