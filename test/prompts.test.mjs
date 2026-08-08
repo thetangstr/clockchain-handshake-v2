@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PROMPTS = ["requestor", "payer"];
+const HERMES_PROMPTS = ["hermes-requestor", "hermes-payer"];
 // 40 originally, then 60, now 75 -- and a number I keep raising is a number
 // that was never measuring the right thing. What the limit defends against is a
 // wall of text nobody reads to the end, so that is now asserted directly: no
@@ -167,4 +168,73 @@ test("prompts/payer.md installs from a clean clone and takes the hosted discover
   );
   assert.match(text, /single-validator testnet/i);
   assert.match(text, /not .*court-grade/i);
+});
+
+async function loadHermes(name) {
+  return readFile(join(ROOT, "prompts", `${name}.md`), "utf8");
+}
+
+for (const name of HERMES_PROMPTS) {
+  test(`prompts/${name}.md defines exactly one role and the canonical five MCP tools`, async () => {
+    const text = await loadHermes(name);
+    const expectedRole = name.endsWith("payer") ? "Payer" : "Requestor";
+    const forbiddenRole = expectedRole === "Payer" ? "Requestor" : "Payer";
+    assert.match(text, new RegExp(`Role: ${expectedRole}\\b`));
+    assert.doesNotMatch(text, new RegExp(`Role: ${forbiddenRole}\\b`));
+    for (const tool of [
+      "handshake_status",
+      "handshake_join",
+      "handshake_next",
+      "handshake_submit",
+      "handshake_get_certificate",
+    ]) {
+      assert.match(text, new RegExp(`\\b${tool}\\b`));
+    }
+    assert.match(text, /https:\/\/mcp\.clockchain\.network\/mcp/);
+    assert.match(text, /shared discovery/i);
+    assert.match(text, /paymentMoved:false/);
+    assert.match(text, /single-validator testnet/i);
+    assert.match(text, /not .*court-grade/i);
+  });
+
+  test(`prompts/${name}.md requires blank-workspace install, wallet bridge, local registration, and terminal JSON`, async () => {
+    const text = await loadHermes(name);
+    assert.match(text, /empty workspace/i);
+    assert.match(text, /git clone/);
+    assert.match(text, /git checkout <KIT_COMMIT>/);
+    assert.match(text, /npm ci/);
+    assert.match(text, /node bin\/wallet-bridge\.mjs init/);
+    assert.match(text, /node bin\/wallet-bridge\.mjs inspect/);
+    assert.match(text, /node bin\/wallet-bridge\.mjs sign/);
+    assert.match(text, /node bin\/wallet-bridge\.mjs register/);
+    assert.match(text, /EIP-191/i);
+    assert.match(text, /ERC-8004/i);
+    assert.match(text, /handshake_get_certificate/i);
+    assert.match(text, /certificateVerified/i);
+    assert.match(text, /FINAL_HANDSHAKE_JSON/);
+  });
+
+  test(`prompts/${name}.md keeps Clockchain host out of party custody and avoids invented ACK signatures`, async () => {
+    const text = await loadHermes(name);
+    assert.match(text, /Clockchain is the host, funder, and independent checker/i);
+    assert.match(text, /not a party/i);
+    assert.match(text, /hosted MCP coordinators advance PROPOSED, ACCEPTED, and ACKNOWLEDGED/i);
+    assert.doesNotMatch(text, /party ACK signature/i);
+    assert.doesNotMatch(text, /host signs as/i);
+    assert.doesNotMatch(text, /Mac mini signs/i);
+  });
+}
+
+test("Hermes payer authors mandate only and never authors the payment request", async () => {
+  const text = await loadHermes("hermes-payer");
+  assert.match(text, /author the mandate only/i);
+  assert.match(text, /must not author the payment request/i);
+  assert.doesNotMatch(text, /author the request only/i);
+});
+
+test("Hermes requestor authors payment request only and never authors the mandate", async () => {
+  const text = await loadHermes("hermes-requestor");
+  assert.match(text, /author the payment request only/i);
+  assert.match(text, /must not author the mandate/i);
+  assert.doesNotMatch(text, /author the mandate only/i);
 });
