@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, realpath, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
 
 import { digestHex } from "../src/core/canonical.mjs";
 import {
@@ -11,7 +16,13 @@ import {
   readKimiCredential,
   runHermesDemo,
 } from "../src/core/hermes-launcher.mjs";
+import {
+  prepareHermesCleanRoom,
+  provisionHermesCleanRoom,
+} from "../src/core/hermes-cleanroom.mjs";
 
+const execFile = promisify(execFileCallback);
+const ROOT = resolve(join(dirname(fileURLToPath(import.meta.url)), ".."));
 const KIT_URL = "https://github.com/thetangstr/clockchain-handshake-v2.git";
 const KIT_COMMIT = "0123456789abcdef0123456789abcdef01234567";
 const HERMES = "/Users/maxiaoer/.local/bin/hermes";
@@ -21,14 +32,28 @@ const PAYER_ADDRESS = "0x1111111111111111111111111111111111111111";
 const REQUESTOR_ADDRESS = "0x2222222222222222222222222222222222222222";
 const PAYER_AGENT = "8677";
 const REQUESTOR_AGENT = "9001";
+const RUN_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const PAYER_JTI = "11111111-1111-4111-8111-111111111111";
+const REQUESTOR_JTI = "22222222-2222-4222-8222-222222222222";
 
 function token(jti) {
-  const payload = Buffer.from(JSON.stringify({ jti, sub: jti }), "utf8").toString("base64url");
+  const payload = Buffer.from(JSON.stringify({
+    exp: 2_000_000_000,
+    iat: 1_700_000_000,
+    jti,
+    sub: "optional-public-subject",
+    tier: "demo",
+    v: 1,
+  }), "utf8").toString("base64url");
   return `cc_${payload}.abcdefghijklmnopqrstuvwxyz`;
 }
 
-const TOKEN_A = token("payer-token");
-const TOKEN_B = token("requestor-token");
+function tokenWithPayload(payload) {
+  return `cc_${Buffer.from(JSON.stringify(payload), "utf8").toString("base64url")}.abcdefghijklmnopqrstuvwxyz`;
+}
+
+const TOKEN_A = token(PAYER_JTI);
+const TOKEN_B = token(REQUESTOR_JTI);
 
 function certificateResult(overrides = {}) {
   return {
@@ -97,6 +122,10 @@ async function writePrivateCredential(t, value = KIMI) {
   return path;
 }
 
+function jtiFingerprint(jti) {
+  return createHash("sha256").update(`jti:${jti}`).digest("hex");
+}
+
 async function makePrepared(root, role, overrides = {}) {
   const roleRoot = join(root, "roles", role);
   const workspace = join(roleRoot, "workspace");
@@ -141,7 +170,7 @@ function terminal(role, overrides = {}) {
   return `progress line\nFINAL_HANDSHAKE_JSON ${JSON.stringify(success(role, overrides))}`;
 }
 
-function fakeProcess({ role, output, exitCode = 0, delayMs = 0, spawnLog }) {
+function fakeProcess({ role, output, stderr = "", exitCode = 0, delayMs = 0, spawnLog }) {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
@@ -152,6 +181,7 @@ function fakeProcess({ role, output, exitCode = 0, delayMs = 0, spawnLog }) {
   };
   queueMicrotask(() => {
     if (output !== undefined) child.stdout.emit("data", Buffer.from(`${output}\n`));
+    if (stderr !== "") child.stderr.emit("data", Buffer.from(stderr));
     setTimeout(() => child.emit("close", exitCode, null), delayMs);
   });
   return child;
@@ -173,6 +203,81 @@ function envFor(room, tokenValue, inferenceKeyValue) {
     PYTHONNOUSERSITE: "1",
     TMPDIR: join(room.roleRoot, "tmp"),
     XDG_CACHE_HOME: join(room.roleRoot, "xdg-cache"),
+  };
+}
+
+async function writeFakeHermesProfile(profileDirectory) {
+  for (const dir of ["cron", "home", "logs", "memories", "plans", "sessions", "skills", "skins", "workspace"]) {
+    await mkdir(join(profileDirectory, dir), { recursive: true, mode: 0o755 });
+  }
+  await writeFile(join(profileDirectory, ".env"), "# generated profile env\n", { mode: 0o600 });
+  await writeFile(join(profileDirectory, ".no-bundled-skills"), "\n", { mode: 0o600 });
+  await writeFile(join(profileDirectory, "SOUL.md"), "default generated rules\n", { mode: 0o600 });
+}
+
+async function realCleanRoomOptions(root) {
+  const installRoot = join(root, "hermes-agent");
+  await mkdir(installRoot, { recursive: true, mode: 0o700 });
+  await writeFile(join(installRoot, ".env"), [
+    "KIMI_API_KEY=from-shared-dotenv",
+    "OPENAI_API_KEY=from-shared-dotenv",
+    "CLOCKCHAIN_TOKEN=from-shared-dotenv",
+    "",
+  ].join("\n"));
+  return {
+    discoverMcp: async () => ({
+      prompts_enabled: false,
+      resources_enabled: false,
+      registered_tools: [
+        "mcp__clockchain__handshake_status",
+        "mcp__clockchain__handshake_join",
+        "mcp__clockchain__handshake_next",
+        "mcp__clockchain__handshake_submit",
+        "mcp__clockchain__handshake_get_certificate",
+      ],
+      servers: [{ enabled: true, name: "clockchain", url: "https://mcp.clockchain.network/mcp" }],
+      shutdown_called: true,
+    }),
+    detectHermes: async ({ hermesInstallRoot }) => ({
+      configVersion: 33,
+      features: {
+        noAlias: true,
+        noSkills: true,
+        profileCreate: true,
+        venvPython: true,
+      },
+      gitDescribe: "v2026.7.30-357-g87bc71060",
+      gitHead: "87bc710609f8b89b6e6b4aa418dde8ee30ec6873",
+      installRoot: hermesInstallRoot,
+      managedConfigPresent: false,
+      managedEnvPresent: false,
+      packageVersion: "0.19.1",
+      sourceClean: true,
+      supported: true,
+    }),
+    hermesInstallRoot: installRoot,
+    probeEnvLoader: async ({ dotenvKeys, env, providerKeyName }) => {
+      const emptyKeys = dotenvKeys.filter((key) => key !== providerKeyName);
+      return {
+        allowed_secret_keys_present: {
+          [providerKeyName]: Boolean(env[providerKeyName]),
+          AUXILIARY_CLOCKCHAIN_MCP_API_KEY: Boolean(env.AUXILIARY_CLOCKCHAIN_MCP_API_KEY),
+        },
+        dotenv_empty: Object.fromEntries(emptyKeys.map((key) => [key, env[key] === ""])),
+        loaded_count: 1,
+        loaded_role_env: true,
+        managed_absent: true,
+        observed_empty_keys: emptyKeys,
+        role_env_comment_only: true,
+        terminal_sanitizer_removed_auxiliary: true,
+        terminal_sanitizer_removed_provider: true,
+      };
+    },
+    runHermesProfileCreate: async ({ env }) => {
+      const profileDirectory = join(env.HERMES_HOME, "profiles", "agent");
+      await writeFakeHermesProfile(profileDirectory);
+      return { profileDirectory };
+    },
   };
 }
 
@@ -228,7 +333,7 @@ function harness(root, t, options = {}) {
           prePromptPath,
           JSON.stringify({
             phase: "pre-prompt",
-            principal: { sha256: role === "payer" ? "1".repeat(64) : "2".repeat(64) },
+            principalFingerprint: role === "payer" ? jtiFingerprint(PAYER_JTI) : jtiFingerprint(REQUESTOR_JTI),
             role,
             tokensPresent: true,
             zeroState: { clean: true },
@@ -245,23 +350,26 @@ function harness(root, t, options = {}) {
         return provisionedRoom;
       },
       relayUrl: "http://relay.local",
-      runId: "run-abc",
+      runId: RUN_ID,
       runRoot: root,
       spawnProcess: (command, args, spawnOptions) => {
         const role = spawnOptions.cwd.includes("/payer/") ? "payer" : "requestor";
         calls.spawns.push({ role, command, args, options: spawnOptions });
         const usagePath = args[args.indexOf("--usage-file") + 1];
-        writeFile(usagePath, JSON.stringify(options.usage?.[role] ?? {
-          durationMs: 42,
-          input: 10,
-          model: "k3",
-          output: 20,
-          provider: "kimi-coding",
-          total: 30,
-        }), { mode: 0o600 });
+        if (!options.missingUsage?.includes(role)) {
+          writeFileSync(usagePath, JSON.stringify(options.usage?.[role] ?? {
+            durationMs: 42,
+            input: 10,
+            model: "k3",
+            output: 20,
+            provider: "kimi-coding",
+            total: 30,
+          }), { mode: 0o600 });
+        }
         return fakeProcess({
           role,
           output: outputs[role],
+          stderr: options.stderr?.[role] ?? "",
           exitCode: options.exitCodes?.[role] ?? 0,
           delayMs: options.delays?.[role] ?? 0,
           spawnLog: calls,
@@ -294,8 +402,8 @@ test("mints two distinct tokens only after both pre-provision manifests exist an
 
   assert.deepEqual(h.calls.prepared.map((entry) => entry.role), ["payer", "requestor"]);
   assert.deepEqual(h.calls.minted, [
-    "hermes-demo:run-abc:payer",
-    "hermes-demo:run-abc:requestor",
+    `hermes-demo:${RUN_ID}:payer`,
+    `hermes-demo:${RUN_ID}:requestor`,
   ]);
   assert.equal(h.calls.prepared.length, 2);
   assert.equal(h.calls.spawns.length, 2);
@@ -363,8 +471,62 @@ test("each child receives the exact provisioned allowlist env and its own token"
   }
 });
 
+test("launcher uses real cleanroom prepare/provision contract with only Hermes runtime probes stubbed", async (t) => {
+  const root = await realpath(await tempRoot(t));
+  const cleanRoomOptions = await realCleanRoomOptions(root);
+  const h = harness(root, t, {
+    extra: {
+      cleanRoomOptions,
+      hermesBinary: join(root, "bin", "hermes"),
+      prepareHermesCleanRoom,
+      provisionHermesCleanRoom,
+    },
+  });
+
+  const result = await runHermesDemo(h.options);
+
+  assert.equal(result.summary.sessionId, SESSION_ID);
+  assert.equal(h.calls.prepared.length, 0, "harness mock prepare must not be used");
+  assert.equal(h.calls.provisioned.length, 0, "harness mock provision must not be used");
+  assert.equal(h.calls.spawns.length, 2);
+  for (const call of h.calls.spawns) {
+    assert.equal(call.options.env.AUXILIARY_CLOCKCHAIN_MCP_API_KEY, call.role === "payer" ? TOKEN_A : TOKEN_B);
+    assert.equal(call.options.env.KIMI_API_KEY, KIMI);
+    assert.equal(call.options.env.OPENAI_API_KEY, "");
+    assert.equal(call.options.env.CLOCKCHAIN_TOKEN, "");
+    assert.equal(call.options.env.HOME, join(root, "roles", call.role, "home"));
+  }
+  const retained = JSON.parse(await readFile(result.evidencePath, "utf8"));
+  assert.equal(retained.cleanRooms.payer.preProvision.hermes.packageVersion, "0.19.1");
+  assert.deepEqual(retained.cleanRooms.requestor.prePrompt.mcp.registeredTools, [
+    "mcp__clockchain__handshake_status",
+    "mcp__clockchain__handshake_join",
+    "mcp__clockchain__handshake_next",
+    "mcp__clockchain__handshake_submit",
+    "mcp__clockchain__handshake_get_certificate",
+  ]);
+  assert.equal(retained.cleanRooms.requestor.prePrompt.mcp.shutdownCalled, true);
+  assert.equal(retained.principals.payer.sha256, jtiFingerprint(PAYER_JTI));
+  assert.equal(retained.principals.requestor.sha256, jtiFingerprint(REQUESTOR_JTI));
+});
+
 test("malformed or equal structural tokens abort before either agent starts and still clean up", async (t) => {
-  for (const tokens of [["bad token"], [TOKEN_A, TOKEN_A]]) {
+  const audToken = tokenWithPayload({
+    aud: "demo",
+    exp: 2_000_000_000,
+    iat: 1_700_000_000,
+    jti: PAYER_JTI,
+    v: 1,
+  });
+  const extraKeyToken = tokenWithPayload({
+    exp: 2_000_000_000,
+    iat: 1_700_000_000,
+    jti: PAYER_JTI,
+    scope: "too-broad",
+    tier: "demo",
+    v: 1,
+  });
+  for (const tokens of [["bad token"], [audToken, TOKEN_B], [extraKeyToken, TOKEN_B], [TOKEN_A, TOKEN_A]]) {
     const root = await tempRoot(t);
     const h = harness(root, t, { tokens });
     await assert.rejects(runHermesDemo(h.options), /Hermes demo failed safely/);
@@ -401,6 +563,58 @@ test("relay verified result is authoritative for digest, parties, receipts, outc
   }
 });
 
+test("checksum-style output addresses are normalized for comparison and evidence", async (t) => {
+  const root = await tempRoot(t);
+  const relayResult = certificateResult({
+    parties: {
+      payer: {
+        address: "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+        agentId: PAYER_AGENT,
+        reference: `eip155:11155111:0x8004a818bfb912233c491871b3d84c89a494bd9e:${PAYER_AGENT}`,
+      },
+      payee: {
+        address: "0xfedcbafedcbafedcbafedcbafedcbafedcbafedc",
+        agentId: REQUESTOR_AGENT,
+        reference: `eip155:11155111:0x8004a818bfb912233c491871b3d84c89a494bd9e:${REQUESTOR_AGENT}`,
+      },
+    },
+  });
+  const digest = digestHex(relayResult);
+  const h = harness(root, t, {
+    relayResult,
+    outputs: {
+      payer: terminal("payer", {
+        address: "0xABCDEFabcdefABCDEFabcdefABCDEFabcdefABCD",
+        certificateDigest: digest,
+      }),
+      requestor: terminal("requestor", {
+        address: "0xFEDCBAfedcbaFEDCBAfedcbaFEDCBAfedcbaFEDC",
+        certificateDigest: digest,
+      }),
+    },
+  });
+
+  const result = await runHermesDemo(h.options);
+
+  assert.equal(result.summary.payer.address, "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd");
+  assert.equal(result.summary.requestor.address, "0xfedcbafedcbafedcbafedcbafedcbafedcbafedc");
+});
+
+test("bounded benign stderr is discarded, while secret-bearing stderr fails", async (t) => {
+  {
+    const root = await tempRoot(t);
+    const h = harness(root, t, { stderr: { payer: "Hermes warning: retrying local terminal\n" } });
+    const result = await runHermesDemo(h.options);
+    const retained = await readFile(result.evidencePath, "utf8");
+    assert.equal(retained.includes("Hermes warning"), false);
+  }
+  {
+    const root = await tempRoot(t);
+    const h = harness(root, t, { stderr: { requestor: `oops ${TOKEN_B}` } });
+    await assert.rejects(runHermesDemo(h.options), /Hermes demo failed safely/);
+  }
+});
+
 test("invalid output, partial failure, stderr, timeout, bad usage, and reused principals fail without authorization evidence", async (t) => {
   const cases = [
     { outputs: { payer: terminal("payer", { certificateVerified: false }) } },
@@ -408,7 +622,8 @@ test("invalid output, partial failure, stderr, timeout, bad usage, and reused pr
     { exitCodes: { payer: 1 } },
     { delays: { payer: 50, requestor: 50 }, timeoutMs: 1 },
     { usage: { payer: { token: TOKEN_A } } },
-    { manifestOverrides: { requestor: { prePrompt: { principal: { sha256: "1".repeat(64) } } } } },
+    { missingUsage: ["requestor"] },
+    { manifestOverrides: { requestor: { prePrompt: { principalFingerprint: jtiFingerprint(PAYER_JTI) } } } },
   ];
   for (const bad of cases) {
     const root = await tempRoot(t);
@@ -423,6 +638,24 @@ test("invalid output, partial failure, stderr, timeout, bad usage, and reused pr
     }
     assert.deepEqual(h.calls.cleaned.sort(), [join(root, "roles", "payer"), join(root, "roles", "requestor")].sort());
   }
+});
+
+test("cleanup attempts both exact role roots and fails if either cleanup fails", async (t) => {
+  const root = await tempRoot(t);
+  const attempted = [];
+  const h = harness(root, t, {
+    extra: {
+      cleanRoom: async ({ role, roleRoot }) => {
+        attempted.push({ role, roleRoot });
+        if (role === "payer") throw new Error("simulated cleanup failure");
+        await rm(roleRoot, { recursive: true, force: true });
+      },
+    },
+  });
+
+  await assert.rejects(runHermesDemo(h.options), /Hermes demo failed safely/);
+  assert.ok(attempted.some((entry) => entry.role === "payer" && entry.roleRoot === join(root, "roles", "payer")));
+  assert.ok(attempted.some((entry) => entry.role === "requestor" && entry.roleRoot === join(root, "roles", "requestor")));
 });
 
 test("retained evidence embeds public manifests and usage without token digests, stdout, stderr, or absolute paths", async (t) => {
@@ -469,6 +702,44 @@ test("dry-run prepares zero-state rooms and checks kit but requires no provider 
   assert.equal(h.calls.spawns.length, 0);
 });
 
+test("default GitHub kit check requires exact commit sha from response JSON", async (t) => {
+  const root = await tempRoot(t);
+  const h = harness(root, t, {
+    extra: {
+      checkKit: undefined,
+      fetchImpl: async () => ({
+        ok: true,
+        json: async () => ({ sha: "f".repeat(40) }),
+      }),
+    },
+  });
+  await assert.rejects(runHermesDemo(h.options), /Hermes demo failed safely/);
+  assert.equal(h.calls.prepared.length, 0);
+});
+
+test("production CLI exposes turnkey defaults and rejects debug cleanroom retention", async () => {
+  const { stdout } = await execFile(process.execPath, [join(ROOT, "bin", "hermes-demo.mjs"), "--help"], {
+    cwd: ROOT,
+    encoding: "utf8",
+    maxBuffer: 8_192,
+  });
+  assert.match(stdout, /https:\/\/github\.com\/thetangstr\/clockchain-handshake-v2\.git/);
+  assert.match(stdout, /http:\/\/44\.249\.47\.220:8080/);
+  assert.match(stdout, /CLOCKCHAIN_HERMES_DEMO_ROOT/);
+  assert.match(stdout, /--keep-cleanrooms is rejected/);
+  assert.doesNotMatch(stdout.split("\n")[0], /--run-root/);
+  assert.doesNotMatch(stdout, /--kit-url/);
+
+  await assert.rejects(
+    execFile(process.execPath, [join(ROOT, "bin", "hermes-demo.mjs"), "--keep-cleanrooms"], {
+      cwd: ROOT,
+      encoding: "utf8",
+      maxBuffer: 8_192,
+    }),
+    /Hermes demo failed safely/,
+  );
+});
+
 test("production wrapper rejects keep-cleanrooms unless local debug is explicit", async (t) => {
   const root = await tempRoot(t);
   const h = harness(root, t, { extra: { keepCleanrooms: true } });
@@ -494,6 +765,12 @@ test("kit URL and commit are validated before prompt creation", () => {
   const prompt = buildHermesPrompt({ role: "payer", kitUrl: KIT_URL, kitCommit: KIT_COMMIT });
   assert.match(prompt, new RegExp(KIT_COMMIT));
   assert.match(prompt, /paymentMoved:false/);
+  assert.match(prompt, /handshake_submit is signatures only/i);
+  assert.match(prompt, /retryAfterMs/i);
+  assert.match(prompt, /start at 5 seconds/i);
+  assert.match(prompt, /back off to at most 15 seconds/i);
+  assert.match(prompt, /erc8004_identity.*register command above, then call handshake_next again/i);
+  assert.doesNotMatch(prompt, /submit the public registration fields/i);
 });
 
 test("credential reader accepts exactly one supported env var or one private file and never searches", async (t) => {

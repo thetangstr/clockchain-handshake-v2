@@ -27,7 +27,7 @@ Sign only exact bytes with EIP-191 raw-byte semantics. Register the same local a
 
 Call `handshake_join` with lowercase role `requestor`. Then call `handshake_next` with the returned UUID sessionId and lowercase role `requestor`.
 
-If `bytesToSignHex` appears, sign it locally and call `handshake_submit` with only `signatureHex`. If `needed` is `funding_record`, `counterpart`, or `wait`, sleep 2 seconds and back off to at most 10 seconds. If `needed` is `erc8004_identity`, register locally and submit only public registration fields. If `needed` is `certificate`, call `handshake_get_certificate`.
+If `bytesToSignHex` appears, sign it locally and call `handshake_submit` with only `signatureHex`. `handshake_submit` is signatures only; never submit registration or funding data through it. If `needed` is `funding_record`, `counterpart`, or `wait`, honor `retryAfterMs` when present; otherwise start at 5 seconds and back off to at most 15 seconds before calling `handshake_next` again. If `needed` is `erc8004_identity`, register locally, then call `handshake_next` again. If `needed` is `certificate`, call `handshake_get_certificate`.
 
 You author the payment request only; you must not author the mandate. Hosted MCP coordinators advance PROPOSED, ACCEPTED, and ACKNOWLEDGED; do not invent or claim an ACK signed by a party.
 

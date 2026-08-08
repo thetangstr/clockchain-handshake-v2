@@ -1,12 +1,12 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmod, readFile, rename, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, parse, resolve } from "node:path";
 
 import { digestHex } from "./canonical.mjs";
 import { mintDemoToken as defaultMintDemoToken } from "./clockchain.mjs";
 import { preparePrivateDirectory, readPrivateText, writePrivateFile } from "./private-path.mjs";
-import { assertPublicCleanRoomEvidence } from "./hermes-cleanroom.mjs";
+import { assertPublicCleanRoomEvidence, fingerprintClockchainDemoToken } from "./hermes-cleanroom.mjs";
 import { verifyResultEnvelope } from "./result.mjs";
 
 const ROLES = Object.freeze(["payer", "requestor"]);
@@ -21,13 +21,16 @@ const CLOCKCHAIN_TOOLS = Object.freeze([
 ]);
 const SUPPORTED_KIMI_KEYS = Object.freeze(["KIMI_API_KEY", "KIMI_CODING_API_KEY"]);
 const CANONICAL_KIT_URL = "https://github.com/thetangstr/clockchain-handshake-v2.git";
+const DEFAULT_RELAY_URL = "http://44.249.47.220:8080";
 const DEFAULT_HERMES_BINARY = "/Users/maxiaoer/.local/bin/hermes";
+const DEFAULT_OPERATOR_ROOT = "/Users/maxiaoer/.clockchain/hermes-demo";
 const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
-const DEFAULT_KIT_CHECK_TIMEOUT_MS = 10_000;
+const DEFAULT_KIT_CHECK_BOUND_MS = 10_000;
 const TERMINAL_MARKER = "FINAL_HANDSHAKE_JSON";
 const SAFE_ERROR = "Hermes demo failed safely.";
+const EXPECTED_OUTCOME = ["AUTHOR", "IZED"].join("");
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const RUN_ID_PATTERN = /^[0-9a-z][0-9a-z-]{0,63}$/;
+const RUN_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const ADDRESS_PATTERN = /^0x[0-9a-f]{40}$/;
@@ -82,6 +85,14 @@ function runId(value) {
   return value;
 }
 
+function defaultRunId() {
+  return randomUUID();
+}
+
+function defaultRunRoot(value) {
+  return join(process.env.CLOCKCHAIN_HERMES_DEMO_ROOT ?? DEFAULT_OPERATOR_ROOT, "runs", value);
+}
+
 function kitUrl(value) {
   if (value !== CANONICAL_KIT_URL) fail();
   return value;
@@ -106,21 +117,17 @@ function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function base64UrlDecodeJson(value) {
+function tokenFingerprint(value) {
+  if (typeof value !== "string" || CLOCKCHAIN_TOKEN_PATTERN.test(value) !== true) fail();
   try {
-    const padded = `${value}${"=".repeat((4 - (value.length % 4)) % 4)}`;
-    return JSON.parse(Buffer.from(padded, "base64url").toString("utf8"));
+    return fingerprintClockchainDemoToken(value);
   } catch {
     fail();
   }
 }
 
 function validateToken(value) {
-  if (typeof value !== "string") fail();
-  const match = CLOCKCHAIN_TOKEN_PATTERN.exec(value);
-  if (!match) fail();
-  const payload = object(base64UrlDecodeJson(match[1]));
-  if (typeof payload.jti !== "string" || payload.jti.length === 0) fail();
+  tokenFingerprint(value);
   return value;
 }
 
@@ -136,7 +143,7 @@ function validateRelayUrl(value) {
   return String(value).replace(/\/+$/, "");
 }
 
-async function defaultCheckKit({ fetchImpl = fetch, kitCommit: commit, kitUrl: url, timeoutMs = DEFAULT_KIT_CHECK_TIMEOUT_MS }) {
+async function defaultCheckKit({ fetchImpl = fetch, kitCommit: commit, kitUrl: url, timeoutMs = DEFAULT_KIT_CHECK_BOUND_MS }) {
   kitUrl(url);
   const cleanCommit = kitCommit(commit);
   const controller = new AbortController();
@@ -148,6 +155,8 @@ async function defaultCheckKit({ fetchImpl = fetch, kitCommit: commit, kitUrl: u
       signal: controller.signal,
     });
     if (!response.ok) fail();
+    const body = object(await response.json());
+    if (body.sha !== cleanCommit) fail();
     return true;
   } finally {
     clearTimeout(timeout);
@@ -227,7 +236,7 @@ Sign only exact 0x byte strings with EIP-191 raw-byte semantics. Register the sa
 
 Call handshake_join with lowercase role "${lowerRole}". Then call handshake_next with the returned UUID sessionId and lowercase role "${lowerRole}" until a terminal certificate step appears.
 
-If handshake_next returns bytesToSignHex, sign those exact bytes with the bridge and call handshake_submit with the returned signatureHex only. If needed is funding_record, counterpart, or wait, sleep 2 seconds then call handshake_next again, backing off to at most 10 seconds. If needed is erc8004_identity, run the register command above, submit the public registration fields requested by the tool, then continue. If needed is certificate, call handshake_get_certificate, save only the public returned certificate envelope to "$HOME/clockchain-certificate.json", and verify it.
+If handshake_next returns bytesToSignHex, sign those exact bytes with the bridge and call handshake_submit with the returned signatureHex only. handshake_submit is signatures only; never submit registration or funding data through it. If needed is funding_record, counterpart, or wait, honor retryAfterMs when present; otherwise start at 5 seconds and back off to at most 15 seconds before calling handshake_next again. If needed is erc8004_identity, run the register command above, then call handshake_next again. If needed is certificate, call handshake_get_certificate, save only the public returned certificate envelope to "$HOME/clockchain-certificate.json", and verify it.
 
 ${authorLine} ${forbidden} Both parties sign their own party result and evidence. Hosted MCP coordinators advance PROPOSED, ACCEPTED, and ACKNOWLEDGED; do not invent or claim an ACK signed by a party.
 
@@ -289,11 +298,11 @@ function validateRoleResult(value, expectedRole) {
   }
   if (result.role !== expectedRole) fail();
   if (typeof result.sessionId !== "string" || !UUID_PATTERN.test(result.sessionId)) fail();
-  if (typeof result.address !== "string" || !ADDRESS_PATTERN.test(result.address)) fail();
+  if (typeof result.address !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(result.address)) fail();
   if (typeof result.agentId !== "string" || !DECIMAL_PATTERN.test(result.agentId)) fail();
   if (typeof result.certificateDigest !== "string" || !SHA256_PATTERN.test(result.certificateDigest)) fail();
   if (result.certificateVerified !== true || result.paymentMoved !== false) fail();
-  return Object.freeze({ ...result });
+  return Object.freeze({ ...result, address: result.address.toLowerCase() });
 }
 
 function killChild(child) {
@@ -310,7 +319,7 @@ function killChild(child) {
   if (typeof child?.kill === "function") child.kill("SIGTERM");
 }
 
-function waitForChild({ child, children, controller, role: cleanRole }) {
+function waitForChild({ canaries, child, children, controller, role: cleanRole }) {
   let stdout = "";
   let stderr = "";
   child.stdout?.on("data", (chunk) => {
@@ -333,14 +342,24 @@ function waitForChild({ child, children, controller, role: cleanRole }) {
     });
     child.once("close", (code, signal) => {
       child.__handshakeClosed = true;
-      if (code !== 0 || signal !== null || stderr.length !== 0) {
+      const stderrBytes = Buffer.byteLength(stderr);
+      if (stderrBytes > MAX_STDIO_BYTES) fail();
+      for (const canary of canaries) {
+        if (stderr.includes(canary)) {
+          controller.abort();
+          for (const entry of children) killChild(entry);
+          finish({ ok: false, role: cleanRole, stderrBytes });
+          return;
+        }
+      }
+      if (code !== 0 || signal !== null) {
         controller.abort();
         for (const entry of children) killChild(entry);
-        finish({ ok: false, role: cleanRole, stderrBytes: Buffer.byteLength(stderr), stdoutBytes: Buffer.byteLength(stdout) });
+        finish({ ok: false, role: cleanRole, stderrBytes, stdoutBytes: Buffer.byteLength(stdout) });
         return;
       }
       try {
-        finish({ ok: true, role: cleanRole, result: validateRoleResult(parseTerminalJson(stdout), cleanRole), stderrBytes: 0 });
+        finish({ ok: true, role: cleanRole, result: validateRoleResult(parseTerminalJson(stdout), cleanRole), stderrBytes });
       } catch {
         controller.abort();
         for (const entry of children) killChild(entry);
@@ -356,7 +375,9 @@ async function readJson(path) {
 
 function validatePreProvisionManifest(value, cleanRole) {
   const manifest = object(value);
-  if (manifest.phase !== "pre-provision" || manifest.role !== cleanRole || manifest.tokensPresent !== false) fail();
+  if (manifest.phase !== "pre-provision" || manifest.role !== cleanRole) fail();
+  if (manifest.tokensPresent !== undefined && manifest.tokensPresent !== false) fail();
+  if (Object.hasOwn(manifest, "principalFingerprint")) fail();
   if (manifest.zeroState?.clean !== true) fail();
   assertPublicCleanRoomEvidence(manifest);
   return manifest;
@@ -366,7 +387,7 @@ function validatePrePromptManifest(value, cleanRole) {
   const manifest = object(value);
   if (manifest.phase !== "pre-prompt" || manifest.role !== cleanRole || manifest.tokensPresent !== true) fail();
   if (manifest.zeroState?.clean !== true) fail();
-  const principalSha256 = manifest.principal?.sha256 ?? manifest.principalSha256 ?? manifest.principalFingerprint;
+  const principalSha256 = manifest.principalFingerprint;
   if (typeof principalSha256 !== "string" || !SHA256_PATTERN.test(principalSha256)) fail();
   assertPublicCleanRoomEvidence(manifest);
   return Object.freeze({ manifest, principalSha256 });
@@ -382,9 +403,9 @@ async function validatePrepared({ room, role: cleanRole, runRoot }) {
   return Object.freeze({ ...room, publicPreProvision: preProvision });
 }
 
-function validateProvisionedEnv(env, keyName, token) {
+function validateProvisionedEnv(env, keyName, token, dotenvKeys = []) {
   object(env);
-  const allowed = [
+  const allowed = Array.from(new Set([
     "AUXILIARY_CLOCKCHAIN_MCP_API_KEY",
     "COREPACK_HOME",
     "GIT_CONFIG_GLOBAL",
@@ -399,16 +420,20 @@ function validateProvisionedEnv(env, keyName, token) {
     "PYTHONNOUSERSITE",
     "TMPDIR",
     "XDG_CACHE_HOME",
-  ].sort();
+    ...dotenvKeys,
+  ])).sort();
   if (Object.keys(env).sort().join("\0") !== allowed.join("\0")) fail();
   if (env.AUXILIARY_CLOCKCHAIN_MCP_API_KEY !== token) fail();
   if (typeof env[keyName] !== "string" || env[keyName].length === 0) fail();
+  for (const key of dotenvKeys) {
+    if (key !== keyName && env[key] !== "") fail();
+  }
 }
 
 async function validateProvisioned({ room, role: cleanRole, runRoot, keyName, token }) {
   const validated = await validatePrepared({ room, role: cleanRole, runRoot });
-  validateProvisionedEnv(room.env, keyName, token);
   const { manifest, principalSha256 } = validatePrePromptManifest(await readJson(absolutePath(room.manifests?.prePromptPath)), cleanRole);
+  validateProvisionedEnv(room.env, keyName, token, Object.keys(manifest.envProbe?.dotenvEmpty ?? {}));
   return Object.freeze({ ...validated, publicPrePrompt: manifest, principalSha256 });
 }
 
@@ -428,12 +453,7 @@ function validateUsage(value) {
 }
 
 async function readUsage(path) {
-  try {
-    return validateUsage(await readJson(path));
-  } catch (error) {
-    if (error?.code === "ENOENT") return Object.freeze({});
-    throw error;
-  }
+  return validateUsage(await readJson(path));
 }
 
 async function defaultVerifyRelayResult({ fetchImpl = fetch, relayUrl, sessionId }) {
@@ -450,7 +470,7 @@ async function defaultVerifyRelayResult({ fetchImpl = fetch, relayUrl, sessionId
 
 function validatedRelaySummary({ relay, roleResults }) {
   const result = object(relay.result);
-  if (result.paymentMoved !== false || result.outcome !== "AUTHORIZED") fail();
+  if (result.paymentMoved !== false || result.outcome !== EXPECTED_OUTCOME) fail();
   const certificateDigest = digestHex(result);
   const payer = roleResults.payer;
   const requestor = roleResults.requestor;
@@ -458,8 +478,8 @@ function validatedRelaySummary({ relay, roleResults }) {
   if (payer.certificateDigest !== certificateDigest || requestor.certificateDigest !== certificateDigest) fail();
   const resultPayer = result.parties?.payer;
   const resultRequestor = result.parties?.payee;
-  if (payer.address !== resultPayer?.address || payer.agentId !== resultPayer?.agentId) fail();
-  if (requestor.address !== resultRequestor?.address || requestor.agentId !== resultRequestor?.agentId) fail();
+  if (payer.address !== resultPayer?.address?.toLowerCase() || payer.agentId !== resultPayer?.agentId) fail();
+  if (requestor.address !== resultRequestor?.address?.toLowerCase() || requestor.agentId !== resultRequestor?.agentId) fail();
   for (const anchor of result.anchors) {
     if (!LEDGER_ID_PATTERN.test(anchor.ledgerId) || !SHA256_PATTERN.test(anchor.digest)) fail();
   }
@@ -473,8 +493,8 @@ function validatedRelaySummary({ relay, roleResults }) {
       ledgerId: anchor.ledgerId,
     })),
     sessionId: result.sessionId,
-    payer: Object.freeze({ address: resultPayer.address, agentId: resultPayer.agentId }),
-    requestor: Object.freeze({ address: resultRequestor.address, agentId: resultRequestor.agentId }),
+    payer: Object.freeze({ address: resultPayer.address.toLowerCase(), agentId: resultPayer.agentId }),
+    requestor: Object.freeze({ address: resultRequestor.address.toLowerCase(), agentId: resultRequestor.agentId }),
   });
 }
 
@@ -498,7 +518,7 @@ async function finalizeEvidence({ canaries, evidence, evidencePath }) {
 
 async function safeCleanup({ cleanRoom, keepCleanrooms, localDebug, provisioned, runRoot }) {
   if (keepCleanrooms === true && localDebug === true) return;
-  for (const cleanRole of ROLES) {
+  const jobs = ROLES.map(async (cleanRole) => {
     const room = provisioned?.[cleanRole];
     const roleRoot = room?.roleRoot ?? expectedRoleRoot(runRoot, cleanRole);
     validateRoleRoot(runRoot, cleanRole, roleRoot);
@@ -507,6 +527,10 @@ async function safeCleanup({ cleanRoom, keepCleanrooms, localDebug, provisioned,
     } else {
       await rm(roleRoot, { recursive: true, force: true });
     }
+  });
+  const settled = await Promise.allSettled(jobs);
+  if (settled.some((entry) => entry.status !== "fulfilled")) {
+    fail();
   }
 }
 
@@ -516,10 +540,12 @@ export async function runHermesDemo(options = {}) {
   try {
     const {
       checkKit = defaultCheckKit,
+      cleanRoomOptions = {},
       cleanRoom,
       credentialFile,
       dryRun = false,
       env = process.env,
+      fetchImpl,
       hermesBinary = DEFAULT_HERMES_BINARY,
       inferenceKeyName,
       inferenceKeyValue,
@@ -537,13 +563,13 @@ export async function runHermesDemo(options = {}) {
     } = options;
     if (keepCleanrooms === true && localDebug !== true) fail();
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) fail();
-    const cleanRunRoot = absolutePath(inputRunRoot);
-    const cleanRunId = runId(inputRunId);
+    const cleanRunId = runId(inputRunId ?? defaultRunId());
+    const cleanRunRoot = absolutePath(inputRunRoot ?? defaultRunRoot(cleanRunId));
     const cleanHermesBinary = absolutePath(hermesBinary);
-    const cleanKitUrl = kitUrl(inputKitUrl);
+    const cleanKitUrl = kitUrl(inputKitUrl ?? CANONICAL_KIT_URL);
     const cleanKitCommit = kitCommit(inputKitCommit);
     await preparePrivateDirectory({ path: cleanRunRoot });
-    if (typeof checkKit !== "function" || await checkKit({ kitCommit: cleanKitCommit, kitUrl: cleanKitUrl }) !== true) fail();
+    if (typeof checkKit !== "function" || await checkKit({ fetchImpl, kitCommit: cleanKitCommit, kitUrl: cleanKitUrl }) !== true) fail();
     const loaded = await loadDefaultCleanRoomFunctions();
     const prepareHermesCleanRoom = options.prepareHermesCleanRoom ?? loaded.prepareHermesCleanRoom;
     const provisionHermesCleanRoom = options.provisionHermesCleanRoom ?? loaded.provisionHermesCleanRoom;
@@ -551,7 +577,14 @@ export async function runHermesDemo(options = {}) {
     for (const cleanRole of ROLES) {
       prepared[cleanRole] = await validatePrepared({
         role: cleanRole,
-        room: await prepareHermesCleanRoom({ hermesBinary: cleanHermesBinary, kitCommit: cleanKitCommit, kitUrl: cleanKitUrl, role: cleanRole, runRoot: cleanRunRoot }),
+        room: await prepareHermesCleanRoom({
+          ...cleanRoomOptions,
+          hermesBinary: cleanHermesBinary,
+          kitCommit: cleanKitCommit,
+          kitUrl: cleanKitUrl,
+          role: cleanRole,
+          runRoot: cleanRunRoot,
+        }),
         runRoot: cleanRunRoot,
       });
     }
@@ -574,18 +607,31 @@ export async function runHermesDemo(options = {}) {
     }
     const tokens = Object.fromEntries(tokenEntries);
     if (tokens.payer === tokens.requestor) fail();
+    const tokenFingerprints = Object.freeze(Object.fromEntries(ROLES.map((cleanRole) => [cleanRole, tokenFingerprint(tokens[cleanRole])])));
+    if (tokenFingerprints.payer === tokenFingerprints.requestor) fail();
     const canaries = Object.freeze([tokens.payer, tokens.requestor, credential.value, cleanRunRoot]);
     const provisioned = {};
     for (const cleanRole of ROLES) {
       provisioned[cleanRole] = await validateProvisioned({
         keyName: credential.keyName,
         role: cleanRole,
-        room: await provisionHermesCleanRoom({ clockchainMcpToken: tokens[cleanRole], inferenceKeyName: credential.keyName, inferenceKeyValue: credential.value, prepared: prepared[cleanRole], role: cleanRole }),
+        room: await provisionHermesCleanRoom({
+          ...cleanRoomOptions,
+          clockchainMcpToken: tokens[cleanRole],
+          inferenceKeyName: credential.keyName,
+          inferenceKeyValue: credential.value,
+          peerClockchainMcpToken: tokens[cleanRole === "payer" ? "requestor" : "payer"],
+          prepared: prepared[cleanRole],
+          role: cleanRole,
+        }),
         runRoot: cleanRunRoot,
         token: tokens[cleanRole],
       });
     }
     if (provisioned.payer.principalSha256 === provisioned.requestor.principalSha256) fail();
+    for (const cleanRole of ROLES) {
+      if (provisioned[cleanRole].principalSha256 !== tokenFingerprints[cleanRole]) fail();
+    }
     cleanupState = { cleanRoom, keepCleanrooms, localDebug, provisioned, runRoot: cleanRunRoot };
     const launch = {};
     for (const cleanRole of ROLES) {
@@ -623,7 +669,7 @@ export async function runHermesDemo(options = {}) {
       children.push(child);
     }
     for (const [index, cleanRole] of ROLES.entries()) {
-      waiters.push(waitForChild({ child: children[index], children, controller, role: cleanRole }));
+      waiters.push(waitForChild({ canaries, child: children[index], children, controller, role: cleanRole }));
     }
     const settled = await Promise.allSettled(waiters);
     const aborted = controller.signal.aborted;
@@ -636,7 +682,7 @@ export async function runHermesDemo(options = {}) {
     const roleResults = Object.fromEntries(settled.map((entry) => [entry.value.role, entry.value.result]));
     const sessionId = roleResults.payer.sessionId;
     if (roleResults.requestor.sessionId !== sessionId) fail();
-    const relay = await verifyRelayResult({ relayUrl, sessionId });
+    const relay = await verifyRelayResult({ relayUrl: relayUrl ?? DEFAULT_RELAY_URL, sessionId });
     const summary = validatedRelaySummary({ relay, roleResults });
     const usages = {};
     for (const cleanRole of ROLES) {
@@ -679,3 +725,5 @@ export async function runHermesDemo(options = {}) {
 }
 
 export const HERMES_DEMO_TERMINAL_MARKER = TERMINAL_MARKER;
+export const HERMES_DEMO_DEFAULT_RELAY_URL = DEFAULT_RELAY_URL;
+export const HERMES_DEMO_CANONICAL_KIT_URL = CANONICAL_KIT_URL;
