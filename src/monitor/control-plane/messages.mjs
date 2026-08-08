@@ -1,6 +1,6 @@
 // src/monitor/control-plane/messages.mjs
 //
-// The operator control plane's message map. This is the ONLY module (besides
+// The session host control plane's message map. This is the ONLY module (besides
 // src/core/verdict.mjs's emission site, src/core/evidence.mjs's ban pattern,
 // the stakeholder message map, and test/**) allowed to contain the literal
 // "AUTHORIZED" -- scripts/check-invariants.sh enforces that allowlist by exact
@@ -18,7 +18,7 @@
 //
 // This dashboard is denser than the public stakeholder page (per spec, that
 // is allowed here), so unlike the public page it is fine to show the raw
-// reason code alongside the plain-language sentence -- this is the operator's
+// reason code alongside the plain-language sentence -- this is the session host's
 // own instrument, not audience-facing output.
 
 export const STATUS_CODES = Object.freeze([
@@ -38,7 +38,7 @@ export const STATUS_CODES = Object.freeze([
 
 // The frozen public reason-code set (14 original + 2 rehearsal-gate additions,
 // see docs/deviations.md D7). scripts/check-invariants.sh enforces this same
-// set on the verifier/relay/role surfaces; this map exists so the operator
+// set on the verifier/relay/role surfaces; this map exists so the session host
 // dashboard never has to invent wording for a code live, mid-demo.
 export const REASON_CODES = Object.freeze([
   "RENDEZVOUS_UNAVAILABLE",
@@ -71,7 +71,7 @@ export const STATUS_MESSAGES = Object.freeze({
   ACCEPTED: "The acceptance is anchored on Clockchain.",
   ACKNOWLEDGED: "The acknowledgment is anchored on Clockchain. All three anchors exist.",
   EVIDENCE_RECEIVED: "Both parties' signed evidence packages reached the relay.",
-  VERIFYING: "The fresh, independent verifier is re-checking every anchor now.",
+  VERIFYING: "The session host's independent checker is re-checking every anchor now.",
 });
 
 export const REASON_MESSAGES = Object.freeze({
@@ -99,7 +99,7 @@ const FALLBACK_REASON_MESSAGE =
   "This run did not complete. No further detail is safe to show without risking a leak.";
 
 /** Plain-language sentence for a run status code. Never throws on an unknown
- * code -- an operator dashboard must keep rendering through a code it does not
+ * code -- a session host dashboard must keep rendering through a code it does not
  * yet recognise rather than blank the screen mid-demo. */
 export function statusMessage(code) {
   return STATUS_MESSAGES[code] ?? FALLBACK_STATUS_MESSAGE;
@@ -140,7 +140,7 @@ export function renderVerdict(verdict) {
   if (verdict === null || verdict === undefined) {
     return Object.freeze({
       detail:
-        "No money has moved. The independent verifier has not published a result yet.",
+        "No money has moved. The independent checker has not published a result yet.",
       headline: "Verdict pending",
       outcome: null,
       state: "pending",
@@ -150,7 +150,7 @@ export function renderVerdict(verdict) {
   if (isSignedAuthorizedPublication(verdict)) {
     return Object.freeze({
       detail:
-        "The independent verifier re-checked every anchor against Clockchain and signed this result. No money has moved.",
+        "The independent checker re-checked every anchor against Clockchain and signed this result. No money has moved.",
       headline: AUTHORIZED_OUTCOME,
       outcome: AUTHORIZED_OUTCOME,
       state: "authorized",

@@ -61,7 +61,7 @@ async function resolveRendezvous() {
   });
 }
 
-// Human-paced throughout: the operator has to fund us on a public testnet, which
+// Human-paced throughout: the session host has to fund us on a public testnet, which
 // takes as long as it takes. Nothing here has an anchor yet, so nothing can expire.
 const WAIT_MS = 45 * 60_000;
 const HEARTBEAT_MS = 20_000;
@@ -130,7 +130,7 @@ async function main() {
       "Another requestor already joined this session. Only one can be paid per session — ask the payer to open a fresh one.");
   }
 
-  // Our own key, generated here. The operator never sees it and cannot produce it.
+  // Our own key, generated here. The session host never sees it and cannot produce it.
   const privateKey = generatePrivateKey();
   const account = privateKeyToAccount(privateKey);
   const kp = relay.generateEnvelopeKeyPair();
@@ -150,7 +150,7 @@ async function main() {
     stop("ROLE_ALREADY_BOUND",
       "The payer funded a different requestor: another agent claimed this session first. Nothing was spent.");
   }
-  say("FUNDED", "The operator covered our registration gas. Registering an on-chain identity.");
+  say("FUNDED", "The session host covered our registration gas. Registering an on-chain identity.");
 
   const wallet = createWalletClient({ account, chain: sepolia, transport: http(RPC_URL) });
   const tx = await wallet.writeContract({
@@ -227,9 +227,9 @@ async function main() {
   say("ACCEPTED", "Our acceptance is recorded on Clockchain and our evidence is delivered.");
 
   // The closing certificate. Until now this side finished blind: the verdict
-  // appeared on the payer's screen and never here. The verifier's signed
-  // certificate is fetched from the session and checked against the operator
-  // key this run's descriptor named -- the same key that gated every earlier
+  // appeared on the payer's screen and never here. The independent checker's
+  // signed certificate is fetched from the session and checked against the
+  // session host key this run's descriptor named -- the same key that gated every earlier
   // step -- so what gets read back is the checker's own signed word, not this
   // side's claim about itself.
   let certificate = null;
@@ -254,7 +254,7 @@ async function main() {
       }
       break;
     }
-    say("VERIFYING", "Waiting for the independent verifier's signed certificate.");
+    say("VERIFYING", "Waiting for the independent checker's signed certificate.");
     await new Promise((resolve) => setTimeout(resolve, 5_000));
   }
 
@@ -262,7 +262,7 @@ async function main() {
     await writeFile(join(directory, "closing-certificate.json"), JSON.stringify(certificate, null, 2));
     const r = certificate.result;
     process.stdout.write(
-      `\nThe independent verifier's certificate has arrived, and its signature\n` +
+      `\nThe independent checker's certificate has arrived, and its signature\n` +
       `verifies against this session host key.\n\n` +
       `  Its verdict: ${r.outcome}\n` +
       `  No money moved: ${r.paymentMoved === false}\n` +
@@ -274,7 +274,7 @@ async function main() {
   } else {
     process.stdout.write(
       "\nOur side is complete — and that is NOT authorization.\n" +
-      "The verifier's certificate did not arrive within the wait window, so the\n" +
+      "The independent checker's certificate did not arrive within the wait window, so the\n" +
       "outcome was decided on the payer's side. No money has moved at any point.\n" +
       `\nEvidence: ${directory}\n`,
     );

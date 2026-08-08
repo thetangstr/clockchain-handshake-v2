@@ -391,7 +391,7 @@ async function runOneSession({ token, treasury }) {
   bumpHeartbeat("payer", "payee");
   await say("EVIDENCE_RECEIVED", "Both parties' evidence has arrived. Verifying now, while the window is open.");
 
-  await say("VERIFYING", "An independent verifier is re-checking every piece of evidence from scratch.");
+  await say("VERIFYING", "The session host's independent checker is re-checking every piece of evidence from scratch.");
   bumpHeartbeat("verifier");
   const verdict = await verifyBilateralAuthorization({
     clockchain: createMcpClient({ token }),
@@ -460,7 +460,7 @@ async function runOneSession({ token, treasury }) {
     });
     process.stdout.write(
       "\nClosing certificate published. Both parties can fetch it from the\n" +
-      "session and verify it against the operator key the descriptor named.\n",
+      "session and verify it against the session host key the descriptor named.\n",
     );
   } catch (error) {
     process.stdout.write(
@@ -474,7 +474,7 @@ async function runOneSession({ token, treasury }) {
   await writeFile(join(process.cwd(), "runs", `session-${sessionId}.json`),
     JSON.stringify({ descriptorEnvelope: envelope, mandateEnvelope, requestEnvelope, repositoryPublicKey, payerDirectory, payeeDirectory, outcome: verdict.outcome, anchors: verdict.transitions, resultEnvelope, paymentMoved: false }, null, 2));
   process.stdout.write(
-    `\nThe run is complete and the verdict above came from the independent verifier.\n` +
+    `\nThe run is complete and the verdict above came from the independent checker.\n` +
     `Anyone can re-check those three blocks themselves; no money moved at any point.\n` +
     `  Evidence: ${payerDirectory}\n`,
   );

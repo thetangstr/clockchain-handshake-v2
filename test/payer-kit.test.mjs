@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 import { canonicalBytes } from "../src/core/canonical.mjs";
@@ -8,6 +9,12 @@ import {
   issuedAtMsFromLedgerTimestamp,
   selectRequestorRoster,
 } from "../src/roles/payer.mjs";
+
+const PAYER = new URL("../bin/payer.mjs", import.meta.url);
+
+async function payerSource() {
+  return readFile(PAYER, "utf8");
+}
 
 function transition(kind, blockHeight) {
   return {
@@ -53,6 +60,17 @@ test("payer rejects discovery repository key substitution before running its rol
     }),
     /signed terms name a different session host key/u,
   );
+});
+
+test("payer-facing prose names the session host and independent checker", async () => {
+  const source = await payerSource();
+
+  assert.ok(!source.includes("operator key"), "payer CLI prose must say session host key");
+  assert.ok(!source.includes("The operator covered"), "payer CLI funding prose must name the session host");
+  assert.ok(!source.includes("independent verifier's signed certificate"));
+  assert.match(source, /session host key/);
+  assert.match(source, /The session host covered our registration gas/);
+  assert.match(source, /independent checker's signed certificate/);
 });
 
 test("payer roster keeps the first requestor identity and ignores party_ready for another address", () => {

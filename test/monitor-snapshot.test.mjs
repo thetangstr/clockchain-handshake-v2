@@ -141,6 +141,29 @@ test("the public board labels the verifier lane as Clockchain while the internal
   assert.ok(!ROLE_NAMES.includes("operator"));
 });
 
+test("public status and verdict copy use session host and independent checker terms", () => {
+  assert.equal(
+    STATUS_MESSAGES.FUNDED,
+    "The session host funded registration gas for both seats. No customer money is at stake.",
+  );
+  assert.equal(
+    STATUS_MESSAGES.VERIFYING,
+    "The session host's independent checker is verifying the evidence.",
+  );
+  assert.equal(
+    VERDICT_MESSAGES.PENDING,
+    "Waiting for the independent checker's signed decision.",
+  );
+  assert.equal(
+    VERDICT_MESSAGES.AUTHORIZED,
+    "AUTHORIZED — the independent checker confirmed the handshake. No money has moved.",
+  );
+  assert.ok(!STATUS_MESSAGES.FUNDED.includes("operator"));
+  assert.ok(!STATUS_MESSAGES.VERIFYING.includes("independent verifier"));
+  assert.ok(!VERDICT_MESSAGES.PENDING.includes("independent verifier"));
+  assert.ok(!VERDICT_MESSAGES.AUTHORIZED.includes("independent verifier"));
+});
+
 test("buildSnapshot produces a snapshot that validates cleanly", () => {
   const snapshot = makeSnapshot();
   assert.equal(validateSnapshot(snapshot), true);

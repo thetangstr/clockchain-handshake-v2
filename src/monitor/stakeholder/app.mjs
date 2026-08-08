@@ -27,7 +27,7 @@ const STALE_SNAPSHOT_MS = 30000;
 // /monitor/<sessionId> for a specific run -- so the path is the primary source
 // and ?sid= remains supported for anything that already builds that form.
 // Reading only the query string meant every path-style link, including the one
-// the operator prints, rendered "no session id given".
+// the session host prints, rendered "no session id given".
 const params = new URLSearchParams(window.location.search);
 const pathSegments = window.location.pathname.split("/").filter(Boolean);
 const pathSid = pathSegments[0] === "monitor" && pathSegments.length > 1

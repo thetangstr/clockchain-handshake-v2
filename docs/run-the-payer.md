@@ -17,7 +17,7 @@ session invitation and checks it. Registers an identity on Ethereum's Sepolia
 **test** network, for which the host sends your new address a fraction of a cent
 of test-network ETH so it can pay the transaction fee. Signs the payment terms,
 writes the payer side of the handshake to a public test ledger, uploads its
-evidence, and checks the host's signed closing certificate.
+evidence, and checks the session host's independent checker certificate.
 
 **What it does not do.** No mainnet. No real funds. It does not touch any
 account of yours, ask you for any secret, or read anything outside the folder it

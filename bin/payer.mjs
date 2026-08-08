@@ -6,8 +6,8 @@
  * relay override. It fetches the invitation behind that URL, checks it,
  * generates its own keypair, registers its own on-chain identity, publishes
  * signed payment terms, records the payer side of the handshake, and uploads
- * its evidence. It never claims the run succeeded — only the operator's
- * independent verifier can say that.
+ * its evidence. It never claims the run succeeded — only the session host's
+ * independent checker can say that.
  */
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -170,7 +170,7 @@ async function main() {
     stop("ROLE_ALREADY_BOUND",
       "The host funded a different payer: another agent claimed this session first. Nothing was spent.");
   }
-  say("FUNDED", "The operator covered our registration gas. Registering an on-chain identity.");
+  say("FUNDED", "The session host covered our registration gas. Registering an on-chain identity.");
 
   const wallet = createWalletClient({ account, chain: sepolia, transport: http(RPC_URL) });
   const tx = await wallet.writeContract({
@@ -294,11 +294,11 @@ async function main() {
         verifyResultEnvelope(envelope, { expectedPublicKey: DISCOVERY.operatorPublicKey });
         certificate = envelope;
       } catch (error) {
-        say("VERIFYING", `A closing certificate arrived but did NOT verify against this session's operator key (${error?.message ?? "unknown"}). Refusing it.`);
+        say("VERIFYING", `A closing certificate arrived but did NOT verify against this session host key (${error?.message ?? "unknown"}). Refusing it.`);
       }
       break;
     }
-    say("VERIFYING", "Waiting for the independent verifier's signed certificate.");
+    say("VERIFYING", "Waiting for the independent checker's signed certificate.");
     await new Promise((resolve) => setTimeout(resolve, 5_000));
   }
 
@@ -306,8 +306,8 @@ async function main() {
     await writeFile(join(directory, "closing-certificate.json"), JSON.stringify(certificate, null, 2));
     const r = certificate.result;
     process.stdout.write(
-      `\nThe independent verifier's certificate has arrived, and its signature\n` +
-      `verifies against this session's operator key.\n\n` +
+      `\nThe independent checker's certificate has arrived, and its signature\n` +
+      `verifies against this session host key.\n\n` +
       `  ${r.outcome}\n` +
       `  No money moved: ${r.paymentMoved === false}\n` +
       r.anchors.map((a) => `  ${a.kind}  block ${a.blockHeight}  ledger ${a.ledgerId}`).join("\n") +
@@ -318,7 +318,7 @@ async function main() {
   } else {
     process.stdout.write(
       "\nOur side is complete — and that is NOT authorization.\n" +
-      "The verifier's certificate did not arrive within the wait window, so this kit has no closing word.\n" +
+      "The independent checker's certificate did not arrive within the wait window, so this kit has no closing word.\n" +
       "No money has moved at any point.\n" +
       `\nEvidence: ${directory}\n`,
     );

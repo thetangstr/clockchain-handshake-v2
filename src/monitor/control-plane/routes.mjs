@@ -1,11 +1,11 @@
 // src/monitor/control-plane/routes.mjs
 //
-// The operator control plane's HTTP surface.
+// The session host control plane's HTTP surface.
 //
 // LOOPBACK ONLY. This handler must be mounted on a server bound to 127.0.0.1
-// (or ::1) by the operator process, never on a public interface. Per the plan
-// (P2 clarification): "the operator control plane binds loopback only; a
-// localhost UI on the operator's own machine is not a cross-machine inbound
+// (or ::1) by the session host process, never on a public interface. Per the plan
+// (P2 clarification): "the control plane binds loopback only; a
+// localhost UI on the session host's own machine is not a cross-machine inbound
 // path and is P2-compliant." The remote-address check below is
 // defense-in-depth, not the enforcement point -- do not remove it, and do not
 // "fix" the bind address to 0.0.0.0 to make this reachable from another
@@ -25,7 +25,7 @@
 //   POST /control/abort      -> the ONLY route that aborts a run.
 //
 // This module shows what the run and the chain say, and forwards exactly two
-// operator intents (start, abort). It never imports a Clockchain client or a
+// session host intents (start, abort). It never imports a Clockchain client or a
 // snapshot builder directly -- both arrive as injected dependencies -- so the
 // control plane structurally cannot become an authority: swap the injected
 // clockchain for a fake in a test, or for the real MCP client in production,

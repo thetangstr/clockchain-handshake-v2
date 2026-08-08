@@ -100,9 +100,9 @@ export const RECEIPT_CARDS = Object.freeze([
 
 export const VERDICT_MESSAGES = Object.freeze({
   PENDING:
-    "Waiting for the independent verifier's signed decision.",
+    "Waiting for the independent checker's signed decision.",
   AUTHORIZED:
-    "AUTHORIZED — the independent verifier confirmed the handshake. No money has moved.",
+    "AUTHORIZED — the independent checker confirmed the handshake. No money has moved.",
 });
 
 /** True if the union of every step's statuses is exactly STATUSES, with no

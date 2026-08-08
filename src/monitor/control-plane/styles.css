@@ -1,6 +1,6 @@
 /* src/monitor/control-plane/styles.css
  *
- * The operator control plane's stylesheet. Dense and information-rich is
+ * The session host control plane's stylesheet. Dense and information-rich is
  * fine here (unlike the public stakeholder page), but it must still read
  * from a few feet away when projected -- so type stays large, contrast
  * stays high, and status color is never the only signal (every colored

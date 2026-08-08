@@ -44,7 +44,11 @@ test("requestor-facing host-key prose does not say operator key", async () => {
   const source = await requestorSource();
 
   assert.ok(!source.includes("operator key"), "requestor CLI prose must say session host key");
+  assert.ok(!source.includes("The operator covered"), "requestor CLI funding prose must name the session host");
+  assert.ok(!source.includes("independent verifier's signed certificate"));
   assert.match(source, /session host key/);
+  assert.match(source, /The session host covered our registration gas/);
+  assert.match(source, /independent checker's signed certificate/);
 });
 
 test("requestor cannot bypass discovery validation with explicit relay/session flags", async () => {
