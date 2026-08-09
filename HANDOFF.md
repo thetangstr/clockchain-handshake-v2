@@ -205,6 +205,35 @@ public discovery URL, with payer/requestor kits joining from a clean clone.
   The next attempt is gated on a tested compact-encoding forwarder plus a
   bounded, lock-releasing wait for that exact counterpart state.
 
+- 2026-08-08 — Turnkey attempt
+  `c614e403-43a9-45e2-88aa-e4134840b263` stopped in `prepare` before either
+  credential read, MCP-token mint, or Hermes launch. Payer preparation had
+  completed when Requestor preparation failed, exposing a deterministic
+  launcher defect: cleanup was armed only after both preparations completed,
+  so the Payer disposable root remained. The exact Requestor substep was not
+  recoverable from sanitized evidence and did not recur in ten consecutive
+  no-token rehearsals. Commit `219cb13a0b44fda707fc7215474a150cb88acc6b`
+  arms cleanup before the role loop and adds the missing second-role-failure
+  regression. The stranded Payer root was removed after exact-path validation;
+  its mode-0600 `failure.json` and `checkpoint.json` remain retained.
+
+- 2026-08-08 — Fresh-agent retry
+  `9fe86b0b-4713-47a6-9e7e-cacbe891606e` reached signed identity claims and
+  role-tagged funding for both blank-state agents in session
+  `e0fe5966-c8ef-4754-b6f9-1b3ea3204990`. Requestor registered fresh ERC-8004
+  agent `9473`, then exited after the normal `payer_mandate` dependency with an
+  empty digest and `certificateVerified:false`; the launcher rejected that
+  terminal marker and terminated Payer before Payer registration completed.
+  Root cause was a contradiction in the actual generated runtime prompt:
+  other-role artifacts were described both as normal waits and as a reason to
+  “stop and emit failure JSON.” The earlier bounded-wait change had updated the
+  markdown prompts but not `buildHermesPrompt()`. Both disposable roots were
+  removed, no result evidence exists, and retained evidence reports
+  `paymentMoved:false`. The next attempt is gated on a runtime-prompt test that
+  makes `party_ready` and other-role dependencies nonterminal, applies
+  `waitMs:15000` to every live `handshake_next`, and reserves
+  `FINAL_HANDSHAKE_JSON` for a locally verified closing certificate.
+
 ## Evidence
 
 *(gate results land here: gate id, date, session id, block heights, anything a skeptic

@@ -271,6 +271,44 @@ test("Hermes role prompts treat every coordinator dependency as waiting, not cro
   assert.match(requestor, /payer_mandate.*wait for (?:the )?Payer.*handshake_next/is);
 });
 
+test("Hermes role prompts make other-role waits and party_ready nonterminal until a verified certificate", async () => {
+  for (const [name, cleanRole, oppositeArtifact, oppositeLabel] of [
+    ["hermes-payer", "payer", "requestor_identity_ready", "Requestor"],
+    ["hermes-requestor", "requestor", "payer_mandate", "Payer"],
+  ]) {
+    const text = await loadHermes(name);
+    assert.match(
+      text,
+      new RegExp(
+        "Every `?handshake_next`? call[^\\n]*" +
+          "waitMs:15000[^\\n]*" +
+          "returned UUID sessionId[^\\n]*" +
+          `lowercase role \`?${cleanRole}\`?[^\\n]*` +
+          'signingEncoding:"gzip-base64url"',
+      ),
+    );
+    assert.match(
+      text,
+      /counterpart_transition[^\n]*already waited[^\n]*call `?handshake_next`? again directly[^\n]*do not run a terminal sleep/i,
+    );
+    assert.match(text, /party_ready[^.]*does not complete (?:the )?task[^.]*keep looping/is);
+    assert.match(
+      text,
+      new RegExp(`${oppositeArtifact}[^.]*means wait for the ${oppositeLabel}[^.]*keep looping`, "is"),
+    );
+    assert.match(text, /FINAL_HANDSHAKE_JSON is success-only/is);
+    assert.match(text, /handshake_get_certificate[^.]*ok:"certificate"[^.]*only success response/is);
+    assert.match(
+      text,
+      /Do not emit `?FINAL_HANDSHAKE_JSON`?[^.]*successfully returned and locally verified certificate[^.]*nonempty 64-lowercase-hex certificateDigest/is,
+    );
+    assert.doesNotMatch(text, /stop and emit failure JSON/i);
+    assert.doesNotMatch(text, /failure JSON/i);
+    assert.doesNotMatch(text, /certificateVerified\s*:\s*false/i);
+    assert.doesNotMatch(text, /certificateDigest[^\\n]*(?:empty|pending|false)/i);
+  }
+});
+
 test("Hermes requestor authors payment request only and never authors the mandate", async () => {
   const text = await loadHermes("hermes-requestor");
   assert.match(text, /author the payment request only/i);

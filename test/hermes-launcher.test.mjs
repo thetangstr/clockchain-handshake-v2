@@ -1283,6 +1283,45 @@ test("generated role prompts keep every coordinator dependency in the retry loop
   assert.match(requestor, /payer_mandate.*wait for (?:the )?Payer.*handshake_next/is);
 });
 
+test("generated Hermes prompts keep live agents looping until a verified certificate", () => {
+  for (const cleanRole of ["payer", "requestor"]) {
+    const prompt = buildHermesPrompt({ role: cleanRole, kitUrl: KIT_URL, kitCommit: KIT_COMMIT });
+    const oppositeArtifact = cleanRole === "payer" ? "requestor_identity_ready" : "payer_mandate";
+    const oppositeLabel = cleanRole === "payer" ? "Requestor" : "Payer";
+
+    assert.match(
+      prompt,
+      new RegExp(
+        "Every handshake_next call[^\\n]*" +
+          "waitMs:15000[^\\n]*" +
+          "returned UUID sessionId[^\\n]*" +
+          `lowercase role \"${cleanRole}\"[^\\n]*` +
+          "signingEncoding \"gzip-base64url\"",
+      ),
+      `${cleanRole} prompt must bind waitMs, sessionId, role, and gzip signing in one instruction`,
+    );
+    assert.match(
+      prompt,
+      /counterpart_transition[^\n]*already waited[^\n]*call handshake_next again directly[^\n]*do not run a terminal sleep/i,
+    );
+    assert.match(prompt, /party_ready[^.]*does not complete (?:the )?task[^.]*keep looping/is);
+    assert.match(
+      prompt,
+      new RegExp(`${oppositeArtifact}[^.]*means wait for the ${oppositeLabel}[^.]*keep looping`, "is"),
+    );
+    assert.match(prompt, /FINAL_HANDSHAKE_JSON is success-only/is);
+    assert.match(prompt, /handshake_get_certificate[^.]*ok:"certificate"[^.]*only success response/is);
+    assert.match(
+      prompt,
+      /Do not emit FINAL_HANDSHAKE_JSON[^.]*successfully returned and locally verified certificate[^.]*nonempty 64-lowercase-hex certificateDigest/is,
+    );
+    assert.doesNotMatch(prompt, /stop and emit failure JSON/i);
+    assert.doesNotMatch(prompt, /failure JSON/i);
+    assert.doesNotMatch(prompt, /certificateVerified\s*:\s*false/i);
+    assert.doesNotMatch(prompt, /certificateDigest[^\\n]*(?:empty|pending|false)/i);
+  }
+});
+
 test("credential reader accepts exactly one supported env var or one private file and never searches", async (t) => {
   assert.deepEqual(
     await readInferenceCredential({ env: { MINIMAX_CN_API_KEY: INFERENCE_SECRET } }),
