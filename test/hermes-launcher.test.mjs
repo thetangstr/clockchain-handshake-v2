@@ -339,6 +339,7 @@ function harness(root, t, options = {}) {
     checkPublicServices: [],
     credentialReads: [],
     minted: [],
+    primed: [],
     prepared: [],
     provisioned: [],
     spawns: [],
@@ -385,6 +386,10 @@ function harness(root, t, options = {}) {
         calls.minted.push(subject);
         if (options.tokens) return options.tokens[calls.minted.length - 1];
         return calls.minted.length === 1 ? TOKEN_A : TOKEN_B;
+      },
+      primeHandshakeInvitation: async (input) => {
+        calls.primed.push(input);
+        return { invitationId: input.invitationId, payer: true, requestor: true };
       },
       postRunCommandRunner: async (command, args) => {
         if (command === "git" && args[0] === "-C" && args[2] === "rev-parse" && args[3] === "HEAD") {
@@ -485,6 +490,47 @@ test("mints two distinct tokens only after both pre-provision manifests exist an
   assert.equal(result.summary.certificateDigest, CERT_DIGEST);
   assert.equal(result.summary.paymentMoved, false);
   assert.deepEqual(h.calls.cleaned.sort(), [join(root, "roles", "payer"), join(root, "roles", "requestor")].sort());
+});
+
+test("pins the same business invitation to both MCP principals before either fresh agent starts", async (t) => {
+  const root = await tempRoot(t);
+  const h = harness(root, t);
+
+  await runHermesDemo(h.options);
+
+  assert.equal(h.calls.primed.length, 1);
+  assert.deepEqual(h.calls.primed[0], {
+    fetchImpl: undefined,
+    invitationId: SESSION_ID,
+    terms: {
+      amount: { currency: "USD", value: "18750" },
+      invoiceReference: "HS-8842",
+      purpose: "Invoice HS-8842 against PO NS-1847",
+      validForMinutes: 45,
+    },
+    tokens: { payer: TOKEN_A, requestor: TOKEN_B },
+  });
+  assert.equal(h.calls.provisioned.length, 2);
+  assert.equal(h.calls.spawns.length, 2);
+});
+
+test("invitation priming failure starts no agent and removes both provisioned clean rooms", async (t) => {
+  const root = await tempRoot(t);
+  const h = harness(root, t, {
+    extra: {
+      primeHandshakeInvitation: async () => {
+        throw new Error("prime refused");
+      },
+    },
+  });
+
+  await assert.rejects(() => runHermesDemo(h.options));
+
+  assert.equal(h.calls.spawns.length, 0);
+  assert.equal(h.calls.cleaned.length, 2);
+  const failure = JSON.parse(await readFile(join(root, "evidence", "failure.json"), "utf8"));
+  assert.equal(failure.phase, "prime");
+  assert.deepEqual(failure.cleanup, { payerRemoved: true, requestorRemoved: true });
 });
 
 test("requestor prepare failure removes payer clean room before retaining sanitized evidence", async (t) => {

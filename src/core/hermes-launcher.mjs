@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, parse, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { digestHex } from "./canonical.mjs";
-import { mintDemoToken as defaultMintDemoToken } from "./clockchain.mjs";
+import { createMcpClient, mintDemoToken as defaultMintDemoToken } from "./clockchain.mjs";
 import { preparePrivateDirectory, readPrivateText, writePrivateFile } from "./private-path.mjs";
 import { assertPublicCleanRoomEvidence, fingerprintClockchainDemoToken } from "./hermes-cleanroom.mjs";
 import { redact } from "./redact.mjs";
@@ -23,6 +23,12 @@ const CLOCKCHAIN_TOOLS = Object.freeze([
   "handshake_submit",
   "handshake_get_certificate",
 ]);
+const INVOICE_DEMO_TERMS = Object.freeze({
+  amount: Object.freeze({ currency: "USD", value: "18750" }),
+  invoiceReference: "HS-8842",
+  purpose: "Invoice HS-8842 against PO NS-1847",
+  validForMinutes: 45,
+});
 const SUPPORTED_INFERENCE_KEYS = Object.freeze(["MINIMAX_CN_API_KEY"]);
 const CANONICAL_KIT_URL = "https://github.com/thetangstr/clockchain-handshake-v2.git";
 const DEFAULT_RELAY_URL = "http://44.249.47.220:8080";
@@ -81,6 +87,7 @@ const CHECKPOINT_PHASES = Object.freeze([
   "credential",
   "mint",
   "provision",
+  "prime",
   "launch",
   "agents",
   "relay",
@@ -213,6 +220,38 @@ function validatePublicServicesSummary(value) {
   if (!UUID_PATTERN.test(summary.invitationId)) fail();
   if (keys.filter((key) => key !== "invitationId").some((key) => summary[key] !== true)) fail();
   return Object.freeze({ ...summary });
+}
+
+function validatePrimedInvitation(value, invitationId) {
+  const summary = object(value);
+  if (
+    Object.keys(summary).sort().join("\0") !== ["invitationId", "payer", "requestor"].sort().join("\0") ||
+    summary.invitationId !== invitationId ||
+    summary.payer !== true ||
+    summary.requestor !== true
+  ) fail();
+  return Object.freeze({ ...summary });
+}
+
+async function defaultPrimeHandshakeInvitation({ fetchImpl, invitationId, terms, tokens }) {
+  const results = await Promise.all(ROLES.map(async (cleanRole) => {
+    const client = createMcpClient({
+      token: tokens[cleanRole],
+      ...(fetchImpl === undefined ? {} : { fetchImpl }),
+    });
+    const joined = object(await client.call("handshake_join", {
+      invitationId,
+      role: cleanRole,
+      terms,
+    }));
+    if (
+      joined.invitationId !== invitationId ||
+      joined.sessionId !== invitationId ||
+      joined.stage !== "sign_identity"
+    ) fail();
+    return [cleanRole, true];
+  }));
+  return Object.freeze({ invitationId, ...Object.fromEntries(results) });
 }
 
 async function defaultCheckPublicServices({
@@ -971,6 +1010,7 @@ export async function runHermesDemo(options = {}) {
       kitUrl: inputKitUrl,
       localDebug = false,
       mintDemoToken = defaultMintDemoToken,
+      primeHandshakeInvitation = defaultPrimeHandshakeInvitation,
       postRunCommandRunner,
       relayUrl,
       runId: inputRunId,
@@ -1070,6 +1110,14 @@ export async function runHermesDemo(options = {}) {
       if (provisioned[cleanRole].principalSha256 !== tokenFingerprints[cleanRole]) fail();
     }
     cleanupState = { cleanRoom, keepCleanrooms, localDebug, provisioned, runRoot: cleanRunRoot };
+    phase = "prime";
+    if (typeof primeHandshakeInvitation !== "function") fail();
+    validatePrimedInvitation(await primeHandshakeInvitation({
+      fetchImpl,
+      invitationId: publicServices.invitationId,
+      terms: INVOICE_DEMO_TERMS,
+      tokens,
+    }), publicServices.invitationId);
     launch = {};
     for (const cleanRole of ROLES) {
       const prompt = buildHermesPrompt({
