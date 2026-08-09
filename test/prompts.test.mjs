@@ -237,7 +237,7 @@ for (const name of HERMES_PROMPTS) {
     assert.match(text, /back off to at most 15 seconds/i);
     assert.match(text, /erc8004_identity.*register locally, then call `?handshake_next`? again/i);
     assert.doesNotMatch(text, /submit only public registration fields/i);
-    assert.match(text, /certificateVerified/i);
+    assert.match(text, /certificate-proof\.mjs/i);
     assert.match(text, /FINAL_HANDSHAKE_JSON/);
   });
 
@@ -297,10 +297,14 @@ test("Hermes role prompts make other-role waits and party_ready nonterminal unti
       new RegExp(`${oppositeArtifact}[^.]*means wait for the ${oppositeLabel}[^.]*keep looping`, "is"),
     );
     assert.match(text, /FINAL_HANDSHAKE_JSON is success-only/is);
-    assert.match(text, /handshake_get_certificate[^.]*ok:"certificate"[^.]*only success response/is);
+    assert.match(text, /nonempty `?certificate`? envelope and no `?needed`? field/is);
+    assert.doesNotMatch(text, /ok:"certificate"/);
+    assert.match(text, /retain[^.]*sessionId[^.]*operatorPublicKey[^.]*handshake_join/is);
+    assert.match(text, /node bin\/certificate-proof\.mjs verify --file "?\$HOME\/clockchain-certificate\.json"? --role (?:payer|requestor) --expected-public-key "?\$OPERATOR_PUBLIC_KEY"? --session-id "?\$SESSION_ID"?/i);
+    assert.match(text, /Do not run npm test, npm run verify, or any test suite/i);
     assert.match(
       text,
-      /Do not emit `?FINAL_HANDSHAKE_JSON`?[^.]*successfully returned and locally verified certificate[^.]*nonempty 64-lowercase-hex certificateDigest/is,
+      /Copy its JSON verbatim after `?FINAL_HANDSHAKE_JSON`?[^.]*final response[^.]*no tests, tool calls, or prose afterward/is,
     );
     assert.doesNotMatch(text, /stop and emit failure JSON/i);
     assert.doesNotMatch(text, /failure JSON/i);

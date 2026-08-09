@@ -1310,11 +1310,13 @@ test("generated Hermes prompts keep live agents looping until a verified certifi
       new RegExp(`${oppositeArtifact}[^.]*means wait for the ${oppositeLabel}[^.]*keep looping`, "is"),
     );
     assert.match(prompt, /FINAL_HANDSHAKE_JSON is success-only/is);
-    assert.match(prompt, /handshake_get_certificate[^.]*ok:"certificate"[^.]*only success response/is);
-    assert.match(
-      prompt,
-      /Do not emit FINAL_HANDSHAKE_JSON[^.]*successfully returned and locally verified certificate[^.]*nonempty 64-lowercase-hex certificateDigest/is,
-    );
+    assert.match(prompt, /nonempty certificate envelope and no needed field/is);
+    assert.doesNotMatch(prompt, /ok:"certificate"/);
+    assert.match(prompt, /retain[^.]*sessionId[^.]*operatorPublicKey[^.]*handshake_join/is);
+    assert.match(prompt, /node bin\/certificate-proof\.mjs verify --file "\$HOME\/clockchain-certificate\.json" --role (?:payer|requestor) --expected-public-key "\$OPERATOR_PUBLIC_KEY" --session-id "\$SESSION_ID"/i);
+    assert.match(prompt, /Do not run npm test, npm run verify, or any test suite/i);
+    assert.match(prompt, /Copy its JSON verbatim after the marker/i);
+    assert.match(prompt, /final response, with no tests, tool calls, or prose afterward/i);
     assert.doesNotMatch(prompt, /stop and emit failure JSON/i);
     assert.doesNotMatch(prompt, /failure JSON/i);
     assert.doesNotMatch(prompt, /certificateVerified\s*:\s*false/i);
