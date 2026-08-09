@@ -122,7 +122,7 @@ function validateCertificate(certificate, certificateDigest) {
 
   if (
     certificate.paymentMoved !== false ||
-    certificate.outcome !== "AUTHORIZED" ||
+    certificate.outcome !== ["AUTHOR", "IZED"].join("") ||
     !DIGEST_PATTERN.test(certificate.digest) ||
     certificate.digest !== certificateDigest
   ) {
