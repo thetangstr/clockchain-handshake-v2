@@ -362,6 +362,7 @@ function harness(root, t, options = {}) {
         calls.checkPublicServices.push(services);
         return {
           discoveryRepositoryMatches: true,
+          invitationId: SESSION_ID,
           mcpAwsHealth: true,
           mcpHealth: true,
           relayDiscovery: true,
@@ -1060,6 +1061,7 @@ test("dry-run checks public services and prepares zero-state rooms without a pro
   assert.equal(h.calls.checkPublicServices.length, 1);
   assert.deepEqual(result.publicServices, {
     discoveryRepositoryMatches: true,
+    invitationId: SESSION_ID,
     mcpAwsHealth: true,
     mcpHealth: true,
     relayDiscovery: true,
@@ -1134,6 +1136,7 @@ test("default public-service preflight binds both MCP origins and current relay 
 
   const result = await runHermesDemo(h.options);
   assert.equal(result.publicServices.discoveryRepositoryMatches, true);
+  assert.equal(result.publicServices.invitationId, SESSION_ID);
   assert.deepEqual(requested.map(({ url }) => url).sort(), [...bodies.keys()].sort());
   assert.ok(requested.every(({ options }) => options.method === "GET"));
 
@@ -1242,14 +1245,14 @@ test("production wrapper rejects keep-cleanrooms unless local debug is explicit"
 
 test("kit URL and commit are validated before prompt creation", () => {
   assert.throws(
-    () => buildHermesPrompt({ role: "payer", kitUrl: KIT_URL, kitCommit: "abc" }),
+    () => buildHermesPrompt({ role: "payer", kitUrl: KIT_URL, kitCommit: "abc", invitationId: SESSION_ID }),
     /Hermes demo failed safely/,
   );
   assert.throws(
-    () => buildHermesPrompt({ role: "payer", kitUrl: "https://github.com/other/repo.git", kitCommit: KIT_COMMIT }),
+    () => buildHermesPrompt({ role: "payer", kitUrl: "https://github.com/other/repo.git", kitCommit: KIT_COMMIT, invitationId: SESSION_ID }),
     /Hermes demo failed safely/,
   );
-  const prompt = buildHermesPrompt({ role: "payer", kitUrl: KIT_URL, kitCommit: KIT_COMMIT });
+  const prompt = buildHermesPrompt({ role: "payer", kitUrl: KIT_URL, kitCommit: KIT_COMMIT, invitationId: SESSION_ID });
   assert.match(prompt, new RegExp(KIT_COMMIT));
   assert.match(prompt, /Do not cd outside the current blank workspace/i);
   assert.match(prompt, /git clone .* \.\/handshake-kit/i);
@@ -1268,12 +1271,17 @@ test("kit URL and commit are validated before prompt creation", () => {
   assert.match(prompt, /start at 5 seconds/i);
   assert.match(prompt, /back off to at most 15 seconds/i);
   assert.match(prompt, /erc8004_identity.*register command above, then call handshake_next again/i);
+  assert.match(prompt, new RegExp(SESSION_ID));
+  assert.match(prompt, /USD 18,750/);
+  assert.match(prompt, /HS-8842/);
+  assert.match(prompt, /NS-1847/);
+  assert.match(prompt, /validForMinutes[^\n]*45/i);
   assert.doesNotMatch(prompt, /submit the public registration fields/i);
 });
 
 test("generated role prompts keep every coordinator dependency in the retry loop", () => {
-  const payer = buildHermesPrompt({ role: "payer", kitUrl: KIT_URL, kitCommit: KIT_COMMIT });
-  const requestor = buildHermesPrompt({ role: "requestor", kitUrl: KIT_URL, kitCommit: KIT_COMMIT });
+  const payer = buildHermesPrompt({ role: "payer", kitUrl: KIT_URL, kitCommit: KIT_COMMIT, invitationId: SESSION_ID });
+  const requestor = buildHermesPrompt({ role: "requestor", kitUrl: KIT_URL, kitCommit: KIT_COMMIT, invitationId: SESSION_ID });
   for (const prompt of [payer, requestor]) {
     for (const needed of ["funding_record", "handshake_required", "clockchain_confirmation", "counterpart_transition"]) {
       assert.match(prompt, new RegExp(`needed[^\\n]*${needed}`, "i"));
@@ -1285,7 +1293,7 @@ test("generated role prompts keep every coordinator dependency in the retry loop
 
 test("generated Hermes prompts keep live agents looping until a verified certificate", () => {
   for (const cleanRole of ["payer", "requestor"]) {
-    const prompt = buildHermesPrompt({ role: cleanRole, kitUrl: KIT_URL, kitCommit: KIT_COMMIT });
+    const prompt = buildHermesPrompt({ role: cleanRole, kitUrl: KIT_URL, kitCommit: KIT_COMMIT, invitationId: SESSION_ID });
     const oppositeArtifact = cleanRole === "payer" ? "requestor_identity_ready" : "payer_mandate";
     const oppositeLabel = cleanRole === "payer" ? "Requestor" : "Payer";
 

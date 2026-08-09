@@ -208,9 +208,10 @@ async function defaultCheckKit({ fetchImpl = fetch, kitCommit: commit, kitUrl: u
 
 function validatePublicServicesSummary(value) {
   const summary = object(value);
-  const keys = ["discoveryRepositoryMatches", "mcpAwsHealth", "mcpHealth", "relayDiscovery", "relayHealth"];
+  const keys = ["discoveryRepositoryMatches", "invitationId", "mcpAwsHealth", "mcpHealth", "relayDiscovery", "relayHealth"];
   if (Object.keys(summary).sort().join("\0") !== keys.sort().join("\0")) fail();
-  if (keys.some((key) => summary[key] !== true)) fail();
+  if (!UUID_PATTERN.test(summary.invitationId)) fail();
+  if (keys.filter((key) => key !== "invitationId").some((key) => summary[key] !== true)) fail();
   return Object.freeze({ ...summary });
 }
 
@@ -258,6 +259,7 @@ async function defaultCheckPublicServices({
     }
     return validatePublicServicesSummary({
       discoveryRepositoryMatches: true,
+      invitationId: discovery.sessionId,
       mcpAwsHealth: true,
       mcpHealth: true,
       relayDiscovery: true,
@@ -340,7 +342,7 @@ Sign only exact MCP-returned payload bytes with EIP-191 raw-byte semantics. Pref
 
 ## MCP loop
 
-Call handshake_join with lowercase role "${lowerRole}". Retain the exact sessionId and operatorPublicKey returned by handshake_join as SESSION_ID and OPERATOR_PUBLIC_KEY. Every handshake_next call in this task must include waitMs:15000, that returned UUID sessionId, lowercase role "${lowerRole}", and signingEncoding "gzip-base64url". Keep looping until certificate verification succeeds or the launcher terminates the process.
+Call handshake_join with lowercase role "${lowerRole}", invitationId "<INVITATION_ID>", and independently supplied expected invoice terms: amount USD 18,750 (structured value "18750"), invoiceReference "HS-8842", purpose "Invoice HS-8842 against PO NS-1847", and validForMinutes 45. The Payer uses these terms for its mandate; the Requestor uses the same independently supplied terms as a fail-closed comparison against the signed mandate. Retain the exact sessionId and operatorPublicKey returned by handshake_join as SESSION_ID and OPERATOR_PUBLIC_KEY. Every handshake_next call in this task must include waitMs:15000, that returned UUID sessionId, lowercase role "${lowerRole}", and signingEncoding "gzip-base64url". Keep looping until certificate verification succeeds or the launcher terminates the process.
 
 If handshake_next returns bytesToSignGzipBase64Url, pass that exact value directly to the bridge with --gzip-base64url. If it returns legacy bytesToSignHex, pass that exact value directly with --bytes. Do not reconstruct, decode, edit, or save either payload in an ad-hoc script. The bridge's bytesSha256 must match handshake_next's bytesSha256 exactly before you call handshake_submit with the returned signatureHex only. If the hashes differ, do not submit: call handshake_next again with signingEncoding "gzip-base64url" and repeat the direct sign step. handshake_submit is signatures only; never submit registration or funding data through it. On SIGNATURE_ROLE_MISMATCH, immediately call handshake_next, sign again, verify the matching bytesSha256, and resubmit once; do not write diagnostic scripts or theorize about signing semantics. ${dependencyWait} If needed is erc8004_identity, run the register command above, then call handshake_next again. If needed is certificate, call handshake_get_certificate. Success is a response containing a nonempty certificate envelope and no needed field. If it returns needed:"certificate" because the host result is not yet published, treat it as normal waiting: honor retryAfterMs and retry handshake_get_certificate; do not terminate while that pending response continues. Save only that returned certificate envelope to "$HOME/clockchain-certificate.json", then run exactly: node bin/certificate-proof.mjs verify --file "$HOME/clockchain-certificate.json" --role ${cleanRole} --expected-public-key "$OPERATOR_PUBLIC_KEY" --session-id "$SESSION_ID". Do not run npm test, npm run verify, or any test suite; the launcher handles integration verification.
 
@@ -356,14 +358,16 @@ ${TERMINAL_MARKER} {"role":"${cleanRole}","sessionId":"00000000-0000-4000-8000-0
 `;
 }
 
-export function buildHermesPrompt({ role: inputRole, kitUrl: inputKitUrl, kitCommit: inputKitCommit } = {}) {
+export function buildHermesPrompt({ role: inputRole, kitUrl: inputKitUrl, kitCommit: inputKitCommit, invitationId: inputInvitationId } = {}) {
   try {
     const cleanRole = role(inputRole);
     const cleanUrl = kitUrl(inputKitUrl);
     const cleanCommit = kitCommit(inputKitCommit);
+    if (!UUID_PATTERN.test(inputInvitationId)) fail();
     return staticPrompt({ role: cleanRole })
       .replaceAll("<KIT_URL>", cleanUrl)
-      .replaceAll("<KIT_COMMIT>", cleanCommit);
+      .replaceAll("<KIT_COMMIT>", cleanCommit)
+      .replaceAll("<INVITATION_ID>", inputInvitationId);
   } catch (error) {
     sanitize(error);
   }
@@ -1068,7 +1072,12 @@ export async function runHermesDemo(options = {}) {
     cleanupState = { cleanRoom, keepCleanrooms, localDebug, provisioned, runRoot: cleanRunRoot };
     launch = {};
     for (const cleanRole of ROLES) {
-      const prompt = buildHermesPrompt({ kitCommit: cleanKitCommit, kitUrl: cleanKitUrl, role: cleanRole });
+      const prompt = buildHermesPrompt({
+        invitationId: publicServices.invitationId,
+        kitCommit: cleanKitCommit,
+        kitUrl: cleanKitUrl,
+        role: cleanRole,
+      });
       const usagePath = join(provisioned[cleanRole].paths.evidencePrivate, "usage.json");
       launch[cleanRole] = { prompt, promptSha256: sha256(prompt), usagePath };
       absolutePath(usagePath);

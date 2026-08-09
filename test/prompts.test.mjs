@@ -197,6 +197,17 @@ for (const name of HERMES_PROMPTS) {
     assert.match(text, /not .*court-grade/i);
   });
 
+  test(`prompts/${name}.md joins the realistic invoice invitation with independently supplied terms`, async () => {
+    const text = await loadHermes(name);
+    assert.match(text, /invitationId[^\n]*<INVITATION_ID>/i);
+    assert.match(text, /USD 18,750/);
+    assert.match(text, /HS-8842/);
+    assert.match(text, /NS-1847/);
+    assert.match(text, /Invoice HS-8842 against PO NS-1847/);
+    assert.match(text, /validForMinutes[^\n]*45/i);
+    assert.match(text, /independent(?:ly)? supplied|expected terms/i);
+  });
+
   test(`prompts/${name}.md requires blank-workspace install, wallet bridge, local registration, and terminal JSON`, async () => {
     const text = await loadHermes(name);
     assert.match(text, /empty workspace/i);
