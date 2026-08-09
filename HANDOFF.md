@@ -470,6 +470,11 @@ would ask for)*
   retained the finished board after the host opened its next empty session.
   Browser recording:
   `/Users/Kailor/.config/browser-harness/agent-workspace/recordings/clockchain-two-agent-preflight-20260808`.
+  Production MCP now runs
+  `fc5948b4df9bdae30a18591562e0013830cb1627` (the session trust-root behavior
+  from `a1472cb` plus the truthful 36-tool manifest/install copy); the canonical
+  systemd service is active and the effective production degraded-mode setting
+  remains `true`.
 
 ## Migration inventory
 
@@ -567,6 +572,7 @@ sources are `clockchain-developer-tools` commits `610d519` and `11b9162`.
 | Item | Value / evidence |
 |---|---|
 | Launcher / source | Mac mini launcher `192.168.86.48`; Handshake `6d185bbb7980e9eb8b116f87a0b10d7a374ae837`; retained run `800ad268-9ff3-4d3c-ad8e-4c25f5029ec9` |
+| MCP deploy | `codex/aws-migration` / `fc5948b4df9bdae30a18591562e0013830cb1627`; public health green; manifest and install guide advertise the actual 36-tool surface |
 | Hosted path | Two disposable Hermes clean rooms → separate production MCP principals → AWS session host; Mac mini did not sign a party artifact |
 | Session / parties | `ee6785a2-dd35-46b4-a18a-e452cacd097a`; Payer `9479` / `0xafbf1fd9a45b59a3f21402751dd0f73101f7535c`; Requestor `9480` / `0x9555187fef89a687165a4d0784146133659b67b5` |
 | Anchors | Proposal `3155213` / `31bffb66-d758-4eef-8400-ca200d1a0606`; acceptance `3155214` / `e6bee318-d624-4c81-928f-86d0037e1162`; acknowledgment `3155230` / `07929991-59f9-4713-b87d-fcd29cd66578` |
