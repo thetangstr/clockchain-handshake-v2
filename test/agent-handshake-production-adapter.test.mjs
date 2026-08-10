@@ -14,6 +14,13 @@ test("generic host defaults to the built-in production adapter", async () => {
   assert.doesNotMatch(source, /AGENT_HANDSHAKE_HOST_ADAPTER is required/);
 });
 
+test("generic production session fails closed without an immutable repository SHA", async () => {
+  await assert.rejects(
+    loadAgentHandshakeSession({ env: {} }),
+    /HANDSHAKE_SHA_INVALID/,
+  );
+});
+
 test("production session publishes generic discovery with the immutable kit revision", async () => {
   const calls = [];
   const session = await loadAgentHandshakeSession({
