@@ -42,6 +42,8 @@ jobs:
       - name: Build SEA on its matching runner
         shell: bash
         run: |
+          test "$(node -p 'process.platform')" = "${{ matrix.platform }}"
+          test "$(node -p 'process.arch')" = "${{ matrix.arch }}"
           mkdir -p dist
           suffix=""
           if [ "${{ matrix.platform }}" = "win32" ]; then suffix=".exe"; fi
@@ -63,7 +65,11 @@ jobs:
           test -n "$APPLE_NOTARY_ISSUER_ID"
           echo "$MAC_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
           security create-keychain -p "$MAC_CERTIFICATE_PASSWORD" "$RUNNER_TEMP/release.keychain-db"
+          security set-keychain-settings -lut 21600 "$RUNNER_TEMP/release.keychain-db"
+          security unlock-keychain -p "$MAC_CERTIFICATE_PASSWORD" "$RUNNER_TEMP/release.keychain-db"
           security import "$RUNNER_TEMP/cert.p12" -k "$RUNNER_TEMP/release.keychain-db" -P "$MAC_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$MAC_CERTIFICATE_PASSWORD" "$RUNNER_TEMP/release.keychain-db"
+          security list-keychains -d user -s "$RUNNER_TEMP/release.keychain-db"
           codesign --force --timestamp --options runtime --sign "$CLOCKCHAIN_NATIVE_SIGNER" "dist/clockchain-agent-handshake-darwin-${{ matrix.arch }}"
           codesign --verify --deep --strict --verbose=2 "dist/clockchain-agent-handshake-darwin-${{ matrix.arch }}"
           printf '%s' "$APPLE_NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
@@ -106,7 +112,7 @@ jobs:
             dist/*.record.json
 
   build-intel-mac:
-    runs-on: [self-hosted, macOS, X64, clockchain-intel-release]
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -115,15 +121,27 @@ jobs:
       - name: Build, sign, execute, and record Intel asset
         shell: bash
         env:
+          MAC_CERTIFICATE_P12: ${{ secrets.MAC_CERTIFICATE_P12 }}
+          MAC_CERTIFICATE_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
           CLOCKCHAIN_NATIVE_SIGNER: ${{ secrets.MAC_SIGNER_NAME }}
           APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
         run: |
           test "$(uname -m)" = "x86_64"
+          test "$(node -p 'process.platform')" = "darwin"
+          test "$(node -p 'process.arch')" = "x64"
+          test -n "$MAC_CERTIFICATE_P12"
           test -n "$APPLE_NOTARY_KEY_P8"
           test -n "$APPLE_NOTARY_KEY_ID"
           test -n "$APPLE_NOTARY_ISSUER_ID"
+          echo "$MAC_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$MAC_CERTIFICATE_PASSWORD" "$RUNNER_TEMP/release.keychain-db"
+          security set-keychain-settings -lut 21600 "$RUNNER_TEMP/release.keychain-db"
+          security unlock-keychain -p "$MAC_CERTIFICATE_PASSWORD" "$RUNNER_TEMP/release.keychain-db"
+          security import "$RUNNER_TEMP/cert.p12" -k "$RUNNER_TEMP/release.keychain-db" -P "$MAC_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$MAC_CERTIFICATE_PASSWORD" "$RUNNER_TEMP/release.keychain-db"
+          security list-keychains -d user -s "$RUNNER_TEMP/release.keychain-db"
           mkdir -p dist
           node scripts/build-agent-handshake-release.mjs sea dist/clockchain-agent-handshake-darwin-x64
           codesign --force --timestamp --options runtime --sign "$CLOCKCHAIN_NATIVE_SIGNER" dist/clockchain-agent-handshake-darwin-x64
