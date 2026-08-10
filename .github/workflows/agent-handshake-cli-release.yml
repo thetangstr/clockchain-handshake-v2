@@ -53,15 +53,27 @@ jobs:
           MAC_CERTIFICATE_P12: ${{ secrets.MAC_CERTIFICATE_P12 }}
           MAC_CERTIFICATE_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
           CLOCKCHAIN_NATIVE_SIGNER: ${{ secrets.MAC_SIGNER_NAME }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
         run: |
           test -n "$MAC_CERTIFICATE_P12"
+          test -n "$APPLE_NOTARY_KEY_P8"
+          test -n "$APPLE_NOTARY_KEY_ID"
+          test -n "$APPLE_NOTARY_ISSUER_ID"
           echo "$MAC_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
           security create-keychain -p "$MAC_CERTIFICATE_PASSWORD" "$RUNNER_TEMP/release.keychain-db"
           security import "$RUNNER_TEMP/cert.p12" -k "$RUNNER_TEMP/release.keychain-db" -P "$MAC_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           codesign --force --timestamp --options runtime --sign "$CLOCKCHAIN_NATIVE_SIGNER" "dist/clockchain-agent-handshake-darwin-${{ matrix.arch }}"
           codesign --verify --deep --strict --verbose=2 "dist/clockchain-agent-handshake-darwin-${{ matrix.arch }}"
+          printf '%s' "$APPLE_NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
+          chmod 0600 "$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
+          ditto -c -k --keepParent "dist/clockchain-agent-handshake-darwin-${{ matrix.arch }}" "$RUNNER_TEMP/clockchain-agent-handshake-darwin-${{ matrix.arch }}.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/clockchain-agent-handshake-darwin-${{ matrix.arch }}.zip" --key "$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8" --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID" --wait
+          spctl --assess --type execute --verbose=4 "dist/clockchain-agent-handshake-darwin-${{ matrix.arch }}"
           echo "CLOCKCHAIN_NATIVE_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" >> "$GITHUB_ENV"
           echo "CLOCKCHAIN_NATIVE_SIGNER=$CLOCKCHAIN_NATIVE_SIGNER" >> "$GITHUB_ENV"
+          echo "CLOCKCHAIN_NATIVE_NOTARIZED=true" >> "$GITHUB_ENV"
       - name: Sign and verify Windows asset
         if: matrix.platform == 'win32'
         shell: pwsh
@@ -104,14 +116,26 @@ jobs:
         shell: bash
         env:
           CLOCKCHAIN_NATIVE_SIGNER: ${{ secrets.MAC_SIGNER_NAME }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
         run: |
           test "$(uname -m)" = "x86_64"
+          test -n "$APPLE_NOTARY_KEY_P8"
+          test -n "$APPLE_NOTARY_KEY_ID"
+          test -n "$APPLE_NOTARY_ISSUER_ID"
           mkdir -p dist
           node scripts/build-agent-handshake-release.mjs sea dist/clockchain-agent-handshake-darwin-x64
           codesign --force --timestamp --options runtime --sign "$CLOCKCHAIN_NATIVE_SIGNER" dist/clockchain-agent-handshake-darwin-x64
           codesign --verify --deep --strict --verbose=2 dist/clockchain-agent-handshake-darwin-x64
+          printf '%s' "$APPLE_NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
+          chmod 0600 "$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
+          ditto -c -k --keepParent dist/clockchain-agent-handshake-darwin-x64 "$RUNNER_TEMP/clockchain-agent-handshake-darwin-x64.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/clockchain-agent-handshake-darwin-x64.zip" --key "$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8" --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID" --wait
+          spctl --assess --type execute --verbose=4 dist/clockchain-agent-handshake-darwin-x64
           dist/clockchain-agent-handshake-darwin-x64 init --state-dir "$RUNNER_TEMP/clockchain-agent-state" > dist/darwin-x64.public.json
           export CLOCKCHAIN_NATIVE_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+          export CLOCKCHAIN_NATIVE_NOTARIZED=true
           node scripts/build-agent-handshake-release.mjs record dist/clockchain-agent-handshake-darwin-x64 darwin x64 clockchain_verified dist/darwin-x64.public.json dist/darwin-x64.record.json
       - uses: actions/upload-artifact@v4
         with:
