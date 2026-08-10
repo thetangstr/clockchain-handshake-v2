@@ -665,6 +665,7 @@ function handleGetEvidence(sessions, sessionId, role) {
 function sessionStartedAtMs(session) {
   return (
     session.publishedAtMs ||
+    session.monitorSnapshot?.timing?.createdAtMs ||
     session.monitorSnapshot?.stageHistory?.[0]?.atMs ||
     session.monitorSnapshot?.updatedAtMs ||
     0
@@ -702,13 +703,29 @@ function handleRuns(sessions) {
   for (const session of sessions.values()) {
     if (session.discovery === undefined) continue;
     const snapshot = session.monitorSnapshot;
-    const anchors = snapshot?.anchors ?? null;
+    const isAgentV2 = snapshot?.schema === "clockchain.agent-handshake-snapshot/v2";
+    const anchors = isAgentV2 ? snapshot?.receipts ?? null : snapshot?.anchors ?? null;
+    const stage = isAgentV2
+      ? snapshot?.certificate !== null
+        ? "CERTIFIED"
+        : snapshot?.failure !== null
+          ? "FAILED"
+          : snapshot?.checker?.stage === "VERIFYING"
+            ? "VERIFYING"
+            : null
+      : snapshot?.currentStage ?? null;
+    const outcome = isAgentV2
+      ? snapshot?.certificate?.outcome ?? null
+      : snapshot?.verdict?.outcome ?? null;
+    const reasonCode = isAgentV2
+      ? snapshot?.failure?.reasonCode ?? null
+      : snapshot?.reasonCode ?? null;
     runs.push({
       sessionId: session.sessionId,
       startedAtMs: sessionStartedAtMs(session),
-      stage: snapshot?.currentStage ?? null,
-      outcome: snapshot?.verdict?.outcome ?? null,
-      reasonCode: snapshot?.reasonCode ?? null,
+      stage,
+      outcome,
+      reasonCode,
       anchors: {
         proposal: anchors?.proposal?.blockHeight ?? null,
         acceptance: anchors?.acceptance?.blockHeight ?? null,

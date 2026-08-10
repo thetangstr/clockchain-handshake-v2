@@ -631,7 +631,10 @@ test("relay accepts exact generic stakeholder snapshots and certificates", async
 
 test("relay stores strict generic v2 snapshots without coercing them through v1", async (t) => {
   const { baseUrl } = await startServer(t);
-  const created = await postJson(`${baseUrl}/v1/sessions`, { sessionId: SESSION_ID });
+  const created = await postJson(`${baseUrl}/v1/sessions`, {
+    sessionId: SESSION_ID,
+    discovery: { schema: "clockchain.agent-handshake-discovery/v2", sessionId: SESSION_ID },
+  });
   assert.equal(created.status, 201);
   const snapshot = buildAgentHandshakeV2Snapshot({
     schema: "clockchain.agent-handshake-snapshot/v2",
@@ -685,6 +688,25 @@ test("relay stores strict generic v2 snapshots without coercing them through v1"
     (await getJson(`${baseUrl}/v1/sessions/${SESSION_ID}/snapshot`)).body,
     JSON.parse(JSON.stringify(snapshot)),
   );
+  const activeRuns = await getJson(`${baseUrl}/v1/runs`);
+  assert.ok(activeRuns.body.runs[0].startedAtMs >= snapshot.timing.createdAtMs);
+  assert.equal(activeRuns.body.runs[0].stage, null);
+  assert.equal(activeRuns.body.runs[0].outcome, null);
+
+  const certified = {
+    ...snapshot,
+    checker: { stage: "VERIFIED", lastSeenMs: 1786337100000 },
+    certificate: {
+      digest: "9".repeat(64),
+      issuedAtMs: 1786337100000,
+      outcome: "VERIFIED",
+    },
+  };
+  const putCertified = await putJson(`${baseUrl}/v1/sessions/${SESSION_ID}/snapshot`, certified);
+  assert.equal(putCertified.status, 200, JSON.stringify(putCertified.body));
+  const certifiedRuns = await getJson(`${baseUrl}/v1/runs`);
+  assert.equal(certifiedRuns.body.runs[0].stage, "CERTIFIED");
+  assert.equal(certifiedRuns.body.runs[0].outcome, "VERIFIED");
   const invalid = await putJson(
     `${baseUrl}/v1/sessions/${SESSION_ID}/snapshot`,
     { ...snapshot, roleAccess: "secret" },
