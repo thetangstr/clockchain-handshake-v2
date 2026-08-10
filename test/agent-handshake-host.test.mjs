@@ -30,6 +30,18 @@ test("host source never signs either stakeholder artifact", async () => {
   assert.deepEqual(AGENT_HANDSHAKE_HOST_ROLES, ["initiator", "responder"]);
 });
 
+test("host entry point preserves v1 by default and dispatches v2 explicitly", async () => {
+  const source = await readFile(
+    new URL("../bin/agent-handshake-host.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /AGENT_HANDSHAKE_PROTOCOL/);
+  assert.match(source, /clockchain\.agent-handshake\/v2/);
+  assert.match(source, /agent-handshake\/v2\/production-adapter\.mjs/);
+  assert.match(source, /runAgentHandshakeV2HostSession/);
+  assert.match(source, /runAgentHandshakeHostSession/);
+});
+
 test("host funds exact seats, observes both signatures, checks evidence, and certifies", async () => {
   const fixture = await buildAgentHandshakeFixture();
   const evidence = {};
