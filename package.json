@@ -13,11 +13,19 @@
     "demo:local": "CLOCKCHAIN_FUNDING_PASSWORD_FILE=\"${CLOCKCHAIN_FUNDING_PASSWORD_FILE:-$PWD/keys/funding.password}\" node scripts/run-local-demo.mjs",
     "demo:hermes": "node bin/hermes-demo.mjs",
     "negative": "node scripts/negative-checks.mjs",
+    "agent-cli:bundle": "node scripts/build-agent-handshake-release.mjs bundle dist/clockchain-agent-handshake.cjs",
+    "agent-cli:sea": "node scripts/build-agent-handshake-release.mjs sea dist/clockchain-agent-handshake",
+    "agent-cli:npm:build": "node scripts/build-agent-handshake-npm.mjs",
+    "agent-cli:release:verify": "node --test test/agent-cli-release.test.mjs test/agent-cli-clean-platform.test.mjs",
     "test": "node --test --test-concurrency=4 test/*.test.mjs",
     "verify": "npm run test && bash scripts/check-invariants.sh",
     "release:pin": "node scripts/release-pin.mjs"
   },
   "dependencies": {
     "viem": "2.55.8"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "postject": "1.0.0-alpha.6"
   }
 }

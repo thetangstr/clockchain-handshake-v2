@@ -1,0 +1,138 @@
+name: agent-handshake-cli-release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v2.1.0"]
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+env:
+  NODE_VERSION: 24.18.0
+
+jobs:
+  build-supported:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux
+            arch: x64
+          - runner: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+          - runner: macos-15
+            platform: darwin
+            arch: arm64
+          - runner: windows-2025
+            platform: win32
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - name: Build SEA on its matching runner
+        shell: bash
+        run: |
+          mkdir -p dist
+          suffix=""
+          if [ "${{ matrix.platform }}" = "win32" ]; then suffix=".exe"; fi
+          node scripts/build-agent-handshake-release.mjs sea "dist/clockchain-agent-handshake-${{ matrix.platform }}-${{ matrix.arch }}${suffix}"
+      - name: Sign and verify macOS asset
+        if: matrix.platform == 'darwin'
+        shell: bash
+        env:
+          MAC_CERTIFICATE_P12: ${{ secrets.MAC_CERTIFICATE_P12 }}
+          MAC_CERTIFICATE_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+          CLOCKCHAIN_NATIVE_SIGNER: ${{ secrets.MAC_SIGNER_NAME }}
+        run: |
+          test -n "$MAC_CERTIFICATE_P12"
+          echo "$MAC_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$MAC_CERTIFICATE_PASSWORD" "$RUNNER_TEMP/release.keychain-db"
+          security import "$RUNNER_TEMP/cert.p12" -k "$RUNNER_TEMP/release.keychain-db" -P "$MAC_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          codesign --force --timestamp --options runtime --sign "$CLOCKCHAIN_NATIVE_SIGNER" "dist/clockchain-agent-handshake-darwin-${{ matrix.arch }}"
+          codesign --verify --deep --strict --verbose=2 "dist/clockchain-agent-handshake-darwin-${{ matrix.arch }}"
+          echo "CLOCKCHAIN_NATIVE_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" >> "$GITHUB_ENV"
+          echo "CLOCKCHAIN_NATIVE_SIGNER=$CLOCKCHAIN_NATIVE_SIGNER" >> "$GITHUB_ENV"
+      - name: Sign and verify Windows asset
+        if: matrix.platform == 'win32'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_PFX: ${{ secrets.WINDOWS_CERTIFICATE_PFX }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_CERTIFICATE_PFX) { throw "missing certificate" }
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\cert.pfx", [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_PFX))
+          signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f "$env:RUNNER_TEMP\cert.pfx" /p "$env:WINDOWS_CERTIFICATE_PASSWORD" "dist\clockchain-agent-handshake-win32-x64.exe"
+          signtool verify /pa /v "dist\clockchain-agent-handshake-win32-x64.exe"
+          "CLOCKCHAIN_NATIVE_SIGNER=Clockchain" >> $env:GITHUB_ENV
+          "CLOCKCHAIN_NATIVE_TIMESTAMP=$([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ'))" >> $env:GITHUB_ENV
+      - name: Execute and record public evidence
+        shell: bash
+        run: |
+          suffix=""
+          if [ "${{ matrix.platform }}" = "win32" ]; then suffix=".exe"; fi
+          asset="dist/clockchain-agent-handshake-${{ matrix.platform }}-${{ matrix.arch }}${suffix}"
+          "$asset" init --state-dir "$RUNNER_TEMP/clockchain-agent-state" > "dist/${{ matrix.platform }}-${{ matrix.arch }}.public.json"
+          node scripts/build-agent-handshake-release.mjs record "$asset" "${{ matrix.platform }}" "${{ matrix.arch }}" node_sea_supported "dist/${{ matrix.platform }}-${{ matrix.arch }}.public.json" "dist/${{ matrix.platform }}-${{ matrix.arch }}.record.json"
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/clockchain-agent-handshake-*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-handshake-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            dist/clockchain-agent-handshake-*
+            dist/*.record.json
+
+  build-intel-mac:
+    runs-on: [self-hosted, macOS, X64, clockchain-intel-release]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24.18.0 }
+      - run: npm ci
+      - name: Build, sign, execute, and record Intel asset
+        shell: bash
+        env:
+          CLOCKCHAIN_NATIVE_SIGNER: ${{ secrets.MAC_SIGNER_NAME }}
+        run: |
+          test "$(uname -m)" = "x86_64"
+          mkdir -p dist
+          node scripts/build-agent-handshake-release.mjs sea dist/clockchain-agent-handshake-darwin-x64
+          codesign --force --timestamp --options runtime --sign "$CLOCKCHAIN_NATIVE_SIGNER" dist/clockchain-agent-handshake-darwin-x64
+          codesign --verify --deep --strict --verbose=2 dist/clockchain-agent-handshake-darwin-x64
+          dist/clockchain-agent-handshake-darwin-x64 init --state-dir "$RUNNER_TEMP/clockchain-agent-state" > dist/darwin-x64.public.json
+          export CLOCKCHAIN_NATIVE_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+          node scripts/build-agent-handshake-release.mjs record dist/clockchain-agent-handshake-darwin-x64 darwin x64 clockchain_verified dist/darwin-x64.public.json dist/darwin-x64.record.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-handshake-darwin-x64
+          path: |
+            dist/clockchain-agent-handshake-darwin-x64
+            dist/darwin-x64.record.json
+
+  publish:
+    needs: [build-supported, build-intel-mac]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24.18.0, registry-url: "https://registry.npmjs.org" }
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - run: node scripts/verify-agent-handshake-release.mjs assemble dist "$GITHUB_SHA" 24.18.0 dist/manifest.json
+      - env: { GH_TOKEN: "${{ github.token }}" }
+        run: gh release create v2.1.0 dist/clockchain-agent-handshake-* dist/manifest.json --verify-tag --title "Clockchain Agent Handshake 2.1.0"
+      - run: npm ci && npm run agent-cli:npm:build
+      - working-directory: dist/npm-agent-handshake
+        env: { NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}" }
+        run: npm publish --provenance --access public
