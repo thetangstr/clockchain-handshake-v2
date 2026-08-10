@@ -121,7 +121,7 @@ It must not assert old business copy.
 ```bash
 cd "$HANDSHAKE" && npm ci && npm run verify
 cd "$MCP/packages/mcp-server" && npm ci && npm test
-cd "$MCP" && node --test infra/clockchain-mcp/test/*.test.mjs
+cd "$MCP" && node --test infra/test/*.test.mjs
 cd "$RESEARCH" && npm ci && npm run typecheck && npm test
 ```
 
@@ -953,9 +953,10 @@ Not-tested: Deployed host and public network behavior land in integration gates.
 - Modify: `infra/clockchain-mcp/Caddyfile`
 - Modify: `infra/clockchain-mcp/docker-compose.yml`
 - Modify: `infra/clockchain-mcp/compose-up.sh`
-- Create: `infra/clockchain-mcp/test/public-handshake-route.test.mjs`
-- Modify: `infra/clockchain-mcp/test/compose-contract.test.mjs`
-- Modify: `infra/clockchain-mcp/test/caddy-contract.test.mjs`
+- Create: `infra/test/public-handshake-route.test.mjs`
+- Modify: `infra/test/deploy-assets.test.mjs`
+- Create: `infra/test/compose-contract.test.mjs`
+- Create: `infra/test/caddy-contract.test.mjs`
 - Modify: `infra/clockchain-mcp/RUNBOOK.md`
 
 - [ ] **Step 1: Write RED infrastructure contracts**
@@ -975,7 +976,7 @@ failure must occur before either seat transfer and must not affect v1/bilateral 
 - [ ] **Step 2: Run RED**
 
 ```bash
-cd "$MCP" && node --test infra/clockchain-mcp/test/*.test.mjs
+cd "$MCP" && node --test infra/test/*.test.mjs
 ```
 
 - [ ] **Step 3: Implement and document deploy/rollback order**
@@ -989,7 +990,7 @@ restores the prior image while leaving generic v1 and bilateral services up.
 - [ ] **Step 4: Run GREEN and container smoke locally**
 
 ```bash
-cd "$MCP" && node --test infra/clockchain-mcp/test/*.test.mjs
+cd "$MCP" && node --test infra/test/*.test.mjs
 cd "$MCP/infra/clockchain-mcp" && docker compose config --quiet
 ```
 
@@ -1317,7 +1318,7 @@ every P0/P1 and rerun its causal test.
 ```bash
 cd "$HANDSHAKE" && npm run verify
 cd "$MCP/packages/mcp-server" && npm test
-cd "$MCP" && node --test infra/clockchain-mcp/test/*.test.mjs
+cd "$MCP" && node --test infra/test/*.test.mjs
 cd "$RESEARCH" && npm run typecheck && npm test && npm run lint
 ```
 
