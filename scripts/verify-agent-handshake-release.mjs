@@ -18,10 +18,16 @@ const SIGNATURE_KEYS = Object.freeze(["type", "verified", "signer", "timestamp",
 const EXECUTION_KEYS = Object.freeze([
   "verified", "platform", "arch", "exitCode", "publicOutputSha256",
 ]);
+const PIN_KEYS = Object.freeze([
+  "version", "sourceCommit", "manifestDigest", "allowedAssetPrefix", "hostRoots",
+]);
+const ROOT_KEYS = Object.freeze(["kid", "fingerprint"]);
 const SHA = /^[0-9a-f]{64}$/;
 const COMMIT = /^[0-9a-f]{40}$/;
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const VERSION = /^2\.1\.0$/;
+const KID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const RELEASE_PREFIX = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.0/";
 
 function invalid() { throw new Error("Agent handshake release verification failed."); }
 
@@ -107,6 +113,39 @@ export function validateAgentHandshakeReleaseManifest(value, {
   return Object.freeze({ ...item, assets: Object.freeze(assets) });
 }
 
+export function validateAgentHandshakeReleasePin(value, { manifestBytes, helperBytes } = {}) {
+  const item = exact(value, PIN_KEYS);
+  if (
+    !VERSION.test(item.version) || !COMMIT.test(item.sourceCommit) ||
+    !SHA.test(item.manifestDigest) || item.allowedAssetPrefix !== RELEASE_PREFIX ||
+    !Array.isArray(item.hostRoots) || item.hostRoots.length < 1 || item.hostRoots.length > 2 ||
+    !Buffer.isBuffer(manifestBytes) || !Buffer.isBuffer(helperBytes) ||
+    createHash("sha256").update(manifestBytes).digest("hex") !== item.manifestDigest
+  ) invalid();
+  const roots = item.hostRoots.map((value) => {
+    const root = exact(value, ROOT_KEYS);
+    if (
+      typeof root.kid !== "string" || typeof root.fingerprint !== "string" ||
+      !KID.test(root.kid) || !SHA.test(root.fingerprint)
+    ) invalid();
+    return Object.freeze(root);
+  });
+  if (
+    new Set(roots.map((root) => root.kid)).size !== roots.length ||
+    new Set(roots.map((root) => root.fingerprint)).size !== roots.length
+  ) invalid();
+  let manifest;
+  try { manifest = JSON.parse(manifestBytes.toString("utf8")); } catch { invalid(); }
+  const canonical = canonicalBytes(manifest);
+  if (!manifestBytes.equals(canonical)) invalid();
+  validateAgentHandshakeReleaseManifest(manifest, {
+    allowedAssetPrefix: item.allowedAssetPrefix,
+    bytesByUrl: new Map([[`${item.allowedAssetPrefix}clockchain-agent-handshake.cjs`, helperBytes]]),
+    expectedSourceCommit: item.sourceCommit,
+  });
+  return Object.freeze({ ...item, hostRoots: Object.freeze(roots) });
+}
+
 export function assembleAgentHandshakeReleaseManifest({ assets, bytesByUrl, nodeRuntime, sourceCommit }) {
   const value = {
     schema: "clockchain.agent-handshake-release-manifest/v1",
@@ -150,6 +189,17 @@ async function main(argv) {
     const canonical = canonicalBytes(manifest);
     if (!manifestBytes.equals(canonical)) invalid();
     process.stdout.write(JSON.stringify({ ok: true, manifestDigest: createHash("sha256").update(manifestBytes).digest("hex") }) + "\n");
+    return;
+  }
+  if (
+    argv.length === 6 && argv[0] === "--pin" && argv[2] === "--manifest" &&
+    argv[4] === "--helper"
+  ) {
+    const pin = JSON.parse(await readFile(resolve(argv[1]), "utf8"));
+    const manifestBytes = await readFile(resolve(argv[3]));
+    const helperBytes = await readFile(resolve(argv[5]));
+    validateAgentHandshakeReleasePin(pin, { manifestBytes, helperBytes });
+    process.stdout.write(JSON.stringify({ ok: true, manifestDigest: pin.manifestDigest }) + "\n");
     return;
   }
   invalid();

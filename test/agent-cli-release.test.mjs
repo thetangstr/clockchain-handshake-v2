@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   agentHandshakeReleaseManifestDigest,
   assembleAgentHandshakeReleaseManifest,
+  validateAgentHandshakeReleasePin,
   validateAgentHandshakeReleaseManifest,
 } from "../scripts/verify-agent-handshake-release.mjs";
 import { canonicalBytes } from "../src/core/canonical.mjs";
@@ -68,6 +69,46 @@ test("pins the sha256 of the exact published canonical manifest bytes", () => {
     nodeRuntime: value.nodeRuntime,
     sourceCommit: value.sourceCommit,
   }), value);
+});
+
+test("binds the post-release pin to exact manifest bytes, helper bytes, and host roots", () => {
+  const value = manifest();
+  const manifestBytes = canonicalBytes(value);
+  const pin = {
+    version: "2.1.0",
+    sourceCommit,
+    manifestDigest: createHash("sha256").update(manifestBytes).digest("hex"),
+    allowedAssetPrefix: prefix,
+    hostRoots: [{ kid: "root-2026-08", fingerprint: "c".repeat(64) }],
+  };
+  assert.deepEqual(validateAgentHandshakeReleasePin(pin, { manifestBytes, helperBytes: bytes }), pin);
+  for (const mutation of [
+    { ...pin, manifestDigest: "d".repeat(64) },
+    { ...pin, sourceCommit: "b".repeat(40) },
+    { ...pin, hostRoots: [] },
+    { ...pin, hostRoots: [{ ...pin.hostRoots[0], fingerprint: "not-a-digest" }] },
+    { ...pin, hostRoots: [{ ...pin.hostRoots[0], kid: 123 }] },
+    { ...pin, hostRoots: [{ ...pin.hostRoots[0], kid: {} }] },
+    { ...pin, hostRoots: [{ ...pin.hostRoots[0], fingerprint: 456 }] },
+    { ...pin, hostRoots: [pin.hostRoots[0], { ...pin.hostRoots[0], fingerprint: "d".repeat(64) }] },
+    { ...pin, hostRoots: [pin.hostRoots[0], { kid: "root-previous", fingerprint: pin.hostRoots[0].fingerprint }] },
+    { ...pin, extra: true },
+  ]) assert.throws(() => validateAgentHandshakeReleasePin(mutation, { manifestBytes, helperBytes: bytes }));
+  assert.throws(() => validateAgentHandshakeReleasePin(pin, { manifestBytes, helperBytes: Buffer.from("tampered") }));
+});
+
+test("tracks the independently published helper in a separate post-release pin", async () => {
+  const pin = JSON.parse(await readFile(new URL("../release/agent-handshake/pin.json", import.meta.url), "utf8"));
+  assert.deepEqual(pin, {
+    version: "2.1.0",
+    sourceCommit: "61d939c3c9bcb6631d615c32671bf737baf57ebb",
+    manifestDigest: "032290c4082c4427e4a800ea065a361bbb4d05989e9c87f6c5a21ac6caf758e4",
+    allowedAssetPrefix: prefix,
+    hostRoots: [{
+      kid: "root-2026-08",
+      fingerprint: "da2771c36bf2298525d2bbd8351b6122bb67115e9979624e8bb56537bcf71ed8",
+    }],
+  });
 });
 
 test("rejects unknown keys, duplicates, redirects, digest drift, and native executable substitutions", () => {
