@@ -159,6 +159,11 @@ function envelope(value) {
   return Object.freeze({ result: result(value.result), signer: signer(value.signer) });
 }
 
+export function validateAgentHandshakeResultEnvelope(value) {
+  envelope(value);
+  return true;
+}
+
 function publicKeyFromRaw(value) {
   const prefix = Buffer.from("302a300506032b6570032100", "hex");
   return createPublicKey({

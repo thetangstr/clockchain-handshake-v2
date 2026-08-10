@@ -29,7 +29,15 @@ import { randomUUID } from "node:crypto";
 import { assertCrossPartyVerification } from "../core/clockchain.mjs";
 import { PARTY_ROLES } from "../core/evidence.mjs";
 import { validateSnapshot } from "../monitor/snapshot.mjs";
+import {
+  AGENT_HANDSHAKE_SNAPSHOT_SCHEMA,
+  validateAgentHandshakeSnapshot,
+} from "../monitor/agent-snapshot.mjs";
 import { ResultError, validateResultEnvelope } from "../core/result.mjs";
+import {
+  AGENT_HANDSHAKE_RESULT_SCHEMA,
+  validateAgentHandshakeResultEnvelope,
+} from "../agent-handshake/result.mjs";
 import { RelayError } from "./errors.mjs";
 
 export const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -1000,7 +1008,11 @@ async function handlePutSnapshot(req, sessions, sessionId) {
     );
   }
   try {
-    validateSnapshot(body);
+    if (body.schema === AGENT_HANDSHAKE_SNAPSHOT_SCHEMA) {
+      validateAgentHandshakeSnapshot(body);
+    } else {
+      validateSnapshot(body);
+    }
   } catch {
     throw new RelayError(
       "Snapshot does not match the required shape.",
@@ -1057,7 +1069,11 @@ async function handlePutResult(req, sessions, sessionId) {
     );
   }
   try {
-    validateResultEnvelope(envelope);
+    if (envelope?.result?.schema === AGENT_HANDSHAKE_RESULT_SCHEMA) {
+      validateAgentHandshakeResultEnvelope(envelope);
+    } else {
+      validateResultEnvelope(envelope);
+    }
   } catch (error) {
     if (error instanceof ResultError) {
       throw new RelayError(error.message, "MALFORMED_RESULT", { status: 400 });

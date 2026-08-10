@@ -6,10 +6,9 @@ import { runAgentHandshakeHostSession } from "../src/agent-handshake/host.mjs";
 
 export async function main() {
   const adapterUrl = process.env.AGENT_HANDSHAKE_HOST_ADAPTER;
-  if (typeof adapterUrl !== "string" || adapterUrl.length === 0) {
-    throw new Error("AGENT_HANDSHAKE_HOST_ADAPTER is required for generic host wiring.");
-  }
-  const adapter = await import(adapterUrl);
+  const adapter = typeof adapterUrl === "string" && adapterUrl.length > 0
+    ? await import(adapterUrl)
+    : await import("../src/agent-handshake/production-adapter.mjs");
   if (
     typeof adapter.createAgentHandshakeHostPorts !== "function" ||
     typeof adapter.loadAgentHandshakeSession !== "function"
