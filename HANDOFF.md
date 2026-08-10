@@ -72,9 +72,10 @@ public discovery URL, with payer/requestor kits joining from a clean clone.
   deployment-wrapper defaults stay fail-closed.
 - GCP remains warm solely as a rollback/decommission topic.
 - The zero-plugin v2 implementation is merged, but production remains intentionally
-  disabled until the signed `v2.1.0` helper release exists and both fresh-client
-  canaries pass. The release workflow now fails before allocating native runners
-  when any signing or npm credential is absent.
+  disabled until the checksum-pinned `v2.1.0` portable helper release exists and both
+  fresh-client canaries pass. For the 2026-08-10 Apple-device demo, Node 24 is an
+  explicit prerequisite; native macOS/Windows packaging and npm publication are
+  deferred and do not gate the stakeholder flow.
 - Rotate the GoDaddy API key/secret after the deployment window. The credential was
   located in `/Users/Kailor/.bash_history` around lines 75807–75813, not in the NAS
   Clockchain checkout; do not copy either value into this repository or a ticket.
@@ -83,7 +84,8 @@ public discovery URL, with payer/requestor kits joining from a clean clone.
 
 *(append dated entries here; format: what you ran, what you expected, what you saw)*
 
-- 2026-08-10 — The signed helper release is waiting on its nine repository
+- 2026-08-10 — **Resolved for today's Apple-device demo.** The original signed
+  native-helper release was waiting on nine repository
   credentials. Workflow run
   `https://github.com/thetangstr/clockchain-handshake-v2/actions/runs/31384450851`
   ran only the low-cost preflight; it reported the following names absent and
@@ -96,8 +98,11 @@ public discovery URL, with payer/requestor kits joining from a clean clone.
   signing certificate, no npm authentication, and no configured repository
   secrets. No private material was read or logged. Do not tag `v2.1.0`, deploy
   `/handshake/mcp`, enable Research readiness, or run the two production
-  cross-client canaries until all nine credentials are installed and preflight
-  passes.
+  cross-client canaries under that original design until all nine credentials were
+  installed. The stakeholder chose the portable Node 24 path instead: publish one
+  canonical manifest plus one bundled JavaScript helper, pin both SHA-256 values,
+  and verify them before execution. Native Apple/Windows signing and npm publication
+  remain future distribution work, not demo prerequisites.
 
 - 2026-08-07 — A3 legacy live verification initially appeared blocked before
   session creation, but both earlier failures shared the same unsupported

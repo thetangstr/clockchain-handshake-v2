@@ -15,11 +15,11 @@ codex mcp add clockchain-handshake --url https://mcp.clockchain.network/handshak
 claude mcp add --transport http --scope user clockchain-handshake https://mcp.clockchain.network/handshake/mcp
 ```
 
-The endpoint instructions provide the verified helper release URL, digest, supported operations, and protocol loop. The local helper creates the role key, commits the exact local policy, registers a fresh ERC-8004 identity when the Initiator requires it, signs only policy-approved bytes, and verifies the final host certificate. The MCP server never receives a private key.
+The endpoint instructions provide the pinned helper manifest URL, the SHA-256 of the exact manifest bytes, supported operations, and protocol loop. For today's Apple-device path, the fresh client needs Node.js 24 and downloads the single portable `clockchain-agent-handshake.cjs` bundle. Every helper invocation runs through one fixed bootstrap command that hashes the exact manifest bytes against the independently agreed pin, reads the helper SHA-256 from that verified manifest, hashes the helper, and executes only those already-verified helper bytes from memory. Claude receives no general `Write` permission and cannot bypass the bootstrap with a direct helper command. The local helper creates the role key, commits the exact local policy, registers a fresh ERC-8004 identity when the Initiator requires it, signs only policy-approved bytes, and verifies the final host certificate. The MCP server never receives a private key.
 
 ## Preflight
 
-The canary remains disabled until all four values below agree with the independently published signed helper release and the production host root:
+The canary remains disabled until all four values below agree with the independently published checksum-pinned helper release and the production host root:
 
 - `CLOCKCHAIN_MCP_RELEASE_MANIFEST_DIGEST`
 - `CLOCKCHAIN_RESEARCH_RELEASE_MANIFEST_DIGEST`
@@ -27,6 +27,8 @@ The canary remains disabled until all four values below agree with the independe
 - `CLOCKCHAIN_RESEARCH_HOST_ROOT_FINGERPRINTS`
 
 Set `CLOCKCHAIN_RESEARCH_MONITOR_URL=https://clockchain-research.vercel.app/api/handshake/monitor`. Supply model authentication through `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY`; the harness passes it only to the disposable client processes and scans retained proof for the exact canary values.
+
+Before starting either fresh client, verify `node --version` reports Node 24. On this demo Mac, the isolated runtime is `/opt/homebrew/opt/node@24/bin/node`; launch the canary with `/opt/homebrew/opt/node@24/bin` first in `PATH`. No Apple Developer account, notarization credential, npm login, plugin, or repository checkout is required for this Apple-device demo path.
 
 ## Run
 

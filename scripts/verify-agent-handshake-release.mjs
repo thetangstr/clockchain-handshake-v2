@@ -8,7 +8,7 @@ import { types } from "node:util";
 import { canonicalBytes } from "../src/core/canonical.mjs";
 
 const MANIFEST_KEYS = Object.freeze([
-  "schema", "version", "sourceCommit", "nodeRuntime", "assets", "manifestDigest",
+  "schema", "version", "sourceCommit", "nodeRuntime", "assets",
 ]);
 const ASSET_KEYS = Object.freeze([
   "platform", "arch", "upstreamSupport", "filename", "url", "byteLength",
@@ -40,22 +40,18 @@ function exact(value, keys) {
 
 function signature(value, platform) {
   const item = exact(value, SIGNATURE_KEYS);
-  const requiredType = platform === "darwin" ? "codesign" : platform === "win32" ? "authenticode" : "none";
+  const requiredType = platform === "node" ? "none" : "invalid";
   if (
     item.type !== requiredType || item.verified !== true ||
-    (platform === "darwin" ? item.notarized !== true : item.notarized !== null) ||
-    (requiredType === "none"
-      ? item.signer !== null || item.timestamp !== null
-      : typeof item.signer !== "string" || item.signer.length === 0 ||
-        typeof item.timestamp !== "string" || !Number.isFinite(Date.parse(item.timestamp)))
+    item.notarized !== null || item.signer !== null || item.timestamp !== null
   ) invalid();
   return Object.freeze(item);
 }
 
-function execution(value, platform, arch) {
+function execution(value) {
   const item = exact(value, EXECUTION_KEYS);
   if (
-    item.verified !== true || item.platform !== platform || item.arch !== arch ||
+    item.verified !== true || item.platform !== "linux" || item.arch !== "x64" ||
     item.exitCode !== "0" || !SHA.test(item.publicOutputSha256)
   ) invalid();
   return Object.freeze(item);
@@ -63,17 +59,11 @@ function execution(value, platform, arch) {
 
 function asset(value, { allowedAssetPrefix, bytesByUrl }) {
   const item = exact(value, ASSET_KEYS);
-  const expectedSupport = item.platform === "darwin" && item.arch === "x64"
-    ? "clockchain_verified"
-    : "node_sea_supported";
   if (
-    !["darwin", "linux", "win32"].includes(item.platform) ||
-    !["arm64", "x64"].includes(item.arch) ||
-    item.platform === "win32" && item.arch !== "x64" ||
-    !["node_sea_supported", "clockchain_verified"].includes(item.upstreamSupport) ||
-    item.upstreamSupport !== expectedSupport
+    item.platform !== "node" || item.arch !== "any" ||
+    item.upstreamSupport !== "node24_portable"
   ) invalid();
-  const expectedFilename = `clockchain-agent-handshake-${item.platform}-${item.arch}${item.platform === "win32" ? ".exe" : ""}`;
+  const expectedFilename = "clockchain-agent-handshake.cjs";
   if (
     item.filename !== expectedFilename || typeof item.url !== "string" ||
     !item.url.startsWith(allowedAssetPrefix) || item.url !== allowedAssetPrefix + expectedFilename ||
@@ -86,12 +76,12 @@ function asset(value, { allowedAssetPrefix, bytesByUrl }) {
   return Object.freeze({
     ...item,
     nativeSignature: signature(item.nativeSignature, item.platform),
-    execution: execution(item.execution, item.platform, item.arch),
+    execution: execution(item.execution),
   });
 }
 
 export function agentHandshakeReleaseManifestDigest(value) {
-  const item = exact(value, MANIFEST_KEYS.filter((key) => key !== "manifestDigest"));
+  const item = exact(value, MANIFEST_KEYS);
   return createHash("sha256").update(canonicalBytes(item)).digest("hex");
 }
 
@@ -107,28 +97,24 @@ export function validateAgentHandshakeReleaseManifest(value, {
     item.sourceCommit !== expectedSourceCommit || !/^24\.[0-9]+\.[0-9]+$/.test(item.nodeRuntime) ||
     typeof allowedAssetPrefix !== "string" ||
     allowedAssetPrefix !== "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.0/" ||
-    !Array.isArray(item.assets) || item.assets.length !== 5 || !SHA.test(item.manifestDigest)
+    !Array.isArray(item.assets) || item.assets.length !== 1
   ) invalid();
   const assets = item.assets.map((entry) => asset(entry, { allowedAssetPrefix, bytesByUrl }));
   const pairs = assets.map((entry) => `${entry.platform}/${entry.arch}`);
   if (new Set(pairs).size !== pairs.length) invalid();
-  const required = ["darwin/arm64", "darwin/x64", "linux/arm64", "linux/x64", "win32/x64"];
+  const required = ["node/any"];
   if (required.some((pair) => !pairs.includes(pair))) invalid();
-  const unsigned = { ...item };
-  delete unsigned.manifestDigest;
-  if (agentHandshakeReleaseManifestDigest(unsigned) !== item.manifestDigest) invalid();
   return Object.freeze({ ...item, assets: Object.freeze(assets) });
 }
 
 export function assembleAgentHandshakeReleaseManifest({ assets, bytesByUrl, nodeRuntime, sourceCommit }) {
-  const unsigned = {
+  const value = {
     schema: "clockchain.agent-handshake-release-manifest/v1",
     version: "2.1.0",
     sourceCommit,
     nodeRuntime,
     assets,
   };
-  const value = { ...unsigned, manifestDigest: agentHandshakeReleaseManifestDigest(unsigned) };
   return validateAgentHandshakeReleaseManifest(value, {
     allowedAssetPrefix: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.0/",
     bytesByUrl,
@@ -149,17 +135,21 @@ async function main(argv) {
       await readFile(resolve(recordsDir, entry.filename)),
     ])));
     const manifest = assembleAgentHandshakeReleaseManifest({ assets, bytesByUrl, nodeRuntime, sourceCommit });
-    await writeFile(output, JSON.stringify(manifest, null, 2) + "\n", { flag: "wx", mode: 0o600 });
-    process.stdout.write(JSON.stringify({ ok: true, manifestDigest: manifest.manifestDigest }) + "\n");
+    const manifestBytes = canonicalBytes(manifest);
+    await writeFile(output, manifestBytes, { flag: "wx", mode: 0o600 });
+    process.stdout.write(JSON.stringify({ ok: true, manifestDigest: createHash("sha256").update(manifestBytes).digest("hex") }) + "\n");
     return;
   }
   if (argv.length === 4 && argv[0] === "--manifest" && argv[2] === "--source-commit") {
-    const manifest = JSON.parse(await readFile(resolve(argv[1]), "utf8"));
+    const manifestBytes = await readFile(resolve(argv[1]));
+    const manifest = JSON.parse(manifestBytes.toString("utf8"));
     validateAgentHandshakeReleaseManifest(manifest, {
       allowedAssetPrefix: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.0/",
       expectedSourceCommit: argv[3],
     });
-    process.stdout.write(JSON.stringify({ ok: true, manifestDigest: manifest.manifestDigest }) + "\n");
+    const canonical = canonicalBytes(manifest);
+    if (!manifestBytes.equals(canonical)) invalid();
+    process.stdout.write(JSON.stringify({ ok: true, manifestDigest: createHash("sha256").update(manifestBytes).digest("hex") }) + "\n");
     return;
   }
   invalid();

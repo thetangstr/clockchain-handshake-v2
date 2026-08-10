@@ -6,6 +6,19 @@
 **Dependent repositories:** `clockchain-developer-tools`, `clockchain-research`  
 **Authoritative baselines:** Handshake `63401f2`, MCP `bef6066`, Research `f81ea0f`
 
+## 2026-08-10 Apple demo release override
+
+For today's two-person Apple-device demonstration, the functional release gate is
+one portable Node 24 bundle, not five native executables. Clockchain publishes the
+exact canonical `manifest.json` bytes and `clockchain-agent-handshake.cjs`; MCP and
+Research independently pin the SHA-256 of the manifest bytes and the manifest pins
+the helper SHA-256. Each fresh Codex or Claude Code client uses a fixed Node bootstrap
+that verifies the raw manifest hash and helper hash before compiling the verified
+helper bytes in memory. No Apple Developer, Windows
+signing, or npm publishing credential is required. Native signed desktop artifacts
+remain an optional later distribution improvement; they are not a protocol or
+production-agent requirement.
+
 ## Objective
 
 Two people use separate, newly started Codex or Claude Code agents to establish
@@ -41,7 +54,7 @@ The demonstration statement is exactly:
 ## Selected approach
 
 Use a dedicated public, rate-limited, handshake-only Streamable HTTP MCP
-endpoint plus a version-pinned, self-contained one-shot local CLI:
+endpoint plus a version-pinned, one-shot local CLI bundle for Node 24:
 
 ```text
 https://mcp.clockchain.network/handshake/mcp
@@ -50,14 +63,13 @@ clockchain-agent-handshake 2.1.0
 
 Codex and Claude Code connect directly to the remote MCP server. MCP server
 instructions explain the cross-tool workflow. When local cryptography is
-required, the agent downloads the correct signed release asset to its private
+required, the agent downloads the checksum-pinned release asset to its private
 working directory, verifies the pinned release manifest and asset digest, and
-runs the CLI through its existing terminal tool. The CLI is assembled from the
+runs the CLI with Node 24 through its existing terminal tool. The CLI is assembled from the
 current tested wallet bridge, registration recovery, canonical protocol
-validators, and certificate verifier. It includes its own runtime and is not a
+validators, and certificate verifier. It bundles its JavaScript dependencies and is not a
 plugin, daemon, browser extension, repository clone, remote signer, or global
-dependency installation. `@clockchain/agent-handshake@2.1.0` remains an
-equivalent developer fallback when Node/npm already exists.
+dependency installation.
 
 ### Rejected alternatives
 
@@ -139,8 +151,8 @@ claude mcp list
 Each person starts a new client session after the connection exists. The live
 runbook supplies version-tested launch settings. Claude Code uses
 `--strict-mcp-config`, `--permission-mode dontAsk`, an exact MCP tool allowlist,
-and literal Bash patterns for the pinned manifest download, digest check, asset
-download, native signature check, `chmod`, `--version`, and six helper
+and literal Bash patterns for the two pinned downloads plus one fixed
+hash-verifying in-memory bootstrap for `--version` and six helper
 operations. Codex uses a strict inline MCP profile, `workspace-write`, an empty
 working directory, network enabled only for the agent run, MCP auto approval,
 and `approval_policy=never` so failures stop rather than ask a person.
@@ -376,26 +388,18 @@ business action or a third stakeholder signature.
 
 ## One-shot local CLI
 
-`clockchain-agent-handshake 2.1.0` is published as self-contained release assets
-for macOS arm64, Linux arm64/x64, and Windows x64. Clockchain also publishes a
-macOS x64 compatibility asset only after it executes on an actual Intel Mac gate;
-Node's upstream SEA CI does not cover that target, so the release describes it as
-Clockchain-verified rather than upstream-guaranteed. A CI matrix bundles the
-existing JavaScript implementation and pinned `viem` dependency into a Node 24
-LTS single-executable application for each platform using the pinned injection
-workflow. The release also publishes an exact-key manifest containing version,
-source commit, build runtime, platform, upstream-support status, asset URL, byte
-length, and SHA-256 for every asset.
-
-SEA remains an active-development Node feature. Builds disable SEA snapshot and
-code-cache portability features, inject into the exact matching Node executable,
-remove any pre-existing platform signature before injection, and sign the final
-shipped macOS and Windows binaries after injection. A target without native
-execution and final-signature verification is not advertised to stakeholders.
+`clockchain-agent-handshake 2.1.0` is published as one audited portable CommonJS
+bundle for Node 24. CI builds and executes that bundle on a pinned Node 24 Linux
+runner, attests its provenance, and publishes it with an exact-key canonical
+manifest containing version, source commit, build runtime, asset URL, byte length,
+SHA-256, and public execution evidence. The manifest explicitly records
+`nativeSignature.type:"none"`; this release makes no native code-signing or
+notarization claim. Signed native packages and npm distribution are future
+convenience work, not part of today's stakeholder or production gate.
 
 The release lifecycle is intentionally non-circular. A reviewed helper source
-commit is created first without naming its future artifact digest. CI builds and
-signs assets whose manifest names that source commit. A separate post-release pin
+commit is created first without naming its future artifact digest. CI builds an
+asset whose manifest names that source commit. A separate post-release pin
 commit then records the final manifest digest, asset-host allowlist, helper
 version, and host-root fingerprints in the Handshake release record, MCP
 instructions/well-known manifest, and Research prompt data. The helper artifact
@@ -404,10 +408,9 @@ never claims its own future manifest digest.
 The Research runbook is the stakeholder's independent manifest-digest source;
 MCP supplies the same value as a cross-check, not as local-code authority. An
 agent must reject any disagreement before downloading or executing an asset. The
-platform asset's digest must then match the selected manifest entry. macOS and
-Windows assets additionally carry their native code signatures. The npm package
-`@clockchain/agent-handshake@2.1.0` publishes the same source with npm provenance
-as a developer fallback; the stakeholder run does not require Node or npm.
+portable asset's digest must then match the sole manifest entry. Stakeholder Macs
+must have Node 24 available; no npm login, repository checkout, native-signing
+credential, or global Clockchain installation is required.
 
 The release contains only the tested local identity, registration, policy,
 signing-request, and certificate-verification code. It has no updater, plugin
@@ -416,7 +419,7 @@ surface.
 
 The release build first produces one auditable JavaScript bundle and rejects any
 unexpected dynamic import, filesystem module lookup, or dependency outside that
-bundle. This is required because a SEA entry script cannot treat an arbitrary
+bundle. This is required because the portable entry script cannot treat an arbitrary
 stakeholder filesystem as its package tree.
 
 The CLI operations are:
@@ -590,9 +593,8 @@ credentials.
 - The local helper verifies a root-signed host session-key certificate against
   its embedded current/previous key ring before any party signature.
 - MCP initialization returns the complete pinned server instructions.
-- Every self-contained release asset executes in a clean platform environment
-  without Node, npm, a repository checkout, or a global Clockchain installation;
-  the npm fallback produces the same public results in its supported environment.
+- The portable release bundle executes under Node 24 in a clean environment
+  without npm installation, a repository checkout, or a global Clockchain installation.
 - Local policy tests prove that a validly signed but disallowed statement,
   duration, identity mode, external action, host, session, role, or helper
   version never reaches the signing function.
