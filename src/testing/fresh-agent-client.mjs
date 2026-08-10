@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, realpath, rm } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 
 import { assertSecretFree } from "../core/redact.mjs";
 
@@ -24,13 +24,13 @@ export const CLOCKCHAIN_HANDSHAKE_TOOLS = Object.freeze([
 ]);
 export const CLAUDE_LOCAL_AUTHORITY_TOOLS = Object.freeze([
   `Bash(curl --fail --location --proto =https --proto-redir =https --output ./manifest.json ${RELEASE_PREFIX}manifest.json)`,
-  `Bash(curl --fail --location --proto =https --proto-redir =https --output ./clockchain-agent-handshake-* ${RELEASE_PREFIX}clockchain-agent-handshake-*)`,
-  "Bash(shasum -a 256 ./manifest.json ./clockchain-agent-handshake-*)",
-  "Bash(codesign --verify --deep --strict ./clockchain-agent-handshake-darwin-*)",
-  "Bash(chmod 700 ./clockchain-agent-handshake-*)",
-  "Bash(./clockchain-agent-handshake-* --version)",
+  `Bash(curl --fail --location --proto =https --proto-redir =https --output ./clockchain-agent-handshake.cjs ${RELEASE_PREFIX}clockchain-agent-handshake.cjs)`,
+  "Write",
+  "Bash(shasum -a 256 -c ./manifest.sha256)",
+  "Bash(shasum -a 256 -c ./clockchain-agent-handshake.sha256)",
+  "Bash(node ./clockchain-agent-handshake.cjs --version)",
   ...HELPER_OPERATIONS.map((operation) =>
-    `Bash(./clockchain-agent-handshake-* ${operation} *)`),
+    `Bash(node ./clockchain-agent-handshake.cjs ${operation} *)`),
 ]);
 
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
@@ -112,18 +112,19 @@ function validateAssetUrl(value) {
   if (url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") fail();
   if (url.origin !== "https://github.com" || !raw.startsWith(RELEASE_PREFIX)) fail();
   const asset = raw.slice(RELEASE_PREFIX.length);
-  if (!SAFE_SEGMENT.test(asset) || asset === "." || asset === ".." || decodeURIComponent(asset) !== asset) fail();
-  return raw;
+  if (!["manifest.json", "clockchain-agent-handshake.cjs"].includes(asset)) fail();
+  return Object.freeze({ asset, url: raw });
 }
 
 function validateHelperArgv(argv, workspace) {
-  if (!Array.isArray(argv) || argv.length < 4 || argv.some((entry) => typeof entry !== "string")) fail();
+  if (!Array.isArray(argv) || argv.length < 5 || argv.some((entry) => typeof entry !== "string")) fail();
   argv.forEach(safeArg);
-  descendant(workspace, argv[0]);
-  if (!HELPER_OPERATIONS.includes(argv[1]) || argv[2] !== "--state-dir") fail();
-  descendant(workspace, argv[3]);
-  if (argv.length === 4) return;
-  if (argv.length !== 6 || argv[4] !== "--payload-base64url" || !BASE64URL.test(argv[5])) fail();
+  if (argv[0] !== "node") fail();
+  descendant(workspace, argv[1]);
+  if (!HELPER_OPERATIONS.includes(argv[2]) || argv[3] !== "--state-dir") fail();
+  descendant(workspace, argv[4]);
+  if (argv.length === 5) return;
+  if (argv.length !== 7 || argv[5] !== "--payload-base64url" || !BASE64URL.test(argv[6])) fail();
 }
 
 export function validateHelperCommand({ argv, kind, workspace } = {}) {
@@ -136,14 +137,19 @@ export function validateHelperCommand({ argv, kind, workspace } = {}) {
       argv[5] !== "--output"
     ) fail();
     argv.forEach(safeArg);
-    descendant(cleanWorkspace, argv[6]);
-    validateAssetUrl(argv[7]);
+    const output = descendant(cleanWorkspace, argv[6]);
+    const download = validateAssetUrl(argv[7]);
+    if (basename(output) !== download.asset) fail();
     return true;
   }
   if (kind === "digest") {
-    if (argv.length !== 4 || argv[0] !== "shasum" || argv[1] !== "-a" || argv[2] !== "256") fail();
+    if (
+      argv.length !== 5 || argv[0] !== "shasum" || argv[1] !== "-a" ||
+      argv[2] !== "256" || argv[3] !== "-c"
+    ) fail();
     argv.forEach(safeArg);
-    descendant(cleanWorkspace, argv[3]);
+    const checksumFile = descendant(cleanWorkspace, argv[4]);
+    if (!["manifest.sha256", "clockchain-agent-handshake.sha256"].includes(basename(checksumFile))) fail();
     return true;
   }
   if (kind === "helper") {

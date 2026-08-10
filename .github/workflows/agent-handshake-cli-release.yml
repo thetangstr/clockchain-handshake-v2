@@ -1,7 +1,6 @@
 name: agent-handshake-cli-release
 
 on:
-  workflow_dispatch:
   push:
     tags: ["v2.1.0"]
 
@@ -14,199 +13,41 @@ env:
   NODE_VERSION: 24.18.0
 
 jobs:
-  preflight-secrets:
-    runs-on: ubuntu-slim
-    env:
-      MAC_CERTIFICATE_P12_PRESENT: ${{ secrets.MAC_CERTIFICATE_P12 != '' }}
-      MAC_CERTIFICATE_PASSWORD_PRESENT: ${{ secrets.MAC_CERTIFICATE_PASSWORD != '' }}
-      MAC_SIGNER_NAME_PRESENT: ${{ secrets.MAC_SIGNER_NAME != '' }}
-      APPLE_NOTARY_KEY_P8_PRESENT: ${{ secrets.APPLE_NOTARY_KEY_P8 != '' }}
-      APPLE_NOTARY_KEY_ID_PRESENT: ${{ secrets.APPLE_NOTARY_KEY_ID != '' }}
-      APPLE_NOTARY_ISSUER_ID_PRESENT: ${{ secrets.APPLE_NOTARY_ISSUER_ID != '' }}
-      WINDOWS_CERTIFICATE_PFX_PRESENT: ${{ secrets.WINDOWS_CERTIFICATE_PFX != '' }}
-      WINDOWS_CERTIFICATE_PASSWORD_PRESENT: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD != '' }}
-      NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
-    steps:
-      - name: Require every release credential before starting native runners
-        shell: bash
-        run: |
-          missing=0
-          for name in \
-            MAC_CERTIFICATE_P12 MAC_CERTIFICATE_PASSWORD MAC_SIGNER_NAME \
-            APPLE_NOTARY_KEY_P8 APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID \
-            WINDOWS_CERTIFICATE_PFX WINDOWS_CERTIFICATE_PASSWORD NPM_TOKEN
-          do
-            present="${name}_PRESENT"
-            if [ "${!present}" != "true" ]; then
-              echo "::error title=Missing release credential::$name is not configured"
-              missing=1
-            fi
-          done
-          exit "$missing"
-
-  build-supported:
-    needs: preflight-secrets
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - runner: ubuntu-24.04
-            platform: linux
-            arch: x64
-          - runner: ubuntu-24.04-arm
-            platform: linux
-            arch: arm64
-          - runner: macos-15
-            platform: darwin
-            arch: arm64
-          - runner: windows-2025
-            platform: win32
-            arch: x64
-    runs-on: ${{ matrix.runner }}
+  build-portable:
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          registry-url: https://registry.npmjs.org
       - run: npm ci
-      - name: Build SEA on its matching runner
+      - name: Build and execute the audited portable helper
         shell: bash
         run: |
-          test "$(node -p 'process.platform')" = "${{ matrix.platform }}"
-          test "$(node -p 'process.arch')" = "${{ matrix.arch }}"
           mkdir -p dist
-          suffix=""
-          if [ "${{ matrix.platform }}" = "win32" ]; then suffix=".exe"; fi
-          node scripts/build-agent-handshake-release.mjs sea "dist/clockchain-agent-handshake-${{ matrix.platform }}-${{ matrix.arch }}${suffix}"
-      - name: Sign and verify macOS asset
-        if: matrix.platform == 'darwin'
-        shell: bash
-        env:
-          MAC_CERTIFICATE_P12: ${{ secrets.MAC_CERTIFICATE_P12 }}
-          MAC_CERTIFICATE_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
-          CLOCKCHAIN_NATIVE_SIGNER: ${{ secrets.MAC_SIGNER_NAME }}
-          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
-          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
-          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-        run: |
-          test -n "$MAC_CERTIFICATE_P12"
-          test -n "$APPLE_NOTARY_KEY_P8"
-          test -n "$APPLE_NOTARY_KEY_ID"
-          test -n "$APPLE_NOTARY_ISSUER_ID"
-          echo "$MAC_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security create-keychain -p "$MAC_CERTIFICATE_PASSWORD" "$RUNNER_TEMP/release.keychain-db"
-          security set-keychain-settings -lut 21600 "$RUNNER_TEMP/release.keychain-db"
-          security unlock-keychain -p "$MAC_CERTIFICATE_PASSWORD" "$RUNNER_TEMP/release.keychain-db"
-          security import "$RUNNER_TEMP/cert.p12" -k "$RUNNER_TEMP/release.keychain-db" -P "$MAC_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$MAC_CERTIFICATE_PASSWORD" "$RUNNER_TEMP/release.keychain-db"
-          security list-keychains -d user -s "$RUNNER_TEMP/release.keychain-db"
-          codesign --force --timestamp --options runtime --sign "$CLOCKCHAIN_NATIVE_SIGNER" "dist/clockchain-agent-handshake-darwin-${{ matrix.arch }}"
-          codesign --verify --deep --strict --verbose=2 "dist/clockchain-agent-handshake-darwin-${{ matrix.arch }}"
-          printf '%s' "$APPLE_NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
-          chmod 0600 "$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
-          ditto -c -k --keepParent "dist/clockchain-agent-handshake-darwin-${{ matrix.arch }}" "$RUNNER_TEMP/clockchain-agent-handshake-darwin-${{ matrix.arch }}.zip"
-          xcrun notarytool submit "$RUNNER_TEMP/clockchain-agent-handshake-darwin-${{ matrix.arch }}.zip" --key "$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8" --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID" --wait
-          spctl --assess --type execute --verbose=4 "dist/clockchain-agent-handshake-darwin-${{ matrix.arch }}"
-          echo "CLOCKCHAIN_NATIVE_TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" >> "$GITHUB_ENV"
-          echo "CLOCKCHAIN_NATIVE_SIGNER=$CLOCKCHAIN_NATIVE_SIGNER" >> "$GITHUB_ENV"
-          echo "CLOCKCHAIN_NATIVE_NOTARIZED=true" >> "$GITHUB_ENV"
-      - name: Sign and verify Windows asset
-        if: matrix.platform == 'win32'
-        shell: pwsh
-        env:
-          WINDOWS_CERTIFICATE_PFX: ${{ secrets.WINDOWS_CERTIFICATE_PFX }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-        run: |
-          if (-not $env:WINDOWS_CERTIFICATE_PFX) { throw "missing certificate" }
-          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\cert.pfx", [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_PFX))
-          signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /f "$env:RUNNER_TEMP\cert.pfx" /p "$env:WINDOWS_CERTIFICATE_PASSWORD" "dist\clockchain-agent-handshake-win32-x64.exe"
-          signtool verify /pa /v "dist\clockchain-agent-handshake-win32-x64.exe"
-          "CLOCKCHAIN_NATIVE_SIGNER=Clockchain" >> $env:GITHUB_ENV
-          "CLOCKCHAIN_NATIVE_TIMESTAMP=$([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ'))" >> $env:GITHUB_ENV
-      - name: Execute and record public evidence
-        shell: bash
-        run: |
-          suffix=""
-          if [ "${{ matrix.platform }}" = "win32" ]; then suffix=".exe"; fi
-          asset="dist/clockchain-agent-handshake-${{ matrix.platform }}-${{ matrix.arch }}${suffix}"
-          "$asset" init --state-dir "$RUNNER_TEMP/clockchain-agent-state" > "dist/${{ matrix.platform }}-${{ matrix.arch }}.public.json"
-          node scripts/build-agent-handshake-release.mjs record "$asset" "${{ matrix.platform }}" "${{ matrix.arch }}" node_sea_supported "dist/${{ matrix.platform }}-${{ matrix.arch }}.public.json" "dist/${{ matrix.platform }}-${{ matrix.arch }}.record.json"
+          node scripts/build-agent-handshake-release.mjs bundle dist/clockchain-agent-handshake.cjs
+          node dist/clockchain-agent-handshake.cjs --version
+          node dist/clockchain-agent-handshake.cjs init --state-dir "$RUNNER_TEMP/clockchain-agent-state" > dist/node-any.public.json
+          node scripts/build-agent-handshake-release.mjs record dist/clockchain-agent-handshake.cjs node any node24_portable dist/node-any.public.json dist/node-any.record.json
       - uses: actions/attest-build-provenance@v2
         with:
-          subject-path: dist/clockchain-agent-handshake-*
+          subject-path: dist/clockchain-agent-handshake.cjs
       - uses: actions/upload-artifact@v4
         with:
-          name: agent-handshake-${{ matrix.platform }}-${{ matrix.arch }}
+          name: agent-handshake-node-any
           path: |
-            dist/clockchain-agent-handshake-*
+            dist/clockchain-agent-handshake.cjs
             dist/*.record.json
 
-  build-intel-mac:
-    needs: preflight-secrets
-    runs-on: macos-15-intel
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 24.18.0 }
-      - run: npm ci
-      - name: Build, sign, execute, and record Intel asset
-        shell: bash
-        env:
-          MAC_CERTIFICATE_P12: ${{ secrets.MAC_CERTIFICATE_P12 }}
-          MAC_CERTIFICATE_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
-          CLOCKCHAIN_NATIVE_SIGNER: ${{ secrets.MAC_SIGNER_NAME }}
-          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
-          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
-          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-        run: |
-          test "$(uname -m)" = "x86_64"
-          test "$(node -p 'process.platform')" = "darwin"
-          test "$(node -p 'process.arch')" = "x64"
-          test -n "$MAC_CERTIFICATE_P12"
-          test -n "$APPLE_NOTARY_KEY_P8"
-          test -n "$APPLE_NOTARY_KEY_ID"
-          test -n "$APPLE_NOTARY_ISSUER_ID"
-          echo "$MAC_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security create-keychain -p "$MAC_CERTIFICATE_PASSWORD" "$RUNNER_TEMP/release.keychain-db"
-          security set-keychain-settings -lut 21600 "$RUNNER_TEMP/release.keychain-db"
-          security unlock-keychain -p "$MAC_CERTIFICATE_PASSWORD" "$RUNNER_TEMP/release.keychain-db"
-          security import "$RUNNER_TEMP/cert.p12" -k "$RUNNER_TEMP/release.keychain-db" -P "$MAC_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -s -k "$MAC_CERTIFICATE_PASSWORD" "$RUNNER_TEMP/release.keychain-db"
-          security list-keychains -d user -s "$RUNNER_TEMP/release.keychain-db"
-          mkdir -p dist
-          node scripts/build-agent-handshake-release.mjs sea dist/clockchain-agent-handshake-darwin-x64
-          codesign --force --timestamp --options runtime --sign "$CLOCKCHAIN_NATIVE_SIGNER" dist/clockchain-agent-handshake-darwin-x64
-          codesign --verify --deep --strict --verbose=2 dist/clockchain-agent-handshake-darwin-x64
-          printf '%s' "$APPLE_NOTARY_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
-          chmod 0600 "$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8"
-          ditto -c -k --keepParent dist/clockchain-agent-handshake-darwin-x64 "$RUNNER_TEMP/clockchain-agent-handshake-darwin-x64.zip"
-          xcrun notarytool submit "$RUNNER_TEMP/clockchain-agent-handshake-darwin-x64.zip" --key "$RUNNER_TEMP/AuthKey_${APPLE_NOTARY_KEY_ID}.p8" --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID" --wait
-          spctl --assess --type execute --verbose=4 dist/clockchain-agent-handshake-darwin-x64
-          dist/clockchain-agent-handshake-darwin-x64 init --state-dir "$RUNNER_TEMP/clockchain-agent-state" > dist/darwin-x64.public.json
-          export CLOCKCHAIN_NATIVE_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
-          export CLOCKCHAIN_NATIVE_NOTARIZED=true
-          node scripts/build-agent-handshake-release.mjs record dist/clockchain-agent-handshake-darwin-x64 darwin x64 clockchain_verified dist/darwin-x64.public.json dist/darwin-x64.record.json
-      - uses: actions/upload-artifact@v4
-        with:
-          name: agent-handshake-darwin-x64
-          path: |
-            dist/clockchain-agent-handshake-darwin-x64
-            dist/darwin-x64.record.json
-
   publish:
-    needs: [build-supported, build-intel-mac]
+    needs: build-portable
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 24.18.0, registry-url: "https://registry.npmjs.org" }
+        with: { node-version: 24.18.0 }
       - uses: actions/download-artifact@v4
         with: { path: dist, merge-multiple: true }
       - run: node scripts/verify-agent-handshake-release.mjs assemble dist "$GITHUB_SHA" 24.18.0 dist/manifest.json
       - env: { GH_TOKEN: "${{ github.token }}" }
-        run: gh release create v2.1.0 dist/clockchain-agent-handshake-* dist/manifest.json --verify-tag --title "Clockchain Agent Handshake 2.1.0"
-      - run: npm ci && npm run agent-cli:npm:build
-      - working-directory: dist/npm-agent-handshake
-        env: { NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}" }
-        run: npm publish --provenance --access public
+        run: gh release create v2.1.0 dist/clockchain-agent-handshake.cjs dist/manifest.json --verify-tag --title "Clockchain Agent Handshake 2.1.0"

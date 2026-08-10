@@ -5,29 +5,31 @@ import test from "node:test";
 
 import {
   agentHandshakeReleaseManifestDigest,
+  assembleAgentHandshakeReleaseManifest,
   validateAgentHandshakeReleaseManifest,
 } from "../scripts/verify-agent-handshake-release.mjs";
+import { canonicalBytes } from "../src/core/canonical.mjs";
 
 const prefix = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.0/";
 const sourceCommit = "a".repeat(40);
 const bytes = Buffer.from("asset");
 const sha256 = createHash("sha256").update(bytes).digest("hex");
 
-function asset(platform, arch, nativeSignature, upstreamSupport = "node_sea_supported") {
-  const filename = `clockchain-agent-handshake-${platform}-${arch}${platform === "win32" ? ".exe" : ""}`;
+function asset() {
+  const filename = "clockchain-agent-handshake.cjs";
   return {
-    platform,
-    arch,
-    upstreamSupport,
+    platform: "node",
+    arch: "any",
+    upstreamSupport: "node24_portable",
     filename,
     url: prefix + filename,
     byteLength: String(bytes.length),
     sha256,
-    nativeSignature,
+    nativeSignature: { type: "none", verified: true, signer: null, timestamp: null, notarized: null },
     execution: {
       verified: true,
-      platform,
-      arch,
+      platform: "linux",
+      arch: "x64",
       exitCode: "0",
       publicOutputSha256: "b".repeat(64),
     },
@@ -35,23 +37,16 @@ function asset(platform, arch, nativeSignature, upstreamSupport = "node_sea_supp
 }
 
 function manifest() {
-  const unsigned = {
+  return {
     schema: "clockchain.agent-handshake-release-manifest/v1",
     version: "2.1.0",
     sourceCommit,
     nodeRuntime: "24.6.0",
-    assets: [
-      asset("darwin", "arm64", { type: "codesign", verified: true, signer: "Developer ID Application", timestamp: "2026-08-10T00:00:00.000Z", notarized: true }),
-      asset("darwin", "x64", { type: "codesign", verified: true, signer: "Developer ID Application", timestamp: "2026-08-10T00:00:00.000Z", notarized: true }, "clockchain_verified"),
-      asset("linux", "arm64", { type: "none", verified: true, signer: null, timestamp: null, notarized: null }),
-      asset("linux", "x64", { type: "none", verified: true, signer: null, timestamp: null, notarized: null }),
-      asset("win32", "x64", { type: "authenticode", verified: true, signer: "Clockchain", timestamp: "2026-08-10T00:00:00.000Z", notarized: null }),
-    ],
+    assets: [asset()],
   };
-  return { ...unsigned, manifestDigest: agentHandshakeReleaseManifestDigest(unsigned) };
 }
 
-test("accepts the exact five-platform release record and independently recomputes every byte hash", () => {
+test("accepts the exact portable helper release and independently recomputes its bytes", () => {
   const value = manifest();
   assert.deepEqual(validateAgentHandshakeReleaseManifest(value, {
     allowedAssetPrefix: prefix,
@@ -60,18 +55,33 @@ test("accepts the exact five-platform release record and independently recompute
   }), value);
 });
 
-test("rejects unknown keys, duplicates, redirects, digest drift, unsigned native assets, and false Intel claims", () => {
+test("pins the sha256 of the exact published canonical manifest bytes", () => {
+  const value = manifest();
+  const publishedBytes = canonicalBytes(value);
+  assert.equal(
+    agentHandshakeReleaseManifestDigest(value),
+    createHash("sha256").update(publishedBytes).digest("hex"),
+  );
+  assert.deepEqual(assembleAgentHandshakeReleaseManifest({
+    assets: value.assets,
+    bytesByUrl: new Map(value.assets.map((entry) => [entry.url, bytes])),
+    nodeRuntime: value.nodeRuntime,
+    sourceCommit: value.sourceCommit,
+  }), value);
+});
+
+test("rejects unknown keys, duplicates, redirects, digest drift, and native executable substitutions", () => {
   const base = manifest();
   const mutations = [
     { ...base, extra: true },
     { ...base, sourceCommit: "b".repeat(40) },
-    { ...base, manifestDigest: "c".repeat(64) },
+    { ...base, nodeRuntime: "24.6.1", extraDigest: "c".repeat(64) },
     { ...base, assets: [...base.assets, base.assets[0]] },
     { ...base, assets: base.assets.map((entry, index) => index === 0 ? { ...entry, url: "https://example.invalid/a" } : entry) },
-    { ...base, assets: base.assets.map((entry, index) => index === 0 ? { ...entry, nativeSignature: { ...entry.nativeSignature, verified: false } } : entry) },
-    { ...base, assets: base.assets.map((entry, index) => index === 0 ? { ...entry, nativeSignature: { ...entry.nativeSignature, notarized: false } } : entry) },
-    { ...base, assets: base.assets.map((entry, index) => index === 2 ? { ...entry, nativeSignature: { ...entry.nativeSignature, notarized: true } } : entry) },
-    { ...base, assets: base.assets.map((entry, index) => index === 1 ? { ...entry, upstreamSupport: "node_sea_supported" } : entry) },
+    { ...base, assets: base.assets.map((entry) => ({ ...entry, platform: "darwin", arch: "arm64" })) },
+    { ...base, assets: base.assets.map((entry) => ({ ...entry, nativeSignature: { ...entry.nativeSignature, type: "codesign", signer: "unknown" } })) },
+    { ...base, assets: base.assets.map((entry) => ({ ...entry, execution: { ...entry.execution, platform: "darwin" } })) },
+    { ...base, assets: base.assets.map((entry) => ({ ...entry, upstreamSupport: "node_sea_supported" })) },
   ];
   for (const value of mutations) assert.throws(() => validateAgentHandshakeReleaseManifest(value, {
     allowedAssetPrefix: prefix,
@@ -80,32 +90,23 @@ test("rejects unknown keys, duplicates, redirects, digest drift, unsigned native
   }));
 });
 
-test("release workflow pins Node, builders, matching runners, native signing, provenance, and the Intel gate", async () => {
+test("release workflow publishes only the portable helper without external signing or npm credentials", async () => {
   const workflow = await readFile(new URL("../.github/workflows/agent-handshake-cli-release.yml", import.meta.url), "utf8");
   const packageLock = JSON.parse(await readFile(new URL("../package-lock.json", import.meta.url), "utf8"));
   for (const required of [
-    "24.18.0", "ubuntu-24.04", "ubuntu-24.04-arm", "macos-15", "windows-2025",
-    "macos-15-intel", "MAC_CERTIFICATE_P12", "codesign", "notarytool submit", "spctl --assess",
-    "APPLE_NOTARY_KEY_P8", "APPLE_NOTARY_KEY_ID", "APPLE_NOTARY_ISSUER_ID",
-    "signtool", "npm publish --provenance",
-    "build-agent-handshake-release.mjs sea",
+    "24.18.0", "ubuntu-24.04", "build-agent-handshake-release.mjs bundle",
+    "dist/clockchain-agent-handshake.cjs", "actions/attest-build-provenance@v2",
+    "gh release create v2.1.0",
   ]) assert.ok(workflow.includes(required), required);
   assert.equal(workflow.includes("self-hosted"), false);
-  assert.equal(workflow.includes("clockchain-intel-release"), false);
-  assert.equal(workflow.match(/security import/g)?.length, 2);
-  assert.equal(workflow.match(/security set-key-partition-list/g)?.length, 2);
-  assert.equal(workflow.match(/security list-keychains/g)?.length, 2);
-  assert.equal(workflow.match(/test "\$\(uname -m\)" = "x86_64"/g)?.length, 1);
-  assert.ok(workflow.includes("node -p 'process.arch'"));
-  assert.ok(workflow.includes("node -p 'process.platform'"));
-  assert.ok(workflow.includes("preflight-secrets:"));
-  assert.equal(workflow.match(/needs: preflight-secrets/g)?.length, 2);
-  assert.ok(workflow.includes("Missing release credential"));
-  for (const secret of [
+  for (const forbidden of [
+    "workflow_dispatch",
+    "preflight-secrets", "build-agent-handshake-release.mjs sea", "codesign", "notarytool",
+    "signtool", "npm publish", "windows-2025", "macos-15", "macos-15-intel",
     "MAC_CERTIFICATE_P12", "MAC_CERTIFICATE_PASSWORD", "MAC_SIGNER_NAME",
     "APPLE_NOTARY_KEY_P8", "APPLE_NOTARY_KEY_ID", "APPLE_NOTARY_ISSUER_ID",
     "WINDOWS_CERTIFICATE_PFX", "WINDOWS_CERTIFICATE_PASSWORD", "NPM_TOKEN",
-  ]) assert.ok(workflow.includes(secret), secret);
+  ]) assert.equal(workflow.includes(forbidden), false, forbidden);
   assert.equal(packageLock.packages["node_modules/esbuild"].version, "0.28.2");
   assert.equal(packageLock.packages["node_modules/esbuild"].integrity, "sha512-HKVLS8dvII+xoKW9kmqxbRKrnWEXfJJr/FZhhJmiqIB0e053QNYFqOBouTMO/k5sID4MvCiUCvv8b9M4h32wIA==");
   assert.equal(packageLock.packages["node_modules/postject"].version, "1.0.0-alpha.6");

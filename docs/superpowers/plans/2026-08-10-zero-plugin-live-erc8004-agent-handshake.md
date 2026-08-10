@@ -6,7 +6,17 @@
 
 **Architecture:** Handshake owns the canonical generic v2 protocol, local policy/signing executable, host/checker, certificate, and public snapshot. MCP exposes a separate rate-limited seven-tool Streamable HTTP surface whose invitation and role capabilities cannot reach the authenticated Clockchain tools. Research keeps the accepted `/handshake/claude-v6` page composition, strictly parses generic v1/v2 snapshots, and derives every visible state from the exact relay or checker artifact that proves it.
 
-**Tech Stack:** Node.js ESM, TypeScript, Zod, MCP Streamable HTTP, EIP-191/viem, ERC-8004 on Sepolia, Ed25519 host certificates, Clockchain ledger receipts, Node Single Executable Applications, Next.js/React/Vitest, Node test runner, Docker Compose/Caddy on AWS, Vercel.
+**Tech Stack:** Node.js ESM/CommonJS bundle, TypeScript, Zod, MCP Streamable HTTP, EIP-191/viem, ERC-8004 on Sepolia, Ed25519 host certificates, Clockchain ledger receipts, Next.js/React/Vitest, Node test runner, Docker Compose/Caddy on AWS, Vercel.
+
+## 2026-08-10 Apple demo execution override
+
+Today’s accepted Apple-device path requires Node 24 and publishes one bundled
+JavaScript helper. The release manifest is written as exact canonical bytes; its
+raw SHA-256 is pinned independently by MCP and Research, and its sole asset entry
+pins the helper SHA-256. Fresh clients must verify both hashes before `node` executes
+the helper. This replaces C4's native-signing/npm gate for today's demo only. The
+native macOS, Windows, Linux, and npm distribution steps below remain historical
+future-release work and must not block C6/C7 for this path.
 
 ---
 
@@ -44,8 +54,8 @@ available and byte-compatible throughout the rollout.
 - Monitoring/demo acceptance: **APPROVE** for preserved layout, strict v1/v2 parsing,
   exact-artifact progression, complete ERC-8004 detail, readiness gating, and live
   chronology tests.
-- Portability reference: Node 24 LTS SEA injection remains active-development; release
-  tests follow the current [Node SEA documentation](https://nodejs.org/docs/latest-v24.x/api/single-executable-applications.html).
+- Portability reference: today's Apple demo uses one audited CommonJS bundle on
+  Node 24; native SEA and npm distribution are deferred.
 
 No product implementation starts until this plan is approved by the stakeholder.
 
@@ -81,7 +91,7 @@ RESEARCH=/Users/Kailor/.config/superpowers/worktrees/clockchain-research/zero-pl
 2. **C1 — Canonical v2:** policy, identity, statement, transitions, evidence, checker, and certificate are mutation-tested.
 3. **C2 — Host truth:** all three identity policies work; fresh registration and 90-second terms fail closed.
 4. **C3 — Public MCP boundary:** the endpoint exposes exactly seven tools and capabilities cannot cross role, session, statement, tool, or expiry boundaries.
-5. **C4 — Portable local authority:** signed release assets work without Node, npm, a clone, or global Clockchain state.
+5. **C4 — Portable local authority:** the checksum-pinned bundle works on Node 24 without npm install, a clone, or global Clockchain state.
 6. **C5 — Monitor truth:** v1/v2 coexist, every row is artifact-derived, full ERC-8004 details render, and the certified-run fallback survives.
 7. **C6 — Fresh clients:** Codex→Claude and Claude→Codex both finish from the exact two stakeholder prompts.
 8. **C7 — Production:** release, host, MCP, and Research deploy in that order; production canaries pass before announcement.
@@ -565,12 +575,11 @@ Not-tested: Packed platform assets land next.
 
 ---
 
-### Task 6: Produce pinned release assets and an npm developer fallback
+### Task 6: Produce the checksum-pinned portable Node 24 release
 
 **Files:**
 - Create: `scripts/build-agent-handshake-release.mjs`
 - Create: `scripts/verify-agent-handshake-release.mjs`
-- Create: `scripts/build-agent-handshake-npm.mjs`
 - Create: `release/agent-handshake/manifest.schema.json`
 - Create: `release/agent-handshake/pin.schema.json`
 - Modify: `release.json`
@@ -582,13 +591,11 @@ Not-tested: Packed platform assets land next.
 
 - [ ] **Step 1: Write RED manifest, reproducibility, and clean-platform tests**
 
-Require exact manifest keys: version, source commit, Node runtime, platform, arch,
-upstream-support status, asset URL, byte length, SHA-256, native-signature metadata,
-and manifest digest. Reject duplicate platforms, relative/network-redirecting URLs,
-digest disagreement, extra keys, unsigned macOS/Windows production assets, source SHA
-mismatch, and runtime dependency discovery. The macOS x64 entry must state
-`clockchain_verified` and carry an actual Intel-Mac execution record; it must not claim
-upstream SEA coverage. The bundler metafile must show one entry graph, the pinned
+Require exact manifest keys: version, source commit, Node runtime, and one portable
+asset record with URL, byte length, SHA-256, explicit no-native-signature metadata,
+and Linux build execution evidence. Reject duplicate assets, relative or redirecting
+URLs, digest disagreement, extra keys, native executable substitutions, source SHA
+mismatch, and runtime dependency discovery. The bundler metafile must show one entry graph, the pinned
 `viem` tree, allowed Node built-ins, no dynamic import, and no runtime filesystem
 package lookup. The source-build commit must not contain its future manifest digest.
 The later release pin must allow only
@@ -605,24 +612,18 @@ cd "$HANDSHAKE" && node --test \
 
 Expected: FAIL because release build and manifest verification do not exist.
 
-- [ ] **Step 3: Implement the pinned Node 24 LTS SEA injection sequence per target**
+- [ ] **Step 3: Implement the pinned Node 24 portable bundle**
 
 Pin `esbuild@0.28.2` with registry integrity
 `sha512-HKVLS8dvII+xoKW9kmqxbRKrnWEXfJJr/FZhhJmiqIB0e053QNYFqOBouTMO/k5sID4MvCiUCvv8b9M4h32wIA==`
 and `postject@1.0.0-alpha.6` with registry integrity
 `sha512-b9Eb8h2eVqNE8edvKdwqkrY6O7kAwmI8kcnBv1NScolYJbo59XUF0noFq+lxbC1yN20bmC0WBEbDC5H/7ASb0A==`
 as build-only dependencies. Bundle only the CLI dependency graph into one auditable
-CommonJS entry and fail on unexpected external or dynamic imports; generate the SEA
-blob with `useCodeCache:false` and `useSnapshot:false`; remove any existing platform
-signature; inject into the exact matching Node 24 LTS executable; apply required
-platform fixups; then sign the final macOS/Windows asset. Build and execute each
-architecture on a matching trusted runner or native verification host. Generate the
-manifest only after all final binaries are signed, verified, and hashed. The workflow
-attaches the manifest and the four upstream-covered assets to one immutable version
-tag; it adds macOS x64 only when the Intel-Mac gate passes.
-
-Build `@clockchain/agent-handshake@2.1.0` from the same entry point as a developer
-fallback with npm provenance. Its public outputs must match the SEA fixtures.
+CommonJS entry and fail on unexpected external or dynamic imports. Build and execute
+it under pinned Node 24 on a trusted runner, record only public execution evidence,
+and generate the canonical manifest after hashing the final bundle. The workflow is
+tag-only and attaches exactly `manifest.json` and
+`clockchain-agent-handshake.cjs` to immutable `v2.1.0`.
 
 - [ ] **Step 4: Run GREEN and commit the source/build pipeline without a manifest pin**
 
@@ -635,13 +636,13 @@ cd "$HANDSHAKE" && node --test \
 ```
 
 Expected: PASS. Retained evidence records platform, upstream-support status, version,
-manifest digest, asset digest, native signature result, exit code, and public output
+manifest digest, asset digest, explicit no-native-signature result, exit code, and public output
 only.
 
 - [ ] **Step 5: Publish immutable assets from that exact source commit**
 
 The manifest names the already-created helper source commit. Verify final downloads,
-native signatures, byte lengths, hashes, platform execution, and npm provenance before
+canonical manifest bytes, byte lengths, hashes, Node 24 execution, and provenance before
 computing the final manifest digest. Do not amend the source commit after publication.
 
 - [ ] **Step 6: Create and test a separate post-release pin commit**
@@ -659,13 +660,13 @@ Source/build intent line: `Make local agent authority portable without a runtime
 Trailers:
 
 ```text
-Constraint: Stakeholder machines may have neither Node nor npm.
-Rejected: Npm-only installation | it is not portable to a fresh native agent environment.
+Constraint: Today's stakeholder Macs have Node 24 but no Clockchain package or repository.
+Rejected: Native signed packaging for today's demo | it requires unrelated Apple/Windows release credentials.
 Confidence: high
 Scope-risk: broad
-Directive: Build, execute, sign, and hash each SEA asset on its matching trusted platform before publishing the manifest; label macOS x64 as Clockchain-verified only.
-Tested: Manifest mutations, clean-platform execution, CLI parity, native signature, and release verification.
-Not-tested: Public download and native notarization are production release gates.
+Directive: Hash the exact canonical manifest bytes and verify both manifest and helper with fail-closed `shasum -c` before execution.
+Tested: Manifest mutations, clean Node 24 execution, CLI parity, checksum enforcement, and release verification.
+Not-tested: Native packaging, notarization, Windows signing, and npm publication are deferred.
 ```
 
 Post-release pin intent line: `Pin the independently published helper for agent use`
@@ -1126,7 +1127,7 @@ digest or root fingerprint.
 
 Lock version-tested no-human launch fixtures. Claude Code uses `--strict-mcp-config`,
 `--permission-mode dontAsk`, exact `mcp__clockchain-handshake__*` tools, and literal
-Bash patterns for the two downloads, hash/signature checks, `chmod`, `--version`, and
+Bash patterns for the two downloads, two fail-closed `shasum -c` checks, `--version`, and
 the six helper operations. Codex uses `--strict-config`, a strict inline MCP entry,
 `workspace-write`, an empty working directory, network enabled for that run, MCP auto
 approval, and `approval_policy=never`. The page must state that current Codex lacks
@@ -1346,7 +1347,7 @@ Not-tested: Public production routing begins at C7.
 ### Task 16: Deploy, canary, and preserve rollback
 
 **Deployment order:**
-1. signed `clockchain-agent-handshake 2.1.0` release and manifest;
+1. checksum-pinned `clockchain-agent-handshake 2.1.0` release and canonical manifest;
 2. Handshake host with v1 default still available;
 3. MCP image with `/handshake/mcp` dark but health-testable;
 4. Research site with dual-schema monitor, new narrative, and readiness disabled;
@@ -1356,8 +1357,8 @@ Not-tested: Public production routing begins at C7.
 
 - [ ] **Step 1: Publish and independently verify release assets**
 
-Download every asset from its final public URL, verify manifest digest, asset SHA-256,
-native signature/notarization where applicable, `--version`, and clean-platform smoke.
+Download both release files from their final public URLs, verify the exact manifest
+SHA-256 and helper SHA-256 with `shasum -c`, then run `--version` and a clean Node 24 smoke.
 Verify the separate post-release pin commit names that immutable source commit and
 published manifest without circular self-reference. Promote that pin into MCP and
 Research configuration; do not rebuild the helper.
@@ -1405,7 +1406,7 @@ Rollback order:
 2. roll Research back to its dual-compatible prior deployment;
 3. roll MCP back to the prior image;
 4. roll the host back only after active v2 sessions expire;
-5. keep signed release assets immutable and mark the release unsupported rather than
+5. keep checksum-pinned release assets immutable and mark the release unsupported rather than
    deleting evidence needed by completed certificates.
 
 - [ ] **Step 7: Final release commit/documentation update**
@@ -1434,7 +1435,7 @@ Not-tested: Long-duration load and non-Sepolia identity registries are outside t
 - [ ] The signed agreement is valid for exactly 90 seconds; invitation and host deadlines remain independent.
 - [ ] The host never owns or invokes a party signer.
 - [ ] Public MCP exposes exactly seven tools and cannot authorize `/mcp`.
-- [ ] All release assets are pinned, signed where required, digest-verified, and runnable without Node/npm.
+- [ ] The portable helper and canonical manifest are digest-verified before execution under Node 24.
 - [ ] The Research pin is independent of MCP, the release lifecycle is non-circular, and the local helper rejects every unpinned host root/session key.
 - [ ] Role capabilities use the exact canonical HS256 contract, expire at the host session deadline, rotate only current/previous keys, and never authorize `/mcp`.
 - [ ] Public v2 funding is atomically reserved and bounded per address, session, hour, and day with fail-closed alerts/backpressure.
