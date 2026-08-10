@@ -194,7 +194,7 @@ export function buildClientCommands({ client, manifestDigest, prompt, workspace 
     }),
     launch: Object.freeze({
       args: Object.freeze([
-        "--print", "--model", "sonnet", "--bare", "--disable-slash-commands", "--no-chrome",
+        "--print", "--model", "sonnet", "--disable-slash-commands", "--no-chrome",
         "--strict-mcp-config", "--mcp-config", JSON.stringify({
           mcpServers: { "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL } },
         }),
