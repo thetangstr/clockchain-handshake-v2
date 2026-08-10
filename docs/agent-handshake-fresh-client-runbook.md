@@ -40,7 +40,7 @@ By default Codex is the Initiator and Claude Code is the Responder. Reverse them
 CLOCKCHAIN_INITIATOR_CLIENT=claude CLOCKCHAIN_RESPONDER_CLIENT=codex node scripts/run-fresh-agent-handshake.mjs
 ```
 
-For a staged copy/paste demonstration, run the Initiator until it returns the single-use Responder invitation, then pass that exact value as `CLOCKCHAIN_RESPONDER_INVITATION` to the canary. Do not put the Initiator role capability in that variable.
+The automated canary starts the Initiator first, reads the actual single-use Responder invitation from the structured MCP tool event in memory, and only then starts the Responder. The invitation is sent to the Responder over stdin, never a process argument, and is included in the retained-evidence secret scan. In the two-person stakeholder demonstration, the Initiator shows that same invitation and the first person copies only it into the second person's fresh client. The Initiator role capability is never copied.
 
 ## Required terminal proof
 

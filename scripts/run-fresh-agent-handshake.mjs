@@ -62,10 +62,6 @@ async function monitor({ sessionId }) {
 
 async function main() {
   const prompts = JSON.parse(await readFile(new URL("../test/fixtures/fresh-agent/prompts.json", import.meta.url), "utf8"));
-  const invitation = process.env.CLOCKCHAIN_RESPONDER_INVITATION;
-  if (typeof invitation === "string" && invitation.length > 0) {
-    prompts.responder = prompts.responder.replace("<PASTE THE INITIATOR INVITATION>", invitation);
-  }
   const clients = {
     initiator: process.env.CLOCKCHAIN_INITIATOR_CLIENT ?? "codex",
     responder: process.env.CLOCKCHAIN_RESPONDER_CLIENT ?? "claude",

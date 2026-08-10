@@ -14,22 +14,30 @@ import {
   validateReleaseAgreement,
 } from "../src/testing/fresh-agent-client.mjs";
 
-function childFor(result, observed) {
-  const child = new EventEmitter();
-  child.pid = 1000 + observed.length;
-  child.stdout = new EventEmitter();
-  child.stderr = new EventEmitter();
-  child.kill = (signal) => observed.push({ signal });
-  queueMicrotask(() => {
-    child.stdout.emit("data", Buffer.from(`${JSON.stringify(result)}\n`));
-    child.emit("close", 0, null);
+function streamEvent(value) {
+  return `${JSON.stringify(value)}\n`;
+}
+
+function terminalEvent(result) {
+  return streamEvent({
+    type: "item.completed",
+    item: { type: "agent_message", text: JSON.stringify(result) },
   });
-  return child;
+}
+
+function claudeTerminalEvent(result) {
+  return streamEvent({
+    type: "assistant",
+    message: {
+      content: [{ type: "text", text: `\`\`\`json\n${JSON.stringify(result)}\n\`\`\`` }],
+    },
+  });
 }
 
 const DIGEST = "a".repeat(64);
 const ROOT = "b".repeat(64);
 const SESSION = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+const INVITATION = `eyJ${"a".repeat(128)}.${"b".repeat(96)}`;
 
 function roleResult(role) {
   return {
@@ -59,12 +67,15 @@ test("builds exact endpoint configuration for Codex and Claude Code", () => {
   assert.deepEqual(codex.launch.args, [
     "exec", "--skip-git-repo-check", "--strict-config", "--ignore-rules", "--ephemeral",
     "--sandbox", "workspace-write", "--config", 'approval_policy="never"',
-    "--config", "sandbox_workspace_write.network_access=true", "--cd", "/tmp/a", "hello",
+    "--config", "sandbox_workspace_write.network_access=true", "--json", "--cd", "/tmp/a", "-",
   ]);
+  assert.equal(codex.launch.input, "hello");
   assert.deepEqual(claude.launch.args, [
-    "--print", "hello", "--strict-mcp-config", "--mcp-config",
+    "--print", "--bare", "--disable-slash-commands", "--no-chrome",
+    "--strict-mcp-config", "--mcp-config",
     JSON.stringify({ mcpServers: { "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL } } }),
     "--permission-mode", "dontAsk", "--no-session-persistence", "--setting-sources", "",
+    "--output-format", "stream-json", "--verbose",
     "--allowedTools",
     [
       "agent_handshake_invite", "agent_handshake_accept_invitation", "agent_handshake_join",
@@ -81,6 +92,7 @@ test("builds exact endpoint configuration for Codex and Claude Code", () => {
         .map((operation) => `Bash(./clockchain-agent-handshake-* ${operation} *)`),
     ]).join(","),
   ]);
+  assert.equal(claude.launch.input, "hello");
 });
 
 test("creates disjoint empty homes, workspaces, caches, and state", async (t) => {
@@ -131,16 +143,43 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
   for (const candidate of bad) assert.throws(() => validateHelperCommand(candidate));
 });
 
-test("launches both clients before awaiting, redacts secrets, retains public proof, and cleans up", async (t) => {
+test("starts the Responder only after the Initiator emits its actual one-time invitation", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "fresh-agent-run-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
   const calls = [];
-  let spawned = 0;
+  const children = {};
   const secret = "canary-provider-secret-value";
   const spawnProcess = (file, args, options) => {
     calls.push({ file, args, options });
-    spawned += 1;
-    return childFor(roleResult(spawned === 1 ? "initiator" : "responder"), calls);
+    const role = children.initiator === undefined ? "initiator" : "responder";
+    const child = new EventEmitter();
+    child.pid = 1000 + calls.length;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end(input) { calls.push({ input, role }); } };
+    child.kill = (signal) => calls.push({ role, signal });
+    children[role] = child;
+    if (role === "initiator") {
+      queueMicrotask(() => {
+        child.stdout.emit("data", Buffer.from(streamEvent({
+          type: "item.completed",
+          item: {
+            type: "mcp_tool_call",
+            name: "agent_handshake_invite",
+            result: { structuredContent: { responderInvitation: INVITATION } },
+          },
+        })));
+      });
+    } else {
+      assert.equal(args.join(" ").includes(INVITATION), false);
+      queueMicrotask(() => {
+        children.initiator.stdout.emit("data", Buffer.from(terminalEvent(roleResult("initiator"))));
+        children.responder.stdout.emit("data", Buffer.from(claudeTerminalEvent(roleResult("responder"))));
+        children.initiator.emit("close", 0, null);
+        children.responder.emit("close", 0, null);
+      });
+    }
+    return child;
   };
   const result = await runFreshAgentHandshake({
     clients: { initiator: "codex", responder: "claude" },
@@ -151,13 +190,19 @@ test("launches both clients before awaiting, redacts secrets, retains public pro
     },
     monitor: async () => ({ chronology: ["INVITATION_CREATED", "INVITATION_CLAIMED", "IDENTITIES_REGISTERED", "CERTIFIED"], sessionId: SESSION }),
     parent,
-    prompts: { initiator: "init prompt", responder: "response prompt" },
+    prompts: { initiator: "init prompt", responder: "consume <PASTE THE INITIATOR INVITATION> now" },
     release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
     spawnProcess,
     timeoutMs: 2_000
   });
   assert.equal(calls.filter((entry) => entry.file).length, 2);
   assert.deepEqual(calls.slice(0, 2), [{ configure: "codex" }, { configure: "claude" }]);
+  assert.equal(calls[2].file, "codex");
+  assert.equal(calls.find((entry) => entry.role === "initiator" && entry.input !== undefined).input, "init prompt");
+  assert.equal(calls.find((entry) => entry.file === "claude").args.join(" ").includes(INVITATION), false);
+  const responderInput = calls.find((entry) => entry.role === "responder" && entry.input !== undefined).input;
+  assert.equal(responderInput.includes(INVITATION), true);
+  assert.equal(responderInput.includes("<PASTE THE INITIATOR INVITATION>"), false);
   assert.equal(result.cleanup.completed, true);
   assert.equal(result.roles.initiator.erc8004.agentId, "9452");
   assert.equal(result.roles.responder.erc8004.agentId, "9453");
@@ -175,6 +220,7 @@ test("times out both process groups and removes both clean rooms", async (t) => 
     child.pid = null;
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
+    child.stdin = { end() {} };
     child.kill = (signal) => killed.push(signal);
     return child;
   };
@@ -189,6 +235,39 @@ test("times out both process groups and removes both clean rooms", async (t) => 
     spawnProcess,
     timeoutMs: 100,
   }), /failed safely/);
-  assert.deepEqual(killed, ["SIGTERM", "SIGTERM"]);
+  assert.deepEqual(killed, ["SIGTERM"]);
+  assert.deepEqual(await readdir(parent), []);
+});
+
+test("rejects a three-segment invitation lookalike before starting the Responder", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-bad-invitation-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  let spawned = 0;
+  const spawnProcess = () => {
+    spawned += 1;
+    const child = new EventEmitter();
+    child.pid = null;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {
+      queueMicrotask(() => child.stdout.emit("data", Buffer.from(streamEvent({
+        result: { responderInvitation: `${INVITATION}.${"c".repeat(96)}` },
+      }))));
+    } };
+    child.kill = () => {};
+    return child;
+  };
+  await assert.rejects(() => runFreshAgentHandshake({
+    clients: { initiator: "codex", responder: "claude" },
+    configureClient: async () => {},
+    modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
+    monitor: async () => { throw new Error("unreachable"); },
+    parent,
+    prompts: { initiator: "init", responder: `respond ${"<PASTE THE INITIATOR INVITATION>"}` },
+    release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
+    spawnProcess,
+    timeoutMs: 2_000,
+  }), /failed safely/);
+  assert.equal(spawned, 1);
   assert.deepEqual(await readdir(parent), []);
 });
