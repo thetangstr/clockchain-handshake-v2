@@ -40,10 +40,12 @@ const ADDRESS = /^0x[0-9a-f]{40}$/;
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const TX = /^0x[0-9a-f]{64}$/;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
+const ROLE_TOKEN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const UNSAFE_SHELL = /[\0\r\n;&|`$<>]/;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const TERMINAL_SCHEMA = "clockchain.fresh-agent-terminal-proof/v1";
 const EVIDENCE_SCHEMA = "clockchain.fresh-agent-canary-evidence/v1";
+const RESPONDER_INVITATION_PLACEHOLDER = "<PASTE THE INITIATOR INVITATION>";
 
 function fail() {
   throw new Error("Fresh agent compatibility check failed safely.");
@@ -165,9 +167,10 @@ export function buildClientCommands({ client, prompt, workspace } = {}) {
         args: Object.freeze([
           "exec", "--skip-git-repo-check", "--strict-config", "--ignore-rules", "--ephemeral",
           "--sandbox", "workspace-write", "--config", 'approval_policy="never"',
-          "--config", "sandbox_workspace_write.network_access=true", "--cd", cwd, prompt,
+          "--config", "sandbox_workspace_write.network_access=true", "--json", "--cd", cwd, "-",
         ]),
         file: "codex",
+        input: prompt,
         limitation: "Codex workspace-write does not provide literal command-pattern enforcement.",
       }),
     });
@@ -179,19 +182,22 @@ export function buildClientCommands({ client, prompt, workspace } = {}) {
     }),
     launch: Object.freeze({
       args: Object.freeze([
-        "--print", prompt,
+        "--print", "--bare", "--disable-slash-commands", "--no-chrome",
         "--strict-mcp-config", "--mcp-config", JSON.stringify({
           mcpServers: { "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL } },
         }),
         "--permission-mode", "dontAsk",
         "--no-session-persistence",
         "--setting-sources", "",
+        "--output-format", "stream-json",
+        "--verbose",
         "--allowedTools", CLOCKCHAIN_HANDSHAKE_TOOLS
           .map((tool) => `mcp__clockchain-handshake__${tool}`)
           .concat(CLAUDE_LOCAL_AUTHORITY_TOOLS)
           .join(","),
       ]),
       file: "claude",
+      input: prompt,
       limitation: null,
     }),
   });
@@ -229,11 +235,7 @@ function append(output, chunk) {
   return next;
 }
 
-function parseTerminal(value, role) {
-  const lines = value.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean);
-  if (lines.length === 0) fail();
-  let parsed;
-  try { parsed = JSON.parse(lines.at(-1)); } catch { fail(); }
+function validateTerminal(parsed, role) {
   exactObject(parsed, [
     "schema", "role", "sessionId", "policyDigest", "address", "erc8004",
     "receiptIds", "certificateDigest", "certificateVerified", "externalBusinessActionPerformed",
@@ -251,6 +253,52 @@ function parseTerminal(value, role) {
   return Object.freeze({ ...parsed, erc8004: Object.freeze({ ...identity }), receiptIds: Object.freeze([...parsed.receiptIds]) });
 }
 
+function invitation(value) {
+  if (typeof value !== "string" || value.length < 80 || value.length > 4096 || !ROLE_TOKEN.test(value)) fail();
+  return value;
+}
+
+function parseJsonString(value) {
+  const clean = value.trim();
+  const fenced = /^```json\r?\n(\{[\s\S]*\})\r?\n```$/u.exec(clean);
+  const candidate = fenced?.[1] ?? clean;
+  if (!candidate.startsWith("{") || !candidate.endsWith("}")) return null;
+  try { return JSON.parse(candidate); } catch { return null; }
+}
+
+function inspectEvent(value, role, depth = 0) {
+  if (depth > 12) fail();
+  if (typeof value === "string") {
+    const parsed = parseJsonString(value);
+    return parsed === null ? {} : inspectEvent(parsed, role, depth + 1);
+  }
+  if (value === null || typeof value !== "object") return {};
+  if (Array.isArray(value)) {
+    return value.reduce((found, entry) => mergeObserved(found, inspectEvent(entry, role, depth + 1)), {});
+  }
+  let found = {};
+  if (Object.hasOwn(value, "responderInvitation")) {
+    found = { invitation: invitation(value.responderInvitation) };
+  }
+  if (value.schema === TERMINAL_SCHEMA) {
+    found = mergeObserved(found, { terminal: validateTerminal(value, role) });
+  }
+  for (const entry of Object.values(value)) {
+    found = mergeObserved(found, inspectEvent(entry, role, depth + 1));
+  }
+  return found;
+}
+
+function mergeObserved(left, right) {
+  const merged = { ...left };
+  for (const key of ["invitation", "terminal"]) {
+    if (right[key] === undefined) continue;
+    if (merged[key] !== undefined && JSON.stringify(merged[key]) !== JSON.stringify(right[key])) fail();
+    merged[key] = right[key];
+  }
+  return merged;
+}
+
 function killProcessGroup(child) {
   if (!child || child.__freshAgentClosed === true) return;
   child.__freshAgentClosed = true;
@@ -260,32 +308,84 @@ function killProcessGroup(child) {
   } catch { child.kill?.("SIGTERM"); }
 }
 
-function waitForChild(child, role, all, canaries) {
-  return new Promise((resolvePromise, rejectPromise) => {
+function observeChild(child, role, all, canaries, { requireInvitation = false } = {}) {
+  let resolveInvitation;
+  let rejectInvitation;
+  const invitationPromise = requireInvitation ? new Promise((resolvePromise, rejectPromise) => {
+    resolveInvitation = resolvePromise;
+    rejectInvitation = rejectPromise;
+  }) : null;
+  const result = new Promise((resolvePromise, rejectPromise) => {
     let stdout = "";
     let stderr = "";
+    let lineBuffer = "";
+    let observed = {};
     let settled = false;
+    function processLine(line) {
+      if (line.trim().length === 0) return;
+      let event;
+      try { event = JSON.parse(line); } catch { fail(); }
+      observed = mergeObserved(observed, inspectEvent(event, role));
+      if (observed.invitation !== undefined && resolveInvitation !== undefined) {
+        resolveInvitation(observed.invitation);
+        resolveInvitation = undefined;
+        rejectInvitation = undefined;
+      }
+    }
+    function processChunk(chunk) {
+      stdout = append(stdout, chunk);
+      lineBuffer += Buffer.from(chunk).toString("utf8");
+      const lines = lineBuffer.split(/\r?\n/);
+      lineBuffer = lines.pop() ?? "";
+      lines.forEach(processLine);
+    }
     function reject() {
       if (settled) return;
       settled = true;
       all.forEach(killProcessGroup);
-      rejectPromise(new Error("Fresh agent compatibility check failed safely."));
+      const error = new Error("Fresh agent compatibility check failed safely.");
+      rejectInvitation?.(error);
+      rejectPromise(error);
     }
-    child.stdout?.on("data", (chunk) => { try { stdout = append(stdout, chunk); } catch { reject(); } });
+    child.stdout?.on("data", (chunk) => { try { processChunk(chunk); } catch { reject(); } });
     child.stderr?.on("data", (chunk) => { try { stderr = append(stderr, chunk); } catch { reject(); } });
     child.once("error", reject);
+    child.stdin?.once?.("error", reject);
     child.once("close", (code) => {
       child.__freshAgentClosed = true;
       if (settled) return;
       settled = true;
-      if (code !== 0) return rejectPromise(new Error("Fresh agent compatibility check failed safely."));
+      if (code !== 0) {
+        const error = new Error("Fresh agent compatibility check failed safely.");
+        rejectInvitation?.(error);
+        return rejectPromise(error);
+      }
       try {
+        if (lineBuffer.trim().length > 0) processLine(lineBuffer);
         assertSecretFree(stdout, canaries);
         assertSecretFree(stderr, canaries);
-        resolvePromise(parseTerminal(stdout, role));
-      } catch { rejectPromise(new Error("Fresh agent compatibility check failed safely.")); }
+        if (observed.terminal === undefined || (requireInvitation && observed.invitation === undefined)) fail();
+        resolvePromise(observed.terminal);
+      } catch {
+        const error = new Error("Fresh agent compatibility check failed safely.");
+        rejectInvitation?.(error);
+        rejectPromise(error);
+      }
     });
   });
+  return Object.freeze({ invitation: invitationPromise, result });
+}
+
+function sendPrompt(child, value) {
+  if (typeof value !== "string" || value.length === 0 || typeof child.stdin?.end !== "function") fail();
+  child.stdin.end(value);
+}
+
+function responderPrompt(template, value) {
+  if (typeof template !== "string") fail();
+  const first = template.indexOf(RESPONDER_INVITATION_PLACEHOLDER);
+  if (first < 0 || first !== template.lastIndexOf(RESPONDER_INVITATION_PLACEHOLDER)) fail();
+  return template.replace(RESPONDER_INVITATION_PLACEHOLDER, invitation(value));
 }
 
 function childEnvironment(room, credentials) {
@@ -347,19 +447,10 @@ export async function runFreshAgentHandshake({
     const prepared = {};
     for (const role of ROLES) {
       const client = cleanClient(clients[role]);
-      const commands = buildClientCommands({ client, prompt: prompts[role], workspace: run.roles[role].workspace });
       const env = childEnvironment(run.roles[role], modelEnvironment[role]);
-      await configureClient(Object.freeze({ client, command: commands.configure, env, role, room: run.roles[role] }));
-      prepared[role] = { client, commands, env };
-    }
-    for (const role of ROLES) {
-      const { commands, env } = prepared[role];
-      children.push(spawnProcess(commands.launch.file, commands.launch.args, {
-        cwd: run.roles[role].workspace,
-        detached: true,
-        env,
-        stdio: ["ignore", "pipe", "pipe"],
-      }));
+      const configure = buildClientCommands({ client, prompt: "configured later", workspace: run.roles[role].workspace }).configure;
+      await configureClient(Object.freeze({ client, command: configure, env, role, room: run.roles[role] }));
+      prepared[role] = { client, env };
     }
     const timedOut = new Promise((_, rejectPromise) => {
       timer = setTimeout(() => {
@@ -367,8 +458,41 @@ export async function runFreshAgentHandshake({
         rejectPromise(new Error("Fresh agent compatibility check failed safely."));
       }, timeoutMs);
     });
+    const initiatorCommands = buildClientCommands({
+      client: prepared.initiator.client,
+      prompt: prompts.initiator,
+      workspace: run.roles.initiator.workspace,
+    });
+    const initiatorChild = spawnProcess(initiatorCommands.launch.file, initiatorCommands.launch.args, {
+      cwd: run.roles.initiator.workspace,
+      detached: true,
+      env: prepared.initiator.env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    children.push(initiatorChild);
+    const initiatorObserved = observeChild(initiatorChild, "initiator", children, canaries, { requireInvitation: true });
+    sendPrompt(initiatorChild, initiatorCommands.launch.input);
+    const actualInvitation = await Promise.race([
+      initiatorObserved.invitation,
+      initiatorObserved.result.then(() => fail()),
+      timedOut,
+    ]);
+    const responderCommands = buildClientCommands({
+      client: prepared.responder.client,
+      prompt: responderPrompt(prompts.responder, actualInvitation),
+      workspace: run.roles.responder.workspace,
+    });
+    const responderChild = spawnProcess(responderCommands.launch.file, responderCommands.launch.args, {
+      cwd: run.roles.responder.workspace,
+      detached: true,
+      env: prepared.responder.env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    children.push(responderChild);
+    const responderObserved = observeChild(responderChild, "responder", children, canaries);
+    sendPrompt(responderChild, responderCommands.launch.input);
     const results = await Promise.race([
-      Promise.all(ROLES.map((role, index) => waitForChild(children[index], role, children, canaries))),
+      Promise.all([initiatorObserved.result, responderObserved.result]),
       timedOut,
     ]);
     clearTimeout(timer);
@@ -388,7 +512,7 @@ export async function runFreshAgentHandshake({
       monitor: Object.freeze({ chronology: Object.freeze([...chronology]), sessionId: monitorResult.sessionId }),
       cleanup: Object.freeze({ completed: true }),
     });
-    assertSecretFree(evidence, [...canaries, run.root]);
+    assertSecretFree(evidence, [...canaries, actualInvitation, run.root]);
     await rm(run.root, { recursive: true, force: true });
     run = undefined;
     return evidence;
