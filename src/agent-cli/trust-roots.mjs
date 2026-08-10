@@ -16,8 +16,17 @@ const KID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 
-// Populated only by the reviewed post-release pin commit in Task 6.
-export const EMBEDDED_HOST_ROOT_KEY_RING = Object.freeze([]);
+// The private half exists only as a production SecureString. The helper carries
+// this public verification ring before release; manifest pins land afterward.
+export const EMBEDDED_HOST_ROOT_KEY_RING = Object.freeze([
+  Object.freeze({
+    kid: "root-2026-08",
+    publicKey: "mjsBe8vyv46uEu0Fa+oH5kCOlJRbZ8nbfIrBSp4aV8Q=",
+    fingerprint: "da2771c36bf2298525d2bbd8351b6122bb67115e9979624e8bb56537bcf71ed8",
+    notBeforeMs: "1785542400000",
+    notAfterMs: "1943308800000",
+  }),
+]);
 
 function invalid() {
   throw new Error("Agent handshake operation failed safely.");
