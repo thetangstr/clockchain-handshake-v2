@@ -85,11 +85,19 @@ test("release workflow pins Node, builders, matching runners, native signing, pr
   const packageLock = JSON.parse(await readFile(new URL("../package-lock.json", import.meta.url), "utf8"));
   for (const required of [
     "24.18.0", "ubuntu-24.04", "ubuntu-24.04-arm", "macos-15", "windows-2025",
-    "clockchain-intel-release", "codesign", "notarytool submit", "spctl --assess",
+    "macos-15-intel", "MAC_CERTIFICATE_P12", "codesign", "notarytool submit", "spctl --assess",
     "APPLE_NOTARY_KEY_P8", "APPLE_NOTARY_KEY_ID", "APPLE_NOTARY_ISSUER_ID",
     "signtool", "npm publish --provenance",
     "build-agent-handshake-release.mjs sea",
   ]) assert.ok(workflow.includes(required), required);
+  assert.equal(workflow.includes("self-hosted"), false);
+  assert.equal(workflow.includes("clockchain-intel-release"), false);
+  assert.equal(workflow.match(/security import/g)?.length, 2);
+  assert.equal(workflow.match(/security set-key-partition-list/g)?.length, 2);
+  assert.equal(workflow.match(/security list-keychains/g)?.length, 2);
+  assert.equal(workflow.match(/test "\$\(uname -m\)" = "x86_64"/g)?.length, 1);
+  assert.ok(workflow.includes("node -p 'process.arch'"));
+  assert.ok(workflow.includes("node -p 'process.platform'"));
   assert.equal(packageLock.packages["node_modules/esbuild"].version, "0.28.2");
   assert.equal(packageLock.packages["node_modules/esbuild"].integrity, "sha512-HKVLS8dvII+xoKW9kmqxbRKrnWEXfJJr/FZhhJmiqIB0e053QNYFqOBouTMO/k5sID4MvCiUCvv8b9M4h32wIA==");
   assert.equal(packageLock.packages["node_modules/postject"].version, "1.0.0-alpha.6");
