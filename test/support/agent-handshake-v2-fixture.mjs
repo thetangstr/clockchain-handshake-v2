@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
 import { privateKeyToAccount } from "viem/accounts";
 
 import { agentHandshakeV2StatementDigest } from "../../src/agent-handshake/v2/terms.mjs";
@@ -48,7 +48,16 @@ export const TERMS = Object.freeze({
 });
 
 export function ed25519(keyId) {
-  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const seed = createHash("sha256").update(`clockchain-test:${keyId}`).digest();
+  const privateKey = createPrivateKey({
+    key: Buffer.concat([
+      Buffer.from("302e020100300506032b657004220420", "hex"),
+      seed,
+    ]),
+    format: "der",
+    type: "pkcs8",
+  });
+  const publicKey = createPublicKey(privateKey);
   return Object.freeze({
     keyId,
     privateKeyPem: privateKey.export({ format: "pem", type: "pkcs8" }),
