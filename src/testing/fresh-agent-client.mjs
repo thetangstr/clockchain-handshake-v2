@@ -22,16 +22,7 @@ export const CLOCKCHAIN_HANDSHAKE_TOOLS = Object.freeze([
   "agent_handshake_submit",
   "agent_handshake_get_certificate",
 ]);
-export const CLAUDE_LOCAL_AUTHORITY_TOOLS = Object.freeze([
-  `Bash(curl --fail --location --proto =https --proto-redir =https --output ./manifest.json ${RELEASE_PREFIX}manifest.json)`,
-  `Bash(curl --fail --location --proto =https --proto-redir =https --output ./clockchain-agent-handshake.cjs ${RELEASE_PREFIX}clockchain-agent-handshake.cjs)`,
-  "Write",
-  "Bash(shasum -a 256 -c ./manifest.sha256)",
-  "Bash(shasum -a 256 -c ./clockchain-agent-handshake.sha256)",
-  "Bash(node ./clockchain-agent-handshake.cjs --version)",
-  ...HELPER_OPERATIONS.map((operation) =>
-    `Bash(node ./clockchain-agent-handshake.cjs ${operation} *)`),
-]);
+export const VERIFIED_HELPER_BOOTSTRAP = 'const fs=require("node:fs");const crypto=require("node:crypto");const Module=require("node:module");const argv=process.argv.slice(1);const expected=argv.shift();const manifestPath=argv.shift();const helperPath=argv.shift();const manifestBytes=fs.readFileSync(manifestPath);const manifestDigest=crypto.createHash("sha256").update(manifestBytes).digest("hex");if(manifestDigest!==expected)process.exit(86);const manifest=JSON.parse(manifestBytes);if(manifest.schema!=="clockchain.agent-handshake-release-manifest/v1"||manifest.version!=="2.1.0"||!Array.isArray(manifest.assets)||manifest.assets.length!==1)process.exit(86);const asset=manifest.assets[0];if(asset.filename!=="clockchain-agent-handshake.cjs"||asset.url!=="https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.0/clockchain-agent-handshake.cjs"||typeof asset.sha256!=="string"||!/^[0-9a-f]{64}$/.test(asset.sha256))process.exit(86);const helperBytes=fs.readFileSync(helperPath);const helperDigest=crypto.createHash("sha256").update(helperBytes).digest("hex");if(helperDigest!==asset.sha256)process.exit(86);process.argv=[process.execPath].concat(helperPath).concat(argv);const loaded=new Module(helperPath);loaded.filename=helperPath;loaded.paths=[];const compile=loaded._compile.bind(loaded);compile(...[helperBytes.toString("utf8")].concat(helperPath));';
 
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -116,18 +107,38 @@ function validateAssetUrl(value) {
   return Object.freeze({ asset, url: raw });
 }
 
-function validateHelperArgv(argv, workspace) {
-  if (!Array.isArray(argv) || argv.length < 5 || argv.some((entry) => typeof entry !== "string")) fail();
-  argv.forEach(safeArg);
-  if (argv[0] !== "node") fail();
-  descendant(workspace, argv[1]);
-  if (!HELPER_OPERATIONS.includes(argv[2]) || argv[3] !== "--state-dir") fail();
-  descendant(workspace, argv[4]);
-  if (argv.length === 5) return;
-  if (argv.length !== 7 || argv[5] !== "--payload-base64url" || !BASE64URL.test(argv[6])) fail();
+function verifiedHelperCommand(manifestDigest, helperArguments) {
+  if (!SHA256.test(manifestDigest) || !Array.isArray(helperArguments)) fail();
+  return `Bash(node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${manifestDigest} ./manifest.json ./clockchain-agent-handshake.cjs ${helperArguments.join(" ")})`;
 }
 
-export function validateHelperCommand({ argv, kind, workspace } = {}) {
+function claudeLocalAuthorityTools(manifestDigest) {
+  return Object.freeze([
+    `Bash(curl --fail --location --proto =https --proto-redir =https --output ./manifest.json ${RELEASE_PREFIX}manifest.json)`,
+    `Bash(curl --fail --location --proto =https --proto-redir =https --output ./clockchain-agent-handshake.cjs ${RELEASE_PREFIX}clockchain-agent-handshake.cjs)`,
+    verifiedHelperCommand(manifestDigest, ["--version"]),
+    ...HELPER_OPERATIONS.map((operation) => verifiedHelperCommand(manifestDigest, [operation, "*"])),
+  ]);
+}
+
+function validateHelperArgv(argv, workspace, manifestDigest) {
+  if (!Array.isArray(argv) || argv.length < 8 || argv.some((entry) => typeof entry !== "string")) fail();
+  argv.forEach((entry, index) => { if (index !== 3) safeArg(entry); });
+  if (
+    argv[0] !== "node" || argv[1] !== "--input-type=commonjs" || argv[2] !== "--eval" ||
+    argv[3] !== VERIFIED_HELPER_BOOTSTRAP || argv[4] !== manifestDigest || !SHA256.test(manifestDigest)
+  ) fail();
+  const manifestPath = descendant(workspace, argv[5]);
+  const helperPath = descendant(workspace, argv[6]);
+  if (basename(manifestPath) !== "manifest.json" || basename(helperPath) !== "clockchain-agent-handshake.cjs") fail();
+  if (argv[7] === "--version" && argv.length === 8) return;
+  if (!HELPER_OPERATIONS.includes(argv[7]) || argv[8] !== "--state-dir") fail();
+  descendant(workspace, argv[9]);
+  if (argv.length === 10) return;
+  if (argv.length !== 12 || argv[10] !== "--payload-base64url" || !BASE64URL.test(argv[11])) fail();
+}
+
+export function validateHelperCommand({ argv, kind, manifestDigest, workspace } = {}) {
   const cleanWorkspace = absolute(workspace);
   if (!Array.isArray(argv)) fail();
   if (kind === "download") {
@@ -142,26 +153,17 @@ export function validateHelperCommand({ argv, kind, workspace } = {}) {
     if (basename(output) !== download.asset) fail();
     return true;
   }
-  if (kind === "digest") {
-    if (
-      argv.length !== 5 || argv[0] !== "shasum" || argv[1] !== "-a" ||
-      argv[2] !== "256" || argv[3] !== "-c"
-    ) fail();
-    argv.forEach(safeArg);
-    const checksumFile = descendant(cleanWorkspace, argv[4]);
-    if (!["manifest.sha256", "clockchain-agent-handshake.sha256"].includes(basename(checksumFile))) fail();
-    return true;
-  }
   if (kind === "helper") {
-    validateHelperArgv(argv, cleanWorkspace);
+    validateHelperArgv(argv, cleanWorkspace, manifestDigest);
     return true;
   }
   fail();
 }
 
-export function buildClientCommands({ client, prompt, workspace } = {}) {
+export function buildClientCommands({ client, manifestDigest, prompt, workspace } = {}) {
   const clean = cleanClient(client);
   const cwd = absolute(workspace);
+  if (!SHA256.test(manifestDigest)) fail();
   if (typeof prompt !== "string" || prompt.length === 0) fail();
   if (clean === "codex") {
     return Object.freeze({
@@ -199,7 +201,7 @@ export function buildClientCommands({ client, prompt, workspace } = {}) {
         "--verbose",
         "--allowedTools", CLOCKCHAIN_HANDSHAKE_TOOLS
           .map((tool) => `mcp__clockchain-handshake__${tool}`)
-          .concat(CLAUDE_LOCAL_AUTHORITY_TOOLS)
+          .concat(claudeLocalAuthorityTools(manifestDigest))
           .join(","),
       ]),
       file: "claude",
@@ -454,7 +456,7 @@ export async function runFreshAgentHandshake({
     for (const role of ROLES) {
       const client = cleanClient(clients[role]);
       const env = childEnvironment(run.roles[role], modelEnvironment[role]);
-      const configure = buildClientCommands({ client, prompt: "configured later", workspace: run.roles[role].workspace }).configure;
+      const configure = buildClientCommands({ client, manifestDigest: pin.manifestDigest, prompt: "configured later", workspace: run.roles[role].workspace }).configure;
       await configureClient(Object.freeze({ client, command: configure, env, role, room: run.roles[role] }));
       prepared[role] = { client, env };
     }
@@ -466,6 +468,7 @@ export async function runFreshAgentHandshake({
     });
     const initiatorCommands = buildClientCommands({
       client: prepared.initiator.client,
+      manifestDigest: pin.manifestDigest,
       prompt: prompts.initiator,
       workspace: run.roles.initiator.workspace,
     });
@@ -485,6 +488,7 @@ export async function runFreshAgentHandshake({
     ]);
     const responderCommands = buildClientCommands({
       client: prepared.responder.client,
+      manifestDigest: pin.manifestDigest,
       prompt: responderPrompt(prompts.responder, actualInvitation),
       workspace: run.roles.responder.workspace,
     });

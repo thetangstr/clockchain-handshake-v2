@@ -12,8 +12,9 @@ For today's two-person Apple-device demonstration, the functional release gate i
 one portable Node 24 bundle, not five native executables. Clockchain publishes the
 exact canonical `manifest.json` bytes and `clockchain-agent-handshake.cjs`; MCP and
 Research independently pin the SHA-256 of the manifest bytes and the manifest pins
-the helper SHA-256. Each fresh Codex or Claude Code client verifies both hashes with
-macOS `shasum` before running the bundle with `node`. No Apple Developer, Windows
+the helper SHA-256. Each fresh Codex or Claude Code client uses a fixed Node bootstrap
+that verifies the raw manifest hash and helper hash before compiling the verified
+helper bytes in memory. No Apple Developer, Windows
 signing, or npm publishing credential is required. Native signed desktop artifacts
 remain an optional later distribution improvement; they are not a protocol or
 production-agent requirement.
@@ -150,8 +151,8 @@ claude mcp list
 Each person starts a new client session after the connection exists. The live
 runbook supplies version-tested launch settings. Claude Code uses
 `--strict-mcp-config`, `--permission-mode dontAsk`, an exact MCP tool allowlist,
-and literal Bash patterns for the pinned manifest download, two fail-closed
-`shasum -c` checks, asset download, `--version`, and six helper
+and literal Bash patterns for the two pinned downloads plus one fixed
+hash-verifying in-memory bootstrap for `--version` and six helper
 operations. Codex uses a strict inline MCP profile, `workspace-write`, an empty
 working directory, network enabled only for the agent run, MCP auto approval,
 and `approval_policy=never` so failures stop rather than ask a person.

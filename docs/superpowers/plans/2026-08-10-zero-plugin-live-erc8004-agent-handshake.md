@@ -664,7 +664,7 @@ Constraint: Today's stakeholder Macs have Node 24 but no Clockchain package or r
 Rejected: Native signed packaging for today's demo | it requires unrelated Apple/Windows release credentials.
 Confidence: high
 Scope-risk: broad
-Directive: Hash the exact canonical manifest bytes and verify both manifest and helper with fail-closed `shasum -c` before execution.
+Directive: Hash the exact canonical manifest and helper bytes inside the fixed bootstrap before every in-memory helper execution.
 Tested: Manifest mutations, clean Node 24 execution, CLI parity, checksum enforcement, and release verification.
 Not-tested: Native packaging, notarization, Windows signing, and npm publication are deferred.
 ```
@@ -1127,7 +1127,7 @@ digest or root fingerprint.
 
 Lock version-tested no-human launch fixtures. Claude Code uses `--strict-mcp-config`,
 `--permission-mode dontAsk`, exact `mcp__clockchain-handshake__*` tools, and literal
-Bash patterns for the two downloads, two fail-closed `shasum -c` checks, `--version`, and
+Bash patterns for the two downloads and the fixed hash-verifying bootstrap for `--version` and
 the six helper operations. Codex uses `--strict-config`, a strict inline MCP entry,
 `workspace-write`, an empty working directory, network enabled for that run, MCP auto
 approval, and `approval_policy=never`. The page must state that current Codex lacks
@@ -1358,7 +1358,8 @@ Not-tested: Public production routing begins at C7.
 - [ ] **Step 1: Publish and independently verify release assets**
 
 Download both release files from their final public URLs, verify the exact manifest
-SHA-256 and helper SHA-256 with `shasum -c`, then run `--version` and a clean Node 24 smoke.
+SHA-256 and helper SHA-256 through the fixed in-memory bootstrap, then run `--version`
+and a clean Node 24 smoke.
 Verify the separate post-release pin commit names that immutable source commit and
 published manifest without circular self-reference. Promote that pin into MCP and
 Research configuration; do not rebuild the helper.
