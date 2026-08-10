@@ -14,7 +14,38 @@ env:
   NODE_VERSION: 24.18.0
 
 jobs:
+  preflight-secrets:
+    runs-on: ubuntu-slim
+    env:
+      MAC_CERTIFICATE_P12_PRESENT: ${{ secrets.MAC_CERTIFICATE_P12 != '' }}
+      MAC_CERTIFICATE_PASSWORD_PRESENT: ${{ secrets.MAC_CERTIFICATE_PASSWORD != '' }}
+      MAC_SIGNER_NAME_PRESENT: ${{ secrets.MAC_SIGNER_NAME != '' }}
+      APPLE_NOTARY_KEY_P8_PRESENT: ${{ secrets.APPLE_NOTARY_KEY_P8 != '' }}
+      APPLE_NOTARY_KEY_ID_PRESENT: ${{ secrets.APPLE_NOTARY_KEY_ID != '' }}
+      APPLE_NOTARY_ISSUER_ID_PRESENT: ${{ secrets.APPLE_NOTARY_ISSUER_ID != '' }}
+      WINDOWS_CERTIFICATE_PFX_PRESENT: ${{ secrets.WINDOWS_CERTIFICATE_PFX != '' }}
+      WINDOWS_CERTIFICATE_PASSWORD_PRESENT: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD != '' }}
+      NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
+    steps:
+      - name: Require every release credential before starting native runners
+        shell: bash
+        run: |
+          missing=0
+          for name in \
+            MAC_CERTIFICATE_P12 MAC_CERTIFICATE_PASSWORD MAC_SIGNER_NAME \
+            APPLE_NOTARY_KEY_P8 APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID \
+            WINDOWS_CERTIFICATE_PFX WINDOWS_CERTIFICATE_PASSWORD NPM_TOKEN
+          do
+            present="${name}_PRESENT"
+            if [ "${!present}" != "true" ]; then
+              echo "::error title=Missing release credential::$name is not configured"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
   build-supported:
+    needs: preflight-secrets
     strategy:
       fail-fast: true
       matrix:
@@ -112,6 +143,7 @@ jobs:
             dist/*.record.json
 
   build-intel-mac:
+    needs: preflight-secrets
     runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
