@@ -32,6 +32,10 @@ const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const TX = /^0x[0-9a-f]{64}$/;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
 const ROLE_TOKEN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+const ROLE_ACCESS_KEYS = Object.freeze([
+  "v", "alg", "typ", "iss", "aud", "kid", "jti", "sessionId", "role",
+  "statementDigest", "allowedTools", "nbfMs", "expMs",
+]);
 const UNSAFE_SHELL = /[\0\r\n;&|`$<>]/;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const TERMINAL_SCHEMA = "clockchain.fresh-agent-terminal-proof/v1";
@@ -263,7 +267,37 @@ function validateTerminal(parsed, role) {
 
 function invitation(value) {
   if (typeof value !== "string" || value.length < 80 || value.length > 4096 || !ROLE_TOKEN.test(value)) fail();
+  const [payloadSegment, signatureSegment] = value.split(".");
+  const payloadBytes = Buffer.from(payloadSegment, "base64url");
+  const signatureBytes = Buffer.from(signatureSegment, "base64url");
+  if (
+    payloadBytes.toString("base64url") !== payloadSegment ||
+    signatureBytes.length !== 32 || signatureBytes.toString("base64url") !== signatureSegment
+  ) fail();
+  let parsed;
+  try { parsed = JSON.parse(payloadBytes.toString("utf8")); } catch { fail(); }
+  const access = exactObject(parsed, ROLE_ACCESS_KEYS);
+  const canonical = Object.fromEntries(Object.entries(access).sort(([left], [right]) => left.localeCompare(right)));
+  if (
+    JSON.stringify(canonical) !== payloadBytes.toString("utf8") ||
+    access.v !== 1 || access.alg !== "HS256" ||
+    access.typ !== "clockchain-agent-handshake-role-access" ||
+    access.iss !== "https://mcp.clockchain.network" || access.aud !== "clockchain-agent-handshake" ||
+    typeof access.kid !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(access.kid) ||
+    !UUID.test(access.jti) || !UUID.test(access.sessionId) || access.role !== "responder" ||
+    !SHA256.test(access.statementDigest) ||
+    JSON.stringify(access.allowedTools) !== JSON.stringify(["agent_handshake_accept_invitation"]) ||
+    typeof access.nbfMs !== "string" || !DECIMAL.test(access.nbfMs) ||
+    typeof access.expMs !== "string" || !DECIMAL.test(access.expMs) ||
+    BigInt(access.nbfMs) >= BigInt(access.expMs)
+  ) fail();
   return value;
+}
+
+function invitationMessage(value) {
+  if (typeof value !== "string") return null;
+  const clean = value.trim();
+  return ROLE_TOKEN.test(clean) ? invitation(clean) : null;
 }
 
 function parseJsonString(value) {
@@ -285,6 +319,10 @@ function inspectEvent(value, role, depth = 0) {
     return value.reduce((found, entry) => mergeObserved(found, inspectEvent(entry, role, depth + 1)), {});
   }
   let found = {};
+  if (["agent_message", "text"].includes(value.type) && Object.hasOwn(value, "text")) {
+    const candidate = invitationMessage(value.text);
+    if (candidate !== null) found = { invitation: candidate };
+  }
   if (Object.hasOwn(value, "responderInvitation")) {
     found = { invitation: invitation(value.responderInvitation) };
   }

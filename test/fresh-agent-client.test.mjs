@@ -38,7 +38,27 @@ function claudeTerminalEvent(result) {
 const DIGEST = "a".repeat(64);
 const ROOT = "b".repeat(64);
 const SESSION = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
-const INVITATION = `eyJ${"a".repeat(128)}.${"b".repeat(96)}`;
+
+function roleAccess(role, allowedTools) {
+  const payload = Object.fromEntries(Object.entries({
+    v: 1,
+    alg: "HS256",
+    typ: "clockchain-agent-handshake-role-access",
+    iss: "https://mcp.clockchain.network",
+    aud: "clockchain-agent-handshake",
+    kid: "active",
+    jti: "11111111-2222-4333-8444-555555555555",
+    sessionId: SESSION,
+    role,
+    statementDigest: "9".repeat(64),
+    allowedTools,
+    nbfMs: "1786380000000",
+    expMs: "1786380090000",
+  }).sort(([left], [right]) => left.localeCompare(right)));
+  return `${Buffer.from(JSON.stringify(payload), "utf8").toString("base64url")}.${Buffer.alloc(32, 1).toString("base64url")}`;
+}
+
+const INVITATION = roleAccess("responder", ["agent_handshake_accept_invitation"]);
 
 function roleResult(role) {
   return {
@@ -170,9 +190,17 @@ test("starts the Responder only after the Initiator emits its actual one-time in
           type: "item.completed",
           item: {
             type: "mcp_tool_call",
-            name: "agent_handshake_invite",
-            result: { structuredContent: { responderInvitation: INVITATION } },
+            tool: "agent_handshake_invite",
+            status: "completed",
+            result: {
+              content: [{ type: "text", text: "Invitation created successfully." }],
+              structured_content: null,
+            },
           },
+        })));
+        child.stdout.emit("data", Buffer.from(streamEvent({
+          type: "item.completed",
+          item: { type: "agent_message", text: INVITATION },
         })));
       });
     } else {
@@ -261,6 +289,47 @@ test("rejects a three-segment invitation lookalike before starting the Responder
     child.stdin = { end() {
       queueMicrotask(() => child.stdout.emit("data", Buffer.from(streamEvent({
         result: { responderInvitation: `${INVITATION}.${"c".repeat(96)}` },
+      }))));
+    } };
+    child.kill = () => {};
+    return child;
+  };
+  await assert.rejects(() => runFreshAgentHandshake({
+    clients: { initiator: "codex", responder: "claude" },
+    configureClient: async () => {},
+    modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
+    monitor: async () => { throw new Error("unreachable"); },
+    parent,
+    prompts: { initiator: "init", responder: `respond ${"<PASTE THE INITIATOR INVITATION>"}` },
+    release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
+    spawnProcess,
+    timeoutMs: 2_000,
+  }), /failed safely/);
+  assert.equal(spawned, 1);
+  assert.deepEqual(await readdir(parent), []);
+});
+
+test("rejects an Initiator role capability when an agent prints it as the invitation", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-wrong-role-access-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  let spawned = 0;
+  const initiatorAccess = roleAccess("initiator", [
+    "agent_handshake_join",
+    "agent_handshake_status",
+    "agent_handshake_next",
+    "agent_handshake_submit",
+    "agent_handshake_get_certificate",
+  ]);
+  const spawnProcess = () => {
+    spawned += 1;
+    const child = new EventEmitter();
+    child.pid = null;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {
+      queueMicrotask(() => child.stdout.emit("data", Buffer.from(streamEvent({
+        type: "item.completed",
+        item: { type: "agent_message", text: initiatorAccess },
       }))));
     } };
     child.kill = () => {};
