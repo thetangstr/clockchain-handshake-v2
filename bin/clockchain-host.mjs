@@ -493,6 +493,10 @@ async function runOneSession({ token, treasury }) {
 }
 
 async function main() {
+  if (process.env.HANDSHAKE_PROTOCOL === "agent-handshake-v1") {
+    const genericHost = await import("./agent-handshake-host.mjs");
+    return genericHost.main();
+  }
   await runHostLoop({
     boot,
     cooldownMs: SESSION_COOLDOWN_MS,
