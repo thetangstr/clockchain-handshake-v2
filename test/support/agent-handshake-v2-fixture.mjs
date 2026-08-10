@@ -228,9 +228,9 @@ export async function buildV2Fixture() {
     nowMs: NOW_MS,
     proposalEnvelope,
     receipts,
-    resolveRegistration: async (agentId) => ({
-      owner: parties[agentId === "9452" ? "initiator" : "responder"].sessionKeyAddress,
-      registrationBlock: parties[agentId === "9452" ? "initiator" : "responder"].erc8004.registrationBlock,
+    resolveRegistration: async (party) => ({
+      owner: party.sessionKeyAddress,
+      registrationBlock: party.erc8004.registrationBlock,
     }),
     transitions,
   });

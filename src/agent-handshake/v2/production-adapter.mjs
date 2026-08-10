@@ -3,6 +3,7 @@ import { generateKeyPairSync, randomUUID } from "node:crypto";
 import {
   createPublicClient,
   createWalletClient,
+  decodeEventLog,
   http,
   parseAbiItem,
   parseEther,
@@ -281,20 +282,52 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
     }
     return null;
   };
-  const defaultResolveRegistration = async (agentId) => {
-    const tokenId = BigInt(agentId);
+  const defaultResolveRegistration = async (party) => {
+    const registration = party?.erc8004;
+    if (
+      registration === null || typeof registration !== "object" ||
+      typeof party?.sessionKeyAddress !== "string"
+    ) throw new Error("AGENT_HANDSHAKE_V2_REGISTRATION_MISSING");
+    const tokenId = BigInt(registration.agentId);
     const owner = String(await publicClient.readContract({
       abi: ERC8004_ABI,
       address: "0x8004a818bfb912233c491871b3d84c89a494bd9e",
       args: [tokenId],
       functionName: "ownerOf",
     })).toLowerCase();
-    const logs = await transferLogs({ args: { to: owner, tokenId } });
-    const latest = logs.at(-1);
-    if (!latest) throw new Error("AGENT_HANDSHAKE_V2_REGISTRATION_MISSING");
+    const receipt = await publicClient.getTransactionReceipt({
+      hash: registration.registrationTx,
+    });
+    const registryAddress = registration.registryAddress.toLowerCase();
+    const minted = receipt.logs.some((log) => {
+      if (String(log.address).toLowerCase() !== registryAddress) return false;
+      try {
+        const decoded = decodeEventLog({
+          abi: [TRANSFER_EVENT],
+          data: log.data,
+          topics: log.topics,
+        });
+        return (
+          decoded.eventName === "Transfer" &&
+          String(decoded.args.from).toLowerCase() ===
+            "0x0000000000000000000000000000000000000000" &&
+          String(decoded.args.to).toLowerCase() === owner &&
+          decoded.args.tokenId === tokenId
+        );
+      } catch {
+        return false;
+      }
+    });
+    if (
+      receipt.status !== "success" ||
+      String(receipt.to).toLowerCase() !== registryAddress ||
+      String(receipt.blockNumber) !== registration.registrationBlock ||
+      owner !== party.sessionKeyAddress ||
+      !minted
+    ) throw new Error("AGENT_HANDSHAKE_V2_REGISTRATION_MISSING");
     return Object.freeze({
       owner,
-      registrationBlock: String(latest.blockNumber),
+      registrationBlock: String(receipt.blockNumber),
     });
   };
   const anchorReport = (message) => {

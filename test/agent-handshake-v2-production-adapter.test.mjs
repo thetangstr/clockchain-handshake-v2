@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { encodeEventTopics, parseAbiItem, zeroAddress } from "viem";
 
 import {
   createAgentHandshakeV2HostPorts,
@@ -8,7 +9,7 @@ import {
 import { verifyHostSessionKeyCertificate, ed25519PublicKeyFingerprint } from "../src/agent-handshake/v2/host-key-certificate.mjs";
 import { canonicalBytes } from "../src/core/canonical.mjs";
 import { agentHandshakeV2StatementDigest } from "../src/agent-handshake/v2/terms.mjs";
-import { ed25519, INITIATOR, REPOSITORY_SHA, SESSION_ID, TERMS } from "./support/agent-handshake-v2-fixture.mjs";
+import { buildV2Fixture, ed25519, INITIATOR, REPOSITORY_SHA, SESSION_ID, TERMS } from "./support/agent-handshake-v2-fixture.mjs";
 
 test("production session fails closed without an immutable repository SHA", async () => {
   await assert.rejects(
@@ -157,4 +158,46 @@ test("production funding configuration enforces the deployed queue cap", async (
     if (previous === undefined) delete process.env.AGENT_HANDSHAKE_V2_FUNDING_QUEUE_LIMIT;
     else process.env.AGENT_HANDSHAKE_V2_FUNDING_QUEUE_LIMIT = previous;
   }
+});
+
+test("production registration proof uses the exact receipt instead of an unbounded log scan", async () => {
+  const fixture = await buildV2Fixture();
+  const party = fixture.parties.initiator;
+  const transfer = parseAbiItem("event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)");
+  let logScans = 0;
+  const ports = await createAgentHandshakeV2HostPorts({
+    relayUrl: "https://relay.test",
+    sessionDeadlineMs: Date.now() + 60_000,
+    sessionId: SESSION_ID,
+  }, {
+    fundingStore: { load: async () => [], save: async () => {} },
+    monitor: {},
+    publicClient: {
+      getLogs: async () => { logScans += 1; return []; },
+      getTransactionReceipt: async ({ hash }) => {
+        assert.equal(hash, party.erc8004.registrationTx);
+        return {
+          blockNumber: BigInt(party.erc8004.registrationBlock),
+          logs: [{
+            address: party.erc8004.registryAddress,
+            data: "0x",
+            topics: encodeEventTopics({ abi: [transfer], eventName: "Transfer", args: {
+              from: zeroAddress,
+              to: party.sessionKeyAddress,
+              tokenId: BigInt(party.erc8004.agentId),
+            } }),
+          }],
+          status: "success",
+          to: party.erc8004.registryAddress,
+        };
+      },
+      readContract: async () => party.sessionKeyAddress,
+    },
+    relayClient: { generateEnvelopeKeyPair: () => ({}) },
+  });
+  assert.deepEqual(await ports.resolveRegistration(party), {
+    owner: party.sessionKeyAddress,
+    registrationBlock: party.erc8004.registrationBlock,
+  });
+  assert.equal(logScans, 0);
 });

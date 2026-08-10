@@ -28,7 +28,7 @@ export async function verifyAgentHandshakeV2Authorization({
   if(terms.identityPolicy.erc8004!=="not_required"){
     if(parties.initiator.erc8004.agentId===parties.responder.erc8004.agentId||typeof resolveRegistration!=="function")invalid();
     for(const role of ["initiator","responder"]){
-      let resolved;try{resolved=await resolveRegistration(parties[role].erc8004.agentId);}catch{invalid();}
+      let resolved;try{resolved=await resolveRegistration(parties[role]);}catch{invalid();}
       if(resolved?.owner!==parties[role].sessionKeyAddress||resolved.registrationBlock!==parties[role].erc8004.registrationBlock||!DECIMAL.test(resolved.registrationBlock)||(terms.identityPolicy.erc8004==="required_fresh"&&BigInt(resolved.registrationBlock)<=BigInt(descriptor.sessionOpenedBlock)))invalid();
     }
   }

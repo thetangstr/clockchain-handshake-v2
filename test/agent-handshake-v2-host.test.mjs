@@ -19,8 +19,9 @@ function ports(fixture, { existing = {}, registrationBlock } = {}) {
     findExistingIdentity: async (address) => existing[address] ?? null,
     fundIdentity: async (input) => { calls.push(["fund", input]); },
     reserveFunding: async (input) => { calls.push(["reserve", input]); },
-    resolveRegistration: async (agentId) => {
-      const role = agentId === "9452" ? "initiator" : "responder";
+    resolveRegistration: async (party) => {
+      const role = party.erc8004.agentId === "9452" ? "initiator" : "responder";
+      assert.deepEqual(party, fixture.parties[role]);
       return {
         owner: fixture.parties[role].sessionKeyAddress,
         registrationBlock: registrationBlock ?? fixture.parties[role].erc8004.registrationBlock,

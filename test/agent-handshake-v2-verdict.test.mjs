@@ -21,9 +21,9 @@ function input(fixture) {
     nowMs: NOW_MS,
     proposalEnvelope: fixture.proposalEnvelope,
     receipts: fixture.receipts,
-    resolveRegistration: async (agentId) => ({
-      owner: fixture.parties[agentId === "9452" ? "initiator" : "responder"].sessionKeyAddress,
-      registrationBlock: fixture.parties[agentId === "9452" ? "initiator" : "responder"].erc8004.registrationBlock,
+    resolveRegistration: async (party) => ({
+      owner: party.sessionKeyAddress,
+      registrationBlock: party.erc8004.registrationBlock,
     }),
     transitions: fixture.transitions,
   };
@@ -45,8 +45,8 @@ test("wrong fresh-registration ownership, chronology, receipt, or duplicate iden
   }));
   await assert.rejects(() => verifyAgentHandshakeV2Authorization({
     ...input(fixture),
-    resolveRegistration: async (agentId) => ({
-      owner: fixture.parties[agentId === "9452" ? "initiator" : "responder"].sessionKeyAddress,
+    resolveRegistration: async (party) => ({
+      owner: party.sessionKeyAddress,
       registrationBlock: "6999",
     }),
   }));
