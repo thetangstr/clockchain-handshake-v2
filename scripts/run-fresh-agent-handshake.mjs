@@ -6,7 +6,10 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { runFreshAgentHandshake } from "../src/testing/fresh-agent-client.mjs";
+import {
+  runFreshAgentHandshake,
+  validateClaudePreparation,
+} from "../src/testing/fresh-agent-client.mjs";
 import {
   installAppleClientAuthentication,
   loadAppleClientAuthentication,
@@ -56,6 +59,17 @@ async function configureClient({ authentication, command, env, room }) {
   });
 }
 
+async function prepareClient({ authentication, command, env, room }) {
+  const { stdout } = await execFileAsync(command.file, [...command.args, command.input], {
+    cwd: room.workspace,
+    env,
+    maxBuffer: 1024 * 1024,
+    timeout: 60_000,
+    windowsHide: true,
+  });
+  return validateClaudePreparation(stdout, authentication.secretCanaries);
+}
+
 async function monitor({ sessionId }) {
   const endpoint = value("CLOCKCHAIN_RESEARCH_MONITOR_URL");
   const chronology = [];
@@ -94,6 +108,7 @@ async function main() {
     const evidence = await runFreshAgentHandshake({
       clients,
       configureClient: (entry) => configureClient({ ...entry, authentication: authentication[entry.role] }),
+      prepareClient: (entry) => prepareClient({ ...entry, authentication: authentication[entry.role] }),
       modelEnvironment: {
         initiator: authentication.initiator.environment,
         responder: authentication.responder.environment,

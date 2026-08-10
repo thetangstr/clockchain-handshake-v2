@@ -9,7 +9,7 @@ const ROLES = Object.freeze(["initiator", "responder"]);
 const HELPER_OPERATIONS = Object.freeze([
   "init", "policy", "inspect", "register", "sign", "verify-certificate",
 ]);
-const RELEASE_PREFIX = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.0/";
+const RELEASE_PREFIX = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.1/";
 
 export const CLOCKCHAIN_HANDSHAKE_MCP_URL = "https://mcp.clockchain.network/handshake/mcp";
 export const FRESH_AGENT_CLIENTS = Object.freeze(["codex", "claude"]);
@@ -22,7 +22,7 @@ export const CLOCKCHAIN_HANDSHAKE_TOOLS = Object.freeze([
   "agent_handshake_submit",
   "agent_handshake_get_certificate",
 ]);
-export const VERIFIED_HELPER_BOOTSTRAP = 'const fs=require("node:fs");const crypto=require("node:crypto");const Module=require("node:module");const argv=process.argv.slice(1);const expected=argv.shift();const manifestPath=argv.shift();const helperPath=argv.shift();const manifestBytes=fs.readFileSync(manifestPath);const manifestDigest=crypto.createHash("sha256").update(manifestBytes).digest("hex");if(manifestDigest!==expected)process.exit(86);const manifest=JSON.parse(manifestBytes);if(manifest.schema!=="clockchain.agent-handshake-release-manifest/v1"||manifest.version!=="2.1.0"||!Array.isArray(manifest.assets)||manifest.assets.length!==1)process.exit(86);const asset=manifest.assets[0];if(asset.filename!=="clockchain-agent-handshake.cjs"||asset.url!=="https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.0/clockchain-agent-handshake.cjs"||typeof asset.sha256!=="string"||!/^[0-9a-f]{64}$/.test(asset.sha256))process.exit(86);const helperBytes=fs.readFileSync(helperPath);const helperDigest=crypto.createHash("sha256").update(helperBytes).digest("hex");if(helperDigest!==asset.sha256)process.exit(86);process.argv=[process.execPath].concat(helperPath).concat(argv);const loaded=new Module(helperPath);loaded.filename=helperPath;loaded.paths=[];const compile=loaded._compile.bind(loaded);compile(...[helperBytes.toString("utf8")].concat(helperPath));';
+export const VERIFIED_HELPER_BOOTSTRAP = 'const fs=require("node:fs");const crypto=require("node:crypto");const Module=require("node:module");const argv=process.argv.slice(1);const expected=argv.shift();const manifestPath=argv.shift();const helperPath=argv.shift();const manifestBytes=fs.readFileSync(manifestPath);const manifestDigest=crypto.createHash("sha256").update(manifestBytes).digest("hex");if(manifestDigest!==expected)process.exit(86);const manifest=JSON.parse(manifestBytes);if(manifest.schema!=="clockchain.agent-handshake-release-manifest/v1"||manifest.version!=="2.1.1"||!Array.isArray(manifest.assets)||manifest.assets.length!==1)process.exit(86);const asset=manifest.assets[0];if(asset.filename!=="clockchain-agent-handshake.cjs"||asset.url!=="https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.1/clockchain-agent-handshake.cjs"||typeof asset.sha256!=="string"||!/^[0-9a-f]{64}$/.test(asset.sha256))process.exit(86);const helperBytes=fs.readFileSync(helperPath);const helperDigest=crypto.createHash("sha256").update(helperBytes).digest("hex");if(helperDigest!==asset.sha256)process.exit(86);process.argv=[process.execPath].concat(helperPath).concat(argv);const loaded=new Module(helperPath);loaded.filename=helperPath;loaded.paths=[];const compile=loaded._compile.bind(loaded);compile(...[helperBytes.toString("utf8")].concat(helperPath));';
 
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -41,6 +41,36 @@ const MAX_OUTPUT_BYTES = 1024 * 1024;
 const TERMINAL_SCHEMA = "clockchain.fresh-agent-terminal-proof/v1";
 const EVIDENCE_SCHEMA = "clockchain.fresh-agent-canary-evidence/v1";
 const RESPONDER_INVITATION_PLACEHOLDER = "<PASTE THE INITIATOR INVITATION>";
+export const CLAUDE_CONTEXT_MARKER = "CLOCKCHAIN_CONTEXT_RECEIVED";
+export const CLAUDE_CONTEXT_PROMPT = `I am using this fresh disposable workspace for an expected Clockchain test. In my next message I will provide a concrete role-specific request. Do not perform any action now; evaluate that later request on its own exact scope and safety boundaries. Reply exactly ${CLAUDE_CONTEXT_MARKER}.`;
+const TRACE_LIFECYCLE = process.env.CLOCKCHAIN_FRESH_AGENT_TRACE === "1";
+
+function traceLifecycle(value) {
+  if (TRACE_LIFECYCLE) process.stderr.write(`${JSON.stringify(value)}\n`);
+}
+
+function traceText(value, canaries) {
+  if (!TRACE_LIFECYCLE || typeof value !== "string") return null;
+  let redacted = value
+    .replace(/[A-Za-z0-9_-]{80,}\.[A-Za-z0-9_-]{40,}/gu, "[ROLE_ACCESS]")
+    .replace(/0x[0-9a-fA-F]{64}/gu, "[HEX_32]");
+  for (const canary of canaries) redacted = redacted.replaceAll(canary, "[SECRET]");
+  return redacted.slice(0, 2_000);
+}
+
+function traceAccessClaims(value) {
+  if (!TRACE_LIFECYCLE || typeof value !== "string") return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(value.split(".")[0], "base64url").toString("utf8"));
+    return {
+      allowedTools: Array.isArray(parsed.allowedTools) ? parsed.allowedTools : null,
+      role: typeof parsed.role === "string" ? parsed.role : null,
+      sessionId: typeof parsed.sessionId === "string" ? parsed.sessionId : null,
+    };
+  } catch {
+    return null;
+  }
+}
 
 function fail() {
   throw new Error("Fresh agent compatibility check failed safely.");
@@ -118,8 +148,11 @@ function verifiedHelperCommand(manifestDigest, helperArguments) {
 
 function claudeLocalAuthorityTools(manifestDigest) {
   return Object.freeze([
+    "Read(./manifest.json)",
+    "Read(./clockchain-agent-handshake.cjs)",
     `Bash(curl --fail --location --proto =https --proto-redir =https --output ./manifest.json ${RELEASE_PREFIX}manifest.json)`,
     `Bash(curl --fail --location --proto =https --proto-redir =https --output ./clockchain-agent-handshake.cjs ${RELEASE_PREFIX}clockchain-agent-handshake.cjs)`,
+    "Bash(mkdir -m 700 ./clockchain-state)",
     verifiedHelperCommand(manifestDigest, ["--version"]),
     ...HELPER_OPERATIONS.map((operation) => verifiedHelperCommand(manifestDigest, [operation, "*"])),
   ]);
@@ -164,7 +197,7 @@ export function validateHelperCommand({ argv, kind, manifestDigest, workspace } 
   fail();
 }
 
-export function buildClientCommands({ client, manifestDigest, prompt, workspace } = {}) {
+export function buildClientCommands({ client, claudeSessionId, manifestDigest, prompt, workspace } = {}) {
   const clean = cleanClient(client);
   const cwd = absolute(workspace);
   if (!SHA256.test(manifestDigest)) fail();
@@ -187,25 +220,34 @@ export function buildClientCommands({ client, manifestDigest, prompt, workspace 
       }),
     });
   }
+  if (!UUID.test(claudeSessionId)) fail();
   return Object.freeze({
     configure: Object.freeze({
       args: Object.freeze(["mcp", "add", "--transport", "http", "--scope", "user", "clockchain-handshake", CLOCKCHAIN_HANDSHAKE_MCP_URL]),
       file: "claude",
     }),
+    prepare: Object.freeze({
+      args: Object.freeze([
+        "--print", "--model", "sonnet", "--effort", "low", "--session-id", claudeSessionId,
+        "--disable-slash-commands", "--no-chrome", "--permission-mode", "dontAsk",
+        "--setting-sources", "", "--output-format", "json",
+      ]),
+      file: "claude",
+      input: CLAUDE_CONTEXT_PROMPT,
+    }),
     launch: Object.freeze({
       args: Object.freeze([
-        "--print", "--model", "sonnet", "--disable-slash-commands", "--no-chrome",
+        "--print", "--resume", claudeSessionId, "--model", "sonnet", "--effort", "low", "--disable-slash-commands", "--no-chrome",
         "--strict-mcp-config", "--mcp-config", JSON.stringify({
           mcpServers: { "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL } },
         }),
         "--permission-mode", "dontAsk",
-        "--no-session-persistence",
         "--setting-sources", "",
         "--output-format", "stream-json",
         "--verbose",
-        "--allowedTools", CLOCKCHAIN_HANDSHAKE_TOOLS
+        "--allowedTools", ["ToolSearch"].concat(CLOCKCHAIN_HANDSHAKE_TOOLS
           .map((tool) => `mcp__clockchain-handshake__${tool}`)
-          .concat(claudeLocalAuthorityTools(manifestDigest))
+          .concat(claudeLocalAuthorityTools(manifestDigest)))
           .join(","),
       ]),
       file: "claude",
@@ -213,6 +255,19 @@ export function buildClientCommands({ client, manifestDigest, prompt, workspace 
       limitation: null,
     }),
   });
+}
+
+export function validateClaudePreparation(output, canaries = []) {
+  if (typeof output !== "string" || !Array.isArray(canaries)) fail();
+  assertSecretFree(output, canaries);
+  let parsed;
+  try { parsed = JSON.parse(output); } catch { fail(); }
+  if (
+    parsed === null || typeof parsed !== "object" || Array.isArray(parsed) ||
+    parsed.subtype !== "success" || parsed.is_error !== false ||
+    typeof parsed.result !== "string" || parsed.result.trim() !== CLAUDE_CONTEXT_MARKER
+  ) fail();
+  return true;
 }
 
 async function privateDirectory(path) {
@@ -372,6 +427,84 @@ function observeChild(child, role, all, canaries, { requireInvitation = false } 
       let event;
       try { event = JSON.parse(line); } catch { fail(); }
       observed = mergeObserved(observed, inspectEvent(event, role));
+      traceLifecycle({
+        phase: "event",
+        role,
+        type: ["thread.started", "turn.started", "item.started", "item.completed", "turn.completed", "system", "assistant", "user", "result", "rate_limit_event"].includes(event?.type) ? event.type : "other",
+        subtype: typeof event?.subtype === "string" && /^[a-z_.-]+$/.test(event.subtype) ? event.subtype : null,
+        invitationObserved: observed.invitation !== undefined,
+        terminalObserved: observed.terminal !== undefined,
+        mcpConnected: event?.type === "system" && Array.isArray(event.mcp_servers)
+          ? event.mcp_servers.some((entry) => entry?.name === "clockchain-handshake" && entry?.status === "connected")
+          : false,
+        blocks: event?.type === "assistant" && Array.isArray(event?.message?.content)
+          ? event.message.content.map((block) => ({
+              type: ["thinking", "text", "tool_use", "tool_result"].includes(block?.type) ? block.type : "other",
+              tool: typeof block?.name === "string" && (
+                CLOCKCHAIN_HANDSHAKE_TOOLS.some((name) => block.name.endsWith(`__${name}`)) ||
+                block.name === "Bash"
+              ) ? block.name : null,
+            }))
+          : [],
+        userBlocks: event?.type === "user" && Array.isArray(event?.message?.content)
+          ? event.message.content.map((block) => ({
+              type: ["text", "tool_result"].includes(block?.type) ? block.type : "other",
+              isError: block?.is_error === true,
+            }))
+          : [],
+        texts: event?.type === "assistant" && Array.isArray(event?.message?.content)
+          ? event.message.content
+            .filter((block) => block?.type === "text")
+            .map((block) => traceText(block.text, canaries))
+          : [],
+        userTexts: event?.type === "user" && Array.isArray(event?.message?.content)
+          ? event.message.content
+            .filter((block) => block?.type === "text")
+            .map((block) => traceText(block.text, canaries))
+          : [],
+        resultErrors: event?.type === "result"
+          ? [event.error, ...(Array.isArray(event.errors) ? event.errors : [])]
+            .filter((entry) => typeof entry === "string")
+            .map((entry) => traceText(entry, canaries))
+          : [],
+        codexItem: ["item.started", "item.completed"].includes(event?.type) && event?.item
+          ? {
+              type: ["reasoning", "agent_message", "mcp_tool_call", "command_execution"].includes(event.item.type)
+                ? event.item.type
+                : "other",
+              tool: typeof event.item.tool === "string" && CLOCKCHAIN_HANDSHAKE_TOOLS.includes(event.item.tool)
+                ? event.item.tool
+                : null,
+              status: ["in_progress", "completed", "failed"].includes(event.item.status) ? event.item.status : null,
+              exitCode: Number.isSafeInteger(event.item.exit_code) ? event.item.exit_code : null,
+              text: event.item.type === "agent_message" ? traceText(event.item.text, canaries) : null,
+              accessPresent: event.item.type === "mcp_tool_call" && [
+                "agent_handshake_join",
+                "agent_handshake_status",
+                "agent_handshake_next",
+                "agent_handshake_submit",
+                "agent_handshake_get_certificate",
+              ].includes(event.item.tool)
+                ? typeof event.item.arguments?.access === "string" && event.item.arguments.access.length > 0
+                : null,
+              accessClaims: event.item.type === "mcp_tool_call"
+                ? traceAccessClaims(event.item.arguments?.access)
+                : null,
+              joinInput: event.item.type === "mcp_tool_call" && event.item.tool === "agent_handshake_join"
+                ? {
+                    accessPresent: typeof event.item.arguments?.access === "string" && event.item.arguments.access.length > 0,
+                    helperVersion: typeof event.item.arguments?.helperVersion === "string" ? event.item.arguments.helperVersion : null,
+                    policyDigest: typeof event.item.arguments?.policyDigest === "string" ? event.item.arguments.policyDigest : null,
+                    sessionKeyAddress: typeof event.item.arguments?.sessionKeyAddress === "string" ? event.item.arguments.sessionKeyAddress : null,
+                  }
+                : null,
+            }
+          : null,
+        isError: event?.type === "result" ? event.is_error === true : false,
+        permissionDenials: event?.type === "result" && Array.isArray(event.permission_denials)
+          ? event.permission_denials.length
+          : 0,
+      });
       if (observed.invitation !== undefined && resolveInvitation !== undefined) {
         resolveInvitation(observed.invitation);
         resolveInvitation = undefined;
@@ -398,6 +531,7 @@ function observeChild(child, role, all, canaries, { requireInvitation = false } 
     child.once("error", reject);
     child.stdin?.once?.("error", reject);
     child.once("close", (code) => {
+      traceLifecycle({ phase: "close", role, code: Number.isSafeInteger(code) ? code : null, stderrBytes: Buffer.byteLength(stderr) });
       child.__freshAgentClosed = true;
       if (settled) return;
       settled = true;
@@ -474,6 +608,7 @@ export async function runFreshAgentHandshake({
   secretCanaries = { initiator: [], responder: [] },
   monitor,
   parent,
+  prepareClient,
   prompts,
   release,
   spawnProcess = spawn,
@@ -483,7 +618,7 @@ export async function runFreshAgentHandshake({
   exactObject(prompts, ROLES);
   exactObject(modelEnvironment, ROLES);
   exactObject(secretCanaries, ROLES);
-  if (typeof configureClient !== "function" || typeof monitor !== "function") fail();
+  if (typeof configureClient !== "function" || typeof monitor !== "function" || typeof prepareClient !== "function") fail();
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60 * 60 * 1000) fail();
   const pin = validateReleaseAgreement(release);
   const canaries = ROLES.flatMap((role) => {
@@ -499,9 +634,15 @@ export async function runFreshAgentHandshake({
     for (const role of ROLES) {
       const client = cleanClient(clients[role]);
       const env = childEnvironment(run.roles[role], modelEnvironment[role]);
-      const configure = buildClientCommands({ client, manifestDigest: pin.manifestDigest, prompt: "configured later", workspace: run.roles[role].workspace }).configure;
+      const claudeSessionId = client === "claude" ? randomUUID() : undefined;
+      const commands = buildClientCommands({ client, claudeSessionId, manifestDigest: pin.manifestDigest, prompt: "configured later", workspace: run.roles[role].workspace });
+      const configure = commands.configure;
       await configureClient(Object.freeze({ client, command: configure, env, role, room: run.roles[role] }));
-      prepared[role] = { client, env };
+      if (client === "claude") {
+        const ready = await prepareClient(Object.freeze({ client, command: commands.prepare, env, role, room: run.roles[role] }));
+        if (ready !== true) fail();
+      }
+      prepared[role] = { claudeSessionId, client, env };
     }
     const timedOut = new Promise((_, rejectPromise) => {
       timer = setTimeout(() => {
@@ -511,6 +652,7 @@ export async function runFreshAgentHandshake({
     });
     const initiatorCommands = buildClientCommands({
       client: prepared.initiator.client,
+      claudeSessionId: prepared.initiator.claudeSessionId,
       manifestDigest: pin.manifestDigest,
       prompt: prompts.initiator,
       workspace: run.roles.initiator.workspace,
@@ -522,6 +664,7 @@ export async function runFreshAgentHandshake({
       stdio: ["pipe", "pipe", "pipe"],
     });
     children.push(initiatorChild);
+    traceLifecycle({ phase: "spawn", role: "initiator" });
     const initiatorObserved = observeChild(initiatorChild, "initiator", children, canaries, { requireInvitation: true });
     sendPrompt(initiatorChild, initiatorCommands.launch.input);
     const actualInvitation = await Promise.race([
@@ -531,6 +674,7 @@ export async function runFreshAgentHandshake({
     ]);
     const responderCommands = buildClientCommands({
       client: prepared.responder.client,
+      claudeSessionId: prepared.responder.claudeSessionId,
       manifestDigest: pin.manifestDigest,
       prompt: responderPrompt(prompts.responder, actualInvitation),
       workspace: run.roles.responder.workspace,
@@ -542,6 +686,7 @@ export async function runFreshAgentHandshake({
       stdio: ["pipe", "pipe", "pipe"],
     });
     children.push(responderChild);
+    traceLifecycle({ phase: "spawn", role: "responder" });
     const responderObserved = observeChild(responderChild, "responder", children, canaries);
     sendPrompt(responderChild, responderCommands.launch.input);
     const results = await Promise.race([
