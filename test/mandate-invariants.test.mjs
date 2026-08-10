@@ -12,12 +12,15 @@
 // so v2 encodes it here as a tested invariant instead.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 
+import { canonicalBytes } from "../src/core/canonical.mjs";
 import { validatePayerMandate } from "../src/core/payer-mandate.mjs";
 import {
   HUMAN_PACED_MINIMUM_MS,
   assertMandateLifetime,
 } from "../src/core/window.mjs";
+import { buildV2Fixture } from "./support/agent-handshake-v2-fixture.mjs";
 
 const BASE_ISSUED = 1_800_000_000_000;
 
@@ -136,4 +139,38 @@ test("the donor validator is unchanged: it still accepts its shorter fixtures", 
       mandate({ expiresAtMs: String(BASE_ISSUED + 700_000) }),
     ),
   );
+});
+
+test("generic v2 has one positive checker emission site", async () => {
+  const source = await readFile(
+    new URL("../src/agent-handshake/v2/verdict.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.equal((source.match(/outcome:\s*"VERIFIED"/g) ?? []).length, 1);
+});
+
+test("generic v2 canonical artifacts never acquire payment vocabulary", async () => {
+  const fixture = await buildV2Fixture();
+  const artifacts = [
+    fixture.proposalEnvelope,
+    fixture.acceptanceEnvelope,
+    fixture.descriptorEnvelope,
+    ...fixture.transitions,
+    fixture.evidence.initiator,
+    fixture.evidence.responder,
+    fixture.resultEnvelope,
+  ];
+  const bytes = artifacts.map((value) => canonicalBytes(value).toString("utf8")).join("\n").toLowerCase();
+  for (const forbidden of [
+    "amount",
+    "currency",
+    "invoice",
+    "payment_request",
+    "payer",
+    "payee",
+    "requestor",
+    "paymentmoved",
+  ]) {
+    assert.equal(bytes.includes(forbidden), false, forbidden);
+  }
 });
