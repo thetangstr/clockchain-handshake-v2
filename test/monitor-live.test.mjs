@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import { createRelayServer } from "../src/relay/server.mjs";
+import { buildAgentHandshakeV2Snapshot } from "../src/monitor/agent-snapshot-v2.mjs";
 import {
   buildSnapshot,
   FAILED_STAGE,
@@ -432,4 +433,64 @@ test("a session with no published monitor snapshot yet falls back to relay bookk
   // -- it is what polls and shows the "cannot reach" / stale state.
   const page = await fetch(`${baseUrl}/monitor/${sessionId}`);
   assert.equal(page.status, 200);
+});
+
+test("a live v2 snapshot preserves absent proof even when a later certificate is present", async (t) => {
+  const baseUrl = await startServer(t);
+  const created = await postJson(`${baseUrl}/v1/sessions`, {});
+  const sessionId = created.body.sessionId;
+  const createdAtMs = 1_786_337_000_000;
+  const snapshot = buildAgentHandshakeV2Snapshot({
+    schema: "clockchain.agent-handshake-snapshot/v2",
+    protocol: "clockchain.agent-handshake/v2",
+    sessionId,
+    repositorySha: "d".repeat(40),
+    hostTrust: {
+      rootKid: "root-2026-08",
+      rootFingerprint: "a".repeat(64),
+      sessionPublicKey: "A".repeat(43) + "=",
+      sessionKeyCertificateDigest: "b".repeat(64),
+    },
+    timing: {
+      createdAtMs,
+      invitationExpiresAtMs: createdAtMs + 120_000,
+      sessionDeadlineMs: createdAtMs + 600_000,
+      agreementValidForSeconds: "90",
+    },
+    invitation: { createdAtMs: createdAtMs + 1_000, responderClaimedAtMs: null },
+    terms: {
+      reference: "NS-1847",
+      statement: "Northstar and Harbor authorize these agents to communicate.",
+      identityPolicy: { erc8004: "not_required", chainId: null, registryAddress: null },
+    },
+    policies: { initiator: null, responder: null },
+    parties: { initiator: null, responder: null },
+    statements: { proposalDigest: null, acceptanceDigest: null },
+    receipts: { proposal: null, acceptance: null, acknowledgment: null },
+    evidence: { initiator: null, responder: null },
+    checker: { stage: "VERIFIED", lastSeenMs: createdAtMs + 9_000 },
+    certificate: {
+      digest: "5".repeat(64),
+      issuedAtMs: createdAtMs + 10_000,
+      outcome: "VERIFIED",
+    },
+    freshness: {
+      initiator: null,
+      responder: null,
+      host: { lastSeenMs: createdAtMs + 9_000 },
+      checker: { lastSeenMs: createdAtMs + 9_000 },
+    },
+    failure: null,
+    externalBusinessActionPerformed: false,
+  });
+
+  const put = await putJson(`${baseUrl}/v1/sessions/${sessionId}/snapshot`, snapshot);
+  assert.equal(put.status, 200);
+  const fetched = await getJson(`${baseUrl}/v1/sessions/${sessionId}/snapshot`);
+  assert.equal(fetched.status, 200);
+  assert.deepEqual(fetched.body, snapshot);
+  assert.equal(fetched.body.certificate.outcome, "VERIFIED");
+  assert.equal(fetched.body.parties.initiator, null);
+  assert.equal(fetched.body.receipts.proposal, null);
+  assert.equal(fetched.body.evidence.responder, null);
 });

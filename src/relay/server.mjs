@@ -33,11 +33,19 @@ import {
   AGENT_HANDSHAKE_SNAPSHOT_SCHEMA,
   validateAgentHandshakeSnapshot,
 } from "../monitor/agent-snapshot.mjs";
+import {
+  AGENT_HANDSHAKE_V2_SNAPSHOT_SCHEMA,
+  validateAgentHandshakeV2Snapshot,
+} from "../monitor/agent-snapshot-v2.mjs";
 import { ResultError, validateResultEnvelope } from "../core/result.mjs";
 import {
   AGENT_HANDSHAKE_RESULT_SCHEMA,
   validateAgentHandshakeResultEnvelope,
 } from "../agent-handshake/result.mjs";
+import {
+  AGENT_HANDSHAKE_V2_RESULT_SCHEMA,
+  validateAgentHandshakeV2ResultEnvelope,
+} from "../agent-handshake/v2/result.mjs";
 import { RelayError } from "./errors.mjs";
 
 export const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -1008,7 +1016,9 @@ async function handlePutSnapshot(req, sessions, sessionId) {
     );
   }
   try {
-    if (body.schema === AGENT_HANDSHAKE_SNAPSHOT_SCHEMA) {
+    if (body.schema === AGENT_HANDSHAKE_V2_SNAPSHOT_SCHEMA) {
+      validateAgentHandshakeV2Snapshot(body);
+    } else if (body.schema === AGENT_HANDSHAKE_SNAPSHOT_SCHEMA) {
       validateAgentHandshakeSnapshot(body);
     } else {
       validateSnapshot(body);
@@ -1069,7 +1079,9 @@ async function handlePutResult(req, sessions, sessionId) {
     );
   }
   try {
-    if (envelope?.result?.schema === AGENT_HANDSHAKE_RESULT_SCHEMA) {
+    if (envelope?.result?.schema === AGENT_HANDSHAKE_V2_RESULT_SCHEMA) {
+      validateAgentHandshakeV2ResultEnvelope(envelope);
+    } else if (envelope?.result?.schema === AGENT_HANDSHAKE_RESULT_SCHEMA) {
       validateAgentHandshakeResultEnvelope(envelope);
     } else {
       validateResultEnvelope(envelope);
