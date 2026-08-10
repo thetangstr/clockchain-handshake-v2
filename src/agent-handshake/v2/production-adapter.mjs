@@ -22,7 +22,12 @@ import {
 import { agentHandshakeV2DescriptorDigest } from "./descriptor.mjs";
 import { createHostSessionKeyCertificate, rawEd25519PublicKey } from "./host-key-certificate.mjs";
 import { loadHostRoot } from "./host-root.mjs";
-import { validateAgentHandshakeV2Terms } from "./terms.mjs";
+import { verifyAgentHandshakeV2IdentityClaimEnvelope } from "./identity-claim.mjs";
+import {
+  agentHandshakeV2StatementDigest,
+  validateAgentHandshakeV2Terms,
+} from "./terms.mjs";
+import { createAgentHandshakeV2Monitor } from "../../monitor/agent-snapshot-v2-producer.mjs";
 
 const DEFAULT_RELAY = "http://44.249.47.220:8080";
 const DEFAULT_REPOSITORY = "https://github.com/thetangstr/clockchain-handshake-v2.git";
@@ -145,7 +150,6 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
   });
   const envelopeKey =
     relayClient.generateEnvelopeKeyPair?.() ?? relay.generateEnvelopeKeyPair();
-  const identityMessages = {};
   let after = "0";
   let buffer = [];
 
@@ -154,9 +158,7 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
       after,
       buffer,
       budgetMs: Math.max(0, session.sessionDeadlineMs - Date.now()),
-      expectedBindings: kind === "agent_v2_party_ready"
-        ? { [role]: identityMessages[role] }
-        : null,
+      expectedBindings: null,
       kind,
       relayClient,
       relayUrl: session.relayUrl,
@@ -167,7 +169,9 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
     after = result.after;
     buffer = result.buffer;
     const message = result.messages[role];
-    if (kind === "agent_v2_identity_claim") identityMessages[role] = message;
+    if (relayClient.verifyEnvelope(message) !== true) {
+      throw new Error("AGENT_HANDSHAKE_V2_RELAY_ENVELOPE_INVALID");
+    }
     return message;
   };
   const waitForMessage = overrides.waitForMessage ?? defaultWaitForMessage;
@@ -180,6 +184,16 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
       role: "host",
       sessionId: session.sessionId,
     }));
+  const monitor = overrides.monitor ?? createAgentHandshakeV2Monitor({
+    now: overrides.now ?? Date.now,
+    publish: (snapshot) => relayClient.putSnapshot({
+      relayUrl: session.relayUrl,
+      retryBudgetMs: 30_000,
+      sessionId: session.sessionId,
+      snapshot,
+    }),
+    session,
+  });
 
   const store = overrides.fundingStore ?? createFileFundingBudgetStore({
     path: process.env.AGENT_HANDSHAKE_V2_FUNDING_LEDGER ??
@@ -300,8 +314,43 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
       anchorReport(await waitForMessage("agent_v2_anchor_report", "initiator")),
     awaitEvidence: async (role) =>
       (await waitForMessage("agent_v2_evidence", role)).body.evidenceEnvelope,
-    awaitIdentityClaim: async (role) =>
-      (await waitForMessage("agent_v2_identity_claim", role)).body,
+    awaitInvitationClaimed: async () => {
+      const message = await waitForMessage("agent_v2_invitation_claimed", "responder");
+      const body = message.body;
+      if (
+        body === null || typeof body !== "object" || Array.isArray(body) ||
+        Object.keys(body).sort().join(",") !==
+          "claimedAtMs,externalBusinessActionPerformed" ||
+        typeof body.claimedAtMs !== "string" ||
+        !/^(?:0|[1-9][0-9]*)$/.test(body.claimedAtMs) ||
+        body.externalBusinessActionPerformed !== false
+      ) throw new Error("AGENT_HANDSHAKE_V2_INVITATION_CLAIM_INVALID");
+      const claimedAtMs = Number(body.claimedAtMs);
+      if (
+        !Number.isSafeInteger(claimedAtMs) ||
+        claimedAtMs < session.sessionOpenedAtMs ||
+        claimedAtMs >= session.invitationExpiresAtMs
+      ) throw new Error("AGENT_HANDSHAKE_V2_INVITATION_CLAIM_INVALID");
+      await monitor.invitationClaimed(claimedAtMs);
+      return claimedAtMs;
+    },
+    awaitIdentityClaim: async (role) => {
+      const message = await waitForMessage("agent_v2_identity_claim", role);
+      const verified = await verifyAgentHandshakeV2IdentityClaimEnvelope(
+        message.body,
+        {
+          expectedRepositorySha: session.repositorySha,
+          expectedRole: role,
+          expectedSessionId: session.sessionId,
+          expectedStatementDigest: agentHandshakeV2StatementDigest(session.terms),
+        },
+      );
+      await monitor.identityClaimed(role, verified.claim);
+      return Object.freeze({
+        policyDigest: verified.claim.policyDigest,
+        sessionKeyAddress: verified.claim.sessionKeyAddress,
+      });
+    },
     awaitPartyReady: async (role) =>
       (await waitForMessage("agent_v2_party_ready", role)).body,
     awaitProposal: async () =>
@@ -323,6 +372,15 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
         retryBudgetMs: 30_000,
         sessionId: session.sessionId,
       })),
+    publishInitial: () => monitor.start(),
+    partiesReady: (parties) => monitor.partiesReady(parties),
+    proposalSigned: (envelope) => monitor.proposalSigned(envelope),
+    acceptanceSigned: (envelope) => monitor.acceptanceSigned(envelope),
+    anchorsRecorded: (report) => monitor.anchorsRecorded(report),
+    evidenceReceived: (role, envelope) => monitor.evidenceReceived(role, envelope),
+    checkerStage: (stage) => monitor.checkerStage(stage),
+    failed: (reasonCode) => monitor.failed(reasonCode),
+    certificateIssued: (envelope) => monitor.certificateIssued(envelope),
     reserveFunding: (input) => fundingBudget.reserve(input),
     resolveRegistration:
       overrides.resolveRegistration ?? defaultResolveRegistration,

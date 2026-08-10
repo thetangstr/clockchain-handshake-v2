@@ -115,13 +115,23 @@ test("the v2 host verifies the full artifact chain and publishes one closing cer
   let publishedDescriptor = null;
   let publishedResult = null;
   Object.assign(active, {
+    acceptanceSigned: async () => {},
+    anchorsRecorded: async () => {},
     awaitAcceptance: async () => fixture.acceptanceEnvelope,
     awaitAnchors: async () => ({
       receipts: fixture.receipts,
       transitions: fixture.transitions,
     }),
     awaitEvidence: async (role) => fixture.evidence[role],
+    awaitInvitationClaimed: async () => 1786337000001,
     awaitProposal: async () => fixture.proposalEnvelope,
+    certificateIssued: async () => {},
+    checkerStage: async () => {},
+    evidenceReceived: async () => {},
+    failed: async () => {},
+    partiesReady: async () => {},
+    proposalSigned: async () => {},
+    publishInitial: async () => {},
     publishDescriptor: async (value) => { publishedDescriptor = value; },
     publishResult: async (value) => { publishedResult = value; },
   });

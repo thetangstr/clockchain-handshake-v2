@@ -6,7 +6,9 @@ import {
   loadAgentHandshakeV2Session,
 } from "../src/agent-handshake/v2/production-adapter.mjs";
 import { verifyHostSessionKeyCertificate, ed25519PublicKeyFingerprint } from "../src/agent-handshake/v2/host-key-certificate.mjs";
-import { ed25519 } from "./support/agent-handshake-v2-fixture.mjs";
+import { canonicalBytes } from "../src/core/canonical.mjs";
+import { agentHandshakeV2StatementDigest } from "../src/agent-handshake/v2/terms.mjs";
+import { ed25519, INITIATOR, REPOSITORY_SHA, SESSION_ID, TERMS } from "./support/agent-handshake-v2-fixture.mjs";
 
 test("production session publishes a root-signed host key before discovery with independent clocks", async () => {
   const root = ed25519("root-2026-08");
@@ -42,8 +44,30 @@ test("production session publishes a root-signed host key before discovery with 
 
 test("production ports map only role-tagged v2 messages and reserve before funding", async () => {
   const seen = [];
+  const identityClaim = {
+    schema: "clockchain.agent-handshake-identity-claim/v2",
+    protocol: "clockchain.agent-handshake/v2",
+    sessionId: SESSION_ID,
+    repositorySha: REPOSITORY_SHA,
+    role: "initiator",
+    sessionKeyAddress: INITIATOR.address.toLowerCase(),
+    policyDigest: "a".repeat(64),
+    statementDigest: agentHandshakeV2StatementDigest(TERMS),
+    externalBusinessActionPerformed: false,
+  };
   const messages = {
-    agent_v2_identity_claim: { body: { sessionKeyAddress: "0x" + "1".repeat(40), policyDigest: "a".repeat(64) } },
+    agent_v2_invitation_claimed: { body: {
+      claimedAtMs: "1786337000001",
+      externalBusinessActionPerformed: false,
+    } },
+    agent_v2_identity_claim: { body: {
+      claim: identityClaim,
+      signature: {
+        address: identityClaim.sessionKeyAddress,
+        algorithm: "eip191",
+        value: await INITIATOR.signMessage({ message: { raw: canonicalBytes(identityClaim) } }),
+      },
+    } },
     agent_v2_party_ready: { body: { ok: "party" } },
     agent_v2_proposal: { body: { proposalEnvelope: { ok: "proposal" } } },
     agent_v2_acceptance: { body: { acceptanceEnvelope: { ok: "acceptance" } } },
@@ -52,19 +76,28 @@ test("production ports map only role-tagged v2 messages and reserve before fundi
   };
   const ports = await createAgentHandshakeV2HostPorts({
     relayUrl: "https://relay.test",
+    repositorySha: REPOSITORY_SHA,
+    sessionOpenedAtMs: 1786337000000,
+    invitationExpiresAtMs: 1786337120000,
     sessionDeadlineMs: Date.now() + 60_000,
-    sessionId: "22222222-3333-4444-8555-666666666666",
+    sessionId: SESSION_ID,
+    terms: TERMS,
   }, {
     fundingBudget: { reserve: async (input) => seen.push(["reserve", input]) },
     fundIdentity: async (input) => seen.push(["fund", input]),
     postHostMessage: async (kind, body) => seen.push([kind, body]),
     publicClient: {},
+    monitor: {
+      invitationClaimed: async (claimedAtMs) => seen.push(["invitation", claimedAtMs]),
+      identityClaimed: async (role, claim) => seen.push(["identity", role, claim]),
+    },
     relayClient: { generateEnvelopeKeyPair: () => ({}) },
     waitForMessage: async (kind, role) => {
       seen.push(["wait", kind, role]);
       return messages[kind];
     },
   });
+  assert.equal(await ports.awaitInvitationClaimed(), 1786337000001);
   assert.equal((await ports.awaitIdentityClaim("initiator")).policyDigest, "a".repeat(64));
   assert.deepEqual(await ports.awaitProposal(), { ok: "proposal" });
   await ports.reserveFunding({
@@ -72,7 +105,7 @@ test("production ports map only role-tagged v2 messages and reserve before fundi
     identityMode: "required_fresh",
     sessionId: "22222222-3333-4444-8555-666666666666",
   });
-  await ports.fundIdentity({ address: "0x" + "1".repeat(40), role: "initiator" });
+  await ports.fundIdentity({ address: identityClaim.sessionKeyAddress, role: "initiator" });
   assert.deepEqual(seen.slice(-2).map(([kind]) => kind), ["reserve", "fund"]);
 });
 
@@ -90,6 +123,7 @@ test("production funding configuration enforces the deployed queue cap", async (
       load: async () => { await gate; return []; },
       save: async () => {},
     },
+    monitor: {},
     publicClient: {},
     relayClient: { generateEnvelopeKeyPair: () => ({}) },
   });

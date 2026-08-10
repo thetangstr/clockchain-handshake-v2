@@ -148,10 +148,20 @@ export async function prepareAgentHandshakeV2Identities({
 
 function requireSessionPorts(ports) {
   for (const name of [
+    "acceptanceSigned",
+    "anchorsRecorded",
     "awaitAcceptance",
     "awaitAnchors",
     "awaitEvidence",
+    "awaitInvitationClaimed",
     "awaitProposal",
+    "certificateIssued",
+    "checkerStage",
+    "evidenceReceived",
+    "failed",
+    "partiesReady",
+    "proposalSigned",
+    "publishInitial",
     "publishDescriptor",
     "publishResult",
   ]) {
@@ -173,12 +183,15 @@ export async function runAgentHandshakeV2HostSession({
     session.sessionDeadlineMs !== session.sessionOpenedAtMs + 10 * 60_000 ||
     now() >= session.sessionDeadlineMs
   ) invalid();
+  await ports.publishInitial();
+  await ports.awaitInvitationClaimed();
   const parties = await prepareAgentHandshakeV2Identities({
     identityPolicy: session.terms.identityPolicy,
     ports,
     sessionId: session.sessionId,
     sessionOpenedBlock: session.sessionOpenedBlock,
   });
+  await ports.partiesReady(parties);
   const proposalEnvelope = await ports.awaitProposal();
   const proposal = await verifyAgentHandshakeV2Proposal({
     envelope: proposalEnvelope,
@@ -187,6 +200,7 @@ export async function runAgentHandshakeV2HostSession({
     expectedTerms: session.terms,
     nowMs: now(),
   });
+  await ports.proposalSigned(proposalEnvelope);
   const acceptanceEnvelope = await ports.awaitAcceptance();
   await verifyAgentHandshakeV2Acceptance({
     envelope: acceptanceEnvelope,
@@ -196,6 +210,7 @@ export async function runAgentHandshakeV2HostSession({
     nowMs: now(),
     proposalEnvelope,
   });
+  await ports.acceptanceSigned(acceptanceEnvelope);
   const descriptorEnvelope = createAgentHandshakeV2DescriptorEnvelope({
     agreementExpiresAtMs: proposal.payload.expiresAtMs,
     externalBusinessActionPerformed: false,
@@ -216,26 +231,35 @@ export async function runAgentHandshakeV2HostSession({
   }, { keyId: session.keyId, privateKeyPem: session.privateKeyPem });
   await ports.publishDescriptor(descriptorEnvelope);
   const anchorReport = await ports.awaitAnchors(descriptorEnvelope);
-  const evidence = {
-    initiator: await ports.awaitEvidence("initiator"),
-    responder: await ports.awaitEvidence("responder"),
-  };
-  const verdict = await verifyAgentHandshakeV2Authorization({
-    acceptanceEnvelope,
-    descriptorEnvelope,
-    evidence,
-    expectedHostSessionKeyCertificateDigest:
-      descriptorEnvelope.descriptor.hostSessionKeyCertificateDigest,
-    expectedPublicKey: session.expectedPublicKey,
-    expectedRepositorySha: session.repositorySha,
-    expectedSessionId: session.sessionId,
-    expectedTerms: session.terms,
-    nowMs: now(),
-    proposalEnvelope,
-    receipts: anchorReport.receipts,
-    resolveRegistration: ports.resolveRegistration,
-    transitions: anchorReport.transitions,
-  });
+  await ports.anchorsRecorded(anchorReport);
+  const evidence = {};
+  evidence.initiator = await ports.awaitEvidence("initiator");
+  await ports.evidenceReceived("initiator", evidence.initiator);
+  evidence.responder = await ports.awaitEvidence("responder");
+  await ports.evidenceReceived("responder", evidence.responder);
+  await ports.checkerStage("VERIFYING");
+  let verdict;
+  try {
+    verdict = await verifyAgentHandshakeV2Authorization({
+      acceptanceEnvelope,
+      descriptorEnvelope,
+      evidence,
+      expectedHostSessionKeyCertificateDigest:
+        descriptorEnvelope.descriptor.hostSessionKeyCertificateDigest,
+      expectedPublicKey: session.expectedPublicKey,
+      expectedRepositorySha: session.repositorySha,
+      expectedSessionId: session.sessionId,
+      expectedTerms: session.terms,
+      nowMs: now(),
+      proposalEnvelope,
+      receipts: anchorReport.receipts,
+      resolveRegistration: ports.resolveRegistration,
+      transitions: anchorReport.transitions,
+    });
+  } catch (error) {
+    await ports.failed(error?.code ?? "AGENT_HANDSHAKE_V2_VERDICT_INVALID");
+    throw error;
+  }
   const certificate = buildAgentHandshakeV2Result({
     hostSessionKeyCertificate: session.hostSessionKeyCertificate,
     issuedAtMs: String(now()),
@@ -246,6 +270,7 @@ export async function runAgentHandshakeV2HostSession({
     verdict,
   });
   await ports.publishResult(certificate);
+  await ports.certificateIssued(certificate);
   return Object.freeze({
     certificate,
     descriptorEnvelope,
