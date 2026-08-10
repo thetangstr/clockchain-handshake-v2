@@ -1,18 +1,18 @@
 {
   "schema": "clockchain.agent-handshake-local-gate/v1",
-  "recordedAt": "2026-08-10T11:00:35Z",
+  "recordedAt": "2026-08-10T11:03:41Z",
   "outcome": "PASSED",
   "externalBusinessActionPerformed": false,
   "topology": "cross-repository-contract-gate",
   "revisions": {
-    "handshake": "81a6aba275ca0270498885fa34f13c90d732b969",
+    "handshake": "3e3c0c26d81eb8d1182ba483ae78c8d1d6a99b40",
     "mcp": "bfbe59d464c61f1da48741f6c863504994386a3d",
     "research": "401fe160b1674e65ddec78e98a799c678c595632"
   },
   "verification": {
     "handshake": {
       "command": "npm run verify",
-      "testsPassed": 1174,
+      "testsPassed": 1175,
       "invariantsPassed": true
     },
     "mcp": {
