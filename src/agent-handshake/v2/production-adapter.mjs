@@ -97,6 +97,7 @@ export async function loadAgentHandshakeV2Session({
     createdAtMs: String(sessionOpenedAtMs),
     invitationExpiresAtMs: String(invitationExpiresAtMs),
     sessionDeadlineMs: String(sessionDeadlineMs),
+    sessionOpenedBlock,
     hostSessionKeyCertificate,
     externalBusinessActionPerformed: false,
   });
