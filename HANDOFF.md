@@ -1,6 +1,6 @@
 # Handoff — two-agent build + AWS migration
 
-**As of:** 2026-08-09 · **Branch:** `codex/hermes-turnkey-demo` · **The full
+**As of:** 2026-08-10 · **Branch:** `codex/generic-stakeholder-handshake` · **The full
 `npm run verify` gate passes.** The previous handoff (still valid for context, landmines §4, known
 gaps §5, and the stakeholder-prompt lesson §6) is archived at
 [docs/handoff-2026-08-04.md](docs/handoff-2026-08-04.md).
@@ -31,6 +31,7 @@ topology.
 | Track B (B0–B6): MCP → AWS migration, gate GM | ✅ complete — GM green; B6 explicitly deferred under its plan branch |
 | P2 / P3 / P4 | ✅ P2 + G2 complete · ✅ P3 + G3 complete · ✅ P4 complete |
 | Turnkey two-fresh-Hermes path (Mac mini launcher → production MCP → AWS host) | ✅ realistic business scenario live-verified — run `278b5a45-ed73-4bbf-8e1d-fb8a477dac24`, session `7b08dfc8-89cc-4bb3-879d-d69458ec95ab` |
+| Generic two-stakeholder path (one-time invitation → fresh Codex agents → production MCP → AWS host) | ✅ live-verified — session `3ca7c8d3-2a6c-4bb5-b361-01798a60c8d6`, Initiator `9510`, Responder `9511`, outcome `VERIFIED` |
 
 The implementation tracks are complete. The active path is the AWS session host plus
 public discovery URL, with payer/requestor kits joining from a clean clone.
@@ -641,3 +642,19 @@ sources are `clockchain-developer-tools` commits `610d519` and `11b9162`.
 | Certificate | Both local proofs independently pinned discovery key + session; shared digest `485df3031b5c4cf41c87583ea658e98f4794b0a8464816fec64c8478a66e78bc`; `AUTHORIZED`; `paymentMoved=false` |
 | Freshness / cleanup | Blank state before provisioning and prompt; distinct principal fingerprints and wallets; independent dependency installs; both disposable role roots removed; no launcher process remains |
 | Presenter | Production `https://clockchain-research.vercel.app/handshake/claude-v6`; read-only monitor holds session `7b08dfc8-89cc-4bb3-879d-d69458ec95ab` with both identities, all three anchors, verdict, and `paymentMoved:false` |
+
+### Generic two-stakeholder Codex gate (2026-08-10)
+
+| Item | Value / evidence |
+|---|---|
+| Source / deploys | Handshake `0f00051d75413439bf86051c1c3b6049bee2bfa0`; MCP `bef60664518b3046599f296219365cc498d11a08`; research presenter `f81ea0f` |
+| Scenario | Reference `NS-1847`; exact shared statement `Two stakeholder agents may communicate about shipment NS-1847.`; validity 45 minutes; no external action authorized or performed |
+| Invitation boundary | Initiator created one signed, time-bounded invitation; the Responder exchanged it once for a distinct responder-only MCP credential; replay returned the fixed rejection path |
+| Fresh-agent boundary | Two isolated Codex homes and workspaces began with zero prior sessions and zero wallets; each used a distinct scoped MCP principal and created its own local wallet; neither role shared token, state, key, or filesystem |
+| Session | `3ca7c8d3-2a6c-4bb5-b361-01798a60c8d6`; statement digest `6f4b1cf63f3a10fb2922e0f3b5e8d00958f6a9434899f662b0234181cbdc55ad`; session digest `3945b1b63fbc8016f7b6d5070fd05a4da1898d32c6e0bdfdc59c74f69cf1b3c1` |
+| Parties | Initiator ERC-8004 `9510` / `0xc878c1f38844d6be26db41420e26e7d8b9f42aa6`; Responder `9511` / `0xcbd7c2afef4b7ccc9c21f952fd0900132510de03`; both registered live on Sepolia and posted independently signed `party_ready` records |
+| Anchors | Proposal `3257267` / `1a14138b-e6e9-4796-a7b6-07b333f6bbbc`; acceptance `3257271` / `641631cd-3913-4ba7-966f-ad4deb5e4479`; acknowledgment `3257272` / `d137c01b-d7bf-4ee9-a4ed-191b6d9f572e` |
+| Certificate | Host/checker outcome `VERIFIED`; `externalActionPerformed:false`; both agents independently fetched the same signed envelope, pinned the discovery public key and exact session, and produced `certificateVerified:true` for their own ERC-8004 identity |
+| Production presenter | `https://clockchain-research.vercel.app/handshake/claude-v6`; accepted two-column layout preserved; generic narrative and copyable Initiator/Responder prompts expose the canonical `https://mcp.clockchain.network/mcp` endpoint and one local wallet path; read-only proxy retains the newest certified generic snapshot after automatic host rollover |
+| Compatibility | Existing payer/requestor MCP tools, payment-authorization host mode, historical page assets, and legacy result semantics remain present and regression-covered; the generic workflow is additive |
+| Cleanup contract | Disposable Codex homes, scoped MCP tokens, and fresh wallet keys are temporary gate material only; retain public certificate evidence, then remove the disposable roots and token state |
