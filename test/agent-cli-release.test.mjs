@@ -98,6 +98,14 @@ test("release workflow pins Node, builders, matching runners, native signing, pr
   assert.equal(workflow.match(/test "\$\(uname -m\)" = "x86_64"/g)?.length, 1);
   assert.ok(workflow.includes("node -p 'process.arch'"));
   assert.ok(workflow.includes("node -p 'process.platform'"));
+  assert.ok(workflow.includes("preflight-secrets:"));
+  assert.equal(workflow.match(/needs: preflight-secrets/g)?.length, 2);
+  assert.ok(workflow.includes("Missing release credential"));
+  for (const secret of [
+    "MAC_CERTIFICATE_P12", "MAC_CERTIFICATE_PASSWORD", "MAC_SIGNER_NAME",
+    "APPLE_NOTARY_KEY_P8", "APPLE_NOTARY_KEY_ID", "APPLE_NOTARY_ISSUER_ID",
+    "WINDOWS_CERTIFICATE_PFX", "WINDOWS_CERTIFICATE_PASSWORD", "NPM_TOKEN",
+  ]) assert.ok(workflow.includes(secret), secret);
   assert.equal(packageLock.packages["node_modules/esbuild"].version, "0.28.2");
   assert.equal(packageLock.packages["node_modules/esbuild"].integrity, "sha512-HKVLS8dvII+xoKW9kmqxbRKrnWEXfJJr/FZhhJmiqIB0e053QNYFqOBouTMO/k5sID4MvCiUCvv8b9M4h32wIA==");
   assert.equal(packageLock.packages["node_modules/postject"].version, "1.0.0-alpha.6");
