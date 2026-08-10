@@ -70,6 +70,33 @@ test("restart state enforces rolling-hour and UTC-day ceilings", async () => {
   assert.deepEqual(records, before);
 });
 
+test("funding budget emits threshold-only alerts without exposing reserved addresses", async () => {
+  const now = Date.UTC(2026, 7, 10, 12, 0, 0);
+  let records = Array.from({ length: 14 }, (_, index) => ({
+    address: "0x" + (index + 10).toString(16).padStart(40, "0"),
+    amountEth: "0.01",
+    atMs: now - 1,
+    sessionId: "00000000-0000-4000-8000-" + String(index).padStart(12, "0"),
+  }));
+  const alerts = [];
+  const budget = createFundingBudget({
+    load: async () => records,
+    save: async (next) => { records = structuredClone(next); },
+    now: () => now,
+    alertHourCents: 16,
+    alertDayCents: 80,
+    onAlert: (value) => alerts.push(value),
+  });
+  await budget.reserve({
+    addresses: [A, B],
+    identityMode: "required_fresh",
+    sessionId: "22222222-3333-4444-8555-666666666666",
+  });
+  assert.deepEqual(alerts, [{ dailyEth: "0.16", hourlyEth: "0.16" }]);
+  assert.equal(JSON.stringify(alerts).includes(A), false);
+  assert.equal(JSON.stringify(alerts).includes(B), false);
+});
+
 test("not-required reserves nothing and existing-or-fresh reserves only missing addresses", async () => {
   let records = [];
   const budget = createFundingBudget({ load: async () => records, save: async (next) => { records = next; } });

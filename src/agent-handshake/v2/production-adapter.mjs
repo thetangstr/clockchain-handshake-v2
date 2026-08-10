@@ -50,6 +50,23 @@ function termsFromEnvironment(env) {
   return validateAgentHandshakeV2Terms(parsed);
 }
 
+function positiveInteger(value, fallback) {
+  const parsed = Number(value ?? fallback);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error("AGENT_HANDSHAKE_V2_FUNDING_CONFIGURATION_INVALID");
+  }
+  return parsed;
+}
+
+function fundingAlertCents(value, fallback) {
+  const parsed = Number(value ?? fallback);
+  const cents = Math.round(parsed * 100);
+  if (!Number.isFinite(parsed) || parsed <= 0 || cents / 100 !== parsed) {
+    throw new Error("AGENT_HANDSHAKE_V2_FUNDING_CONFIGURATION_INVALID");
+  }
+  return cents;
+}
+
 export async function loadAgentHandshakeV2Session({
   env = process.env,
   loadRoot = loadHostRoot,
@@ -168,7 +185,25 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
     path: process.env.AGENT_HANDSHAKE_V2_FUNDING_LEDGER ??
       "/var/lib/clockchain/private/v2-funding-ledger.jsonl",
   });
-  const fundingBudget = overrides.fundingBudget ?? createFundingBudget(store);
+  const fundingBudget = overrides.fundingBudget ?? createFundingBudget({
+    ...store,
+    alertDayCents: fundingAlertCents(
+      process.env.AGENT_HANDSHAKE_V2_FUNDING_ALERT_DAILY_ETH,
+      "0.80",
+    ),
+    alertHourCents: fundingAlertCents(
+      process.env.AGENT_HANDSHAKE_V2_FUNDING_ALERT_HOURLY_ETH,
+      "0.16",
+    ),
+    onAlert: (usage) => console.warn(JSON.stringify({
+      event: "agent_handshake_v2_funding_budget_alert",
+      ...usage,
+    })),
+    queueLimit: positiveInteger(
+      process.env.AGENT_HANDSHAKE_V2_FUNDING_QUEUE_LIMIT,
+      "16",
+    ),
+  });
   let walletPromise = null;
   const defaultFundIdentity = async ({ address, role }) => {
     walletPromise ??= openFundingWallet({

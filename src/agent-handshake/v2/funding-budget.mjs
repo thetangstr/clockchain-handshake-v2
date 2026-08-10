@@ -46,8 +46,11 @@ function utcDayStart(nowMs) {
 }
 
 export function createFundingBudget({
+  alertDayCents = 80,
+  alertHourCents = 16,
   load,
   now = Date.now,
+  onAlert = () => {},
   queueLimit = 16,
   save,
 } = {}) {
@@ -55,6 +58,13 @@ export function createFundingBudget({
     typeof load !== "function" ||
     typeof save !== "function" ||
     typeof now !== "function" ||
+    typeof onAlert !== "function" ||
+    !Number.isSafeInteger(alertHourCents) ||
+    alertHourCents < 1 ||
+    alertHourCents > HOUR_CENTS ||
+    !Number.isSafeInteger(alertDayCents) ||
+    alertDayCents < 1 ||
+    alertDayCents > DAY_CENTS ||
     !Number.isSafeInteger(queueLimit) ||
     queueLimit < 1
   ) invalid();
@@ -122,6 +132,17 @@ export function createFundingBudget({
       }));
       try {
         await save([...existing, ...additions]);
+        const nextHourCents = hourCents + newCents;
+        const nextDayCents = dayCents + newCents;
+        if (
+          nextHourCents >= alertHourCents ||
+          nextDayCents >= alertDayCents
+        ) {
+          onAlert(Object.freeze({
+            dailyEth: (nextDayCents / 100).toFixed(2),
+            hourlyEth: (nextHourCents / 100).toFixed(2),
+          }));
+        }
       } catch {
         invalid();
       }

@@ -75,3 +75,44 @@ test("production ports map only role-tagged v2 messages and reserve before fundi
   await ports.fundIdentity({ address: "0x" + "1".repeat(40), role: "initiator" });
   assert.deepEqual(seen.slice(-2).map(([kind]) => kind), ["reserve", "fund"]);
 });
+
+test("production funding configuration enforces the deployed queue cap", async () => {
+  const previous = process.env.AGENT_HANDSHAKE_V2_FUNDING_QUEUE_LIMIT;
+  process.env.AGENT_HANDSHAKE_V2_FUNDING_QUEUE_LIMIT = "1";
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const ports = await createAgentHandshakeV2HostPorts({
+    relayUrl: "https://relay.test",
+    sessionDeadlineMs: Date.now() + 60_000,
+    sessionId: "22222222-3333-4444-8555-666666666666",
+  }, {
+    fundingStore: {
+      load: async () => { await gate; return []; },
+      save: async () => {},
+    },
+    publicClient: {},
+    relayClient: { generateEnvelopeKeyPair: () => ({}) },
+  });
+  try {
+    const first = ports.reserveFunding({
+      addresses: ["0x" + "1".repeat(40), "0x" + "2".repeat(40)],
+      identityMode: "required_fresh",
+      sessionId: "22222222-3333-4444-8555-666666666666",
+    });
+    const second = ports.reserveFunding({
+      addresses: ["0x" + "3".repeat(40), "0x" + "4".repeat(40)],
+      identityMode: "required_fresh",
+      sessionId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    });
+    const secondOutcome = await Promise.race([
+      second.then(() => "fulfilled", () => "rejected"),
+      new Promise((resolve) => setTimeout(() => resolve("pending"), 10)),
+    ]);
+    assert.equal(secondOutcome, "rejected");
+    release();
+    await Promise.allSettled([first, second]);
+  } finally {
+    if (previous === undefined) delete process.env.AGENT_HANDSHAKE_V2_FUNDING_QUEUE_LIMIT;
+    else process.env.AGENT_HANDSHAKE_V2_FUNDING_QUEUE_LIMIT = previous;
+  }
+});
