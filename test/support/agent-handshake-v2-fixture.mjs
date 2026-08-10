@@ -187,9 +187,10 @@ export async function buildV2Fixture() {
     predecessor: agentHandshakeV2TransitionDigest(accepted),
   }, accepted);
   const transitions = Object.freeze([proposed, accepted, acknowledged]);
+  const receiptTimes = [1786337120000, 1786337170000, 1786337200000];
   const receipts = Object.freeze(transitions.map((transition, index) => Object.freeze({
     blockHeight: String(7010 + index),
-    blockTimeRaw: "2026-08-09T17:0" + index + ":00.000Z",
+    blockTimeRaw: new Date(receiptTimes[index]).toISOString(),
     digest: agentHandshakeV2TransitionDigest(transition),
     kind: ["proposal", "acceptance", "acknowledgment"][index],
     ledgerId: [

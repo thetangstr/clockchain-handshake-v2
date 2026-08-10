@@ -63,3 +63,32 @@ test("wrong fresh-registration ownership, chronology, receipt, or duplicate iden
     descriptorEnvelope: wrongPolicyDescriptor,
   }));
 });
+
+test("checker uses the accepted ledger time instead of its later wall clock", async () => {
+  const fixture = await buildV2Fixture();
+  const proposalIssuedAtMs = Number(fixture.proposalEnvelope.payload.issuedAtMs);
+  const acceptanceIssuedAtMs = Number(fixture.acceptanceEnvelope.payload.issuedAtMs);
+  const expiresAtMs = Number(fixture.proposalEnvelope.payload.expiresAtMs);
+  const receipts = fixture.receipts.map((receipt, index) => ({
+    ...receipt,
+    blockTimeRaw: new Date([
+      proposalIssuedAtMs + 30_000,
+      acceptanceIssuedAtMs + 5_000,
+      expiresAtMs + 20_000,
+    ][index]).toISOString(),
+  }));
+
+  await assert.doesNotReject(() => verifyAgentHandshakeV2Authorization({
+    ...input(fixture),
+    nowMs: expiresAtMs + 60_000,
+    receipts,
+  }));
+
+  await assert.rejects(() => verifyAgentHandshakeV2Authorization({
+    ...input(fixture),
+    nowMs: expiresAtMs + 60_000,
+    receipts: receipts.map((receipt, index) => index === 1
+      ? { ...receipt, blockTimeRaw: new Date(expiresAtMs).toISOString() }
+      : receipt),
+  }));
+});

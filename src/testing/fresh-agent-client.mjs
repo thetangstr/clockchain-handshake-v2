@@ -409,7 +409,7 @@ function killProcessGroup(child) {
   } catch { child.kill?.("SIGTERM"); }
 }
 
-function observeChild(child, role, all, canaries, { requireInvitation = false } = {}) {
+function observeChild(child, role, all, canaries, { expectedInvitation, requireInvitation = false } = {}) {
   let resolveInvitation;
   let rejectInvitation;
   const invitationPromise = requireInvitation ? new Promise((resolvePromise, rejectPromise) => {
@@ -496,6 +496,13 @@ function observeChild(child, role, all, canaries, { requireInvitation = false } 
                     helperVersion: typeof event.item.arguments?.helperVersion === "string" ? event.item.arguments.helperVersion : null,
                     policyDigest: typeof event.item.arguments?.policyDigest === "string" ? event.item.arguments.policyDigest : null,
                     sessionKeyAddress: typeof event.item.arguments?.sessionKeyAddress === "string" ? event.item.arguments.sessionKeyAddress : null,
+                  }
+                : null,
+              invitationInput: event.item.type === "mcp_tool_call" && event.item.tool === "agent_handshake_accept_invitation"
+                ? {
+                    present: typeof event.item.arguments?.invitation === "string",
+                    matchesExpected: typeof expectedInvitation === "string" && event.item.arguments?.invitation === expectedInvitation,
+                    claims: traceAccessClaims(event.item.arguments?.invitation),
                   }
                 : null,
             }
@@ -687,7 +694,9 @@ export async function runFreshAgentHandshake({
     });
     children.push(responderChild);
     traceLifecycle({ phase: "spawn", role: "responder" });
-    const responderObserved = observeChild(responderChild, "responder", children, canaries);
+    const responderObserved = observeChild(responderChild, "responder", children, canaries, {
+      expectedInvitation: actualInvitation,
+    });
     sendPrompt(responderChild, responderCommands.launch.input);
     const results = await Promise.race([
       Promise.all([initiatorObserved.result, responderObserved.result]),
