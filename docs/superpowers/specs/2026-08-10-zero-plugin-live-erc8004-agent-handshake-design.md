@@ -1,7 +1,7 @@
 # Zero-Plugin Live ERC-8004 Agent Handshake Design
 
 **Date:** 2026-08-10  
-**Status:** Locked for implementation-plan review  
+**Status:** Reviewed and locked; awaiting stakeholder implementation approval
 **Primary owner:** Clockchain Handshake  
 **Dependent repositories:** `clockchain-developer-tools`, `clockchain-research`  
 **Authoritative baselines:** Handshake `63401f2`, MCP `bef6066`, Research `f81ea0f`
@@ -109,6 +109,12 @@ equivalent developer fallback when Node/npm already exists.
     evidence presentation remain intact.
 18. No generic v2 public schema contains amount, currency, invoice,
     `payment_request`, `payer`, `payee`, `requestor`, or `paymentMoved`.
+19. Both role access values expire at the immutable host session deadline, never
+    later. Invitation claim still expires after 120 seconds; proposal terms still
+    expire 90 seconds after proposal creation.
+20. A per-session host key is trusted only through a root-signed session-key
+    certificate whose root key is already pinned in the verified local helper.
+    The MCP response alone is never a certificate trust root.
 
 ## Stakeholder run
 
@@ -131,10 +137,19 @@ claude mcp list
 ```
 
 Each person starts a new client session after the connection exists. The live
-runbook pre-authorizes only the `clockchain-handshake` MCP tools plus the exact
-download, digest-verification, and `clockchain-agent-handshake 2.1.0` command
-family. Other shell commands remain outside the demonstration's permitted
-surface.
+runbook supplies version-tested launch settings. Claude Code uses
+`--strict-mcp-config`, `--permission-mode dontAsk`, an exact MCP tool allowlist,
+and literal Bash patterns for the pinned manifest download, digest check, asset
+download, native signature check, `chmod`, `--version`, and six helper
+operations. Codex uses a strict inline MCP profile, `workspace-write`, an empty
+working directory, network enabled only for the agent run, MCP auto approval,
+and `approval_policy=never` so failures stop rather than ask a person.
+
+Codex does not currently expose Claude Code's literal per-command Bash-pattern
+allowlist. The runbook says this plainly: the Codex no-human demonstration is
+contained by the empty workspace/sandbox and the helper's cryptographic policy,
+not by a claimed shell-command firewall. Production client fixtures pin the
+exact supported client versions and fail if a launch setting is unknown.
 
 Official client behavior is pinned to:
 
@@ -221,23 +236,47 @@ smaller than the existing authenticated v1 contracts.
 |---|---|---|
 | `agent_handshake_invite` | exact terms and identity policy | public Responder invitation, private Initiator role access, session facts |
 | `agent_handshake_accept_invitation` | full copied invitation | private Responder role access and exact invited terms |
-| `agent_handshake_join` | role access and local policy digest | host trust root, session facts, first identity-signing stage |
+| `agent_handshake_join` | role access and local policy digest | root-signed host session-key certificate, session facts, first identity-signing stage |
 | `agent_handshake_status` | role access | only that role's public progress |
 | `agent_handshake_next` | role access and `gzip-base64url` | a wait state, registration requirement, or one exact local signing request |
 | `agent_handshake_submit` | role access, signature, policy digest | the next committed role stage |
 | `agent_handshake_get_certificate` | role access | closing certificate after server-side verification |
 
-The role access payload is HMAC-signed and contains exact values for version,
-kind, session id, role, statement digest, allowed tools, issued time, expiry, and
-unique id. The server derives the coordinator principal from a SHA-256 digest of
-the verified role access value and persists only digests and public binding
-facts. Raw invitations and role access values are not written to disk or logs.
+The role access encoding is
+`base64url(canonical-json).base64url(hmac-sha256)`, without padding. Its exact
+canonical payload contains `v`, `alg:"HS256"`,
+`typ:"clockchain-agent-handshake-role-access"`,
+`iss:"https://mcp.clockchain.network"`,
+`aud:"clockchain-agent-handshake"`, `kid`, UUID `jti`, `sessionId`, `role`,
+`statementDigest`, the exact allowed-tool array, decimal-string `nbfMs`, and
+decimal-string `expMs`. `expMs` equals the host session deadline. Verification
+uses a timing-safe comparison and accepts only the configured active or previous
+`kid`; the SSM-backed secret for each key is at least 32 uniformly random bytes.
+The server derives the coordinator principal from a SHA-256 digest of the
+verified role access value and persists only digests and public binding facts.
+Raw invitations and role access values are not written to disk or server logs.
 
 The Initiator receives its role access when it creates the invitation. The
 Responder receives a different role access only after
 `agent_handshake_accept_invitation` atomically consumes the invitation. The
 Responder cannot claim the Initiator role, and neither role access can operate
 another session or the general MCP endpoint.
+
+### Host trust chain
+
+The production host still creates a fresh Ed25519 session key. Before publishing
+discovery, it uses the configured Clockchain host-root key to sign an exact
+`clockchain.host-session-key/v1` certificate containing the root `kid`, session
+id, session public key, repository SHA, `validFromMs`, and `validUntilMs`. The
+certificate validity cannot exceed the host session.
+
+`clockchain-agent-handshake 2.1.0` embeds the accepted current and previous root
+public keys and their SHA-256 fingerprints. It verifies the root signature and
+certificate fields before accepting the per-session key returned by MCP, and it
+uses that exact session key for descriptor and closing-certificate checks. Root
+rotation deploys a new helper release and Research pin first, then MCP and host;
+only current and previous keys are accepted during the bounded overlap. Unknown,
+stale, not-yet-valid, or MCP-substituted keys fail before party signing.
 
 ## Generic v2 protocol
 
@@ -267,6 +306,11 @@ The protocol accepts three exact ERC-8004 policy values:
   identity or register a new one;
 - `not_required`: the EIP-191 session-key address is sufficient and ERC-8004
   fields are null.
+
+The two required modes require the exact chain and registry strings.
+`not_required` keeps the same exact-key identity-policy object but requires
+`chainId:null` and `registryAddress:null`; it cannot carry a dormant registry
+mandate.
 
 The demonstration accepts only `required_fresh` on Sepolia. A fresh registration
 means the registry transfer establishing ownership must occur after the session
@@ -333,15 +377,33 @@ business action or a third stakeholder signature.
 ## One-shot local CLI
 
 `clockchain-agent-handshake 2.1.0` is published as self-contained release assets
-for macOS arm64/x64, Linux arm64/x64, and Windows x64. A CI matrix bundles the
-existing JavaScript implementation and pinned `viem` dependency into the Node
-single-executable application for each platform. The release also publishes an
-exact-key manifest containing version, source commit, build runtime, platform,
-asset URL, byte length, and SHA-256 for every asset.
+for macOS arm64, Linux arm64/x64, and Windows x64. Clockchain also publishes a
+macOS x64 compatibility asset only after it executes on an actual Intel Mac gate;
+Node's upstream SEA CI does not cover that target, so the release describes it as
+Clockchain-verified rather than upstream-guaranteed. A CI matrix bundles the
+existing JavaScript implementation and pinned `viem` dependency into a Node 24
+LTS single-executable application for each platform using the pinned injection
+workflow. The release also publishes an exact-key manifest containing version,
+source commit, build runtime, platform, upstream-support status, asset URL, byte
+length, and SHA-256 for every asset.
 
-The release manifest digest is stored in the Handshake release record, MCP
-server instructions, well-known handshake manifest, and Research prompt data.
-An agent must require all advertised values to agree before execution. The
+SEA remains an active-development Node feature. Builds disable SEA snapshot and
+code-cache portability features, inject into the exact matching Node executable,
+remove any pre-existing platform signature before injection, and sign the final
+shipped macOS and Windows binaries after injection. A target without native
+execution and final-signature verification is not advertised to stakeholders.
+
+The release lifecycle is intentionally non-circular. A reviewed helper source
+commit is created first without naming its future artifact digest. CI builds and
+signs assets whose manifest names that source commit. A separate post-release pin
+commit then records the final manifest digest, asset-host allowlist, helper
+version, and host-root fingerprints in the Handshake release record, MCP
+instructions/well-known manifest, and Research prompt data. The helper artifact
+never claims its own future manifest digest.
+
+The Research runbook is the stakeholder's independent manifest-digest source;
+MCP supplies the same value as a cross-check, not as local-code authority. An
+agent must reject any disagreement before downloading or executing an asset. The
 platform asset's digest must then match the selected manifest entry. macOS and
 Windows assets additionally carry their native code signatures. The npm package
 `@clockchain/agent-handshake@2.1.0` publishes the same source with npm provenance
@@ -351,6 +413,11 @@ The release contains only the tested local identity, registration, policy,
 signing-request, and certificate-verification code. It has no updater, plugin
 loader, telemetry, network destination override, or general command-execution
 surface.
+
+The release build first produces one auditable JavaScript bundle and rejects any
+unexpected dynamic import, filesystem module lookup, or dependency outside that
+bundle. This is required because a SEA entry script cannot treat an arbitrary
+stakeholder filesystem as its package tree.
 
 The CLI operations are:
 
@@ -386,6 +453,14 @@ requires registration receipts later than session creation. For
 `required_existing_or_fresh`, it funds only when the exact address lacks an
 owned identity. For `not_required`, it performs no identity funding or registry
 lookup.
+
+Funding is reserved atomically before the first transfer: at most 0.01 Sepolia
+ETH per address, once per session address; at most 0.02 per `required_fresh`
+session; at most 0.20 per rolling hour and 1.00 per UTC day across the public v2
+surface. Exhaustion or queue backpressure fails the session before either role is
+funded. The restart-safe budget ledger stores only public address, session,
+amount, and transaction facts. Production alerts fire before the hourly or daily
+ceiling.
 
 The host still never creates a party key, signs a party artifact, chooses a
 Responder decision, or operates role access. It verifies both local signatures,
@@ -426,9 +501,9 @@ snapshot.
 
 The v2 snapshot exposes only public facts:
 
-- session id, protocol version, immutable repository revision, host public key,
-  creation time, invitation expiry, session deadline, and signed agreement
-  window;
+- session id, protocol version, immutable repository revision, host session key,
+  host-root `kid` and fingerprint, session-key certificate digest, creation time,
+  invitation expiry, session deadline, and signed agreement window;
 - invitation-created and Responder-claimed timestamps, never invitation or role
   access values;
 - each role's policy digest and policy-committed timestamp;
@@ -460,6 +535,12 @@ cryptographic artifact's completed state. Monitor rendering, polling, drawers,
 copy buttons, registry links, and receipt links are tested independently from
 the protocol producer.
 
+The page also consumes a same-origin readiness route. Until the deployed public
+endpoint passes initialization, exact seven-tool inventory, pinned manifest/root
+metadata, rate-limit, and invitation canaries, the page keeps the accepted layout
+but labels the live path unavailable and disables copyable live prompts. Enabling
+the page is a distinct deployment action after those canaries pass.
+
 ## Failure behavior
 
 The system fails closed when:
@@ -469,14 +550,21 @@ The system fails closed when:
 - an invitation is malformed, expired, replayed, or bound to other terms;
 - a role access value has the wrong signature, role, session, tool, terms, or
   expiry;
+- a role access value has an unknown algorithm, type, issuer, audience, `kid`,
+  non-canonical encoding, weak signing configuration, or session-later expiry;
 - two roles resolve to the same local address or ERC-8004 identity;
 - a local policy, helper version, package, action, schema, byte digest, host key,
   role, session, statement, validity, identity mandate, or external-action flag
   differs;
+- the Research and MCP release pins differ, the asset leaves the allowed release
+  origin, or the host session key does not verify under an embedded current or
+  previous root;
 - fresh ERC-8004 ownership was established before session creation or resolves
   to another address;
 - funding, proposal, acceptance, descriptor, transition, evidence, or
   certificate records are missing, duplicated, reordered, malformed, or late;
+- an atomic funding reservation, queue, hourly ceiling, or daily ceiling cannot
+  be satisfied before either role is funded;
 - either client cannot verify the identical final certificate locally.
 
 Failure responses do not echo private keys, role access, invitation
@@ -496,6 +584,11 @@ credentials.
   tool.
 - Invitation and role access values reject tamper, replay, wrong role, wrong
   session, wrong tool, wrong statement, and expiry.
+- Role access rejects every non-canonical/unknown algorithm, type, issuer,
+  audience, key id, timing, rotation, or weak-secret case and expires exactly at
+  the host session deadline.
+- The local helper verifies a root-signed host session-key certificate against
+  its embedded current/previous key ring before any party signature.
 - MCP initialization returns the complete pinned server instructions.
 - Every self-contained release asset executes in a clean platform environment
   without Node, npm, a repository checkout, or a global Clockchain installation;
@@ -505,6 +598,11 @@ credentials.
   version never reaches the signing function.
 - Codex and Claude Code prompt contracts contain the same endpoint, terms,
   helper version, autonomy boundary, and certificate requirement.
+- Client launch tests enforce Claude's literal tool/command patterns and Codex's
+  strict empty-workspace sandbox while clearly retaining the documented Codex
+  command-pattern limitation.
+- Public funding tests atomically enforce address/session/hour/day ceilings and
+  stop before a partial two-seat funding state.
 - Research rendering preserves the accepted layout and contains no clone,
   plugin, browser-open, wallet-sign-in, token-mint, JSON-handoff, payment, or
   per-signature approval instruction.
@@ -512,6 +610,9 @@ credentials.
   v1/v2 coexistence, exact-artifact progression, independent role freshness,
   full ERC-8004 registration detail, receipt-by-receipt display, public failure
   behavior, and newest-certified-run fallback.
+- Research readiness tests keep live prompts disabled until independent release
+  pin, host-root, public-tool, rate-limit, invitation, and cross-client canaries
+  pass.
 
 ### Local integration gate
 
