@@ -71,6 +71,10 @@ public discovery URL, with payer/requestor kits joining from a clean clone.
   `HANDSHAKE_ALLOW_DEGRADED=true` remains in the deployed environment; source and
   deployment-wrapper defaults stay fail-closed.
 - GCP remains warm solely as a rollback/decommission topic.
+- The zero-plugin v2 implementation is merged, but production remains intentionally
+  disabled until the signed `v2.1.0` helper release exists and both fresh-client
+  canaries pass. The release workflow now fails before allocating native runners
+  when any signing or npm credential is absent.
 - Rotate the GoDaddy API key/secret after the deployment window. The credential was
   located in `/Users/Kailor/.bash_history` around lines 75807–75813, not in the NAS
   Clockchain checkout; do not copy either value into this repository or a ticket.
@@ -78,6 +82,22 @@ public discovery URL, with payer/requestor kits joining from a clean clone.
 ## Blockers
 
 *(append dated entries here; format: what you ran, what you expected, what you saw)*
+
+- 2026-08-10 — The signed helper release is waiting on its nine repository
+  credentials. Workflow run
+  `https://github.com/thetangstr/clockchain-handshake-v2/actions/runs/31384450851`
+  ran only the low-cost preflight; it reported the following names absent and
+  skipped every native build and publish job:
+  `MAC_CERTIFICATE_P12`, `MAC_CERTIFICATE_PASSWORD`, `MAC_SIGNER_NAME`,
+  `APPLE_NOTARY_KEY_P8`, `APPLE_NOTARY_KEY_ID`, `APPLE_NOTARY_ISSUER_ID`,
+  `WINDOWS_CERTIFICATE_PFX`, `WINDOWS_CERTIFICATE_PASSWORD`, and `NPM_TOKEN`.
+  A metadata-only local check found one Apple Development identity, no Developer
+  ID Application identity, no usable Apple notary key, no production Windows
+  signing certificate, no npm authentication, and no configured repository
+  secrets. No private material was read or logged. Do not tag `v2.1.0`, deploy
+  `/handshake/mcp`, enable Research readiness, or run the two production
+  cross-client canaries until all nine credentials are installed and preflight
+  passes.
 
 - 2026-08-07 — A3 legacy live verification initially appeared blocked before
   session creation, but both earlier failures shared the same unsupported
