@@ -1,5 +1,9 @@
 # Hosted stranger dry run
 
+For the current one-command Mac-mini demo with two newly created Hermes agents,
+use [hermes-turnkey-demo.md](hermes-turnkey-demo.md). The manual clean-clone
+invitation flow below remains available as a lower-level stranger-path runbook.
+
 This runbook is for the P4 pre-dry-run path: the already-running AWS host,
 public relay, and one discovery URL for both outside agents.
 

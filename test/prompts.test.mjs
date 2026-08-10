@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PROMPTS = ["requestor", "payer"];
+const HERMES_PROMPTS = ["hermes-requestor", "hermes-payer"];
 // 40 originally, then 60, now 75 -- and a number I keep raising is a number
 // that was never measuring the right thing. What the limit defends against is a
 // wall of text nobody reads to the end, so that is now asserted directly: no
@@ -167,4 +168,165 @@ test("prompts/payer.md installs from a clean clone and takes the hosted discover
   );
   assert.match(text, /single-validator testnet/i);
   assert.match(text, /not .*court-grade/i);
+});
+
+async function loadHermes(name) {
+  return readFile(join(ROOT, "prompts", `${name}.md`), "utf8");
+}
+
+for (const name of HERMES_PROMPTS) {
+  test(`prompts/${name}.md defines exactly one role and the canonical five MCP tools`, async () => {
+    const text = await loadHermes(name);
+    const expectedRole = name.endsWith("payer") ? "Payer" : "Requestor";
+    const forbiddenRole = expectedRole === "Payer" ? "Requestor" : "Payer";
+    assert.match(text, new RegExp(`Role: ${expectedRole}\\b`));
+    assert.doesNotMatch(text, new RegExp(`Role: ${forbiddenRole}\\b`));
+    for (const tool of [
+      "handshake_status",
+      "handshake_join",
+      "handshake_next",
+      "handshake_submit",
+      "handshake_get_certificate",
+    ]) {
+      assert.match(text, new RegExp(`\\b${tool}\\b`));
+    }
+    assert.match(text, /https:\/\/mcp\.clockchain\.network\/mcp/);
+    assert.match(text, /shared discovery/i);
+    assert.match(text, /paymentMoved:false/);
+    assert.match(text, /single-validator testnet/i);
+    assert.match(text, /not .*court-grade/i);
+  });
+
+  test(`prompts/${name}.md joins the realistic invoice invitation with independently supplied terms`, async () => {
+    const text = await loadHermes(name);
+    assert.match(text, /invitationId[^\n]*<INVITATION_ID>/i);
+    assert.match(text, /USD 18,750/);
+    assert.match(text, /HS-8842/);
+    assert.match(text, /NS-1847/);
+    assert.match(text, /Invoice HS-8842 against PO NS-1847/);
+    assert.match(text, /validForMinutes[^\n]*45/i);
+    assert.match(text, /independent(?:ly)? supplied|expected terms/i);
+  });
+
+  test(`prompts/${name}.md requires blank-workspace install, wallet bridge, local registration, and terminal JSON`, async () => {
+    const text = await loadHermes(name);
+    assert.match(text, /empty workspace/i);
+    assert.match(text, /git clone/);
+    assert.match(text, /git checkout <KIT_COMMIT>/);
+    assert.match(text, /npm ci/);
+    assert.match(text, /node bin\/wallet-bridge\.mjs init/);
+    assert.match(text, /node bin\/wallet-bridge\.mjs inspect/);
+    assert.match(text, /node bin\/wallet-bridge\.mjs sign/);
+    assert.match(text, /--gzip-base64url/);
+    const expectedLowercaseRole = name.endsWith("payer") ? "payer" : "requestor";
+    assert.match(
+      text,
+      new RegExp(
+        "Every `?handshake_next`? call[^\\n]*" +
+          "waitMs:15000[^\\n]*" +
+          "returned UUID sessionId[^\\n]*" +
+          `lowercase role \`${expectedLowercaseRole}\`[^\\n]*` +
+          'signingEncoding:"gzip-base64url"',
+      ),
+      `${name}.md must put sessionId, role, signingEncoding, and waitMs in one handshake_next instruction`,
+    );
+    assert.match(text, /counterpart_transition[^\n]*already waited[^\n]*do not run a terminal sleep/i);
+    assert.match(text, /bytesToSignGzipBase64Url/);
+    assert.match(text, /bytesSha256/i);
+    assert.match(text, /must match/i);
+    assert.match(text, /do not reconstruct/i);
+    assert.match(text, /do not write diagnostic scripts/i);
+    assert.match(text, /SIGNATURE_ROLE_MISMATCH.*handshake_next.*sign again.*resubmit/i);
+    assert.match(text, /node bin\/wallet-bridge\.mjs register/);
+    assert.match(text, /EIP-191/i);
+    assert.match(text, /ERC-8004/i);
+    assert.match(text, /handshake_get_certificate/i);
+    assert.match(text, /handshake_get_certificate.*needed.*certificate.*retryAfterMs.*retry/is);
+    assert.match(text, /handshake_submit`? is signatures only/i);
+    assert.match(text, /retryAfterMs/i);
+    assert.match(text, /start at 5 seconds/i);
+    assert.match(text, /back off to at most 15 seconds/i);
+    assert.match(text, /erc8004_identity.*register locally, then call `?handshake_next`? again/i);
+    assert.doesNotMatch(text, /submit only public registration fields/i);
+    assert.match(text, /certificate-proof\.mjs/i);
+    assert.match(text, /FINAL_HANDSHAKE_JSON/);
+  });
+
+  test(`prompts/${name}.md keeps Clockchain host out of party custody and avoids invented ACK signatures`, async () => {
+    const text = await loadHermes(name);
+    assert.match(text, /Clockchain is the host, funder, and independent checker/i);
+    assert.match(text, /not a party/i);
+    assert.match(text, /hosted MCP coordinators advance PROPOSED, ACCEPTED, and ACKNOWLEDGED/i);
+    assert.doesNotMatch(text, /party ACK signature/i);
+    assert.doesNotMatch(text, /host signs as/i);
+    assert.doesNotMatch(text, /Mac mini signs/i);
+  });
+}
+
+test("Hermes payer authors mandate only and never authors the payment request", async () => {
+  const text = await loadHermes("hermes-payer");
+  assert.match(text, /author the mandate only/i);
+  assert.match(text, /must not author the payment request/i);
+  assert.doesNotMatch(text, /author the request only/i);
+});
+
+test("Hermes role prompts treat every coordinator dependency as waiting, not cross-role authorship", async () => {
+  const payer = await loadHermes("hermes-payer");
+  const requestor = await loadHermes("hermes-requestor");
+  for (const text of [payer, requestor]) {
+    for (const needed of ["funding_record", "handshake_required", "clockchain_confirmation", "counterpart_transition"]) {
+      assert.match(text, new RegExp(`needed[^\\n]*${needed}`, "i"));
+    }
+  }
+  assert.match(payer, /requestor_identity_ready.*wait for (?:the )?Requestor.*handshake_next/is);
+  assert.match(requestor, /payer_mandate.*wait for (?:the )?Payer.*handshake_next/is);
+});
+
+test("Hermes role prompts make other-role waits and party_ready nonterminal until a verified certificate", async () => {
+  for (const [name, cleanRole, oppositeArtifact, oppositeLabel] of [
+    ["hermes-payer", "payer", "requestor_identity_ready", "Requestor"],
+    ["hermes-requestor", "requestor", "payer_mandate", "Payer"],
+  ]) {
+    const text = await loadHermes(name);
+    assert.match(
+      text,
+      new RegExp(
+        "Every `?handshake_next`? call[^\\n]*" +
+          "waitMs:15000[^\\n]*" +
+          "returned UUID sessionId[^\\n]*" +
+          `lowercase role \`?${cleanRole}\`?[^\\n]*` +
+          'signingEncoding:"gzip-base64url"',
+      ),
+    );
+    assert.match(
+      text,
+      /counterpart_transition[^\n]*already waited[^\n]*call `?handshake_next`? again directly[^\n]*do not run a terminal sleep/i,
+    );
+    assert.match(text, /party_ready[^.]*does not complete (?:the )?task[^.]*keep looping/is);
+    assert.match(
+      text,
+      new RegExp(`${oppositeArtifact}[^.]*means wait for the ${oppositeLabel}[^.]*keep looping`, "is"),
+    );
+    assert.match(text, /FINAL_HANDSHAKE_JSON is success-only/is);
+    assert.match(text, /nonempty `?certificate`? envelope and no `?needed`? field/is);
+    assert.doesNotMatch(text, /ok:"certificate"/);
+    assert.match(text, /retain[^.]*sessionId[^.]*operatorPublicKey[^.]*handshake_join/is);
+    assert.match(text, /node bin\/certificate-proof\.mjs verify --file "?\$HOME\/clockchain-certificate\.json"? --role (?:payer|requestor) --expected-public-key "?\$OPERATOR_PUBLIC_KEY"? --session-id "?\$SESSION_ID"?/i);
+    assert.match(text, /Do not run npm test, npm run verify, or any test suite/i);
+    assert.match(
+      text,
+      /Copy its JSON verbatim after `?FINAL_HANDSHAKE_JSON`?[^.]*final response[^.]*no tests, tool calls, or prose afterward/is,
+    );
+    assert.doesNotMatch(text, /stop and emit failure JSON/i);
+    assert.doesNotMatch(text, /failure JSON/i);
+    assert.doesNotMatch(text, /certificateVerified\s*:\s*false/i);
+    assert.doesNotMatch(text, /certificateDigest[^\\n]*(?:empty|pending|false)/i);
+  }
+});
+
+test("Hermes requestor authors payment request only and never authors the mandate", async () => {
+  const text = await loadHermes("hermes-requestor");
+  assert.match(text, /author the payment request only/i);
+  assert.match(text, /must not author the mandate/i);
+  assert.doesNotMatch(text, /author the mandate only/i);
 });

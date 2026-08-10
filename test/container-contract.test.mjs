@@ -42,6 +42,17 @@ test("host container prepares writable runtime directories and default keystore 
   );
 });
 
+test("generic host selection is additive and the payment host stays the default", async () => {
+  const source = await readRootFile("bin/clockchain-host.mjs");
+  const genericSource = await readRootFile("bin/agent-handshake-host.mjs");
+
+  assert.match(source, /HANDSHAKE_PROTOCOL === "agent-handshake-v1"/);
+  assert.match(source, /import\("\.\/agent-handshake-host\.mjs"\)/);
+  assert.match(genericSource, /runAgentHandshakeHostSession/);
+  assert.doesNotMatch(genericSource, /signAgentHandshake(?:Proposal|Acceptance)/);
+  assert.doesNotMatch(await readRootFile("Dockerfile"), /HANDSHAKE_PROTOCOL/);
+});
+
 test("docker build context excludes local secrets, run output, git data, and installs", async () => {
   const dockerignore = await readRootFile(".dockerignore");
   const ignored = new Set(

@@ -29,7 +29,23 @@ import { randomUUID } from "node:crypto";
 import { assertCrossPartyVerification } from "../core/clockchain.mjs";
 import { PARTY_ROLES } from "../core/evidence.mjs";
 import { validateSnapshot } from "../monitor/snapshot.mjs";
+import {
+  AGENT_HANDSHAKE_SNAPSHOT_SCHEMA,
+  validateAgentHandshakeSnapshot,
+} from "../monitor/agent-snapshot.mjs";
+import {
+  AGENT_HANDSHAKE_V2_SNAPSHOT_SCHEMA,
+  validateAgentHandshakeV2Snapshot,
+} from "../monitor/agent-snapshot-v2.mjs";
 import { ResultError, validateResultEnvelope } from "../core/result.mjs";
+import {
+  AGENT_HANDSHAKE_RESULT_SCHEMA,
+  validateAgentHandshakeResultEnvelope,
+} from "../agent-handshake/result.mjs";
+import {
+  AGENT_HANDSHAKE_V2_RESULT_SCHEMA,
+  validateAgentHandshakeV2ResultEnvelope,
+} from "../agent-handshake/v2/result.mjs";
 import { RelayError } from "./errors.mjs";
 
 export const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -649,6 +665,7 @@ function handleGetEvidence(sessions, sessionId, role) {
 function sessionStartedAtMs(session) {
   return (
     session.publishedAtMs ||
+    session.monitorSnapshot?.timing?.createdAtMs ||
     session.monitorSnapshot?.stageHistory?.[0]?.atMs ||
     session.monitorSnapshot?.updatedAtMs ||
     0
@@ -686,13 +703,29 @@ function handleRuns(sessions) {
   for (const session of sessions.values()) {
     if (session.discovery === undefined) continue;
     const snapshot = session.monitorSnapshot;
-    const anchors = snapshot?.anchors ?? null;
+    const isAgentV2 = snapshot?.schema === "clockchain.agent-handshake-snapshot/v2";
+    const anchors = isAgentV2 ? snapshot?.receipts ?? null : snapshot?.anchors ?? null;
+    const stage = isAgentV2
+      ? snapshot?.certificate !== null
+        ? "CERTIFIED"
+        : snapshot?.failure !== null
+          ? "FAILED"
+          : snapshot?.checker?.stage === "VERIFYING"
+            ? "VERIFYING"
+            : null
+      : snapshot?.currentStage ?? null;
+    const outcome = isAgentV2
+      ? snapshot?.certificate?.outcome ?? null
+      : snapshot?.verdict?.outcome ?? null;
+    const reasonCode = isAgentV2
+      ? snapshot?.failure?.reasonCode ?? null
+      : snapshot?.reasonCode ?? null;
     runs.push({
       sessionId: session.sessionId,
       startedAtMs: sessionStartedAtMs(session),
-      stage: snapshot?.currentStage ?? null,
-      outcome: snapshot?.verdict?.outcome ?? null,
-      reasonCode: snapshot?.reasonCode ?? null,
+      stage,
+      outcome,
+      reasonCode,
       anchors: {
         proposal: anchors?.proposal?.blockHeight ?? null,
         acceptance: anchors?.acceptance?.blockHeight ?? null,
@@ -1000,7 +1033,13 @@ async function handlePutSnapshot(req, sessions, sessionId) {
     );
   }
   try {
-    validateSnapshot(body);
+    if (body.schema === AGENT_HANDSHAKE_V2_SNAPSHOT_SCHEMA) {
+      validateAgentHandshakeV2Snapshot(body);
+    } else if (body.schema === AGENT_HANDSHAKE_SNAPSHOT_SCHEMA) {
+      validateAgentHandshakeSnapshot(body);
+    } else {
+      validateSnapshot(body);
+    }
   } catch {
     throw new RelayError(
       "Snapshot does not match the required shape.",
@@ -1057,7 +1096,13 @@ async function handlePutResult(req, sessions, sessionId) {
     );
   }
   try {
-    validateResultEnvelope(envelope);
+    if (envelope?.result?.schema === AGENT_HANDSHAKE_V2_RESULT_SCHEMA) {
+      validateAgentHandshakeV2ResultEnvelope(envelope);
+    } else if (envelope?.result?.schema === AGENT_HANDSHAKE_RESULT_SCHEMA) {
+      validateAgentHandshakeResultEnvelope(envelope);
+    } else {
+      validateResultEnvelope(envelope);
+    }
   } catch (error) {
     if (error instanceof ResultError) {
       throw new RelayError(error.message, "MALFORMED_RESULT", { status: 400 });

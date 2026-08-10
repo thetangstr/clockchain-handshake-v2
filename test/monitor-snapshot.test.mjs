@@ -20,7 +20,6 @@ import {
   buildStakeholderView,
   buildVerdictView,
   NO_MONEY_MOVED_SENTENCE,
-  timelineCoversAllStatuses,
   TIMELINE_STEPS,
   VERDICT_MESSAGES,
 } from "../src/monitor/stakeholder/messages.mjs";
@@ -128,8 +127,9 @@ test("message maps cover every status and every reason code", () => {
   assert.deepEqual(Object.keys(REASON_MESSAGES).sort(), [...REASON_CODES].sort());
 });
 
-test("the five-step timeline covers every status exactly once", () => {
-  assert.equal(timelineCoversAllStatuses(), true);
+test("the five-step timeline is a stable display contract, not an enum-order map", () => {
+  assert.equal(TIMELINE_STEPS.length, 5);
+  assert.equal(TIMELINE_STEPS.every((step) => !("statuses" in step)), true);
 });
 
 test("the public board labels the verifier lane as Clockchain while the internal role key stays verifier", () => {

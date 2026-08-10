@@ -525,6 +525,42 @@ function validateRegistrationIntent(
   }
 }
 
+export function validateRegistrationRecoveryCheckpoint(
+  recovery,
+  { expectedAddress, displayName } = {},
+) {
+  return validateRecovery(recovery, { expectedAddress, displayName });
+}
+
+export function validateRegistrationIntentCheckpoint(
+  intent,
+  { expectedAddress, displayName } = {},
+) {
+  return validateRegistrationIntent(intent, {
+    expectedAddress,
+    displayName,
+  });
+}
+
+export function validateRegistrationCheckpoint(
+  checkpoint,
+  { expectedAddress, displayName } = {},
+) {
+  if (checkpoint?.schema === RECOVERY_SCHEMA) {
+    return validateRegistrationRecoveryCheckpoint(checkpoint, {
+      expectedAddress,
+      displayName,
+    });
+  }
+  if (checkpoint?.schema === INTENT_SCHEMA) {
+    return validateRegistrationIntentCheckpoint(checkpoint, {
+      expectedAddress,
+      displayName,
+    });
+  }
+  throw new Error("Registration checkpoint is invalid.");
+}
+
 function createRegistrationIntent({
   address,
   displayName,

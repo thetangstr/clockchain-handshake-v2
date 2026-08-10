@@ -498,8 +498,11 @@ loop survives a `docker restart`.
 **P3 — Handshake tools in the MCP server** (in `clockchain-developer-tools`). Contract:
 - `handshake_status(sessionId?)` → stage + what's needed next for the caller's role.
 - `handshake_join(role)` → discovery info for the open session.
-- `handshake_next(sessionId, role)` → `{stage, bytesToSignHex, context}` — canonical bytes
-  prepared server-side.
+- `handshake_next(sessionId, role, signingEncoding?)` → defaults to legacy
+  `{stage, bytesToSignHex, bytesSha256, context}`; with
+  `signingEncoding:"gzip-base64url"` returns `{stage, bytesToSignGzipBase64Url,
+  bytesEncoding, bytesSha256, context}` for shorter model-safe copying. In both modes the
+  server prepares canonical raw bytes plus an independently checkable digest.
 - `handshake_submit(sessionId, role, signatureHex)` → advances the state machine.
 - `handshake_get_certificate(sessionId)` → the signed result envelope.
 The server runs the role state machine against the relay; the party's EIP-191 signature is

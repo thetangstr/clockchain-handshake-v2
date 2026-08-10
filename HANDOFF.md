@@ -1,7 +1,7 @@
 # Handoff — two-agent build + AWS migration
 
-**As of:** 2026-08-08 · **Branch:** `codex/handshake-build` · **937 tests pass and all
-structural invariants hold.** The previous handoff (still valid for context, landmines §4, known
+**As of:** 2026-08-10 · **Branch:** `codex/generic-stakeholder-handshake` · **The full
+`npm run verify` gate passes.** The previous handoff (still valid for context, landmines §4, known
 gaps §5, and the stakeholder-prompt lesson §6) is archived at
 [docs/handoff-2026-08-04.md](docs/handoff-2026-08-04.md).
 
@@ -15,6 +15,12 @@ files for rationale and pitfall history, not as unexecuted work.
 Context behind the plan, if you need it: [docs/two-agent-build.md](docs/two-agent-build.md)
 (locked decisions D1–D5, verified infrastructure map, phase rationale).
 
+The current turnkey two-fresh-Hermes operator path, endpoint map, and evidence
+contract are in
+[docs/hermes-turnkey-demo.md](docs/hermes-turnkey-demo.md). It is an addendum to
+the completed P4 record below; do not revive the retired laptop/operator party
+topology.
+
 ## State of play
 
 | Piece | Status |
@@ -24,6 +30,8 @@ Context behind the plan, if you need it: [docs/two-agent-build.md](docs/two-agen
 | Track A (A1–A8): host severance + payer kit + gates G0/G1 | ✅ complete — G0 and G1 live gates passed |
 | Track B (B0–B6): MCP → AWS migration, gate GM | ✅ complete — GM green; B6 explicitly deferred under its plan branch |
 | P2 / P3 / P4 | ✅ P2 + G2 complete · ✅ P3 + G3 complete · ✅ P4 complete |
+| Turnkey two-fresh-Hermes path (Mac mini launcher → production MCP → AWS host) | ✅ realistic business scenario live-verified — run `278b5a45-ed73-4bbf-8e1d-fb8a477dac24`, session `7b08dfc8-89cc-4bb3-879d-d69458ec95ab` |
+| Generic two-stakeholder path (one-time invitation → fresh Codex agents → production MCP → AWS host) | ✅ live-verified — session `3ca7c8d3-2a6c-4bb5-b361-01798a60c8d6`, Initiator `9510`, Responder `9511`, outcome `VERIFIED` |
 
 The implementation tracks are complete. The active path is the AWS session host plus
 public discovery URL, with payer/requestor kits joining from a clean clone.
@@ -63,6 +71,9 @@ public discovery URL, with payer/requestor kits joining from a clean clone.
   `HANDSHAKE_ALLOW_DEGRADED=true` remains in the deployed environment; source and
   deployment-wrapper defaults stay fail-closed.
 - GCP remains warm solely as a rollback/decommission topic.
+- Rotate the GoDaddy API key/secret after the deployment window. The credential was
+  located in `/Users/Kailor/.bash_history` around lines 75807–75813, not in the NAS
+  Clockchain checkout; do not copy either value into this repository or a ticket.
 
 ## Blockers
 
@@ -181,6 +192,88 @@ public discovery URL, with payer/requestor kits joining from a clean clone.
   for the exact configured checkout. A second installer run brought MCP,
   Caddy, and host up; both public health endpoints are green. No persistent
   system or global Git exception remains.
+
+- 2026-08-08 — Turnkey live attempt
+  `e6ee2305-afed-4cc0-b67a-53a1a80a6e4d` against Handshake commit
+  `34ebf982dee51f5f19bcba0ab81061a2e92d8b8c` stopped safely in the agent
+  phase. Session `abdb55f5-f0ed-4a61-94d3-b0154a08e6b7` created distinct
+  Payer agent `9468` / `0x0fa88cedf08a577bcf30f1db8eb2bc54de56bb7f`
+  and Requestor agent `9467` /
+  `0x9b4138a2f2f9ed26c814cac49713589fbf0b2f83`; the real mandate, payment
+  request, and host descriptor were present, but no anchor or verdict had been
+  published. Requestor exhausted Hermes 0.19.1's 90-iteration one-shot budget
+  while honestly waiting on `counterpart_transition`, emitted no terminal
+  certificate marker, and the launcher terminated Payer. Retained
+  `failure.json`/`checkpoint.json` report `paymentMoved:false`; both disposable
+  roots were removed. Root-cause inspection also found that the MCP runtime
+  adapter dropped `signingEncoding`, explaining the live legacy-hex payloads.
+  The next attempt is gated on a tested compact-encoding forwarder plus a
+  bounded, lock-releasing wait for that exact counterpart state.
+
+- 2026-08-08 — Turnkey attempt
+  `c614e403-43a9-45e2-88aa-e4134840b263` stopped in `prepare` before either
+  credential read, MCP-token mint, or Hermes launch. Payer preparation had
+  completed when Requestor preparation failed, exposing a deterministic
+  launcher defect: cleanup was armed only after both preparations completed,
+  so the Payer disposable root remained. The exact Requestor substep was not
+  recoverable from sanitized evidence and did not recur in ten consecutive
+  no-token rehearsals. Commit `219cb13a0b44fda707fc7215474a150cb88acc6b`
+  arms cleanup before the role loop and adds the missing second-role-failure
+  regression. The stranded Payer root was removed after exact-path validation;
+  its mode-0600 `failure.json` and `checkpoint.json` remain retained.
+
+- 2026-08-08 — Fresh-agent retry
+  `9fe86b0b-4713-47a6-9e7e-cacbe891606e` reached signed identity claims and
+  role-tagged funding for both blank-state agents in session
+  `e0fe5966-c8ef-4754-b6f9-1b3ea3204990`. Requestor registered fresh ERC-8004
+  agent `9473`, then exited after the normal `payer_mandate` dependency with an
+  empty digest and `certificateVerified:false`; the launcher rejected that
+  terminal marker and terminated Payer before Payer registration completed.
+  Root cause was a contradiction in the actual generated runtime prompt:
+  other-role artifacts were described both as normal waits and as a reason to
+  “stop and emit failure JSON.” The earlier bounded-wait change had updated the
+  markdown prompts but not `buildHermesPrompt()`. Both disposable roots were
+  removed, no result evidence exists, and retained evidence reports
+  `paymentMoved:false`. The next attempt is gated on a runtime-prompt test that
+  makes `party_ready` and other-role dependencies nonterminal, applies
+  `waitMs:15000` to every live `handshake_next`, and reserves
+  `FINAL_HANDSHAKE_JSON` for a locally verified closing certificate.
+
+- 2026-08-08 — Turnkey attempt
+  `5a1f4f9e-586a-4e51-a002-a10bea0621d0` stopped safely before any anchor. A
+  direct MCP wrapper restart had bypassed the canonical systemd path, so the
+  production-only `HANDSHAKE_ALLOW_DEGRADED=true` drop-in was absent and the MCP
+  container was fail-closed at the validator gate. Restoring and restarting
+  `clockchain-mcp.service` through systemd, then verifying the container's
+  effective environment, resolved the mismatch. The retained failure evidence
+  records `paymentMoved:false`, both disposable roots removed, and all five
+  public service/discovery preflights green.
+
+- 2026-08-08 — Turnkey attempt
+  `066d9b27-715a-4c1b-8c89-f3793169ea66` completed the protocol but correctly
+  failed the launcher gate. Session `16be75af-4bc4-4dfa-a469-10b74a2127c0`
+  registered Payer `9477` and Requestor `9478`, anchored blocks `3151156` /
+  `3151159` / `3151168`, and produced an `AUTHORIZED`, payment-false result.
+  Requestor verified its certificate, while Payer emitted invalid terminal output
+  because the runtime prompt demanded an invented `ok:"certificate"` tool
+  discriminator. The fix added a local certificate-proof command pinned to the
+  discovery public key and exact session, rejected foreign signers and negative
+  outcomes, and made both runtime prompts copy that verified proof verbatim. Both
+  disposable roots were removed; the unsuccessful run was not represented as a
+  turnkey success.
+
+- 2026-08-09 — The first realistic-scenario attempt
+  `a2481003-ad0b-4cf5-a60f-2d651c08b3a8` stopped safely before anchors. Both
+  agents were fresh (Payer ERC-8004 `9507`, Requestor `9506`), but Payer omitted
+  the optional business terms when it called `handshake_join` and therefore
+  signed the legacy demo mandate. Requestor independently detected the mismatch
+  against invoice `HS-8842` / PO `NS-1847` / USD `18,750` and refused with
+  `BUSINESS_TERMS_MISMATCH`. No certificate or payment was produced and both
+  disposable roots were removed. Commit `ee43fe6` fixes the launcher boundary by
+  binding the same discovered invitation and terms to both new MCP principals
+  before either agent starts; the agents still create their wallets, sign every
+  party artifact, register their own ERC-8004 identities, decide, and verify the
+  closing certificate independently.
 
 ## Evidence
 
@@ -356,6 +449,81 @@ would ask for)*
   exact label true, `[object Object]` false, AUTHORIZED/payment-false true. The
   host reopened next session after completion.
 
+- 2026-08-08 — **Turnkey two-fresh-Hermes gate complete.** Mac mini launcher run
+  `800ad268-9ff3-4d3c-ad8e-4c25f5029ec9` created two independent disposable
+  Hermes clean rooms against Handshake commit
+  `6d185bbb7980e9eb8b116f87a0b10d7a374ae837` and the production Clockchain MCP.
+  Before either prompt, both rooms had only the allowlisted bootstrap files, no
+  prior repo checkout, wallet, contacts, sessions, memories, bundled skills, or
+  MCP state; each then cloned the pinned kit and installed its own ten top-level
+  dependencies. The agents used distinct MCP principal fingerprints and distinct
+  wallet keys. Payer ERC-8004 agent `9479`
+  (`0xafbf1fd9a45b59a3f21402751dd0f73101f7535c`) and Requestor agent `9480`
+  (`0x9555187fef89a687165a4d0784146133659b67b5`) completed session
+  `ee6785a2-dd35-46b4-a18a-e452cacd097a`. The signed mandate and payment request
+  arrived before any anchor. Proposal `3155213` /
+  `31bffb66-d758-4eef-8400-ca200d1a0606`, acceptance `3155214` /
+  `e6bee318-d624-4c81-928f-86d0037e1162`, and acknowledgment `3155230` /
+  `07929991-59f9-4713-b87d-fcd29cd66578` share session digest
+  `9b156a62300baad52fa9389fa01acd4f09b6818cf650397feb7f00bc4199a1c6`.
+  Both agents independently verified the same discovery-key/session-bound closing
+  certificate digest
+  `518546cc76f93682f3e04c8f32c9deb9ce8ef75c6b50f7e2f29a797c1000958b`;
+  outcome was `AUTHORIZED` and `paymentMoved:false`.
+
+  Retained public evidence is the single mode-0600 file
+  `/Users/maxiaoer/.clockchain/hermes-demo/runs/800ad268-9ff3-4d3c-ad8e-4c25f5029ec9/evidence/result.json`.
+  It records both cleanup booleans true, no remaining role roots or run processes,
+  exact registration of only the five Clockchain handshake MCP tools, terminal
+  environment sanitization, and successful MCP shutdown for both rooms. Hermes
+  was pinned to `minimax-cn` / `MiniMax-M3`; the provider did not report a
+  billable dollar cost. Public usage counters were Payer 53 calls / 23,579 input /
+  6,516 output and Requestor 59 calls / 27,652 input / 8,706 output, plus provider
+  cache reads. The deployed `/handshake/claude-v6` page followed this active
+  session after Reset, rendered both full ERC-8004 owner/reference cards, then
+  retained the finished board after the host opened its next empty session.
+  Browser recording:
+  `/Users/Kailor/.config/browser-harness/agent-workspace/recordings/clockchain-two-agent-preflight-20260808`.
+  Production MCP now runs
+  `fc5948b4df9bdae30a18591562e0013830cb1627` (the session trust-root behavior
+  from `a1472cb` plus the truthful 36-tool manifest/install copy); the canonical
+  systemd service is active and the effective production degraded-mode setting
+  remains `true`.
+
+- 2026-08-09 — **Realistic two-company Hermes scenario passed production.** Mac
+  mini launcher run `278b5a45-ed73-4bbf-8e1d-fb8a477dac24` used Handshake
+  `ee43fe6fee9db860e5001c7beb67716325dad3c9`, production MCP
+  `8c68f352d934f40a5957567b942c724cf90faba7`, and session/invitation
+  `7b08dfc8-89cc-4bb3-879d-d69458ec95ab`. Northstar Logistics' fresh Payer
+  registered ERC-8004 agent `9508`
+  (`0x0837fda09beacfb16690c76b79f1907578b8ceea`); Harbor Supply's independently
+  fresh Requestor registered agent `9509`
+  (`0x65b0582f4d8b1e84533e26525576bb0f54cbc714`). The signed mandate carried the
+  exact business terms: invoice `HS-8842`, PO `NS-1847`, USD `18,750`, purpose
+  `Invoice HS-8842 against PO NS-1847`, and 45-minute validity. Requestor signed
+  its own matching payment request before any anchor.
+
+  Proposal block `3227383` / ledger
+  `0155c656-0e53-4da9-b706-c8599659a066`, acceptance block `3227384` /
+  `87d41fa0-3268-4efa-abfe-f64e0aa3c823`, and acknowledgment block `3227402` /
+  `f37c951c-79ee-4cf7-9c00-2114bd6d73d2` produced one independently checked
+  `AUTHORIZED` result. Both agents locally verified the same discovery-key- and
+  session-bound certificate digest
+  `485df3031b5c4cf41c87583ea658e98f4794b0a8464816fec64c8478a66e78bc`;
+  `paymentMoved:false` throughout.
+
+  Retained evidence is
+  `/Users/maxiaoer/.clockchain/hermes-demo/runs/278b5a45-ed73-4bbf-8e1d-fb8a477dac24/evidence/result.json`.
+  It proves two distinct MCP principal fingerprints, blank pre-provision and
+  pre-prompt state, separate pinned dependency installs and mode-0600 wallets,
+  exact registration of only the five Clockchain handshake tools, both terminal
+  certificate proofs, and cleanup of both disposable role roots. Hermes was
+  `0.19.1`, provider/model `minimax-cn` / `MiniMax-M3`, with no fallback. The
+  production research route
+  `https://clockchain-research.vercel.app/handshake/claude-v6` holds the terminal
+  session through its read-only monitor adapter and shows the complete identities,
+  three receipts, authorized verdict, and no-money-moved invariant.
+
 ## Migration inventory
 
 *(plan §B0's table gets filled in here — every row, even when the answer is "none")*
@@ -446,3 +614,47 @@ sources are `clockchain-developer-tools` commits `610d519` and `11b9162`.
 | Certificate and board | Both certificates verified; `AUTHORIZED`; `paymentMoved=false`; at `EVIDENCE_RECEIVED` verdict was `null`; final browser board exact label true, `[object Object]` false, AUTHORIZED/payment-false true |
 | Runtime policy | Production-only `HANDSHAKE_ALLOW_DEGRADED=true`; source default fail-closed; validator count non-blocking per Yang |
 | Continuity | Host reopened next session |
+
+### Turnkey two-fresh-Hermes gate (2026-08-08)
+
+| Item | Value / evidence |
+|---|---|
+| Launcher / source | Mac mini launcher `192.168.86.48`; Handshake `6d185bbb7980e9eb8b116f87a0b10d7a374ae837`; retained run `800ad268-9ff3-4d3c-ad8e-4c25f5029ec9` |
+| MCP deploy | `codex/aws-migration` / `fc5948b4df9bdae30a18591562e0013830cb1627`; public health green; manifest and install guide advertise the actual 36-tool surface |
+| Hosted path | Two disposable Hermes clean rooms → separate production MCP principals → AWS session host; Mac mini did not sign a party artifact |
+| Session / parties | `ee6785a2-dd35-46b4-a18a-e452cacd097a`; Payer `9479` / `0xafbf1fd9a45b59a3f21402751dd0f73101f7535c`; Requestor `9480` / `0x9555187fef89a687165a4d0784146133659b67b5` |
+| Anchors | Proposal `3155213` / `31bffb66-d758-4eef-8400-ca200d1a0606`; acceptance `3155214` / `e6bee318-d624-4c81-928f-86d0037e1162`; acknowledgment `3155230` / `07929991-59f9-4713-b87d-fcd29cd66578` |
+| Certificate | Both role proofs independently pinned the discovery key and exact session; shared digest `518546cc76f93682f3e04c8f32c9deb9ce8ef75c6b50f7e2f29a797c1000958b`; `AUTHORIZED`; `paymentMoved=false` |
+| Freshness / cleanup | Both pre-prompt manifests clean with no inherited state; separate dependency install and wallet; distinct principal fingerprints; both disposable roots removed; no run processes remain |
+| Cost routing | Both agents used `minimax-cn` / `MiniMax-M3`, no fallback; provider dollar cost unavailable, so the evidence preserves usage counts without claiming `$0` |
+| Presenter | Production `https://clockchain-research.vercel.app/handshake/claude-v6`; complete ERC-8004 owner/reference cards; Reset-to-new-session and terminal-rollover retention browser-verified; visual verdict 95/100 |
+
+### Realistic invoice scenario gate (2026-08-09)
+
+| Item | Value / evidence |
+|---|---|
+| Launcher / source | Mac mini launcher `192.168.86.48`; Handshake `ee43fe6fee9db860e5001c7beb67716325dad3c9`; retained run `278b5a45-ed73-4bbf-8e1d-fb8a477dac24` |
+| MCP deploy | `codex/aws-migration` / `8c68f352d934f40a5957567b942c724cf90faba7`; production health and canonical `/mcp` manifest green |
+| Invitation / terms | `7b08dfc8-89cc-4bb3-879d-d69458ec95ab`; Northstar Logistics → Harbor Supply; invoice `HS-8842`; PO `NS-1847`; USD `18,750`; 45 minutes |
+| Hosted path | Two disposable Hermes clean rooms → distinct production MCP principals → AWS session host; launcher primed only the common invitation/terms and signed no party artifact |
+| Parties | Payer ERC-8004 `9508` / `0x0837fda09beacfb16690c76b79f1907578b8ceea`; Requestor `9509` / `0x65b0582f4d8b1e84533e26525576bb0f54cbc714` |
+| Anchors | Proposal `3227383` / `0155c656-0e53-4da9-b706-c8599659a066`; acceptance `3227384` / `87d41fa0-3268-4efa-abfe-f64e0aa3c823`; acknowledgment `3227402` / `f37c951c-79ee-4cf7-9c00-2114bd6d73d2` |
+| Certificate | Both local proofs independently pinned discovery key + session; shared digest `485df3031b5c4cf41c87583ea658e98f4794b0a8464816fec64c8478a66e78bc`; `AUTHORIZED`; `paymentMoved=false` |
+| Freshness / cleanup | Blank state before provisioning and prompt; distinct principal fingerprints and wallets; independent dependency installs; both disposable role roots removed; no launcher process remains |
+| Presenter | Production `https://clockchain-research.vercel.app/handshake/claude-v6`; read-only monitor holds session `7b08dfc8-89cc-4bb3-879d-d69458ec95ab` with both identities, all three anchors, verdict, and `paymentMoved:false` |
+
+### Generic two-stakeholder Codex gate (2026-08-10)
+
+| Item | Value / evidence |
+|---|---|
+| Source / deploys | Handshake `0f00051d75413439bf86051c1c3b6049bee2bfa0`; MCP `bef60664518b3046599f296219365cc498d11a08`; research presenter `f81ea0f` |
+| Scenario | Reference `NS-1847`; exact shared statement `Two stakeholder agents may communicate about shipment NS-1847.`; validity 45 minutes; no external action authorized or performed |
+| Invitation boundary | Initiator created one signed, time-bounded invitation; the Responder exchanged it once for a distinct responder-only MCP credential; replay returned the fixed rejection path |
+| Fresh-agent boundary | Two isolated Codex homes and workspaces began with zero prior sessions and zero wallets; each used a distinct scoped MCP principal and created its own local wallet; neither role shared token, state, key, or filesystem |
+| Session | `3ca7c8d3-2a6c-4bb5-b361-01798a60c8d6`; statement digest `6f4b1cf63f3a10fb2922e0f3b5e8d00958f6a9434899f662b0234181cbdc55ad`; session digest `3945b1b63fbc8016f7b6d5070fd05a4da1898d32c6e0bdfdc59c74f69cf1b3c1` |
+| Parties | Initiator ERC-8004 `9510` / `0xc878c1f38844d6be26db41420e26e7d8b9f42aa6`; Responder `9511` / `0xcbd7c2afef4b7ccc9c21f952fd0900132510de03`; both registered live on Sepolia and posted independently signed `party_ready` records |
+| Anchors | Proposal `3257267` / `1a14138b-e6e9-4796-a7b6-07b333f6bbbc`; acceptance `3257271` / `641631cd-3913-4ba7-966f-ad4deb5e4479`; acknowledgment `3257272` / `d137c01b-d7bf-4ee9-a4ed-191b6d9f572e` |
+| Certificate | Host/checker outcome `VERIFIED`; `externalActionPerformed:false`; both agents independently fetched the same signed envelope, pinned the discovery public key and exact session, and produced `certificateVerified:true` for their own ERC-8004 identity |
+| Production presenter | `https://clockchain-research.vercel.app/handshake/claude-v6`; accepted two-column layout preserved; generic narrative and copyable Initiator/Responder prompts expose the canonical `https://mcp.clockchain.network/mcp` endpoint and one local wallet path; read-only proxy retains the newest certified generic snapshot after automatic host rollover |
+| Compatibility | Existing payer/requestor MCP tools, payment-authorization host mode, historical page assets, and legacy result semantics remain present and regression-covered; the generic workflow is additive |
+| Cleanup contract | Disposable Codex homes, scoped MCP tokens, and fresh wallet keys are temporary gate material only; retain public certificate evidence, then remove the disposable roots and token state |

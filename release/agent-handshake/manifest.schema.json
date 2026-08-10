@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clockchain.network/schemas/agent-handshake-release-manifest-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "version", "sourceCommit", "nodeRuntime", "assets", "manifestDigest"],
+  "properties": {
+    "schema": { "const": "clockchain.agent-handshake-release-manifest/v1" },
+    "version": { "const": "2.1.0" },
+    "sourceCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "nodeRuntime": { "type": "string", "pattern": "^24\\.[0-9]+\\.[0-9]+$" },
+    "assets": { "type": "array", "minItems": 5, "maxItems": 5 },
+    "manifestDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

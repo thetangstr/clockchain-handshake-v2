@@ -181,7 +181,7 @@ printf '\n== 7. Pure-port byte fidelity ==\n'
 # The pure ports must still differ from the donor only in import specifiers.
 if [ -d /Users/Kailor/conductor/workspaces/clockchain-handshake/riyadh-v3 ]; then
   if node scripts/port-pure.mjs --check >/tmp/port-check.txt 2>&1; then
-    pass "all 16 pure modules still byte-faithful to the donor"
+    pass "all 15 pure modules still byte-faithful to the donor"
     info "$(tail -1 /tmp/port-check.txt)"
   else
     fail "a pure port has drifted from the donor:"

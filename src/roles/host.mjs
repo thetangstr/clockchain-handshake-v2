@@ -1,8 +1,10 @@
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { wireReportToAnchor } from "../monitor/anchor.mjs";
+import { wireReportToAnchor as parseWireReportAnchor } from "../monitor/anchor.mjs";
 import { validateAnchor } from "../monitor/snapshot.mjs";
+import { payerMandateDigest } from "../core/payer-mandate.mjs";
+import { paymentRequestDigest } from "../core/payment-request.mjs";
 import { verifyEnvelope } from "../relay/client.mjs";
 
 export class SessionEnded extends Error {
@@ -19,6 +21,19 @@ const RETRYABLE_EVIDENCE_CODES = new Set([
   "RENDEZVOUS_UNAVAILABLE",
   "RATE_BLOCKED",
 ]);
+
+function wireReportToAnchor(anchor) {
+  const mapped = parseWireReportAnchor(anchor);
+  return {
+    ...mapped,
+    signedBy: mapped.signedBy === null
+      ? null
+      : {
+        address: mapped.signedBy?.address,
+        agentId: mapped.signedBy?.agentId,
+      },
+  };
+}
 
 export function remainingWaitMinutes({ deadline, now }) {
   return Math.round((deadline - now) / 60_000);
@@ -222,7 +237,25 @@ export function mandateBodyFrom(message) {
   if (!body?.common || !body?.sessionUuid || !body?.mandateEnvelope) {
     throw new SessionEnded("MALFORMED", "The payer mandate message was incomplete.");
   }
+  try {
+    payerMandateDigest(body.mandateEnvelope);
+  } catch {
+    throw new SessionEnded("MALFORMED", "The payer mandate message was malformed.");
+  }
   return body;
+}
+
+export function requestEnvelopeFrom(message) {
+  const requestEnvelope = message?.body?.requestEnvelope;
+  if (!requestEnvelope) {
+    throw new SessionEnded("MALFORMED", "The payment request message was incomplete.");
+  }
+  try {
+    paymentRequestDigest(requestEnvelope);
+  } catch {
+    throw new SessionEnded("MALFORMED", "The payment request message was malformed.");
+  }
+  return requestEnvelope;
 }
 
 export async function applyAnchorReport({
@@ -256,6 +289,7 @@ export async function applyAnchorReport({
     validateAnchor("acceptance", anchors.acceptance);
     validateAnchor("acknowledgment", anchors.acknowledgment);
     monitorState.anchors = { ...monitorState.anchors, ...anchors };
+    await say("PROPOSED", "The payer's proposal is recorded on Clockchain.");
     await say("ACCEPTED", "The requestor accepted the exact terms, and that acceptance is recorded.");
     await say("ACKNOWLEDGED", "All three steps are recorded on Clockchain in order.");
     return true;

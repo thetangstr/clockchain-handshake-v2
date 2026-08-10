@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clockchain.network/schemas/agent-handshake-release-pin-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "sourceCommit", "manifestDigest", "allowedAssetPrefix", "hostRoots"],
+  "properties": {
+    "version": { "const": "2.1.0" },
+    "sourceCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "manifestDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "allowedAssetPrefix": { "const": "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.0/" },
+    "hostRoots": { "type": "array", "minItems": 1, "maxItems": 2 }
+  }
+}

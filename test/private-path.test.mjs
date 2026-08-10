@@ -7,13 +7,14 @@ import {
   mkdtemp,
   open,
   readFile,
+  rename,
   rm,
   symlink,
   unlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 
 import {
@@ -26,6 +27,42 @@ async function temporaryRoot(t) {
   const root = await mkdtemp(join(tmpdir(), "clockchain-private-path-"));
   t.after(() => rm(root, { force: true, recursive: true }));
   return root;
+}
+
+async function readOptional(path) {
+  try {
+    return await readFile(path, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return "";
+    throw error;
+  }
+}
+
+function privateFileSystem(overrides = {}) {
+  return {
+    chmod,
+    link,
+    lstat,
+    mkdir,
+    open,
+    unlink,
+    ...overrides,
+  };
+}
+
+async function swapParentToSymlink({
+  redirectedParent,
+  displacedParent,
+  originalParent,
+}) {
+  await rename(originalParent, displacedParent);
+  await symlink(redirectedParent, originalParent);
+}
+
+async function assertNoSecretRedirected(redirectedParent, secret) {
+  const redirectedText = await readOptional(join(redirectedParent, "secret"));
+  assert.equal(redirectedText.includes(secret), false);
+  assert.equal(redirectedText.includes(secret.toString("hex")), false);
 }
 
 test("POSIX private paths create exact modes and refuse overwrite", async (t) => {
@@ -52,6 +89,26 @@ test("POSIX private paths create exact modes and refuse overwrite", async (t) =>
     /Private path operation failed safely/,
   );
   assert.equal(await readFile(target, "utf8"), '{"secret":"value"}\n');
+});
+
+test("private writes create the final target directly without linking a temporary file", async (t) => {
+  const root = await temporaryRoot(t);
+  const directory = join(root, "state");
+  const target = join(directory, "secret");
+
+  await preparePrivateDirectory({ path: directory, platform: "darwin" });
+  await writePrivateFile({
+    bytes: Buffer.from("secret"),
+    fileSystem: privateFileSystem({
+      async link() {
+        throw new Error("writePrivateFile must not link private data");
+      },
+    }),
+    path: target,
+    platform: "darwin",
+  });
+
+  assert.equal(await readFile(target, "utf8"), "secret");
 });
 
 test("POSIX private paths reject permissive directories, symlinks, and hard-linked files", async (t) => {
@@ -83,7 +140,7 @@ test("POSIX private paths reject permissive directories, symlinks, and hard-link
   );
 });
 
-test("Windows private paths require ACL enforcement for directories, temporary files, and final files", async (t) => {
+test("Windows private paths require ACL enforcement for directories and final files before reading", async (t) => {
   const root = await temporaryRoot(t);
   const directory = join(root, "state");
   const target = join(directory, "secret.json");
@@ -106,7 +163,7 @@ test("Windows private paths require ACL enforcement for directories, temporary f
   );
 
   assert.equal(calls.some((entry) => entry.kind === "directory" && entry.path === directory), true);
-  assert.equal(calls.some((entry) => entry.action === "secure-and-verify" && entry.kind === "file" && entry.path.includes(".clockchain-private-")), true);
+  assert.equal(calls.some((entry) => entry.action === "secure-and-verify" && entry.kind === "file" && entry.path === target), true);
   assert.equal(calls.some((entry) => entry.action === "verify" && entry.kind === "file" && entry.path === target), true);
 });
 
@@ -184,4 +241,144 @@ test("private reads reject a file identity change between path check and open ha
     }),
     /Private path operation failed safely/,
   );
+});
+
+test("private writes do not redirect secret bytes when the parent is swapped after pinning", async (t) => {
+  const root = await temporaryRoot(t);
+  const originalParent = join(root, "state");
+  const redirectedParent = join(root, "redirected");
+  const displacedParent = join(root, "state-displaced");
+  const target = join(originalParent, "secret");
+  const secret = Buffer.from("parent-pinned-secret");
+  let swapped = false;
+
+  await preparePrivateDirectory({ path: originalParent, platform: "darwin" });
+  await preparePrivateDirectory({ path: redirectedParent, platform: "darwin" });
+
+  await assert.rejects(
+    writePrivateFile({
+      bytes: secret,
+      fileSystem: privateFileSystem({
+        async open(...args) {
+          if (!swapped) {
+            swapped = true;
+            await swapParentToSymlink({
+              redirectedParent,
+              displacedParent,
+              originalParent,
+            });
+          }
+          return await open(...args);
+        },
+      }),
+      path: target,
+      platform: "darwin",
+    }),
+    /Private path operation failed safely/,
+  );
+
+  await assertNoSecretRedirected(redirectedParent, secret);
+});
+
+test("private writes keep secret bytes on the opened target when the parent is swapped before write", async (t) => {
+  const root = await temporaryRoot(t);
+  const originalParent = join(root, "state");
+  const redirectedParent = join(root, "redirected");
+  const displacedParent = join(root, "state-displaced");
+  const target = join(originalParent, "secret");
+  const secret = Buffer.from("opened-target-secret");
+  let swapped = false;
+
+  await preparePrivateDirectory({ path: originalParent, platform: "darwin" });
+  await preparePrivateDirectory({ path: redirectedParent, platform: "darwin" });
+
+  await assert.rejects(
+    writePrivateFile({
+      bytes: secret,
+      fileSystem: privateFileSystem({
+        async open(...args) {
+          const handle = await open(...args);
+          return {
+            chmod: (...handleArgs) => handle.chmod(...handleArgs),
+            close: (...handleArgs) => handle.close(...handleArgs),
+            stat: (...handleArgs) => handle.stat(...handleArgs),
+            sync: (...handleArgs) => handle.sync(...handleArgs),
+            async writeFile(...handleArgs) {
+              if (!swapped) {
+                swapped = true;
+                await swapParentToSymlink({
+                  redirectedParent,
+                  displacedParent,
+                  originalParent,
+                });
+              }
+              return await handle.writeFile(...handleArgs);
+            },
+          };
+        },
+      }),
+      path: target,
+      platform: "darwin",
+    }),
+    /Private path operation failed safely/,
+  );
+
+  await assertNoSecretRedirected(redirectedParent, secret);
+  assert.equal(
+    (await readOptional(join(displacedParent, "secret"))).includes(secret.toString()),
+    true,
+  );
+});
+
+test("private writes fail closed when the parent is swapped before final verification", async (t) => {
+  const root = await temporaryRoot(t);
+  const originalParent = join(root, "state");
+  const redirectedParent = join(root, "redirected");
+  const displacedParent = join(root, "state-displaced");
+  const target = join(originalParent, "secret");
+  const secret = Buffer.from("final-verify-secret");
+  let wroteSecret = false;
+  let swapped = false;
+
+  await preparePrivateDirectory({ path: originalParent, platform: "darwin" });
+  await preparePrivateDirectory({ path: redirectedParent, platform: "darwin" });
+
+  await assert.rejects(
+    writePrivateFile({
+      bytes: secret,
+      fileSystem: privateFileSystem({
+        async lstat(path) {
+          if (path === target && wroteSecret && !swapped) {
+            swapped = true;
+            await swapParentToSymlink({
+              redirectedParent,
+              displacedParent,
+              originalParent,
+            });
+          }
+          return await lstat(path);
+        },
+        async open(...args) {
+          const handle = await open(...args);
+          return {
+            chmod: (...handleArgs) => handle.chmod(...handleArgs),
+            close: (...handleArgs) => handle.close(...handleArgs),
+            stat: (...handleArgs) => handle.stat(...handleArgs),
+            sync: (...handleArgs) => handle.sync(...handleArgs),
+            async writeFile(...handleArgs) {
+              const result = await handle.writeFile(...handleArgs);
+              wroteSecret = true;
+              return result;
+            },
+          };
+        },
+      }),
+      path: target,
+      platform: "darwin",
+    }),
+    /Private path operation failed safely/,
+  );
+
+  await assertNoSecretRedirected(redirectedParent, secret);
+  assert.equal(dirname(target), originalParent);
 });

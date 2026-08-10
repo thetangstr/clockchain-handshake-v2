@@ -30,6 +30,9 @@ const DONOR_PUBLIC_EXPORTS = [
   "registerIdentity",
   "registrationDataUri",
   "registryNamespace",
+  "validateRegistrationCheckpoint",
+  "validateRegistrationIntentCheckpoint",
+  "validateRegistrationRecoveryCheckpoint",
 ];
 
 /** Donor ERC8004_ABI literal, verbatim. */
@@ -126,6 +129,9 @@ test("merged module exports are all defined and correctly typed", () => {
     "identityReference",
     "finalizeIdentityRegistration",
     "registerIdentity",
+    "validateRegistrationCheckpoint",
+    "validateRegistrationIntentCheckpoint",
+    "validateRegistrationRecoveryCheckpoint",
   ]) {
     assert.equal(typeof registration[name], "function", name);
   }

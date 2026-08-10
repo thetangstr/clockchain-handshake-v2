@@ -1,0 +1,49 @@
+{
+  "schema": "clockchain.agent-handshake-local-gate/v1",
+  "recordedAt": "2026-08-10T11:03:41Z",
+  "outcome": "PASSED",
+  "externalBusinessActionPerformed": false,
+  "topology": "cross-repository-contract-gate",
+  "revisions": {
+    "handshake": "3e3c0c26d81eb8d1182ba483ae78c8d1d6a99b40",
+    "mcp": "bfbe59d464c61f1da48741f6c863504994386a3d",
+    "research": "401fe160b1674e65ddec78e98a799c678c595632"
+  },
+  "verification": {
+    "handshake": {
+      "command": "npm run verify",
+      "testsPassed": 1175,
+      "invariantsPassed": true
+    },
+    "mcp": {
+      "command": "npm test && node --test infra/test/*.test.mjs",
+      "packageTestsPassed": 285,
+      "infrastructureTestsPassed": 27,
+      "knownVulnerabilities": 0
+    },
+    "research": {
+      "command": "npm run typecheck && npm test && npm run build",
+      "testsPassed": 156,
+      "typecheckPassed": true,
+      "productionBuildPassed": true,
+      "knownVulnerabilities": 0
+    }
+  },
+  "contracts": {
+    "freshClientIsolation": true,
+    "dedicatedSevenToolEndpoint": true,
+    "liveRegistrationPath": true,
+    "localPolicyAndSigning": true,
+    "releasePinAgreement": true,
+    "artifactTruthfulMonitor": true,
+    "genericV1Preserved": true,
+    "bilateralV1Preserved": true
+  },
+  "productionGates": {
+    "signedHelperReleasePublished": false,
+    "codexInitiatorClaudeResponder": false,
+    "claudeInitiatorCodexResponder": false,
+    "publicReadinessEnabled": false,
+    "reasonCode": "SIGNING_AUTHORITY_NOT_CONFIGURED"
+  }
+}

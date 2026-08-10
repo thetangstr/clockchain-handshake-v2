@@ -12,6 +12,10 @@ import test from "node:test";
 import { EVIDENCE_PART_LIMITS, createRelayServer } from "../src/relay/server.mjs";
 import { RelayError, verifyEnvelope } from "../src/relay/client.mjs";
 import { buildSnapshot } from "../src/monitor/snapshot.mjs";
+import { buildAgentHandshakeSnapshot } from "../src/monitor/agent-snapshot.mjs";
+import { buildAgentHandshakeV2Snapshot } from "../src/monitor/agent-snapshot-v2.mjs";
+import { buildAgentHandshakeResult } from "../src/agent-handshake/result.mjs";
+import { buildAgentHandshakeFixture, SESSION_ID, TERMS } from "./support/agent-handshake-fixture.mjs";
 
 async function temporaryDirectory(t) {
   const directory = await mkdtemp(join(tmpdir(), "handshake-relay-"));
@@ -572,6 +576,143 @@ test("result: absent until published, then served verbatim, and it survives a re
   const replayed = await getJson(`${baseUrl}/v1/sessions/${sessionId}/result`);
   assert.equal(replayed.status, 200);
   assert.deepEqual(replayed.body, JSON.parse(JSON.stringify(envelope)));
+});
+
+test("relay accepts exact generic stakeholder snapshots and certificates", async (t) => {
+  const { baseUrl } = await startServer(t);
+  const fixture = await buildAgentHandshakeFixture();
+  const created = await postJson(`${baseUrl}/v1/sessions`, { sessionId: SESSION_ID });
+  assert.equal(created.status, 201);
+  const identity = (party) => ({
+    ...party,
+    chainId: "11155111",
+    reference: `eip155:11155111:0x8004a818bfb912233c491871b3d84c89a494bd9e:${party.agentId}`,
+    registryAddress: "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+  });
+  const snapshot = buildAgentHandshakeSnapshot({
+    anchors: { acceptance: null, acknowledgment: null, proposal: null },
+    currentStage: "IDENTITIES_REGISTERED",
+    funding: { atMs: 1786337100000, funded: true },
+    heartbeat: { checker: null, initiator: null, responder: null },
+    identities: { initiator: identity(fixture.initiator), responder: identity(fixture.responder) },
+    reasonCode: null,
+    reference: TERMS.reference,
+    sessionId: SESSION_ID,
+    stageHistory: [
+      { atMs: 1786337000000, status: "SESSION_STARTED" },
+      { atMs: 1786337100000, status: "IDENTITIES_REGISTERED" },
+    ],
+    statement: TERMS.statement,
+    subjectRun: "stakeholder",
+    updatedAtMs: 1786337100000,
+    verdict: null,
+  });
+  const putSnapshot = await putJson(`${baseUrl}/v1/sessions/${SESSION_ID}/snapshot`, snapshot);
+  assert.equal(putSnapshot.status, 200, JSON.stringify(putSnapshot.body));
+
+  const envelope = buildAgentHandshakeResult({
+    issuedAtMs: "1786337200000",
+    keyId: fixture.host.keyId,
+    parties: { initiator: fixture.initiator, responder: fixture.responder },
+    privateKeyPem: fixture.host.privateKeyPem,
+    sessionId: SESSION_ID,
+    verdict: {
+      outcome: "VERIFIED",
+      reference: TERMS.reference,
+      sessionDigest: fixture.base.sessionDigest,
+      statementDigest: fixture.base.statementDigest,
+      transitions: fixture.receipts,
+    },
+  });
+  const putResult = await putJson(`${baseUrl}/v1/sessions/${SESSION_ID}/result`, envelope);
+  assert.equal(putResult.status, 200, JSON.stringify(putResult.body));
+  assert.deepEqual((await getJson(`${baseUrl}/v1/sessions/${SESSION_ID}/result`)).body, JSON.parse(JSON.stringify(envelope)));
+});
+
+test("relay stores strict generic v2 snapshots without coercing them through v1", async (t) => {
+  const { baseUrl } = await startServer(t);
+  const created = await postJson(`${baseUrl}/v1/sessions`, {
+    sessionId: SESSION_ID,
+    discovery: { schema: "clockchain.agent-handshake-discovery/v2", sessionId: SESSION_ID },
+  });
+  assert.equal(created.status, 201);
+  const snapshot = buildAgentHandshakeV2Snapshot({
+    schema: "clockchain.agent-handshake-snapshot/v2",
+    protocol: "clockchain.agent-handshake/v2",
+    sessionId: SESSION_ID,
+    repositorySha: "d".repeat(40),
+    hostTrust: {
+      rootKid: "root-2026-08",
+      rootFingerprint: "a".repeat(64),
+      sessionPublicKey: "A".repeat(43) + "=",
+      sessionKeyCertificateDigest: "b".repeat(64),
+    },
+    timing: {
+      createdAtMs: 1786337000000,
+      invitationExpiresAtMs: 1786337120000,
+      sessionDeadlineMs: 1786337600000,
+      agreementValidForSeconds: "90",
+    },
+    invitation: { createdAtMs: 1786337001000, responderClaimedAtMs: null },
+    terms: {
+      reference: "NS-1847",
+      statement: "Northstar and Harbor authorize these agents to communicate.",
+      identityPolicy: {
+        erc8004: "required_fresh",
+        chainId: "eip155:11155111",
+        registryAddress: "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+      },
+    },
+    policies: { initiator: null, responder: null },
+    parties: { initiator: null, responder: null },
+    statements: { proposalDigest: null, acceptanceDigest: null },
+    receipts: { proposal: null, acceptance: null, acknowledgment: null },
+    evidence: { initiator: null, responder: null },
+    checker: { stage: "WAITING", lastSeenMs: 1786337001000 },
+    certificate: null,
+    freshness: {
+      initiator: null,
+      responder: null,
+      host: { lastSeenMs: 1786337001000 },
+      checker: null,
+    },
+    failure: null,
+    externalBusinessActionPerformed: false,
+  });
+  const put = await putJson(
+    `${baseUrl}/v1/sessions/${SESSION_ID}/snapshot`,
+    snapshot,
+  );
+  assert.equal(put.status, 200, JSON.stringify(put.body));
+  assert.deepEqual(
+    (await getJson(`${baseUrl}/v1/sessions/${SESSION_ID}/snapshot`)).body,
+    JSON.parse(JSON.stringify(snapshot)),
+  );
+  const activeRuns = await getJson(`${baseUrl}/v1/runs`);
+  assert.ok(activeRuns.body.runs[0].startedAtMs >= snapshot.timing.createdAtMs);
+  assert.equal(activeRuns.body.runs[0].stage, null);
+  assert.equal(activeRuns.body.runs[0].outcome, null);
+
+  const certified = {
+    ...snapshot,
+    checker: { stage: "VERIFIED", lastSeenMs: 1786337100000 },
+    certificate: {
+      digest: "9".repeat(64),
+      issuedAtMs: 1786337100000,
+      outcome: "VERIFIED",
+    },
+  };
+  const putCertified = await putJson(`${baseUrl}/v1/sessions/${SESSION_ID}/snapshot`, certified);
+  assert.equal(putCertified.status, 200, JSON.stringify(putCertified.body));
+  const certifiedRuns = await getJson(`${baseUrl}/v1/runs`);
+  assert.equal(certifiedRuns.body.runs[0].stage, "CERTIFIED");
+  assert.equal(certifiedRuns.body.runs[0].outcome, "VERIFIED");
+  const invalid = await putJson(
+    `${baseUrl}/v1/sessions/${SESSION_ID}/snapshot`,
+    { ...snapshot, roleAccess: "secret" },
+  );
+  assert.equal(invalid.status, 400);
+  assert.equal(invalid.body.error, "MALFORMED_SNAPSHOT");
 });
 
 test("result: a malformed certificate is refused with a named reason", async (t) => {
