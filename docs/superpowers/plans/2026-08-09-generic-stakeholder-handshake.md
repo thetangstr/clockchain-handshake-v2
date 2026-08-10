@@ -332,7 +332,7 @@ Use exact Zod inputs:
 ```ts
 const agentTermsSchema = z.object({
   reference: z.string().min(1).max(128),
-  statement: z.string().min(1).max(512),
+  statement: z.string().min(1).max(256),
   validForMinutes: z.number().int().min(1).max(60),
 }).strict();
 ```

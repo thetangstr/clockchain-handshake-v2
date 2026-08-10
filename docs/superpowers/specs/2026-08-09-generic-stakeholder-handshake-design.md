@@ -145,7 +145,8 @@ unchanged.
 }
 ```
 
-The fields are printable bounded strings. `validForMinutes` is a decimal integer
+The fields are printable bounded strings (reference 128 characters, statement
+256 characters to match the frozen canonical-string profile). `validForMinutes` is a decimal integer
 string on the signed wire and a bounded integer only at the MCP input boundary.
 
 ### Roles
@@ -397,4 +398,3 @@ payment vocabulary.
 - Money movement, invoice authorization, settlement, or accounts-payable
   integration.
 - Replacing the existing payment-authorization protocol.
-
