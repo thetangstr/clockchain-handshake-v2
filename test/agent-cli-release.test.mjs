@@ -41,11 +41,11 @@ function manifest() {
     sourceCommit,
     nodeRuntime: "24.6.0",
     assets: [
-      asset("darwin", "arm64", { type: "codesign", verified: true, signer: "Developer ID Application", timestamp: "2026-08-10T00:00:00.000Z" }),
-      asset("darwin", "x64", { type: "codesign", verified: true, signer: "Developer ID Application", timestamp: "2026-08-10T00:00:00.000Z" }, "clockchain_verified"),
-      asset("linux", "arm64", { type: "none", verified: true, signer: null, timestamp: null }),
-      asset("linux", "x64", { type: "none", verified: true, signer: null, timestamp: null }),
-      asset("win32", "x64", { type: "authenticode", verified: true, signer: "Clockchain", timestamp: "2026-08-10T00:00:00.000Z" }),
+      asset("darwin", "arm64", { type: "codesign", verified: true, signer: "Developer ID Application", timestamp: "2026-08-10T00:00:00.000Z", notarized: true }),
+      asset("darwin", "x64", { type: "codesign", verified: true, signer: "Developer ID Application", timestamp: "2026-08-10T00:00:00.000Z", notarized: true }, "clockchain_verified"),
+      asset("linux", "arm64", { type: "none", verified: true, signer: null, timestamp: null, notarized: null }),
+      asset("linux", "x64", { type: "none", verified: true, signer: null, timestamp: null, notarized: null }),
+      asset("win32", "x64", { type: "authenticode", verified: true, signer: "Clockchain", timestamp: "2026-08-10T00:00:00.000Z", notarized: null }),
     ],
   };
   return { ...unsigned, manifestDigest: agentHandshakeReleaseManifestDigest(unsigned) };
@@ -69,6 +69,8 @@ test("rejects unknown keys, duplicates, redirects, digest drift, unsigned native
     { ...base, assets: [...base.assets, base.assets[0]] },
     { ...base, assets: base.assets.map((entry, index) => index === 0 ? { ...entry, url: "https://example.invalid/a" } : entry) },
     { ...base, assets: base.assets.map((entry, index) => index === 0 ? { ...entry, nativeSignature: { ...entry.nativeSignature, verified: false } } : entry) },
+    { ...base, assets: base.assets.map((entry, index) => index === 0 ? { ...entry, nativeSignature: { ...entry.nativeSignature, notarized: false } } : entry) },
+    { ...base, assets: base.assets.map((entry, index) => index === 2 ? { ...entry, nativeSignature: { ...entry.nativeSignature, notarized: true } } : entry) },
     { ...base, assets: base.assets.map((entry, index) => index === 1 ? { ...entry, upstreamSupport: "node_sea_supported" } : entry) },
   ];
   for (const value of mutations) assert.throws(() => validateAgentHandshakeReleaseManifest(value, {
@@ -83,7 +85,9 @@ test("release workflow pins Node, builders, matching runners, native signing, pr
   const packageLock = JSON.parse(await readFile(new URL("../package-lock.json", import.meta.url), "utf8"));
   for (const required of [
     "24.18.0", "ubuntu-24.04", "ubuntu-24.04-arm", "macos-15", "windows-2025",
-    "clockchain-intel-release", "codesign", "signtool", "npm publish --provenance",
+    "clockchain-intel-release", "codesign", "notarytool submit", "spctl --assess",
+    "APPLE_NOTARY_KEY_P8", "APPLE_NOTARY_KEY_ID", "APPLE_NOTARY_ISSUER_ID",
+    "signtool", "npm publish --provenance",
     "build-agent-handshake-release.mjs sea",
   ]) assert.ok(workflow.includes(required), required);
   assert.equal(packageLock.packages["node_modules/esbuild"].version, "0.28.2");

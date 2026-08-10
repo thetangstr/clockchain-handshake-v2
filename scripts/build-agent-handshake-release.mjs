@@ -78,6 +78,7 @@ export async function buildAgentHandshakeSea({ nodeExecutable, outfile, workDir,
 export async function recordAgentHandshakeAsset({
   arch,
   assetPath,
+  nativeNotarized,
   nativeSigner,
   nativeTimestamp,
   outputPath,
@@ -90,7 +91,12 @@ export async function recordAgentHandshakeAsset({
   const publicOutput = await readFile(publicOutputPath);
   const filename = `clockchain-agent-handshake-${platform}-${arch}${platform === "win32" ? ".exe" : ""}`;
   const signatureType = platform === "darwin" ? "codesign" : platform === "win32" ? "authenticode" : "none";
-  if (signatureType === "none" ? nativeSigner !== undefined || nativeTimestamp !== undefined : !nativeSigner || !nativeTimestamp) invalid();
+  if (
+    signatureType === "none"
+      ? nativeSigner !== undefined || nativeTimestamp !== undefined || nativeNotarized !== undefined
+      : !nativeSigner || !nativeTimestamp ||
+        (platform === "darwin" ? nativeNotarized !== true : nativeNotarized !== undefined)
+  ) invalid();
   const record = {
     platform,
     arch,
@@ -104,6 +110,7 @@ export async function recordAgentHandshakeAsset({
       verified: true,
       signer: nativeSigner ?? null,
       timestamp: nativeTimestamp ?? null,
+      notarized: platform === "darwin" ? true : null,
     },
     execution: {
       verified: true,
@@ -134,6 +141,7 @@ async function main(argv) {
     await recordAgentHandshakeAsset({
       arch,
       assetPath: resolve(assetPath),
+      nativeNotarized: process.env.CLOCKCHAIN_NATIVE_NOTARIZED === "true" ? true : undefined,
       nativeSigner: process.env.CLOCKCHAIN_NATIVE_SIGNER,
       nativeTimestamp: process.env.CLOCKCHAIN_NATIVE_TIMESTAMP,
       outputPath: resolve(outputPath),

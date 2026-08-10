@@ -14,7 +14,7 @@ const ASSET_KEYS = Object.freeze([
   "platform", "arch", "upstreamSupport", "filename", "url", "byteLength",
   "sha256", "nativeSignature", "execution",
 ]);
-const SIGNATURE_KEYS = Object.freeze(["type", "verified", "signer", "timestamp"]);
+const SIGNATURE_KEYS = Object.freeze(["type", "verified", "signer", "timestamp", "notarized"]);
 const EXECUTION_KEYS = Object.freeze([
   "verified", "platform", "arch", "exitCode", "publicOutputSha256",
 ]);
@@ -43,6 +43,7 @@ function signature(value, platform) {
   const requiredType = platform === "darwin" ? "codesign" : platform === "win32" ? "authenticode" : "none";
   if (
     item.type !== requiredType || item.verified !== true ||
+    (platform === "darwin" ? item.notarized !== true : item.notarized !== null) ||
     (requiredType === "none"
       ? item.signer !== null || item.timestamp !== null
       : typeof item.signer !== "string" || item.signer.length === 0 ||
