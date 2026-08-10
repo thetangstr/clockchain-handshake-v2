@@ -39,6 +39,8 @@ function acceptance(value){
   if(!DIGEST.test(item.proposalDigest)||item.decision!=="ACCEPTED")invalid();
   return Object.freeze(item);
 }
+export function validateAgentHandshakeV2ProposalPayload(value){return proposal(value);}
+export function validateAgentHandshakeV2AcceptancePayload(value){return acceptance(value);}
 function signature(value){const item=exact(value,SIGNATURE_KEYS);if(!/^0x[0-9a-f]{40}$/.test(item.address)||item.algorithm!=="eip191"||!SIGNATURE.test(item.value))invalid();return Object.freeze(item);}
 function signedEnvelope(value,type){const item=exact(value,ENVELOPE_KEYS);const payload=type==="proposal"?proposal(item.payload):acceptance(item.payload);const expectedSchema="clockchain.agent-handshake-"+type+"-envelope/v2";if(item.schema!==expectedSchema)invalid();return Object.freeze({payload,schema:item.schema,signature:signature(item.signature)});}
 async function recover(payload,value){try{return (await recoverMessageAddress({message:{raw:canonicalBytes(payload)},signature:value})).toLowerCase();}catch{invalid();}}

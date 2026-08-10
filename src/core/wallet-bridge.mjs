@@ -64,7 +64,7 @@ function assertPrivateKey(value) {
   return value;
 }
 
-function signingBytes({ bytesGzipBase64Url, bytesHex }) {
+export function decodeSigningBytes({ bytesGzipBase64Url, bytesHex }) {
   const hasHex = bytesHex !== undefined;
   const hasGzipBase64Url = bytesGzipBase64Url !== undefined;
   if (hasHex === hasGzipBase64Url) fail();
@@ -379,7 +379,7 @@ export async function signExactBytes({
 } = {}) {
   try {
     const statePath = assertPath(inputStatePath);
-    const rawBytes = signingBytes({ bytesGzipBase64Url, bytesHex });
+    const rawBytes = decodeSigningBytes({ bytesGzipBase64Url, bytesHex });
     const { account } = await readWallet({ platform, runIcacls, statePath });
     const signatureHex = await account.signMessage({
       message: { raw: `0x${rawBytes.toString("hex")}` },
