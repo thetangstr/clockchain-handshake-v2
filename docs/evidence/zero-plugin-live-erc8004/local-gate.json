@@ -5,9 +5,9 @@
   "externalBusinessActionPerformed": false,
   "topology": "cross-repository-contract-gate",
   "revisions": {
-    "handshake": "6e82ee3a3c246cd117b0a956f6bf179010d2c4a3",
-    "mcp": "0e688eca532cfeb4ec270a3e1f7b5f2b3bdbfe01",
-    "research": "530f1f5457bcb07d1be5e256c779509bca3b6713"
+    "handshake": "f81cb4efc02ac8391b62086045ab736e06cb156c",
+    "mcp": "6b31ae318d69e650db8c62326460843ce7260347",
+    "research": "e10ac4789f3e42db76d62a576eb5426246e16da0"
   },
   "verification": {
     "handshake": {
@@ -18,13 +18,15 @@
     "mcp": {
       "command": "npm test && node --test infra/test/*.test.mjs",
       "packageTestsPassed": 285,
-      "infrastructureTestsPassed": 27
+      "infrastructureTestsPassed": 27,
+      "knownVulnerabilities": 0
     },
     "research": {
       "command": "npm run typecheck && npm test && npm run build",
       "testsPassed": 156,
       "typecheckPassed": true,
-      "productionBuildPassed": true
+      "productionBuildPassed": true,
+      "knownVulnerabilities": 0
     }
   },
   "contracts": {
