@@ -173,7 +173,7 @@ export function buildClientCommands({ client, manifestDigest, prompt, workspace 
       }),
       launch: Object.freeze({
         args: Object.freeze([
-          "exec", "--skip-git-repo-check", "--strict-config", "--ignore-rules", "--ephemeral",
+          "exec", "--model", "gpt-5.6-terra", "--skip-git-repo-check", "--strict-config", "--ignore-rules", "--ephemeral",
           "--sandbox", "workspace-write", "--config", 'approval_policy="never"',
           "--config", "sandbox_workspace_write.network_access=true", "--json", "--cd", cwd, "-",
         ]),
@@ -190,7 +190,7 @@ export function buildClientCommands({ client, manifestDigest, prompt, workspace 
     }),
     launch: Object.freeze({
       args: Object.freeze([
-        "--print", "--bare", "--disable-slash-commands", "--no-chrome",
+        "--print", "--model", "sonnet", "--bare", "--disable-slash-commands", "--no-chrome",
         "--strict-mcp-config", "--mcp-config", JSON.stringify({
           mcpServers: { "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL } },
         }),
@@ -433,6 +433,7 @@ export async function runFreshAgentHandshake({
   clients,
   configureClient,
   modelEnvironment = {},
+  secretCanaries = { initiator: [], responder: [] },
   monitor,
   parent,
   prompts,
@@ -443,10 +444,14 @@ export async function runFreshAgentHandshake({
   exactObject(clients, ROLES);
   exactObject(prompts, ROLES);
   exactObject(modelEnvironment, ROLES);
+  exactObject(secretCanaries, ROLES);
   if (typeof configureClient !== "function" || typeof monitor !== "function") fail();
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60 * 60 * 1000) fail();
   const pin = validateReleaseAgreement(release);
-  const canaries = ROLES.flatMap((role) => Object.values(modelEnvironment[role]));
+  const canaries = ROLES.flatMap((role) => {
+    if (!Array.isArray(secretCanaries[role]) || secretCanaries[role].some((entry) => typeof entry !== "string" || entry.length === 0)) fail();
+    return [...Object.values(modelEnvironment[role]), ...secretCanaries[role]];
+  });
   let run;
   const children = [];
   let timer;

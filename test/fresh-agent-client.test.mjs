@@ -68,13 +68,13 @@ test("builds exact endpoint configuration for Codex and Claude Code", () => {
   assert.deepEqual(codex.configure.args, ["mcp", "add", "clockchain-handshake", "--url", CLOCKCHAIN_HANDSHAKE_MCP_URL]);
   assert.deepEqual(claude.configure.args, ["mcp", "add", "--transport", "http", "--scope", "user", "clockchain-handshake", CLOCKCHAIN_HANDSHAKE_MCP_URL]);
   assert.deepEqual(codex.launch.args, [
-    "exec", "--skip-git-repo-check", "--strict-config", "--ignore-rules", "--ephemeral",
+    "exec", "--model", "gpt-5.6-terra", "--skip-git-repo-check", "--strict-config", "--ignore-rules", "--ephemeral",
     "--sandbox", "workspace-write", "--config", 'approval_policy="never"',
     "--config", "sandbox_workspace_write.network_access=true", "--json", "--cd", "/tmp/a", "-",
   ]);
   assert.equal(codex.launch.input, "hello");
   assert.deepEqual(claude.launch.args, [
-    "--print", "--bare", "--disable-slash-commands", "--no-chrome",
+    "--print", "--model", "sonnet", "--bare", "--disable-slash-commands", "--no-chrome",
     "--strict-mcp-config", "--mcp-config",
     JSON.stringify({ mcpServers: { "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL } } }),
     "--permission-mode", "dontAsk", "--no-session-persistence", "--setting-sources", "",
@@ -192,6 +192,10 @@ test("starts the Responder only after the Initiator emits its actual one-time in
     modelEnvironment: {
       initiator: { TEST_PROVIDER_KEY: `${secret}-initiator` },
       responder: { TEST_PROVIDER_KEY: `${secret}-responder` }
+    },
+    secretCanaries: {
+      initiator: [`${secret}-codex-auth`],
+      responder: [`${secret}-claude-auth`],
     },
     monitor: async () => ({ chronology: ["INVITATION_CREATED", "INVITATION_CLAIMED", "IDENTITIES_REGISTERED", "CERTIFIED"], sessionId: SESSION }),
     parent,

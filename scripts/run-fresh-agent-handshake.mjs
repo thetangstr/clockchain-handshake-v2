@@ -2,11 +2,15 @@
 
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { runFreshAgentHandshake } from "../src/testing/fresh-agent-client.mjs";
+import {
+  installAppleClientAuthentication,
+  loadAppleClientAuthentication,
+} from "../src/testing/apple-client-auth.mjs";
 
 const execFileAsync = promisify(execFile);
 const SAFE_ERROR = "Fresh agent compatibility check failed safely.\n";
@@ -24,12 +28,26 @@ function roots(name) {
   return result;
 }
 
-function credentialFor(client) {
+async function authenticationFor(client) {
   const key = client === "codex" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY";
-  return { [key]: value(key) };
+  const credential = process.env[key];
+  if (typeof credential === "string" && credential.length > 0) {
+    return Object.freeze({
+      client,
+      environment: Object.freeze({ [key]: credential }),
+      secretCanaries: Object.freeze([credential]),
+      source: null,
+    });
+  }
+  const override = client === "codex" ? "CLOCKCHAIN_CODEX_AUTH_FILE" : "CLOCKCHAIN_CLAUDE_AUTH_FILE";
+  const source = process.env[override] ?? join(homedir(), client === "codex" ? ".codex/auth.json" : ".claude/.credentials.json");
+  return loadAppleClientAuthentication({ client, source });
 }
 
-async function configureClient({ command, env }) {
+async function configureClient({ authentication, command, env, room }) {
+  if (typeof authentication.source === "string" || typeof authentication.serialized === "string") {
+    await installAppleClientAuthentication({ authentication, home: room.home });
+  }
   await execFileAsync(command.file, command.args, {
     env,
     maxBuffer: 64 * 1024,
@@ -66,15 +84,23 @@ async function main() {
     initiator: process.env.CLOCKCHAIN_INITIATOR_CLIENT ?? "codex",
     responder: process.env.CLOCKCHAIN_RESPONDER_CLIENT ?? "claude",
   };
+  const authentication = {
+    initiator: await authenticationFor(clients.initiator),
+    responder: await authenticationFor(clients.responder),
+  };
   const ownsParent = process.env.CLOCKCHAIN_FRESH_AGENT_PARENT === undefined;
   const parent = process.env.CLOCKCHAIN_FRESH_AGENT_PARENT ?? await mkdtemp(join(tmpdir(), "clockchain-fresh-agent-"));
   try {
     const evidence = await runFreshAgentHandshake({
       clients,
-      configureClient,
+      configureClient: (entry) => configureClient({ ...entry, authentication: authentication[entry.role] }),
       modelEnvironment: {
-        initiator: credentialFor(clients.initiator),
-        responder: credentialFor(clients.responder),
+        initiator: authentication.initiator.environment,
+        responder: authentication.responder.environment,
+      },
+      secretCanaries: {
+        initiator: authentication.initiator.secretCanaries,
+        responder: authentication.responder.secretCanaries,
       },
       monitor,
       parent,

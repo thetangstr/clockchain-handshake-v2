@@ -99,12 +99,13 @@ test("production ports map only role-tagged v2 messages and reserve before fundi
       identityClaimed: async (role, claim) => seen.push(["identity", role, claim]),
     },
     relayClient: { generateEnvelopeKeyPair: () => ({}) },
-    waitForMessage: async (kind, role) => {
-      seen.push(["wait", kind, role]);
+    waitForMessage: async (kind, role, deadlineMs) => {
+      seen.push(["wait", kind, role, deadlineMs]);
       return messages[kind];
     },
   });
   assert.equal(await ports.awaitInvitationClaimed(), 1786337000001);
+  assert.deepEqual(seen[0], ["wait", "agent_v2_invitation_claimed", "responder", 1786337120000]);
   assert.equal((await ports.awaitIdentityClaim("initiator")).policyDigest, "a".repeat(64));
   assert.deepEqual(await ports.awaitProposal(), { ok: "proposal" });
   await ports.reserveFunding({

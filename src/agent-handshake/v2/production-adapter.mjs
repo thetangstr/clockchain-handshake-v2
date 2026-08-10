@@ -145,6 +145,7 @@ export async function loadAgentHandshakeV2Session({
 
 export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) {
   const session = _session;
+  const now = overrides.now ?? Date.now;
   const relayClient = overrides.relayClient ?? relay;
   const publicClient = overrides.publicClient ?? createPublicClient({
     chain: sepolia,
@@ -155,11 +156,15 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
   let after = "0";
   let buffer = [];
 
-  const defaultWaitForMessage = async (kind, role) => {
+  const defaultWaitForMessage = async (
+    kind,
+    role,
+    deadlineMs = session.sessionDeadlineMs,
+  ) => {
     const result = await awaitRoleMessages({
       after,
       buffer,
-      budgetMs: Math.max(0, session.sessionDeadlineMs - Date.now()),
+      budgetMs: Math.max(0, deadlineMs - now()),
       expectedBindings: null,
       kind,
       relayClient,
@@ -187,7 +192,7 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
       sessionId: session.sessionId,
     }));
   const monitor = overrides.monitor ?? createAgentHandshakeV2Monitor({
-    now: overrides.now ?? Date.now,
+    now,
     publish: (snapshot) => relayClient.putSnapshot({
       relayUrl: session.relayUrl,
       retryBudgetMs: 30_000,
@@ -317,7 +322,11 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
     awaitEvidence: async (role) =>
       (await waitForMessage("agent_v2_evidence", role)).body.evidenceEnvelope,
     awaitInvitationClaimed: async () => {
-      const message = await waitForMessage("agent_v2_invitation_claimed", "responder");
+      const message = await waitForMessage(
+        "agent_v2_invitation_claimed",
+        "responder",
+        session.invitationExpiresAtMs,
+      );
       const body = message.body;
       if (
         body === null || typeof body !== "object" || Array.isArray(body) ||
