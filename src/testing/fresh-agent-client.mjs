@@ -5,14 +5,34 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 
 import { assertSecretFree } from "../core/redact.mjs";
 
-export const CLOCKCHAIN_HANDSHAKE_MCP_URL = "https://mcp.clockchain.network/handshake/mcp";
-export const FRESH_AGENT_CLIENTS = Object.freeze(["codex", "claude"]);
-
 const ROLES = Object.freeze(["initiator", "responder"]);
 const HELPER_OPERATIONS = Object.freeze([
   "init", "policy", "inspect", "register", "sign", "verify-certificate",
 ]);
 const RELEASE_PREFIX = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.0/";
+
+export const CLOCKCHAIN_HANDSHAKE_MCP_URL = "https://mcp.clockchain.network/handshake/mcp";
+export const FRESH_AGENT_CLIENTS = Object.freeze(["codex", "claude"]);
+export const CLOCKCHAIN_HANDSHAKE_TOOLS = Object.freeze([
+  "agent_handshake_invite",
+  "agent_handshake_accept_invitation",
+  "agent_handshake_join",
+  "agent_handshake_status",
+  "agent_handshake_next",
+  "agent_handshake_submit",
+  "agent_handshake_get_certificate",
+]);
+export const CLAUDE_LOCAL_AUTHORITY_TOOLS = Object.freeze([
+  `Bash(curl --fail --location --proto =https --proto-redir =https --output ./manifest.json ${RELEASE_PREFIX}manifest.json)`,
+  `Bash(curl --fail --location --proto =https --proto-redir =https --output ./clockchain-agent-handshake-* ${RELEASE_PREFIX}clockchain-agent-handshake-*)`,
+  "Bash(shasum -a 256 ./manifest.json ./clockchain-agent-handshake-*)",
+  "Bash(codesign --verify --deep --strict ./clockchain-agent-handshake-darwin-*)",
+  "Bash(chmod 700 ./clockchain-agent-handshake-*)",
+  "Bash(./clockchain-agent-handshake-* --version)",
+  ...HELPER_OPERATIONS.map((operation) =>
+    `Bash(./clockchain-agent-handshake-* ${operation} *)`),
+]);
+
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -142,7 +162,11 @@ export function buildClientCommands({ client, prompt, workspace } = {}) {
         file: "codex",
       }),
       launch: Object.freeze({
-        args: Object.freeze(["exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "--cd", cwd, prompt]),
+        args: Object.freeze([
+          "exec", "--skip-git-repo-check", "--strict-config", "--ignore-rules", "--ephemeral",
+          "--sandbox", "workspace-write", "--config", 'approval_policy="never"',
+          "--config", "sandbox_workspace_write.network_access=true", "--cd", cwd, prompt,
+        ]),
         file: "codex",
         limitation: "Codex workspace-write does not provide literal command-pattern enforcement.",
       }),
@@ -154,7 +178,19 @@ export function buildClientCommands({ client, prompt, workspace } = {}) {
       file: "claude",
     }),
     launch: Object.freeze({
-      args: Object.freeze(["-p", prompt, "--permission-mode", "acceptEdits"]),
+      args: Object.freeze([
+        "--print", prompt,
+        "--strict-mcp-config", "--mcp-config", JSON.stringify({
+          mcpServers: { "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL } },
+        }),
+        "--permission-mode", "dontAsk",
+        "--no-session-persistence",
+        "--setting-sources", "",
+        "--allowedTools", CLOCKCHAIN_HANDSHAKE_TOOLS
+          .map((tool) => `mcp__clockchain-handshake__${tool}`)
+          .concat(CLAUDE_LOCAL_AUTHORITY_TOOLS)
+          .join(","),
+      ]),
       file: "claude",
       limitation: null,
     }),

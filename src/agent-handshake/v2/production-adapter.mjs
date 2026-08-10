@@ -79,8 +79,10 @@ export async function loadAgentHandshakeV2Session({
   publicClient: publicClientOverride,
   relayClient = relay,
 } = {}) {
-  const repositorySha = env.HANDSHAKE_SHA ?? "0".repeat(40);
-  if (!/^[0-9a-f]{40}$/.test(repositorySha)) throw new Error("HANDSHAKE_SHA_INVALID");
+  const repositorySha = env.HANDSHAKE_SHA;
+  if (typeof repositorySha !== "string" || !/^[0-9a-f]{40}$/.test(repositorySha)) {
+    throw new Error("HANDSHAKE_SHA_INVALID");
+  }
   const root = await loadRoot({ env });
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const privateKeyPem = privateKey.export({ format: "pem", type: "pkcs8" });

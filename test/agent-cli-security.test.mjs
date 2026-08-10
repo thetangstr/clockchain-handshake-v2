@@ -39,3 +39,13 @@ test("real CLI emits public JSON only and one generic failure", async (t) => {
     assert.equal(output.toLowerCase().includes("roleaccess"), false);
   }
 });
+
+test("real CLI exposes an exact public version check without creating local state", async () => {
+  const result = await run(["--version"]);
+  assert.equal(result.code, 0);
+  assert.equal(result.stderr, "");
+  assert.deepEqual(JSON.parse(result.stdout), {
+    schema: "clockchain.agent-handshake-cli-version/v1",
+    version: "2.1.0",
+  });
+});

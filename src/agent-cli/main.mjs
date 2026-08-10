@@ -2,6 +2,7 @@ import { isAbsolute } from "node:path";
 import { parseArgs } from "node:util";
 
 import { createAgentCliOperations } from "./operations.mjs";
+import { AGENT_HANDSHAKE_HELPER_VERSION } from "./signing-request.mjs";
 
 function invalid() { throw new Error("Agent handshake operation failed safely."); }
 
@@ -17,6 +18,12 @@ function payload(value) {
 }
 
 export async function runAgentHandshakeCli(argv, { operations = createAgentCliOperations() } = {}) {
+  if (argv.length === 1 && argv[0] === "--version") {
+    return Object.freeze({
+      schema: "clockchain.agent-handshake-cli-version/v1",
+      version: AGENT_HANDSHAKE_HELPER_VERSION,
+    });
+  }
   const [operation, ...args] = argv;
   if (!operations.names.includes(operation)) invalid();
   let values;

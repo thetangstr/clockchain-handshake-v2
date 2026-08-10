@@ -10,6 +10,13 @@ import { canonicalBytes } from "../src/core/canonical.mjs";
 import { agentHandshakeV2StatementDigest } from "../src/agent-handshake/v2/terms.mjs";
 import { ed25519, INITIATOR, REPOSITORY_SHA, SESSION_ID, TERMS } from "./support/agent-handshake-v2-fixture.mjs";
 
+test("production session fails closed without an immutable repository SHA", async () => {
+  await assert.rejects(
+    loadAgentHandshakeV2Session({ env: {} }),
+    /HANDSHAKE_SHA_INVALID/,
+  );
+});
+
 test("production session publishes a root-signed host key before discovery with independent clocks", async () => {
   const root = ed25519("root-2026-08");
   const calls = [];

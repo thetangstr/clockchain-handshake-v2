@@ -56,8 +56,31 @@ test("builds exact endpoint configuration for Codex and Claude Code", () => {
   const claude = buildClientCommands({ client: "claude", prompt: "hello", workspace: "/tmp/b" });
   assert.deepEqual(codex.configure.args, ["mcp", "add", "clockchain-handshake", "--url", CLOCKCHAIN_HANDSHAKE_MCP_URL]);
   assert.deepEqual(claude.configure.args, ["mcp", "add", "--transport", "http", "--scope", "user", "clockchain-handshake", CLOCKCHAIN_HANDSHAKE_MCP_URL]);
-  assert.ok(codex.launch.args.includes("workspace-write"));
-  assert.ok(!claude.launch.args.includes("--dangerously-skip-permissions"));
+  assert.deepEqual(codex.launch.args, [
+    "exec", "--skip-git-repo-check", "--strict-config", "--ignore-rules", "--ephemeral",
+    "--sandbox", "workspace-write", "--config", 'approval_policy="never"',
+    "--config", "sandbox_workspace_write.network_access=true", "--cd", "/tmp/a", "hello",
+  ]);
+  assert.deepEqual(claude.launch.args, [
+    "--print", "hello", "--strict-mcp-config", "--mcp-config",
+    JSON.stringify({ mcpServers: { "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL } } }),
+    "--permission-mode", "dontAsk", "--no-session-persistence", "--setting-sources", "",
+    "--allowedTools",
+    [
+      "agent_handshake_invite", "agent_handshake_accept_invitation", "agent_handshake_join",
+      "agent_handshake_status", "agent_handshake_next", "agent_handshake_submit",
+      "agent_handshake_get_certificate",
+    ].map((tool) => `mcp__clockchain-handshake__${tool}`).concat([
+      "Bash(curl --fail --location --proto =https --proto-redir =https --output ./manifest.json https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.0/manifest.json)",
+      "Bash(curl --fail --location --proto =https --proto-redir =https --output ./clockchain-agent-handshake-* https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.0/clockchain-agent-handshake-*)",
+      "Bash(shasum -a 256 ./manifest.json ./clockchain-agent-handshake-*)",
+      "Bash(codesign --verify --deep --strict ./clockchain-agent-handshake-darwin-*)",
+      "Bash(chmod 700 ./clockchain-agent-handshake-*)",
+      "Bash(./clockchain-agent-handshake-* --version)",
+      ...["init", "policy", "inspect", "register", "sign", "verify-certificate"]
+        .map((operation) => `Bash(./clockchain-agent-handshake-* ${operation} *)`),
+    ]).join(","),
+  ]);
 });
 
 test("creates disjoint empty homes, workspaces, caches, and state", async (t) => {
