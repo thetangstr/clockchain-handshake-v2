@@ -12,7 +12,6 @@ import {
 import { canonicalBytes } from "../src/core/canonical.mjs";
 
 const prefix = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.1/";
-const legacyPrefix = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.0/";
 const sourceCommit = "a".repeat(40);
 const bytes = Buffer.from("asset");
 const sha256 = createHash("sha256").update(bytes).digest("hex");
@@ -101,10 +100,10 @@ test("binds the post-release pin to exact manifest bytes, helper bytes, and host
 test("tracks the independently published helper in a separate post-release pin", async () => {
   const pin = JSON.parse(await readFile(new URL("../release/agent-handshake/pin.json", import.meta.url), "utf8"));
   assert.deepEqual(pin, {
-    version: "2.1.0",
-    sourceCommit: "61d939c3c9bcb6631d615c32671bf737baf57ebb",
-    manifestDigest: "032290c4082c4427e4a800ea065a361bbb4d05989e9c87f6c5a21ac6caf758e4",
-    allowedAssetPrefix: legacyPrefix,
+    version: "2.1.1",
+    sourceCommit: "8f74f6d953631cbac057426e3540ba73bf607f3b",
+    manifestDigest: "681f61d4cde2537ec6953b134e8385e6a716c8d889db0f46fd566c10407c9402",
+    allowedAssetPrefix: prefix,
     hostRoots: [{
       kid: "root-2026-08",
       fingerprint: "da2771c36bf2298525d2bbd8351b6122bb67115e9979624e8bb56537bcf71ed8",
