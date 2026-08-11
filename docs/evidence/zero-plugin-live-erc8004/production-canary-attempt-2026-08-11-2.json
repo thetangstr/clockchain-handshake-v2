@@ -1,0 +1,53 @@
+{
+  "schema": "clockchain.fresh-agent-canary-attempt/v1",
+  "attemptId": "2a819a40-d429-476c-8192-89247c1b13a2",
+  "recordedAt": "2026-08-11T17:39:52Z",
+  "outcome": "failure",
+  "diagnostic": {
+    "phase": "agent-exit",
+    "category": "agent",
+    "code": "AGENT_FAILED"
+  },
+  "freshClientPreflight": {
+    "codexTerra": "passed",
+    "claudeSonnet": "passed",
+    "claudeContext": {
+      "autoMemory": false,
+      "claudeMd": false,
+      "plugins": 0,
+      "skills": 0,
+      "slashCommands": 0,
+      "explicitClockchainMcpTools": 7
+    }
+  },
+  "invitationCreated": true,
+  "responderStarted": true,
+  "invitationAccepted": true,
+  "productionSnapshot": {
+    "sessionId": "a69a5b0d-459d-45d5-b1b7-35d376ebc74e",
+    "identityPolicy": null,
+    "initiator": null,
+    "responder": null,
+    "proposalReceipt": null,
+    "acceptanceReceipt": null,
+    "acknowledgmentReceipt": null,
+    "checkerStage": "WAITING",
+    "certificate": null,
+    "externalBusinessActionPerformed": false
+  },
+  "namedCause": "runner_intermediate_helper_output_misclassified",
+  "causeEvidence": {
+    "lastAcceptedInitiatorEvent": "verified_helper_init_started",
+    "helperInitSchema": "clockchain.agent-handshake-cli-result/v1",
+    "observerBehavior": "parsedHelperProof treated every helper result with this schema as terminal certificate proof before checking operation",
+    "failClosedEffect": "the supervisor terminated both clients before join, registration, signatures, or anchors"
+  },
+  "cleanup": {
+    "agentProcessesRunning": false,
+    "newDisposableRunDirectoryPresent": false,
+    "retainedArtifactDirectoryMode": "0700",
+    "retainedArtifactMode": "0600"
+  },
+  "researchReadinessEnabled": false,
+  "nextGate": "Add an intermediate-helper-output regression, require operation verify-certificate before terminal-proof validation, rerun local gates, then request separate authority for another production canary."
+}

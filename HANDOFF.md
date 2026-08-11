@@ -84,6 +84,24 @@ public discovery URL, with payer/requestor kits joining from a clean clone.
 
 *(append dated entries here; format: what you ran, what you expected, what you saw)*
 
+- 2026-08-11 — **Research readiness remains disabled after the fresh
+  Codex/Terra → Claude/Sonnet production canary stopped safely.** Both client
+  preflights passed; Claude exposed zero inherited skills, plugins, slash
+  commands, CLAUDE.md, or auto-memory and connected only the explicit seven-tool
+  Clockchain MCP. The Initiator created a one-time invitation and the Responder
+  accepted it. The supervisor then emitted `agent-exit / agent / AGENT_FAILED`
+  while the Initiator's verified helper `init` operation was completing, and
+  terminated both clients. The production snapshot for session
+  `a69a5b0d-459d-45d5-b1b7-35d376ebc74e` proves there were no parties, ERC-8004
+  identities, receipts, certificate, or external business action. Read-only
+  source audit identified the harness cause: every helper operation shares
+  `clockchain.agent-handshake-cli-result/v1`, but `parsedHelperProof` attempts
+  terminal certificate validation on the intermediate `init` result before it
+  checks `operation === "verify-certificate"`. Evidence is retained at
+  `docs/evidence/zero-plugin-live-erc8004/production-canary-attempt-2026-08-11-2.json`.
+  Add that regression and repair locally before requesting separate authority
+  for another production canary; do not enable Research readiness from this run.
+
 - 2026-08-11 — **Research readiness remains disabled pending a successful
   two-computer stakeholder proof.** The single authorized production canary
   (`5043ea99-3212-460c-93d6-710e3d5e8250`) passed both fresh-client
