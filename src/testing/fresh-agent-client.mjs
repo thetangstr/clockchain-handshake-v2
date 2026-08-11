@@ -1119,8 +1119,9 @@ function bindHelperExecution(command, expectedHelperCommands) {
   }
   const approvalMatches = expected.approvalCommand !== null && command === expected.approvalCommand;
   const helperActual = fingerprintHelperExecutionCommand(command);
-  const approvalShaped = command.includes("clockchain-agent-authorize");
-  if (!approvalShaped && helperActual.helperBootstrap !== true) {
+  const approvalShaped = command.startsWith("clockchain-agent-authorize ");
+  const helperExecutionShaped = command.startsWith("node --input-type=commonjs --eval ");
+  if (!approvalShaped && !helperExecutionShaped) {
     return Object.freeze({ bound: false, actual: helperActual });
   }
   const actual = approvalMatches
@@ -1229,8 +1230,7 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
       if (typeof block.id !== "string" || block.id.length === 0 || typeof block?.input?.command !== "string") fail();
       if (claudeBashCommands.has(block.id)) fail();
       const rawCommand = block.input.command;
-      const helperShaped = rawCommand.includes("clockchain-agent-authorize") ||
-        fingerprintHelperExecutionCommand(rawCommand).helperBootstrap === true;
+      const helperShaped = /^\s*(?:clockchain-agent-authorize |node --input-type=commonjs --eval )/.test(rawCommand);
       const command = helperShaped
         ? stripLiteralShellLineContinuations(rawCommand)
         : rawCommand;

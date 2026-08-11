@@ -1720,7 +1720,8 @@ test("does not apply strict helper shell parsing to ordinary Claude inspection",
   t.after(() => rm(parent, { recursive: true, force: true }));
   const children = {};
   const command = verifyCertificateCommand("responder");
-  const inspection = 'grep -n "`helper source`" ./clockchain-agent-handshake.cjs';
+  const inspection = 'grep -n "`node --input-type=commonjs --eval` clockchain-agent-handshake.cjs" ./clockchain-agent-handshake.cjs';
+  assert.equal(fingerprintHelperExecutionCommand(inspection).helperBootstrap, true);
   const spawnProcess = () => {
     const role = children.initiator === undefined ? "initiator" : "responder";
     const child = new EventEmitter();
