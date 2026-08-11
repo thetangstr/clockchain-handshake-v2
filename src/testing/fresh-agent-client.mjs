@@ -1120,7 +1120,7 @@ function bindHelperExecution(command, expectedHelperCommands) {
   const approvalMatches = expected.approvalCommand !== null && command === expected.approvalCommand;
   const helperActual = fingerprintHelperExecutionCommand(command);
   const approvalShaped = command.includes("clockchain-agent-authorize");
-  if (!approvalShaped && helperActual.operation === null) {
+  if (!approvalShaped && helperActual.helperBootstrap !== true) {
     return Object.freeze({ bound: false, actual: helperActual });
   }
   const actual = approvalMatches
