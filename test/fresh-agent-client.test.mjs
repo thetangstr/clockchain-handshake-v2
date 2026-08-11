@@ -121,6 +121,7 @@ test("builds exact endpoint configuration for Codex and Claude Code", () => {
         allowedDomains: [
           "github.com",
           "release-assets.githubusercontent.com",
+          "11155111.rpc.thirdweb.com",
           "ethereum-sepolia-rpc.publicnode.com",
         ],
       },

@@ -253,6 +253,7 @@ export function buildClaudeSandboxSettings({ hostHome = homedir(), hostUid = pro
         allowedDomains: Object.freeze([
           "github.com",
           "release-assets.githubusercontent.com",
+          "11155111.rpc.thirdweb.com",
           "ethereum-sepolia-rpc.publicnode.com",
         ]),
       }),
