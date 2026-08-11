@@ -106,13 +106,16 @@ function traceAccessClaims(value) {
 }
 
 export class FreshAgentDiagnosticError extends Error {
-  constructor({ phase = "unknown", category = "unknown", code = "UNKNOWN" } = {}) {
+  constructor({ phase = "unknown", category = "unknown", code = "UNKNOWN", details } = {}) {
     super("Fresh agent compatibility check failed safely.");
     this.name = "FreshAgentDiagnosticError";
+    const cleanCode = cleanDiagnosticCode(code);
+    const cleanDetails = cleanHelperDiagnosticDetails(cleanCode, details);
     this.diagnostic = Object.freeze({
       phase: cleanDiagnosticPhase(phase),
       category: cleanDiagnosticCategory(category),
-      code: cleanDiagnosticCode(code),
+      code: cleanCode,
+      ...(cleanDetails === null ? {} : { details: cleanDetails }),
     });
   }
 
@@ -133,12 +136,41 @@ function cleanDiagnosticCode(value) {
   return DIAGNOSTIC_CODES.has(value) || /^HTTP_[1-5][0-9]{2}$/.test(value) ? value : "UNKNOWN";
 }
 
-function diagnostic(phase, category, code) {
-  return new FreshAgentDiagnosticError({ phase, category, code });
+function cleanCommandDiagnostic(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([
+    "commandLength", "commandSha256", "operation", "role", "sessionId",
+  ])) return null;
+  if (
+    !Number.isSafeInteger(value.commandLength) || value.commandLength < 1 || value.commandLength > MAX_OUTPUT_BYTES ||
+    !SHA256.test(value.commandSha256) || !HELPER_OPERATIONS.includes(value.operation) ||
+    !(value.role === null || ROLES.includes(value.role)) ||
+    !(value.sessionId === null || UUID.test(value.sessionId))
+  ) return null;
+  return Object.freeze({
+    commandSha256: value.commandSha256,
+    commandLength: value.commandLength,
+    operation: value.operation,
+    role: value.role,
+    sessionId: value.sessionId,
+  });
 }
 
-function fail(phase = "unknown", category = "unknown", code = "UNKNOWN") {
-  throw diagnostic(phase, category, code);
+function cleanHelperDiagnosticDetails(code, value) {
+  if (!["HELPER_COMMAND_MISMATCH", "HELPER_EXECUTION_FAILED"].includes(code)) return null;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(["actual", "expected"])) return null;
+  const expected = cleanCommandDiagnostic(value.expected);
+  const actual = cleanCommandDiagnostic(value.actual);
+  return expected === null || actual === null ? null : Object.freeze({ expected, actual });
+}
+
+function diagnostic(phase, category, code, details) {
+  return new FreshAgentDiagnosticError({ phase, category, code, details });
+}
+
+function fail(phase = "unknown", category = "unknown", code = "UNKNOWN", details) {
+  throw diagnostic(phase, category, code, details);
 }
 
 export function assertFreshAgentNodeRuntime({
@@ -774,6 +806,22 @@ function bindHelperExecution(command, expectedHelperCommands) {
   if (actual.operation === null) return Object.freeze({ bound: false, actual });
   const expected = expectedHelperCommands.shift();
   if (expected === undefined) return Object.freeze({ bound: false, actual });
+  const details = Object.freeze({
+    expected: Object.freeze({
+      commandSha256: expected.commandSha256,
+      commandLength: expected.commandLength,
+      operation: expected.operation,
+      role: expected.role,
+      sessionId: expected.sessionId,
+    }),
+    actual: Object.freeze({
+      commandSha256: actual.commandSha256,
+      commandLength: Buffer.byteLength(command),
+      operation: actual.operation,
+      role: actual.state?.role ?? null,
+      sessionId: actual.state?.sessionId ?? null,
+    }),
+  });
   if (
     actual.commandSha256 !== expected.commandSha256 ||
     Buffer.byteLength(command) !== expected.commandLength ||
@@ -781,9 +829,10 @@ function bindHelperExecution(command, expectedHelperCommands) {
     actual.state?.role !== expected.role ||
     actual.state?.sessionId !== expected.sessionId
   ) {
-    fail("agent-exit", "validation", "HELPER_COMMAND_MISMATCH");
+    traceLifecycle({ phase: "helper-command-mismatch", details });
+    fail("agent-exit", "validation", "HELPER_COMMAND_MISMATCH", details);
   }
-  return Object.freeze({ bound: true, actual, expected });
+  return Object.freeze({ bound: true, actual, expected, details });
 }
 
 function validateVerifyCertificateCommand(value, proof, manifestDigest) {
@@ -827,6 +876,7 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
       (event.item.status === "failed" || (event.item.status === "completed" && event.item.exit_code !== 0))
     ) {
       helperExecutionState.failed = true;
+      helperExecutionState.details = binding.details;
     }
     if (event.item.status !== "completed" || event.item.exit_code !== 0) return null;
     const proof = parsedHelperProof(event.item.aggregated_output, role);
@@ -839,8 +889,11 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
       if (block?.type !== "tool_use" || block?.name !== "Bash") continue;
       if (typeof block.id !== "string" || block.id.length === 0 || typeof block?.input?.command !== "string") fail();
       if (claudeBashCommands.has(block.id)) fail();
-      bindHelperExecution(block.input.command, expectedHelperCommands);
-      claudeBashCommands.set(block.id, block.input.command);
+      const binding = bindHelperExecution(block.input.command, expectedHelperCommands);
+      claudeBashCommands.set(block.id, Object.freeze({
+        command: block.input.command,
+        details: binding.bound ? binding.details : null,
+      }));
     }
     return null;
   }
@@ -849,8 +902,10 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
   for (const block of event.message.content) {
     if (block?.type !== "tool_result") continue;
     if (block.is_error === true) {
-      if (typeof block.tool_use_id === "string" && typeof claudeBashCommands.get(block.tool_use_id) === "string") {
+      const execution = typeof block.tool_use_id === "string" ? claudeBashCommands.get(block.tool_use_id) : null;
+      if (execution !== null && typeof execution === "object" && typeof execution.command === "string") {
         helperExecutionState.failed = true;
+        helperExecutionState.details = execution.details;
         claudeBashCommands.set(block.tool_use_id, null);
       }
       continue;
@@ -858,8 +913,9 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
     const parsed = parsedHelperProof(block.content, role);
     if (parsed === null) continue;
     if (typeof block.tool_use_id !== "string") fail();
-    const command = claudeBashCommands.get(block.tool_use_id);
-    if (typeof command !== "string") fail();
+    const execution = claudeBashCommands.get(block.tool_use_id);
+    if (execution === null || typeof execution !== "object" || typeof execution.command !== "string") fail();
+    const command = execution.command;
     HELPER_CERTIFICATE_BINDINGS.set(parsed, validateVerifyCertificateCommand(command, parsed, manifestDigest));
     claudeBashCommands.set(block.tool_use_id, null);
     if (found !== null && JSON.stringify(found) !== JSON.stringify(parsed)) fail();
@@ -892,7 +948,7 @@ function observeChild(child, role, all, canaries, { expectedInvitation, manifest
     let observed = {};
     const claudeBashCommands = new Map();
     const expectedHelperCommands = [];
-    const helperExecutionState = { failed: false };
+    const helperExecutionState = { failed: false, details: null };
     let settled = false;
     function processLine(line) {
       if (line.trim().length === 0) return;
@@ -1036,7 +1092,12 @@ function observeChild(child, role, all, canaries, { expectedInvitation, manifest
         assertSecretFree(stderr, canaries);
         if (requireInvitation && observed.invitation === undefined) fail("invitation", "agent", "INVITATION_MISSING");
         if (observed.helperProof === undefined) {
-          fail("agent-exit", "agent", helperExecutionState.failed ? "HELPER_EXECUTION_FAILED" : "HELPER_PROOF_MISSING");
+          fail(
+            "agent-exit",
+            "agent",
+            helperExecutionState.failed ? "HELPER_EXECUTION_FAILED" : "HELPER_PROOF_MISSING",
+            helperExecutionState.details,
+          );
         }
         resolvePromise(observed.helperProof);
       } catch (error) {
@@ -1245,10 +1306,13 @@ function diagnosticPayload(error) {
   const clean = error instanceof FreshAgentDiagnosticError
     ? error.diagnostic
     : diagnostic("unknown", "unknown", "UNKNOWN").diagnostic;
+  const code = cleanDiagnosticCode(clean.code);
+  const details = cleanHelperDiagnosticDetails(code, clean.details);
   return Object.freeze({
     phase: cleanDiagnosticPhase(clean.phase),
     category: cleanDiagnosticCategory(clean.category),
-    code: cleanDiagnosticCode(clean.code),
+    code,
+    ...(details === null ? {} : { details }),
   });
 }
 

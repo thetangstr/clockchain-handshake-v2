@@ -93,6 +93,17 @@ function verifyCertificateCommand(role, overrides = {}) {
   return `node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${DIGEST} ./manifest.json ./clockchain-agent-handshake.cjs verify-certificate --state-dir "$TMPDIR/.clockchain/handshakes/${SESSION}/${role}" --payload-base64url ${Buffer.from(JSON.stringify(payload), "utf8").toString("base64url")}`;
 }
 
+function publicCommandDetails(command) {
+  const fingerprint = fingerprintHelperExecutionCommand(command);
+  return {
+    commandSha256: fingerprint.commandSha256,
+    commandLength: Buffer.byteLength(command),
+    operation: fingerprint.operation,
+    role: fingerprint.state?.role ?? null,
+    sessionId: fingerprint.state?.sessionId ?? null,
+  };
+}
+
 function helperStep(command) {
   const fingerprint = fingerprintHelperExecutionCommand(command);
   return {
@@ -614,7 +625,15 @@ test("attempt artifacts are private, exclusive, secret-free, and survive clean-r
   const failure = await writeFreshAgentAttemptArtifact({
     attemptId: "failure-attempt",
     directory: artifacts,
-    error: new FreshAgentDiagnosticError({ phase: "monitor", category: "validation", code: "MONITOR_RESULT_INVALID" }),
+    error: new FreshAgentDiagnosticError({
+      phase: "agent-exit",
+      category: "validation",
+      code: "HELPER_COMMAND_MISMATCH",
+      details: {
+        expected: publicCommandDetails(verifyCertificateCommand("initiator")),
+        actual: publicCommandDetails(verifyCertificateCommand("initiator").replace("verify-certificate", "verify-certificate ")),
+      },
+    }),
     outcome: "failure",
     secretCanaries: ["raw-model-output-secret", parent, V2_FIXTURE.resultEnvelope.signer.signature],
   });
@@ -624,7 +643,15 @@ test("attempt artifacts are private, exclusive, secret-free, and survive clean-r
     schema: "clockchain.fresh-agent-canary-attempt/v1",
     attemptId: "failure-attempt",
     outcome: "failure",
-    diagnostic: { phase: "monitor", category: "validation", code: "MONITOR_RESULT_INVALID" },
+    diagnostic: {
+      phase: "agent-exit",
+      category: "validation",
+      code: "HELPER_COMMAND_MISMATCH",
+      details: {
+        expected: publicCommandDetails(verifyCertificateCommand("initiator")),
+        actual: publicCommandDetails(verifyCertificateCommand("initiator").replace("verify-certificate", "verify-certificate ")),
+      },
+    },
   });
   assert.equal(failureText.includes("raw-model-output-secret"), false);
   assert.equal(failureText.includes(parent), false);
@@ -1374,6 +1401,8 @@ test("rejects agent-mutated helper commands against the last MCP-returned comman
       const parent = await mkdtemp(join(tmpdir(), `fresh-agent-helper-command-mismatch-${mode}-`));
       t.after(() => rm(parent, { recursive: true, force: true }));
       const children = {};
+      const command = verifyCertificateCommand(mode === "codex" ? "initiator" : "responder");
+      const mutated = command.replace("verify-certificate", "verify-certificate ");
       const spawnProcess = () => {
         const role = children.initiator === undefined ? "initiator" : "responder";
         const child = new EventEmitter();
@@ -1386,8 +1415,6 @@ test("rejects agent-mutated helper commands against the last MCP-returned comman
               child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
               return;
             }
-            const command = verifyCertificateCommand(mode === "codex" ? "initiator" : "responder");
-            const mutated = command.replace("verify-certificate", "verify-certificate ");
             if (mode === "codex") {
               children.initiator.stdout.emit("data", Buffer.from(codexExpectedHelperEvent(command)));
               children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"), { command: mutated })));
@@ -1407,7 +1434,15 @@ test("rejects agent-mutated helper commands against the last MCP-returned comman
 
       const error = await rejectsFreshAgentRun(parent, { spawnProcess });
 
-      assert.deepEqual(error.diagnostic, { phase: "agent-exit", category: "validation", code: "HELPER_COMMAND_MISMATCH" });
+      assert.deepEqual(error.diagnostic, {
+        phase: "agent-exit",
+        category: "validation",
+        code: "HELPER_COMMAND_MISMATCH",
+        details: {
+          expected: publicCommandDetails(command),
+          actual: publicCommandDetails(mutated),
+        },
+      });
       assert.deepEqual(await readdir(parent), []);
     });
   }
@@ -1419,6 +1454,7 @@ test("reports exact helper execution failures distinctly from missing terminal p
       const parent = await mkdtemp(join(tmpdir(), `fresh-agent-helper-execution-failed-${mode}-`));
       t.after(() => rm(parent, { recursive: true, force: true }));
       const children = {};
+      const command = verifyCertificateCommand(mode === "codex" ? "initiator" : "responder");
       const spawnProcess = () => {
         const role = children.initiator === undefined ? "initiator" : "responder";
         const child = new EventEmitter();
@@ -1431,7 +1467,6 @@ test("reports exact helper execution failures distinctly from missing terminal p
               child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
               return;
             }
-            const command = verifyCertificateCommand(mode === "codex" ? "initiator" : "responder");
             if (mode === "codex") {
               children.initiator.stdout.emit("data", Buffer.from(codexExpectedHelperEvent(command)));
               children.initiator.stdout.emit("data", Buffer.from(streamEvent({
@@ -1461,7 +1496,15 @@ test("reports exact helper execution failures distinctly from missing terminal p
 
       const error = await rejectsFreshAgentRun(parent, { spawnProcess });
 
-      assert.deepEqual(error.diagnostic, { phase: "agent-exit", category: "agent", code: "HELPER_EXECUTION_FAILED" });
+      assert.deepEqual(error.diagnostic, {
+        phase: "agent-exit",
+        category: "agent",
+        code: "HELPER_EXECUTION_FAILED",
+        details: {
+          expected: publicCommandDetails(command),
+          actual: publicCommandDetails(command),
+        },
+      });
       assert.deepEqual(await readdir(parent), []);
     });
   }
