@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +13,7 @@ import {
   runFreshAgentHandshake,
   validateClaudePreparation,
   validateFreshAgentMonitorSnapshot,
+  writeFreshAgentAttemptArtifact,
 } from "../src/testing/fresh-agent-client.mjs";
 import {
   installAppleClientAuthentication,
@@ -139,46 +141,94 @@ export async function monitor({ sessionId, retryDelayMs = 1_000, timeoutMs = 120
   throw safeMonitorError("deadline", "TIMEOUT");
 }
 
+export async function runFreshAgentCliAttempt({
+  artifactDirectory,
+  attemptId = randomUUID(),
+  runHandshake,
+  secretCanaries = [],
+  writeArtifact = writeFreshAgentAttemptArtifact,
+  writeOutput = (value) => process.stdout.write(value),
+} = {}) {
+  if (typeof runHandshake !== "function" || typeof writeArtifact !== "function" || typeof writeOutput !== "function") throw new Error("invalid");
+  let outcome;
+  try {
+    outcome = Object.freeze({ outcome: "success", evidence: await runHandshake() });
+  } catch (error) {
+    outcome = Object.freeze({ outcome: "failure", error });
+  }
+  await writeArtifact(outcome.outcome === "success"
+    ? {
+        attemptId,
+        directory: artifactDirectory,
+        evidence: outcome.evidence,
+        outcome: outcome.outcome,
+        secretCanaries,
+      }
+    : {
+        attemptId,
+        directory: artifactDirectory,
+        error: outcome.error,
+        outcome: outcome.outcome,
+        secretCanaries,
+      });
+  if (outcome.outcome === "failure") throw outcome.error;
+  writeOutput(`${JSON.stringify(outcome.evidence)}\n`);
+  return outcome.evidence;
+}
+
 async function main() {
-  const prompts = JSON.parse(await readFile(new URL("../test/fixtures/fresh-agent/prompts.json", import.meta.url), "utf8"));
-  const clients = {
-    initiator: process.env.CLOCKCHAIN_INITIATOR_CLIENT ?? "codex",
-    responder: process.env.CLOCKCHAIN_RESPONDER_CLIENT ?? "claude",
-  };
-  const authentication = {
-    initiator: await authenticationFor(clients.initiator),
-    responder: await authenticationFor(clients.responder),
-  };
+  const artifactDirectory = value("CLOCKCHAIN_FRESH_AGENT_RESULT_DIR");
   const ownsParent = process.env.CLOCKCHAIN_FRESH_AGENT_PARENT === undefined;
   const parent = process.env.CLOCKCHAIN_FRESH_AGENT_PARENT ?? await mkdtemp(join(tmpdir(), "clockchain-fresh-agent-"));
+  let artifactCanaries = [];
   try {
-    const evidence = await runFreshAgentHandshake({
-      clients,
-      configureClient: (entry) => configureClient({ ...entry, authentication: authentication[entry.role] }),
-      prepareClient: (entry) => prepareClient({ ...entry, authentication: authentication[entry.role] }),
-      modelEnvironment: {
-        initiator: authentication.initiator.environment,
-        responder: authentication.responder.environment,
-      },
-      secretCanaries: {
-        initiator: authentication.initiator.secretCanaries,
-        responder: authentication.responder.secretCanaries,
-      },
-      monitor,
+    const prompts = JSON.parse(await readFile(new URL("../test/fixtures/fresh-agent/prompts.json", import.meta.url), "utf8"));
+    const clients = {
+      initiator: process.env.CLOCKCHAIN_INITIATOR_CLIENT ?? "codex",
+      responder: process.env.CLOCKCHAIN_RESPONDER_CLIENT ?? "claude",
+    };
+    const authentication = {
+      initiator: await authenticationFor(clients.initiator),
+      responder: await authenticationFor(clients.responder),
+    };
+    artifactCanaries = [
+      ...authentication.initiator.secretCanaries,
+      ...authentication.responder.secretCanaries,
       parent,
-      prompts: { initiator: prompts.initiator, responder: prompts.responder },
-      release: {
-        mcp: {
-          manifestDigest: value("CLOCKCHAIN_MCP_RELEASE_MANIFEST_DIGEST"),
-          hostRoots: roots("CLOCKCHAIN_MCP_HOST_ROOT_FINGERPRINTS"),
+    ];
+    await runFreshAgentCliAttempt({
+      artifactDirectory,
+      runHandshake: () => runFreshAgentHandshake({
+        clients,
+        configureClient: (entry) => configureClient({ ...entry, authentication: authentication[entry.role] }),
+        prepareClient: (entry) => prepareClient({ ...entry, authentication: authentication[entry.role] }),
+        modelEnvironment: {
+          initiator: authentication.initiator.environment,
+          responder: authentication.responder.environment,
         },
-        research: {
-          manifestDigest: value("CLOCKCHAIN_RESEARCH_RELEASE_MANIFEST_DIGEST"),
-          hostRoots: roots("CLOCKCHAIN_RESEARCH_HOST_ROOT_FINGERPRINTS"),
+        secretCanaries: {
+          initiator: authentication.initiator.secretCanaries,
+          responder: authentication.responder.secretCanaries,
         },
-      },
+        monitor,
+        parent,
+        prompts: { initiator: prompts.initiator, responder: prompts.responder },
+        release: {
+          mcp: {
+            manifestDigest: value("CLOCKCHAIN_MCP_RELEASE_MANIFEST_DIGEST"),
+            hostRoots: roots("CLOCKCHAIN_MCP_HOST_ROOT_FINGERPRINTS"),
+          },
+          research: {
+            manifestDigest: value("CLOCKCHAIN_RESEARCH_RELEASE_MANIFEST_DIGEST"),
+            hostRoots: roots("CLOCKCHAIN_RESEARCH_HOST_ROOT_FINGERPRINTS"),
+          },
+        },
+      }),
+      secretCanaries: artifactCanaries,
     });
-    process.stdout.write(`${JSON.stringify(evidence)}\n`);
+  } catch (error) {
+    process.stderr.write(SAFE_ERROR);
+    process.exitCode = 1;
   } finally {
     if (ownsParent) await rm(parent, { recursive: true, force: true });
   }

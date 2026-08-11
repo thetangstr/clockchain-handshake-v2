@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   CLOCKCHAIN_HANDSHAKE_MCP_URL,
   CLAUDE_CONTEXT_MARKER,
+  FreshAgentDiagnosticError,
   VERIFIED_HELPER_BOOTSTRAP,
   buildClientCommands,
   buildClaudeSandboxSettings,
@@ -15,25 +16,42 @@ import {
   classifyHelperExecutionCommand,
   createFreshAgentRun,
   runFreshAgentHandshake,
+  writeFreshAgentAttemptArtifact,
   validateHelperCommand,
   validateClaudePreparation,
   validateFreshAgentMonitorSnapshot,
   validateReleaseAgreement,
 } from "../src/testing/fresh-agent-client.mjs";
-import { monitor as runFreshAgentMonitor } from "../scripts/run-fresh-agent-handshake.mjs";
+import {
+  monitor as runFreshAgentMonitor,
+  runFreshAgentCliAttempt,
+} from "../scripts/run-fresh-agent-handshake.mjs";
+import { agentHandshakeV2ResultDigest } from "../src/agent-handshake/v2/result.mjs";
+import { ed25519PublicKeyFingerprint, hostSessionKeyCertificateDigest } from "../src/agent-handshake/v2/host-key-certificate.mjs";
+import {
+  IDENTITY_POLICY,
+  REPOSITORY_SHA,
+  SESSION_DEADLINE_MS,
+  SESSION_ID,
+  TERMS,
+  buildV2Fixture,
+  ed25519,
+} from "./support/agent-handshake-v2-fixture.mjs";
+
+const V2_FIXTURE = await buildV2Fixture();
 
 function streamEvent(value) {
   return `${JSON.stringify(value)}\n`;
 }
 
-function codexHelperProofEvent(result) {
+function codexHelperProofEvent(result, { command = verifyCertificateCommand(result.role) } = {}) {
   return streamEvent({
     type: "item.completed",
     item: {
       type: "command_execution",
       status: "completed",
       exit_code: 0,
-      command: verifyCertificateCommand(result.role),
+      command,
       aggregated_output: JSON.stringify(result),
     },
   });
@@ -51,20 +69,20 @@ function claudeHelperProofEvent(result, { command = verifyCertificateCommand(res
 }
 
 const DIGEST = "a".repeat(64);
-const ROOT = "b".repeat(64);
-const SESSION = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
-const REGISTRY = "0x8004a818bfb912233c491871b3d84c89a494bd9e";
+const ROOT = ed25519PublicKeyFingerprint(V2_FIXTURE.hostSessionKeyCertificate.rootSignature.publicKey);
+const SESSION = SESSION_ID;
 
-function verifyCertificateCommand(role) {
+function verifyCertificateCommand(role, overrides = {}) {
   const payload = {
     schema: "clockchain.agent-handshake-certificate-verification/v1",
     helperVersion: "2.1.2",
     role,
     sessionId: SESSION,
-    repositorySha: "f".repeat(40),
-    sessionDeadlineMs: "1786380600000",
-    certificate: {},
+    repositorySha: REPOSITORY_SHA,
+    sessionDeadlineMs: SESSION_DEADLINE_MS,
+    certificate: V2_FIXTURE.resultEnvelope,
     externalBusinessActionPerformed: false,
+    ...overrides,
   };
   return `node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${DIGEST} ./manifest.json ./clockchain-agent-handshake.cjs verify-certificate --state-dir "$TMPDIR/.clockchain/handshakes/${SESSION}/${role}" --payload-base64url ${Buffer.from(JSON.stringify(payload), "utf8").toString("base64url")}`;
 }
@@ -91,6 +109,7 @@ function roleAccess(role, allowedTools) {
 const INVITATION = roleAccess("responder", ["agent_handshake_accept_invitation"]);
 
 function helperProof(role) {
+  const party = V2_FIXTURE.parties[role];
   return {
     schema: "clockchain.agent-handshake-cli-result/v1",
     helperVersion: "2.1.2",
@@ -98,27 +117,20 @@ function helperProof(role) {
     certificateVerified: true,
     externalBusinessActionPerformed: false,
     identity: {
-      sessionKeyAddress: role === "initiator" ? `0x${"1".repeat(40)}` : `0x${"2".repeat(40)}`,
-      policyDigest: role === "initiator" ? "c".repeat(64) : "d".repeat(64),
-      erc8004: {
-        agentId: role === "initiator" ? "9452" : "9453",
-        chainId: "eip155:11155111",
-        registryAddress: REGISTRY,
-        reference: `eip155:11155111:${REGISTRY}:${role === "initiator" ? "9452" : "9453"}`,
-        registrationTx: `0x${(role === "initiator" ? "3" : "4").repeat(64)}`,
-        registrationBlock: role === "initiator" ? "9001" : "9002",
-      },
+      sessionKeyAddress: party.sessionKeyAddress,
+      policyDigest: party.policyDigest,
+      erc8004: party.erc8004,
     },
     outcome: "VERIFIED",
-    policyDigest: role === "initiator" ? "c".repeat(64) : "d".repeat(64),
+    policyDigest: party.policyDigest,
     role,
     sessionId: SESSION,
-    statementDigest: "9".repeat(64),
+    statementDigest: V2_FIXTURE.verdict.statementDigest,
   };
 }
 
 function completeMonitorSnapshot() {
-  const completed = monitorResult();
+  const completed = monitorFacts();
   const receipt = (kind, index) => ({
     blockHeight: String(7000 + index),
     blockTimeRaw: `2026-08-10T19:0${index}:00.000Z`,
@@ -131,28 +143,28 @@ function completeMonitorSnapshot() {
     schema: "clockchain.agent-handshake-snapshot/v2",
     protocol: "clockchain.agent-handshake/v2",
     sessionId: SESSION,
-    repositorySha: "f".repeat(40),
+    repositorySha: REPOSITORY_SHA,
     hostTrust: {
-      rootKid: "root-2026-08",
+      rootKid: V2_FIXTURE.root.keyId,
       rootFingerprint: ROOT,
-      sessionPublicKey: "A".repeat(43) + "=",
-      sessionKeyCertificateDigest: "b".repeat(64),
+      sessionPublicKey: V2_FIXTURE.host.publicKey,
+      sessionKeyCertificateDigest: hostSessionKeyCertificateDigest(V2_FIXTURE.hostSessionKeyCertificate),
     },
     timing: {
-      createdAtMs: 1786380000000,
-      invitationExpiresAtMs: 1786380120000,
-      sessionDeadlineMs: 1786380600000,
+      createdAtMs: 1786337000000,
+      invitationExpiresAtMs: 1786337120000,
+      sessionDeadlineMs: Number(SESSION_DEADLINE_MS),
       agreementValidForSeconds: "90",
     },
-    invitation: { createdAtMs: 1786380001000, responderClaimedAtMs: 1786380002000 },
+    invitation: { createdAtMs: 1786337001000, responderClaimedAtMs: 1786337002000 },
     terms: {
-      reference: "NS-1847",
-      statement: "Northstar Logistics and Harbor Supply authorize these agents to communicate.",
-      identityPolicy: { erc8004: "required_fresh", chainId: "eip155:11155111", registryAddress: REGISTRY },
+      reference: TERMS.reference,
+      statement: TERMS.statement,
+      identityPolicy: IDENTITY_POLICY,
     },
     policies: {
-      initiator: { digest: completed.roles.initiator.policyDigest, committedAtMs: 1786380003000 },
-      responder: { digest: completed.roles.responder.policyDigest, committedAtMs: 1786380004000 },
+      initiator: { digest: completed.roles.initiator.policyDigest, committedAtMs: 1786337003000 },
+      responder: { digest: completed.roles.responder.policyDigest, committedAtMs: 1786337004000 },
     },
     parties: {
       initiator: { sessionKeyAddress: completed.roles.initiator.address, erc8004: completed.roles.initiator.erc8004 },
@@ -161,26 +173,25 @@ function completeMonitorSnapshot() {
     statements: { proposalDigest: "1".repeat(64), acceptanceDigest: "2".repeat(64) },
     receipts: { proposal: receipt("proposal", 0), acceptance: receipt("acceptance", 1), acknowledgment: receipt("acknowledgment", 2) },
     evidence: {
-      initiator: { digest: "3".repeat(64), receivedAtMs: 1786380100000 },
-      responder: { digest: "4".repeat(64), receivedAtMs: 1786380100001 },
+      initiator: { digest: "3".repeat(64), receivedAtMs: 1786337170000 },
+      responder: { digest: "4".repeat(64), receivedAtMs: 1786337170001 },
     },
-    checker: { stage: "VERIFIED", lastSeenMs: 1786380101000 },
-    certificate: { digest: completed.certificateDigest, issuedAtMs: 1786380102000, outcome: "VERIFIED" },
+    checker: { stage: "VERIFIED", lastSeenMs: 1786337180000 },
+    certificate: { digest: completed.certificateDigest, issuedAtMs: 1786337180000, outcome: "VERIFIED" },
     freshness: {
-      initiator: { lastSeenMs: 1786380100000 }, responder: { lastSeenMs: 1786380100001 },
-      host: { lastSeenMs: 1786380101000 }, checker: { lastSeenMs: 1786380101000 },
+      initiator: { lastSeenMs: 1786337170000 }, responder: { lastSeenMs: 1786337170001 },
+      host: { lastSeenMs: 1786337180000 }, checker: { lastSeenMs: 1786337180000 },
     },
     failure: null,
     externalBusinessActionPerformed: false,
   };
 }
 
-function monitorResult() {
+function monitorFacts() {
   return {
-    chronology: ["SESSION_STARTED", "INVITATION_CLAIMED", "POLICIES_COMMITTED", "IDENTITIES_REGISTERED", "STATEMENT_PROPOSED", "STATEMENT_ACCEPTED", "PROPOSED", "ACCEPTED", "ACKNOWLEDGED", "EVIDENCE_RECEIVED", "VERIFIED", "CERTIFIED"],
     sessionId: SESSION,
-    statementDigest: "9".repeat(64),
-    certificateDigest: "e".repeat(64),
+    statementDigest: V2_FIXTURE.verdict.statementDigest,
+    certificateDigest: agentHandshakeV2ResultDigest(V2_FIXTURE.resultEnvelope),
     receiptIds: [
       "11111111-2222-4333-8444-555555555551",
       "11111111-2222-4333-8444-555555555552",
@@ -188,13 +199,28 @@ function monitorResult() {
     ],
     externalBusinessActionPerformed: false,
     roles: {
-      initiator: { address: `0x${"1".repeat(40)}`, policyDigest: "c".repeat(64), erc8004: helperProof("initiator").identity.erc8004 },
-      responder: { address: `0x${"2".repeat(40)}`, policyDigest: "d".repeat(64), erc8004: helperProof("responder").identity.erc8004 },
+      initiator: {
+        address: V2_FIXTURE.parties.initiator.sessionKeyAddress,
+        policyDigest: V2_FIXTURE.parties.initiator.policyDigest,
+        erc8004: V2_FIXTURE.parties.initiator.erc8004,
+      },
+      responder: {
+        address: V2_FIXTURE.parties.responder.sessionKeyAddress,
+        policyDigest: V2_FIXTURE.parties.responder.policyDigest,
+        erc8004: V2_FIXTURE.parties.responder.erc8004,
+      },
     },
   };
 }
 
-function successfulFreshAgentSpawn(calls = []) {
+function monitorProjection(overrides = {}) {
+  return {
+    ...validateFreshAgentMonitorSnapshot(completeMonitorSnapshot(), SESSION),
+    ...overrides,
+  };
+}
+
+function successfulFreshAgentSpawn(calls = [], { command = verifyCertificateCommand, helper = helperProof } = {}) {
   const children = {};
   return (file, args, options) => {
     calls.push({ file, args, options });
@@ -213,8 +239,10 @@ function successfulFreshAgentSpawn(calls = []) {
           })));
           return;
         }
-        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
-        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
+        const initiatorProof = helper("initiator");
+        const responderProof = helper("responder");
+        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(initiatorProof, { command: command("initiator") })));
+        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(responderProof, { command: command("responder") })));
         children.initiator.emit("close", 0, null);
         children.responder.emit("close", 0, null);
       });
@@ -232,7 +260,7 @@ function baseFreshAgentRunOptions(parent, overrides = {}) {
     prepareClient: async () => true,
     modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
     secretCanaries: { initiator: ["canary-initiator-secret"], responder: ["canary-responder-secret"] },
-    monitor: async () => monitorResult(),
+    monitor: async () => monitorProjection(),
     parent,
     prompts: { initiator: "init", responder: "respond <PASTE THE INITIATOR INVITATION>" },
     release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
@@ -360,11 +388,16 @@ test("projects terminal evidence only from a complete, strictly validated v2 mon
   const snapshot = completeMonitorSnapshot();
   const projected = validateFreshAgentMonitorSnapshot(snapshot, SESSION);
   assert.equal(projected.sessionId, SESSION);
-  assert.equal(projected.certificateDigest, snapshot.certificate.digest);
-  assert.deepEqual(projected.receiptIds, Object.values(snapshot.receipts).map((entry) => entry.ledgerId));
+  assert.equal(projected.certificate.digest, snapshot.certificate.digest);
+  assert.deepEqual(Object.values(projected.receipts).map((entry) => entry.ledgerId), Object.values(snapshot.receipts).map((entry) => entry.ledgerId));
   assert.equal(projected.roles.initiator.erc8004.agentId, "9452");
   assert.equal(projected.roles.responder.erc8004.agentId, "9453");
-  assert.equal(projected.chronology.at(-1), "CERTIFIED");
+  assert.equal("chronology" in projected, false);
+  assert.equal(projected.checker.stage, snapshot.checker.stage);
+  assert.equal(projected.checker.lastSeenMs, snapshot.checker.lastSeenMs);
+  assert.equal(projected.certificate.issuedAtMs, snapshot.certificate.issuedAtMs);
+  assert.equal(projected.receipts.proposal.blockTimeRaw, snapshot.receipts.proposal.blockTimeRaw);
+  assert.equal(JSON.stringify(projected).includes("CERTIFIED"), false);
 
   const incomplete = structuredClone(snapshot);
   incomplete.certificate = null;
@@ -372,6 +405,157 @@ test("projects terminal evidence only from a complete, strictly validated v2 mon
   assert.equal(validateFreshAgentMonitorSnapshot(incomplete, SESSION), null);
   assert.equal(validateFreshAgentMonitorSnapshot(snapshot, "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"), null);
   assert.throws(() => validateFreshAgentMonitorSnapshot({ ...snapshot, externalBusinessActionPerformed: true }, SESSION));
+});
+
+test("parent independently binds exact certificate payloads to the monitor snapshot and release root", async (t) => {
+  const cases = [
+    ["foreign-root", {
+      command: (role) => {
+        const foreign = ed25519("foreign-root");
+        const certificate = structuredClone(V2_FIXTURE.resultEnvelope);
+        certificate.hostSessionKeyCertificate.rootSignature.publicKey = foreign.publicKey;
+        return verifyCertificateCommand(role, { certificate });
+      },
+    }],
+    ["unpinned-root", { release: { mcp: { manifestDigest: DIGEST, hostRoots: ["9".repeat(64)] }, research: { manifestDigest: DIGEST, hostRoots: ["9".repeat(64)] } } }],
+    ["mismatched-certificate-digest", { monitor: async () => {
+      const projection = monitorProjection();
+      return { ...projection, certificate: { ...projection.certificate, digest: "9".repeat(64) } };
+    } }],
+    ["different-role-certificates", { command: (role) => verifyCertificateCommand(role, role === "responder" ? { certificate: structuredClone({ ...V2_FIXTURE.resultEnvelope, result: { ...V2_FIXTURE.resultEnvelope.result, issuedAtMs: "1786337180010" } }) } : {}) }],
+    ["wrong-session", { command: (role) => verifyCertificateCommand(role, { sessionId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" }) }],
+    ["wrong-repository", { command: (role) => verifyCertificateCommand(role, { repositorySha: "f".repeat(40) }) }],
+    ["wrong-deadline", { command: (role) => verifyCertificateCommand(role, { sessionDeadlineMs: "1786337190000" }) }],
+    ["wrong-party", { helper: (role) => ({ ...helperProof(role), identity: { ...helperProof(role).identity, sessionKeyAddress: `0x${"9".repeat(40)}` } }) }],
+    ["wrong-policy", { helper: (role) => ({ ...helperProof(role), policyDigest: "9".repeat(64), identity: { ...helperProof(role).identity, policyDigest: "9".repeat(64) } }) }],
+  ];
+
+  for (const [name, override] of cases) {
+    await t.test(name, async (t) => {
+      const parent = await mkdtemp(join(tmpdir(), `fresh-agent-binding-${name}-`));
+      t.after(() => rm(parent, { recursive: true, force: true }));
+      const spawnProcess = successfulFreshAgentSpawn([], {
+        command: override.command,
+        helper: override.helper,
+      });
+      await assert.rejects(() => runFreshAgentHandshake(baseFreshAgentRunOptions(parent, {
+        monitor: override.monitor ?? (async () => monitorProjection()),
+        release: override.release ?? { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
+        spawnProcess,
+      })), /failed safely/);
+      assert.deepEqual(await readdir(parent), []);
+    });
+  }
+});
+
+test("public role certificate verification is sourced from parent binding, not helper prose", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-parent-derived-role-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const helper = (role) => ({ ...helperProof(role), certificateVerified: false });
+
+  const result = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, {
+    spawnProcess: successfulFreshAgentSpawn([], { helper }),
+  }));
+
+  assert.equal(result.certificateVerified, true);
+  assert.equal(result.roles.initiator.certificateVerified, result.certificateVerified);
+  assert.equal(result.roles.responder.certificateVerified, result.certificateVerified);
+});
+
+test("attempt artifacts are private, exclusive, secret-free, and survive clean-room cleanup", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-artifact-parent-"));
+  const artifacts = await mkdtemp(join(tmpdir(), "fresh-agent-artifacts-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  t.after(() => rm(artifacts, { recursive: true, force: true }));
+
+  const evidence = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent));
+  const success = await writeFreshAgentAttemptArtifact({
+    attemptId: "success-attempt",
+    directory: artifacts,
+    evidence,
+    outcome: "success",
+    secretCanaries: ["one-secret", "two-secret"],
+  });
+  const successText = await readFile(success.path, "utf8");
+  const successJson = JSON.parse(successText);
+  assert.equal(successJson.outcome, "success");
+  assert.deepEqual(successJson.result, evidence);
+  assert.equal(successText.includes("CERTIFIED"), false);
+  assert.equal(successText.includes(V2_FIXTURE.resultEnvelope.signer.signature), false);
+  assert.equal(successText.includes(parent), false);
+  assert.equal((await stat(success.path)).mode & 0o777, 0o600);
+  await assert.rejects(() => writeFreshAgentAttemptArtifact({
+    attemptId: "success-attempt",
+    directory: artifacts,
+    evidence,
+    outcome: "success",
+  }));
+
+  const failure = await writeFreshAgentAttemptArtifact({
+    attemptId: "failure-attempt",
+    directory: artifacts,
+    error: new FreshAgentDiagnosticError({ phase: "monitor", category: "validation", code: "MONITOR_RESULT_INVALID" }),
+    outcome: "failure",
+    secretCanaries: ["raw-model-output-secret", parent, V2_FIXTURE.resultEnvelope.signer.signature],
+  });
+  const failureText = await readFile(failure.path, "utf8");
+  const failureJson = JSON.parse(failureText);
+  assert.deepEqual(failureJson, {
+    schema: "clockchain.fresh-agent-canary-attempt/v1",
+    attemptId: "failure-attempt",
+    outcome: "failure",
+    diagnostic: { phase: "monitor", category: "validation", code: "MONITOR_RESULT_INVALID" },
+  });
+  assert.equal(failureText.includes("raw-model-output-secret"), false);
+  assert.equal(failureText.includes(parent), false);
+  assert.equal(failureText.includes("signature"), false);
+  assert.equal((await stat(failure.path)).mode & 0o777, 0o600);
+  assert.deepEqual((await readdir(artifacts)).sort(), ["failure-attempt.json", "success-attempt.json"]);
+  assert.deepEqual(await readdir(parent), []);
+});
+
+test("malformed success evidence is rejected before creating an attempt artifact", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-malformed-evidence-parent-"));
+  const artifacts = await mkdtemp(join(tmpdir(), "fresh-agent-malformed-evidence-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  t.after(() => rm(artifacts, { recursive: true, force: true }));
+  const evidence = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent));
+
+  await assert.rejects(() => writeFreshAgentAttemptArtifact({
+    attemptId: "malformed-success",
+    directory: artifacts,
+    evidence: { ...evidence, schema: "wrong" },
+    outcome: "success",
+  }), /failed safely/);
+
+  assert.deepEqual(await readdir(artifacts), []);
+});
+
+test("CLI attempt writes at most one artifact for the captured handshake outcome", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-cli-once-parent-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const evidence = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent));
+  for (const name of ["post-success-artifact-failure", "post-success-stdout-failure"]) {
+    await t.test(name, async () => {
+      const calls = [];
+      await assert.rejects(() => runFreshAgentCliAttempt({
+        artifactDirectory: "/tmp/fresh-agent-cli-artifacts",
+        attemptId: "same-attempt",
+        runHandshake: async () => evidence,
+        secretCanaries: ["secret"],
+        writeArtifact: async (entry) => {
+          calls.push(entry);
+          if (name === "post-success-artifact-failure") throw new Error("disk write failed after success");
+        },
+        writeOutput: () => { throw new Error("stdout closed after success"); },
+      }));
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].attemptId, "same-attempt");
+      assert.equal(calls[0].outcome, "success");
+      assert.equal(calls[0].evidence, evidence);
+      assert.equal("error" in calls[0], false);
+    });
+  }
 });
 
 test("fresh-agent monitor retries transient 502 until a valid complete snapshot succeeds", async (t) => {
@@ -632,7 +816,7 @@ test("starts the Responder only after the Initiator emits its actual one-time in
       initiator: [`${secret}-codex-auth`],
       responder: [`${secret}-claude-auth`],
     },
-    monitor: async () => monitorResult(),
+    monitor: async () => monitorProjection(),
     parent,
     prompts: { initiator: "init prompt", responder: "consume <PASTE THE INITIATOR INVITATION> now" },
     release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
@@ -690,7 +874,7 @@ test("fresh-agent injected failures produce distinct safe diagnostics", async (t
       expected: { phase: "monitor", category: "monitor", code: "MONITOR_FAILED" },
     }],
     ["monitor-validation", {
-      monitor: async () => ({ ...monitorResult(), sessionId: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff" }),
+      monitor: async () => monitorProjection({ sessionId: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff" }),
       expected: { phase: "monitor", category: "validation", code: "MONITOR_RESULT_INVALID" },
     }],
     ["timeout", {
@@ -772,7 +956,7 @@ test("rejects model-authored certificate claims without completed helper executi
     clients: { initiator: "codex", responder: "claude" },
     configureClient: async () => {}, prepareClient: async () => true,
     modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
-    monitor: async () => monitorResult(), parent,
+    monitor: async () => monitorProjection(), parent,
     prompts: { initiator: "init", responder: "respond <PASTE THE INITIATOR INVITATION>" },
     release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
     spawnProcess, timeoutMs: 2_000,
@@ -819,7 +1003,7 @@ test("rejects helper-shaped output not produced by the exact pinned verification
         clients: { initiator: "codex", responder: "claude" },
         configureClient: async () => {}, prepareClient: async () => true,
         modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
-        monitor: async () => monitorResult(), parent,
+        monitor: async () => monitorProjection(), parent,
         prompts: { initiator: "init", responder: "respond <PASTE THE INITIATOR INVITATION>" },
         release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
         spawnProcess, timeoutMs: 2_000,

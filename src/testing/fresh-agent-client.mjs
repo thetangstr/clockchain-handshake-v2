@@ -5,6 +5,15 @@ import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 
 import { assertSecretFree } from "../core/redact.mjs";
+import { preparePrivateDirectory, readPrivateText, writePrivateFile } from "../core/private-path.mjs";
+import {
+  agentHandshakeV2ResultDigest,
+  verifyAgentHandshakeV2Result,
+} from "../agent-handshake/v2/result.mjs";
+import {
+  ed25519PublicKeyFingerprint,
+  hostSessionKeyCertificateDigest,
+} from "../agent-handshake/v2/host-key-certificate.mjs";
 import { agentHandshakeV2StatementDigest } from "../agent-handshake/v2/terms.mjs";
 import {
   AGENT_HANDSHAKE_V2_SNAPSHOT_SCHEMA,
@@ -47,7 +56,9 @@ const UNSAFE_SHELL = /[\0\r\n;&|`$<>]/;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const HELPER_RESULT_SCHEMA = "clockchain.agent-handshake-cli-result/v1";
 const EVIDENCE_SCHEMA = "clockchain.fresh-agent-canary-evidence/v1";
+const ATTEMPT_ARTIFACT_SCHEMA = "clockchain.fresh-agent-canary-attempt/v1";
 const RESPONDER_INVITATION_PLACEHOLDER = "<PASTE THE INITIATOR INVITATION>";
+const HELPER_CERTIFICATE_BINDINGS = new WeakMap();
 export const CLAUDE_CONTEXT_MARKER = "CLOCKCHAIN_CONTEXT_RECEIVED";
 export const CLAUDE_CONTEXT_PROMPT = `I am using this fresh disposable workspace for an expected Clockchain test. In my next message I will provide a concrete role-specific request. Do not perform any action now; evaluate that later request on its own exact scope and safety boundaries. Reply exactly ${CLAUDE_CONTEXT_MARKER}.`;
 const TRACE_LIFECYCLE = process.env.CLOCKCHAIN_FRESH_AGENT_TRACE === "1";
@@ -457,7 +468,7 @@ function validateHelperProof(parsed, role) {
     parsed.schema !== HELPER_RESULT_SCHEMA || parsed.helperVersion !== "2.1.2" ||
     parsed.operation !== "verify-certificate" || parsed.outcome !== "VERIFIED" ||
     parsed.role !== role || !UUID.test(parsed.sessionId) || !SHA256.test(parsed.policyDigest) ||
-    !SHA256.test(parsed.statementDigest) || parsed.certificateVerified !== true ||
+    !SHA256.test(parsed.statementDigest) || typeof parsed.certificateVerified !== "boolean" ||
     parsed.externalBusinessActionPerformed !== false
   ) fail();
   const identity = exactObject(parsed.identity, ["erc8004", "policyDigest", "sessionKeyAddress"]);
@@ -579,6 +590,11 @@ function validateVerifyCertificateCommand(value, proof, manifestDigest) {
     typeof payload.certificate !== "object" || Array.isArray(payload.certificate) ||
     payload.externalBusinessActionPerformed !== false
   ) fail();
+  return Object.freeze({
+    certificate: payload.certificate,
+    repositorySha: payload.repositorySha,
+    sessionDeadlineMs: payload.sessionDeadlineMs,
+  });
 }
 
 function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands) {
@@ -588,7 +604,7 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands) {
   ) {
     const proof = parsedHelperProof(event.item.aggregated_output, role);
     if (proof === null) return null;
-    validateVerifyCertificateCommand(event.item.command, proof, manifestDigest);
+    HELPER_CERTIFICATE_BINDINGS.set(proof, validateVerifyCertificateCommand(event.item.command, proof, manifestDigest));
     return proof;
   }
   if (event?.type === "assistant" && Array.isArray(event?.message?.content)) {
@@ -609,7 +625,7 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands) {
     if (typeof block.tool_use_id !== "string") fail();
     const command = claudeBashCommands.get(block.tool_use_id);
     if (typeof command !== "string") fail();
-    validateVerifyCertificateCommand(command, parsed, manifestDigest);
+    HELPER_CERTIFICATE_BINDINGS.set(parsed, validateVerifyCertificateCommand(command, parsed, manifestDigest));
     claudeBashCommands.set(block.tool_use_id, null);
     if (found !== null && JSON.stringify(found) !== JSON.stringify(parsed)) fail();
     found = parsed;
@@ -831,24 +847,59 @@ function validateMonitorRole(value) {
   return Object.freeze({ address: item.address, policyDigest: item.policyDigest, erc8004: validateRegistration(item.erc8004) });
 }
 
+function validateMonitorReceipt(value, kind) {
+  const item = exactObject(value, ["blockHeight", "blockTimeRaw", "digest", "explorerUrl", "kind", "ledgerId"]);
+  if (
+    item.kind !== kind || !DECIMAL.test(item.blockHeight) || typeof item.blockTimeRaw !== "string" ||
+    item.blockTimeRaw.length === 0 || !SHA256.test(item.digest) || typeof item.explorerUrl !== "string" ||
+    !/^https:\/\//.test(item.explorerUrl) || !UUID.test(item.ledgerId)
+  ) fail();
+  return Object.freeze({ ...item });
+}
+
 function validateMonitorResult(value, expectedSessionId) {
   const item = exactObject(value, [
-    "certificateDigest", "chronology", "externalBusinessActionPerformed", "receiptIds", "roles", "sessionId", "statementDigest",
+    "certificate", "checker", "externalBusinessActionPerformed", "hostTrust", "receipts",
+    "repositorySha", "roles", "sessionId", "statementDigest", "timing",
+  ]);
+  const certificate = exactObject(item.certificate, ["digest", "issuedAtMs", "outcome"]);
+  const checker = exactObject(item.checker, ["stage", "lastSeenMs"]);
+  const hostTrust = exactObject(item.hostTrust, [
+    "rootKid", "rootFingerprint", "sessionPublicKey", "sessionKeyCertificateDigest",
+  ]);
+  const timing = exactObject(item.timing, [
+    "createdAtMs", "invitationExpiresAtMs", "sessionDeadlineMs", "agreementValidForSeconds",
   ]);
   if (
-    item.sessionId !== expectedSessionId || !UUID.test(item.sessionId) || !SHA256.test(item.certificateDigest) ||
+    item.sessionId !== expectedSessionId || !UUID.test(item.sessionId) || !SHA.test(item.repositorySha) ||
     !SHA256.test(item.statementDigest) || item.externalBusinessActionPerformed !== false ||
-    !Array.isArray(item.chronology) || item.chronology.at(-1) !== "CERTIFIED" ||
-    item.chronology.some((entry) => typeof entry !== "string" || entry.length === 0) ||
-    !Array.isArray(item.receiptIds) || item.receiptIds.length !== 3 || new Set(item.receiptIds).size !== 3 ||
-    item.receiptIds.some((entry) => typeof entry !== "string" || entry.length === 0)
+    !SHA256.test(certificate.digest) || certificate.outcome !== "VERIFIED" ||
+    !Number.isSafeInteger(certificate.issuedAtMs) || certificate.issuedAtMs < 0 ||
+    checker.stage !== "VERIFIED" || !Number.isSafeInteger(checker.lastSeenMs) || checker.lastSeenMs < 0 ||
+    typeof hostTrust.rootKid !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(hostTrust.rootKid) ||
+    !SHA256.test(hostTrust.rootFingerprint) || typeof hostTrust.sessionPublicKey !== "string" ||
+    Buffer.from(hostTrust.sessionPublicKey, "base64").length !== 32 ||
+    !SHA256.test(hostTrust.sessionKeyCertificateDigest) ||
+    !Number.isSafeInteger(timing.createdAtMs) || !Number.isSafeInteger(timing.invitationExpiresAtMs) ||
+    !Number.isSafeInteger(timing.sessionDeadlineMs) || timing.agreementValidForSeconds !== "90"
   ) fail();
+  const receipts = exactObject(item.receipts, ["proposal", "acceptance", "acknowledgment"]);
   const roles = exactObject(item.roles, ROLES);
   return Object.freeze({
-    ...item,
-    chronology: Object.freeze([...item.chronology]),
-    receiptIds: Object.freeze([...item.receiptIds]),
+    certificate: Object.freeze({ ...certificate }),
+    checker: Object.freeze({ ...checker }),
+    externalBusinessActionPerformed: false,
+    hostTrust: Object.freeze({ ...hostTrust }),
+    receipts: Object.freeze({
+      proposal: validateMonitorReceipt(receipts.proposal, "proposal"),
+      acceptance: validateMonitorReceipt(receipts.acceptance, "acceptance"),
+      acknowledgment: validateMonitorReceipt(receipts.acknowledgment, "acknowledgment"),
+    }),
+    repositorySha: item.repositorySha,
     roles: Object.freeze({ initiator: validateMonitorRole(roles.initiator), responder: validateMonitorRole(roles.responder) }),
+    sessionId: item.sessionId,
+    statementDigest: item.statementDigest,
+    timing: Object.freeze({ ...timing }),
   });
 }
 
@@ -866,14 +917,12 @@ export function validateFreshAgentMonitorSnapshot(value, expectedSessionId) {
   if (!complete) return null;
   const terms = { ...snapshot.terms, validForSeconds: snapshot.timing.agreementValidForSeconds };
   return validateMonitorResult({
-    certificateDigest: snapshot.certificate.digest,
-    chronology: [
-      "SESSION_STARTED", "INVITATION_CLAIMED", "POLICIES_COMMITTED", "IDENTITIES_REGISTERED",
-      "STATEMENT_PROPOSED", "STATEMENT_ACCEPTED", "PROPOSED", "ACCEPTED", "ACKNOWLEDGED",
-      "EVIDENCE_RECEIVED", "VERIFIED", "CERTIFIED",
-    ],
+    certificate: snapshot.certificate,
+    checker: snapshot.checker,
     externalBusinessActionPerformed: snapshot.externalBusinessActionPerformed,
-    receiptIds: [snapshot.receipts.proposal.ledgerId, snapshot.receipts.acceptance.ledgerId, snapshot.receipts.acknowledgment.ledgerId],
+    hostTrust: snapshot.hostTrust,
+    receipts: snapshot.receipts,
+    repositorySha: snapshot.repositorySha,
     roles: Object.fromEntries(ROLES.map((role) => [role, {
       address: snapshot.parties[role].sessionKeyAddress,
       erc8004: snapshot.parties[role].erc8004,
@@ -881,10 +930,11 @@ export function validateFreshAgentMonitorSnapshot(value, expectedSessionId) {
     }])),
     sessionId: snapshot.sessionId,
     statementDigest: agentHandshakeV2StatementDigest(terms),
+    timing: snapshot.timing,
   }, expectedSessionId);
 }
 
-function publicRole(value, monitorResult) {
+function publicRole(value, monitorResult, binding) {
   const role = monitorResult.roles[value.role];
   if (
     value.sessionId !== monitorResult.sessionId || value.statementDigest !== monitorResult.statementDigest ||
@@ -893,14 +943,246 @@ function publicRole(value, monitorResult) {
   ) fail();
   return Object.freeze({
     address: role.address,
-    certificateDigest: monitorResult.certificateDigest,
-    certificateVerified: value.certificateVerified,
+    certificateDigest: monitorResult.certificate.digest,
+    certificateVerified: binding.certificateVerified,
     erc8004: role.erc8004,
     externalBusinessActionPerformed: value.externalBusinessActionPerformed,
     policyDigest: value.policyDigest,
-    receiptIds: monitorResult.receiptIds,
+    receiptIds: [
+      monitorResult.receipts.proposal.ledgerId,
+      monitorResult.receipts.acceptance.ledgerId,
+      monitorResult.receipts.acknowledgment.ledgerId,
+    ],
     role: value.role,
     sessionId: value.sessionId,
+  });
+}
+
+function attemptId(value) {
+  if (typeof value !== "string" || !SAFE_SEGMENT.test(value)) fail();
+  return value;
+}
+
+function diagnosticPayload(error) {
+  const clean = error instanceof FreshAgentDiagnosticError
+    ? error.diagnostic
+    : diagnostic("unknown", "unknown", "UNKNOWN").diagnostic;
+  return Object.freeze({
+    phase: cleanDiagnosticPhase(clean.phase),
+    category: cleanDiagnosticCategory(clean.category),
+    code: cleanDiagnosticCode(clean.code),
+  });
+}
+
+function validatePublicRoleEvidence(value, role, expectedSessionId, expectedCertificateDigest, expectedCertificateVerified) {
+  const item = exactObject(value, [
+    "address", "certificateDigest", "certificateVerified", "erc8004", "externalBusinessActionPerformed",
+    "policyDigest", "receiptIds", "role", "sessionId",
+  ]);
+  if (
+    item.role !== role || item.sessionId !== expectedSessionId || !ADDRESS.test(item.address) ||
+    item.certificateDigest !== expectedCertificateDigest || item.certificateVerified !== expectedCertificateVerified ||
+    item.externalBusinessActionPerformed !== false || !SHA256.test(item.policyDigest) ||
+    !Array.isArray(item.receiptIds) || item.receiptIds.length !== 3 ||
+    new Set(item.receiptIds).size !== 3 || item.receiptIds.some((entry) => !UUID.test(entry))
+  ) fail();
+  return Object.freeze({
+    address: item.address,
+    certificateDigest: item.certificateDigest,
+    certificateVerified: item.certificateVerified,
+    erc8004: validateRegistration(item.erc8004),
+    externalBusinessActionPerformed: false,
+    policyDigest: item.policyDigest,
+    receiptIds: Object.freeze([...item.receiptIds]),
+    role,
+    sessionId: item.sessionId,
+  });
+}
+
+function validatePublicMonitorEvidence(value, expectedSessionId, binding) {
+  const item = exactObject(value, ["certificate", "checker", "hostTrust", "receipts", "sessionId"]);
+  const certificate = exactObject(item.certificate, ["digest", "issuedAtMs", "outcome"]);
+  const checker = exactObject(item.checker, ["stage", "lastSeenMs"]);
+  const hostTrust = exactObject(item.hostTrust, [
+    "rootKid", "rootFingerprint", "sessionPublicKey", "sessionKeyCertificateDigest",
+  ]);
+  if (
+    item.sessionId !== expectedSessionId || certificate.digest !== binding.certificateDigest ||
+    certificate.outcome !== "VERIFIED" || !Number.isSafeInteger(certificate.issuedAtMs) || certificate.issuedAtMs < 0 ||
+    checker.stage !== "VERIFIED" || !Number.isSafeInteger(checker.lastSeenMs) || checker.lastSeenMs < 0 ||
+    !/^[a-z0-9][a-z0-9-]{0,63}$/.test(hostTrust.rootKid) ||
+    hostTrust.rootFingerprint !== binding.hostRootFingerprint ||
+    typeof hostTrust.sessionPublicKey !== "string" || Buffer.from(hostTrust.sessionPublicKey, "base64").length !== 32 ||
+    hostTrust.sessionKeyCertificateDigest !== binding.hostSessionKeyCertificateDigest
+  ) fail();
+  const receipts = exactObject(item.receipts, ["proposal", "acceptance", "acknowledgment"]);
+  return Object.freeze({
+    certificate: Object.freeze({ ...certificate }),
+    checker: Object.freeze({ ...checker }),
+    hostTrust: Object.freeze({ ...hostTrust }),
+    receipts: Object.freeze({
+      proposal: validateMonitorReceipt(receipts.proposal, "proposal"),
+      acceptance: validateMonitorReceipt(receipts.acceptance, "acceptance"),
+      acknowledgment: validateMonitorReceipt(receipts.acknowledgment, "acknowledgment"),
+    }),
+    sessionId: item.sessionId,
+  });
+}
+
+function validateSuccessEvidence(value) {
+  const item = exactObject(value, [
+    "binding", "certificateVerified", "cleanup", "clients", "monitor", "release", "roles", "runId", "schema",
+  ]);
+  if (item.schema !== EVIDENCE_SCHEMA || !SAFE_SEGMENT.test(item.runId) || item.certificateVerified !== true) fail();
+  const clients = exactObject(item.clients, ROLES);
+  const release = validateReleaseAgreement({ mcp: item.release, research: item.release });
+  const binding = exactObject(item.binding, [
+    "certificateDigest", "hostRootFingerprint", "hostSessionKeyCertificateDigest", "repositorySha", "sessionDeadlineMs",
+  ]);
+  if (
+    !SHA256.test(binding.certificateDigest) || !SHA256.test(binding.hostRootFingerprint) ||
+    !release.hostRoots.includes(binding.hostRootFingerprint) ||
+    !SHA256.test(binding.hostSessionKeyCertificateDigest) || !SHA.test(binding.repositorySha) ||
+    !Number.isSafeInteger(binding.sessionDeadlineMs) || binding.sessionDeadlineMs < 1
+  ) fail();
+  const roles = exactObject(item.roles, ROLES);
+  const initiator = validatePublicRoleEvidence(roles.initiator, "initiator", item.monitor?.sessionId, binding.certificateDigest, item.certificateVerified);
+  const responder = validatePublicRoleEvidence(roles.responder, "responder", item.monitor?.sessionId, binding.certificateDigest, item.certificateVerified);
+  if (
+    initiator.address === responder.address || initiator.erc8004.agentId === responder.erc8004.agentId ||
+    initiator.policyDigest === responder.policyDigest ||
+    JSON.stringify(initiator.receiptIds) !== JSON.stringify(responder.receiptIds)
+  ) fail();
+  const cleanup = exactObject(item.cleanup, ["completed"]);
+  if (cleanup.completed !== true) fail();
+  return Object.freeze({
+    schema: EVIDENCE_SCHEMA,
+    runId: item.runId,
+    release,
+    clients: Object.freeze({ initiator: cleanClient(clients.initiator), responder: cleanClient(clients.responder) }),
+    roles: Object.freeze({ initiator, responder }),
+    certificateVerified: true,
+    binding: Object.freeze({ ...binding }),
+    monitor: validatePublicMonitorEvidence(item.monitor, initiator.sessionId, binding),
+    cleanup: Object.freeze({ completed: true }),
+  });
+}
+
+export async function writeFreshAgentAttemptArtifact({
+  attemptId: rawAttemptId = randomUUID(),
+  directory,
+  error,
+  evidence,
+  outcome,
+  secretCanaries = [],
+} = {}) {
+  const cleanDirectory = absolute(directory);
+  const cleanAttemptId = attemptId(rawAttemptId);
+  if (!["success", "failure"].includes(outcome)) fail();
+  if (!Array.isArray(secretCanaries) || secretCanaries.some((entry) => typeof entry !== "string" || entry.length === 0)) fail();
+  const artifact = outcome === "success"
+    ? Object.freeze({
+        schema: ATTEMPT_ARTIFACT_SCHEMA,
+        attemptId: cleanAttemptId,
+        outcome,
+        result: validateSuccessEvidence(evidence),
+      })
+    : Object.freeze({
+        schema: ATTEMPT_ARTIFACT_SCHEMA,
+        attemptId: cleanAttemptId,
+        outcome,
+        diagnostic: diagnosticPayload(error),
+      });
+  assertSecretFree(artifact, secretCanaries);
+  await preparePrivateDirectory({ path: cleanDirectory });
+  const bytes = Buffer.from(`${JSON.stringify(artifact)}\n`, "utf8");
+  const target = join(cleanDirectory, `${cleanAttemptId}.json`);
+  const written = await writePrivateFile({ path: target, bytes });
+  const readback = await readPrivateText({ path: target, maxBytes: bytes.length });
+  if (readback !== bytes.toString("utf8")) fail();
+  return Object.freeze({ path: written.path, size: written.size });
+}
+
+function monitorParty(monitorResult, role) {
+  const value = monitorResult.roles[role];
+  return Object.freeze({
+    sessionKeyAddress: value.address,
+    policyDigest: value.policyDigest,
+    erc8004: value.erc8004,
+  });
+}
+
+function verifyParentCertificateBinding({ initiatorProof, monitorResult, pin, responderProof }) {
+  const initiator = HELPER_CERTIFICATE_BINDINGS.get(initiatorProof);
+  const responder = HELPER_CERTIFICATE_BINDINGS.get(responderProof);
+  if (initiator === undefined || responder === undefined) fail();
+  if (
+    initiator.repositorySha !== responder.repositorySha ||
+    initiator.sessionDeadlineMs !== responder.sessionDeadlineMs ||
+    initiator.repositorySha !== monitorResult.repositorySha ||
+    Number(initiator.sessionDeadlineMs) !== monitorResult.timing.sessionDeadlineMs
+  ) fail();
+  const initiatorDigest = agentHandshakeV2ResultDigest(initiator.certificate);
+  const responderDigest = agentHandshakeV2ResultDigest(responder.certificate);
+  if (
+    initiatorDigest !== responderDigest ||
+    initiatorDigest !== monitorResult.certificate.digest
+  ) fail();
+  const certificate = initiator.certificate;
+  const hostCertificate = certificate.hostSessionKeyCertificate;
+  const rootPublicKey = hostCertificate?.rootSignature?.publicKey;
+  const rootFingerprint = ed25519PublicKeyFingerprint(rootPublicKey);
+  if (
+    rootFingerprint !== monitorResult.hostTrust.rootFingerprint ||
+    !pin.hostRoots.includes(rootFingerprint) ||
+    hostCertificate?.certificate?.rootKid !== monitorResult.hostTrust.rootKid ||
+    hostCertificate.certificate.sessionId !== monitorResult.sessionId ||
+    hostCertificate.certificate.repositorySha !== monitorResult.repositorySha ||
+    hostCertificate.certificate.sessionPublicKey !== monitorResult.hostTrust.sessionPublicKey ||
+    hostSessionKeyCertificateDigest(hostCertificate) !== monitorResult.hostTrust.sessionKeyCertificateDigest
+  ) fail();
+  const rootKeyRing = Object.freeze([Object.freeze({
+    kid: hostCertificate.rootSignature.keyId,
+    publicKey: rootPublicKey,
+    fingerprint: rootFingerprint,
+  })]);
+  const common = Object.freeze({
+    expectedRepositorySha: monitorResult.repositorySha,
+    expectedSessionId: monitorResult.sessionId,
+    nowMs: monitorResult.certificate.issuedAtMs,
+    rootKeyRing,
+    sessionDeadlineMs: monitorResult.timing.sessionDeadlineMs,
+  });
+  for (const [role, proof, binding] of [
+    ["initiator", initiatorProof, initiator],
+    ["responder", responderProof, responder],
+  ]) {
+    const verified = verifyAgentHandshakeV2Result(binding.certificate, {
+      ...common,
+      expectedParty: monitorParty(monitorResult, role),
+      expectedPolicyDigest: monitorResult.roles[role].policyDigest,
+      expectedRole: role,
+    });
+    if (
+      verified.certificateVerified !== true ||
+      verified.externalBusinessActionPerformed !== false ||
+      verified.sessionId !== proof.sessionId ||
+      verified.role !== proof.role ||
+      verified.policyDigest !== proof.policyDigest ||
+      verified.statementDigest !== proof.statementDigest ||
+      verified.identity.sessionKeyAddress !== proof.identity.sessionKeyAddress ||
+      JSON.stringify(verified.identity.erc8004) !== JSON.stringify(proof.identity.erc8004)
+    ) fail();
+  }
+  return Object.freeze({
+    binding: Object.freeze({
+      certificateDigest: initiatorDigest,
+      hostRootFingerprint: rootFingerprint,
+      hostSessionKeyCertificateDigest: monitorResult.hostTrust.sessionKeyCertificateDigest,
+      repositorySha: monitorResult.repositorySha,
+      sessionDeadlineMs: monitorResult.timing.sessionDeadlineMs,
+    }),
+    certificateVerified: true,
   });
 }
 
@@ -1031,8 +1313,14 @@ export async function runFreshAgentHandshake({
     } catch {
       throw diagnostic("monitor", "validation", "MONITOR_RESULT_INVALID");
     }
-    const initiator = publicRole(initiatorProof, monitorResult);
-    const responder = publicRole(responderProof, monitorResult);
+    let binding;
+    try {
+      binding = verifyParentCertificateBinding({ initiatorProof, responderProof, monitorResult, pin });
+    } catch {
+      throw diagnostic("monitor", "validation", "MONITOR_RESULT_INVALID");
+    }
+    const initiator = publicRole(initiatorProof, monitorResult, binding);
+    const responder = publicRole(responderProof, monitorResult, binding);
     if (initiator.address === responder.address || initiator.erc8004.agentId === responder.erc8004.agentId || initiator.policyDigest === responder.policyDigest) fail();
     const evidence = Object.freeze({
       schema: EVIDENCE_SCHEMA,
@@ -1040,7 +1328,15 @@ export async function runFreshAgentHandshake({
       release: pin,
       clients: Object.freeze({ ...clients }),
       roles: Object.freeze({ initiator, responder }),
-      monitor: Object.freeze({ chronology: monitorResult.chronology, sessionId: monitorResult.sessionId }),
+      certificateVerified: binding.certificateVerified,
+      binding: binding.binding,
+      monitor: Object.freeze({
+        certificate: monitorResult.certificate,
+        checker: monitorResult.checker,
+        hostTrust: monitorResult.hostTrust,
+        receipts: monitorResult.receipts,
+        sessionId: monitorResult.sessionId,
+      }),
       cleanup: Object.freeze({ completed: true }),
     });
     assertSecretFree(evidence, [...canaries, actualInvitation, run.root]);
