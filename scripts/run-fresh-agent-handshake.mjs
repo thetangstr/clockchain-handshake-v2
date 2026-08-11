@@ -10,6 +10,7 @@ import { promisify } from "node:util";
 
 import {
   FreshAgentDiagnosticError,
+  assertFreshAgentNodeRuntime,
   runFreshAgentHandshake,
   validateClaudePreparation,
   validateFreshAgentMonitorSnapshot,
@@ -71,7 +72,7 @@ async function authenticationFor(client) {
   }
   const override = client === "codex" ? "CLOCKCHAIN_CODEX_AUTH_FILE" : "CLOCKCHAIN_CLAUDE_AUTH_FILE";
   const source = process.env[override] ?? join(homedir(), client === "codex" ? ".codex/auth.json" : ".claude/.credentials.json");
-  return loadAppleClientAuthentication({ client, source });
+  return loadAppleClientAuthentication({ client, nowMs: Date.now(), source });
 }
 
 async function configureClient({ authentication, command, env, room }) {
@@ -144,32 +145,39 @@ export async function monitor({ sessionId, retryDelayMs = 1_000, timeoutMs = 120
 export async function runFreshAgentCliAttempt({
   artifactDirectory,
   attemptId = randomUUID(),
+  preflight = async () => ({}),
   runHandshake,
   secretCanaries = [],
   writeArtifact = writeFreshAgentAttemptArtifact,
   writeOutput = (value) => process.stdout.write(value),
 } = {}) {
-  if (typeof runHandshake !== "function" || typeof writeArtifact !== "function" || typeof writeOutput !== "function") throw new Error("invalid");
+  if (typeof preflight !== "function" || typeof runHandshake !== "function" || typeof writeArtifact !== "function" || typeof writeOutput !== "function") throw new Error("invalid");
   let outcome;
+  let preflightResult = {};
   try {
-    outcome = Object.freeze({ outcome: "success", evidence: await runHandshake() });
+    preflightResult = await preflight();
+    outcome = Object.freeze({ outcome: "success", evidence: await runHandshake(preflightResult) });
   } catch (error) {
     outcome = Object.freeze({ outcome: "failure", error });
   }
+  const artifactCanaries = [
+    ...secretCanaries,
+    ...(Array.isArray(preflightResult?.secretCanaries) ? preflightResult.secretCanaries : []),
+  ];
   await writeArtifact(outcome.outcome === "success"
     ? {
         attemptId,
         directory: artifactDirectory,
         evidence: outcome.evidence,
         outcome: outcome.outcome,
-        secretCanaries,
+        secretCanaries: artifactCanaries,
       }
     : {
         attemptId,
         directory: artifactDirectory,
         error: outcome.error,
         outcome: outcome.outcome,
-        secretCanaries,
+        secretCanaries: artifactCanaries,
       });
   if (outcome.outcome === "failure") throw outcome.error;
   writeOutput(`${JSON.stringify(outcome.evidence)}\n`);
@@ -180,25 +188,36 @@ async function main() {
   const artifactDirectory = value("CLOCKCHAIN_FRESH_AGENT_RESULT_DIR");
   const ownsParent = process.env.CLOCKCHAIN_FRESH_AGENT_PARENT === undefined;
   const parent = process.env.CLOCKCHAIN_FRESH_AGENT_PARENT ?? await mkdtemp(join(tmpdir(), "clockchain-fresh-agent-"));
-  let artifactCanaries = [];
   try {
     const prompts = JSON.parse(await readFile(new URL("../test/fixtures/fresh-agent/prompts.json", import.meta.url), "utf8"));
     const clients = {
       initiator: process.env.CLOCKCHAIN_INITIATOR_CLIENT ?? "codex",
       responder: process.env.CLOCKCHAIN_RESPONDER_CLIENT ?? "claude",
     };
-    const authentication = {
-      initiator: await authenticationFor(clients.initiator),
-      responder: await authenticationFor(clients.responder),
-    };
-    artifactCanaries = [
-      ...authentication.initiator.secretCanaries,
-      ...authentication.responder.secretCanaries,
-      parent,
-    ];
     await runFreshAgentCliAttempt({
       artifactDirectory,
-      runHandshake: () => runFreshAgentHandshake({
+      preflight: async () => {
+        const runtime = assertFreshAgentNodeRuntime();
+        let authentication;
+        try {
+          authentication = {
+            initiator: await authenticationFor(clients.initiator),
+            responder: await authenticationFor(clients.responder),
+          };
+        } catch {
+          throw new FreshAgentDiagnosticError({ phase: "preflight", category: "authentication", code: "AUTHENTICATION_FAILED" });
+        }
+        return Object.freeze({
+          authentication,
+          runtime,
+          secretCanaries: [
+            ...authentication.initiator.secretCanaries,
+            ...authentication.responder.secretCanaries,
+            parent,
+          ],
+        });
+      },
+      runHandshake: ({ authentication, runtime }) => runFreshAgentHandshake({
         clients,
         configureClient: (entry) => configureClient({ ...entry, authentication: authentication[entry.role] }),
         prepareClient: (entry) => prepareClient({ ...entry, authentication: authentication[entry.role] }),
@@ -223,8 +242,9 @@ async function main() {
             hostRoots: roots("CLOCKCHAIN_RESEARCH_HOST_ROOT_FINGERPRINTS"),
           },
         },
+        runtimeExecPath: runtime.execPath,
+        runtimeVersion: runtime.version,
       }),
-      secretCanaries: artifactCanaries,
     });
   } catch (error) {
     process.stderr.write(SAFE_ERROR);

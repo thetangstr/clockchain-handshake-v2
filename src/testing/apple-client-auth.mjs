@@ -28,7 +28,7 @@ async function privateSource(source) {
   return resolved;
 }
 
-function parseAuthentication(client, text) {
+function parseAuthentication(client, text, nowMs) {
   let parsed;
   try { parsed = record(JSON.parse(text)); } catch { fail(); }
   if (client === "codex") {
@@ -37,10 +37,11 @@ function parseAuthentication(client, text) {
   }
   const oauth = record(parsed.claudeAiOauth);
   if (!Number.isSafeInteger(oauth.expiresAt) || oauth.expiresAt <= 0) fail();
+  if (nowMs !== undefined && (!Number.isSafeInteger(nowMs) || oauth.expiresAt <= nowMs)) fail();
   return [secret(oauth.accessToken), secret(oauth.refreshToken)];
 }
 
-export async function loadAppleClientAuthentication({ client, serialized, source } = {}) {
+export async function loadAppleClientAuthentication({ client, nowMs, serialized, source } = {}) {
   if (!CLIENTS.includes(client)) fail();
   const hasSource = typeof source === "string";
   const hasSerialized = typeof serialized === "string";
@@ -48,7 +49,7 @@ export async function loadAppleClientAuthentication({ client, serialized, source
   const cleanSource = hasSource ? await privateSource(source) : null;
   const text = hasSource ? await readFile(cleanSource, "utf8").catch(fail) : serialized;
   if (Buffer.byteLength(text) < 2 || Buffer.byteLength(text) > MAX_AUTH_BYTES) fail();
-  const secretCanaries = parseAuthentication(client, text);
+  const secretCanaries = parseAuthentication(client, text, nowMs);
   return Object.freeze({
     client,
     environment: Object.freeze({}),

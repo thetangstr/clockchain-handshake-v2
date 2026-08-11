@@ -77,6 +77,28 @@ test("Claude Code can install the macOS Keychain credential without exporting ot
   assert.equal((await stat(destination)).mode & 0o777, 0o600);
 });
 
+test("Claude Code OAuth credentials must be fresh at load time", async () => {
+  const expired = JSON.stringify({
+    claudeAiOauth: {
+      accessToken: "expired-access-secret",
+      expiresAt: 2_000,
+      refreshToken: "expired-refresh-secret",
+    },
+  });
+  await assert.rejects(
+    loadAppleClientAuthentication({ client: "claude", nowMs: 2_000, serialized: expired }),
+    /Apple client authentication failed safely/,
+  );
+
+  const valid = await loadAppleClientAuthentication({
+    client: "claude",
+    nowMs: 1_999,
+    serialized: expired,
+  });
+  assert.deepEqual(valid.secretCanaries, ["expired-access-secret", "expired-refresh-secret"]);
+  assert.deepEqual(valid.environment, {});
+});
+
 test("authentication input must be private and match the selected client", async () => {
   const open = await fixture("open.json", {
     tokens: { access_token: "a", id_token: "b", refresh_token: "c" },

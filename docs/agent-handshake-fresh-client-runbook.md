@@ -15,7 +15,7 @@ codex mcp add clockchain-handshake --url https://mcp.clockchain.network/handshak
 claude mcp add --transport http --scope user clockchain-handshake https://mcp.clockchain.network/handshake/mcp
 ```
 
-The endpoint instructions provide the pinned helper manifest URL, the SHA-256 of the exact manifest bytes, supported operations, and protocol loop. For today's Apple-device path, the fresh client needs Node.js 24 and downloads the single portable `clockchain-agent-handshake.cjs` bundle. Every helper invocation runs through one fixed bootstrap command that hashes the exact manifest bytes against the independently agreed pin, reads the helper SHA-256 from that verified manifest, hashes the helper, and executes only those already-verified helper bytes from memory. Claude receives no general `Write` permission and cannot bypass the bootstrap with a direct helper command. The local helper creates the role key, commits the exact local policy, registers a fresh ERC-8004 identity when the Initiator requires it, signs only policy-approved bytes, and verifies the final host certificate. The MCP server never receives a private key.
+The endpoint instructions provide the pinned helper manifest URL, the SHA-256 of the exact manifest bytes, supported operations, and protocol loop. For today's Apple-device path, Node 24 is enforced and the fresh client downloads the single portable `clockchain-agent-handshake.cjs` bundle. Every helper invocation runs through one fixed bootstrap command that hashes the exact manifest bytes against the independently agreed pin, requires the manifest `nodeRuntime` and executing process to be Node 24.x, reads the helper SHA-256 from that verified manifest, hashes the helper, and executes only those already-verified helper bytes from memory. Claude receives no general `Write` permission, but Bash is still general within the configured sandbox. Authorization evidence is accepted only from the exact pinned helper command plus parent verification. The local helper creates the role key, commits the exact local policy, registers a fresh ERC-8004 identity when the Initiator requires it, signs only policy-approved bytes, and verifies the final host certificate. The MCP server never receives a private key.
 
 ## Preflight
 
@@ -26,9 +26,9 @@ The canary remains disabled until all four values below agree with the independe
 - `CLOCKCHAIN_MCP_HOST_ROOT_FINGERPRINTS`
 - `CLOCKCHAIN_RESEARCH_HOST_ROOT_FINGERPRINTS`
 
-Set `CLOCKCHAIN_RESEARCH_MONITOR_URL=https://clockchain-research.vercel.app/api/handshake/monitor`. Supply model authentication through `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY`; the harness passes it only to the disposable client processes and scans retained proof for the exact canary values.
+Set `CLOCKCHAIN_RESEARCH_MONITOR_URL=https://clockchain-research.vercel.app/api/handshake/monitor`. Set `CLOCKCHAIN_FRESH_AGENT_RESULT_DIR` to an explicit private directory where the attempt artifact will be written. The default authentication path copies existing Codex/Claude CLI auth files into the disposable homes: `~/.codex/auth.json` for Codex and `~/.claude/.credentials.json` for Claude Code. API keys are optional; when `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is present, the harness passes that key only to the matching disposable client process and scans retained proof for the exact canary value.
 
-Before starting either fresh client, verify `node --version` reports Node 24. On this demo Mac, the isolated runtime is `/opt/homebrew/opt/node@24/bin/node`; launch the canary with `/opt/homebrew/opt/node@24/bin` first in `PATH`. No Apple Developer account, notarization credential, npm login, plugin, or repository checkout is required for this Apple-device demo path.
+Node 24 is enforced before starting either fresh client. On this demo Mac, the isolated runtime is `/opt/homebrew/opt/node@24/bin/node`; launch the canary with `/opt/homebrew/opt/node@24/bin` first in `PATH`. The same validated runtime directory is prepended to child process `PATH` so helper `node` execution resolves to the checked runtime. No Apple Developer account, notarization credential, npm login, plugin, or repository checkout is required for this Apple-device demo path.
 
 ## Run
 
@@ -46,7 +46,7 @@ The automated canary starts the Initiator first, reads the actual single-use Res
 
 ## Required terminal proof
 
-Success requires both clients to report the same session and certificate digest, distinct addresses, policies, and ERC-8004 agent ids, three receipt ids, `certificateVerified: true`, and `externalBusinessActionPerformed: false`. The Research monitor must independently reach `CERTIFIED` for that session.
+Success requires both clients to report the same session and certificate digest, distinct addresses, policies, and ERC-8004 agent ids, three receipt ids, `certificateVerified: true`, and `externalBusinessActionPerformed: false`. The Research monitor must independently report checker `VERIFIED` and a closing certificate for that session.
 
 The retained JSON contains only public evidence. Disposable homes, workspaces, caches, client configuration, helper state, local keys, role capabilities, invitations, transcripts, and raw stdout/stderr are removed on success and failure.
 

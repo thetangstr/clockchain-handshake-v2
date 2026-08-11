@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, realpath, rm } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import { assertSecretFree } from "../core/redact.mjs";
 import { preparePrivateDirectory, readPrivateText, writePrivateFile } from "../core/private-path.mjs";
@@ -37,7 +37,7 @@ export const CLOCKCHAIN_HANDSHAKE_TOOLS = Object.freeze([
   "agent_handshake_submit",
   "agent_handshake_get_certificate",
 ]);
-export const VERIFIED_HELPER_BOOTSTRAP = 'const fs=require("node:fs");const crypto=require("node:crypto");const Module=require("node:module");const argv=process.argv.slice(1);const expected=argv.shift();const manifestPath=argv.shift();const helperPath=argv.shift();const manifestBytes=fs.readFileSync(manifestPath);const manifestDigest=crypto.createHash("sha256").update(manifestBytes).digest("hex");if(manifestDigest!==expected)process.exit(86);const manifest=JSON.parse(manifestBytes);if(manifest.schema!=="clockchain.agent-handshake-release-manifest/v1"||manifest.version!=="2.1.2"||!Array.isArray(manifest.assets)||manifest.assets.length!==1)process.exit(86);const asset=manifest.assets[0];if(asset.filename!=="clockchain-agent-handshake.cjs"||asset.url!=="https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/clockchain-agent-handshake.cjs"||typeof asset.sha256!=="string"||!/^[0-9a-f]{64}$/.test(asset.sha256))process.exit(86);const helperBytes=fs.readFileSync(helperPath);const helperDigest=crypto.createHash("sha256").update(helperBytes).digest("hex");if(helperDigest!==asset.sha256)process.exit(86);process.argv=[process.execPath].concat(helperPath).concat(argv);const loaded=new Module(helperPath);loaded.filename=helperPath;loaded.paths=[];const compile=loaded._compile.bind(loaded);compile(...[helperBytes.toString("utf8")].concat(helperPath));';
+export const VERIFIED_HELPER_BOOTSTRAP = 'const fs=require("node:fs");const crypto=require("node:crypto");const Module=require("node:module");const argv=process.argv.slice(1);const expected=argv.shift();const manifestPath=argv.shift();const helperPath=argv.shift();const manifestBytes=fs.readFileSync(manifestPath);const manifestDigest=crypto.createHash("sha256").update(manifestBytes).digest("hex");if(manifestDigest!==expected)process.exit(86);const manifest=JSON.parse(manifestBytes);if(manifest.schema!=="clockchain.agent-handshake-release-manifest/v1"||manifest.version!=="2.1.2"||!/^24\\./.test(manifest.nodeRuntime)||!/^24\\./.test(process.versions.node)||!Array.isArray(manifest.assets)||manifest.assets.length!==1)process.exit(86);const asset=manifest.assets[0];if(asset.filename!=="clockchain-agent-handshake.cjs"||asset.url!=="https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/clockchain-agent-handshake.cjs"||typeof asset.sha256!=="string"||!/^[0-9a-f]{64}$/.test(asset.sha256))process.exit(86);const helperBytes=fs.readFileSync(helperPath);const helperDigest=crypto.createHash("sha256").update(helperBytes).digest("hex");if(helperDigest!==asset.sha256)process.exit(86);process.argv=[process.execPath].concat(helperPath).concat(argv);const loaded=new Module(helperPath);loaded.filename=helperPath;loaded.paths=[];const compile=loaded._compile.bind(loaded);compile(...[helperBytes.toString("utf8")].concat(helperPath));';
 
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
 const SHA = /^[0-9a-f]{40}$/;
@@ -63,15 +63,15 @@ export const CLAUDE_CONTEXT_MARKER = "CLOCKCHAIN_CONTEXT_RECEIVED";
 export const CLAUDE_CONTEXT_PROMPT = `I am using this fresh disposable workspace for an expected Clockchain test. In my next message I will provide a concrete role-specific request. Do not perform any action now; evaluate that later request on its own exact scope and safety boundaries. Reply exactly ${CLAUDE_CONTEXT_MARKER}.`;
 const TRACE_LIFECYCLE = process.env.CLOCKCHAIN_FRESH_AGENT_TRACE === "1";
 const DIAGNOSTIC_PHASES = Object.freeze(new Set([
-  "agent-exit", "configure", "invitation", "monitor", "prepare", "timeout", "unknown",
+  "agent-exit", "configure", "invitation", "monitor", "preflight", "prepare", "timeout", "unknown",
 ]));
 const DIAGNOSTIC_CATEGORIES = Object.freeze(new Set([
-  "agent", "client", "deadline", "http", "monitor", "process", "unknown", "validation",
+  "agent", "authentication", "client", "deadline", "http", "monitor", "process", "runtime", "unknown", "validation",
 ]));
 const DIAGNOSTIC_CODES = Object.freeze(new Set([
   "AGENT_EXIT", "AGENT_FAILED", "AGENT_OUTPUT_INVALID", "CONFIGURE_FAILED", "HELPER_PROOF_MISSING",
   "INVALID_RETRY_DELAY", "INVALID_TIMEOUT", "INVITATION_MISSING", "MONITOR_FAILED", "MONITOR_RESULT_INVALID",
-  "PREPARE_FAILED", "TIMEOUT", "UNKNOWN",
+  "NODE24_REQUIRED", "PREPARE_FAILED", "AUTHENTICATION_FAILED", "TIMEOUT", "UNKNOWN",
 ]));
 
 function traceLifecycle(value) {
@@ -135,6 +135,24 @@ function diagnostic(phase, category, code) {
 
 function fail(phase = "unknown", category = "unknown", code = "UNKNOWN") {
   throw diagnostic(phase, category, code);
+}
+
+export function assertFreshAgentNodeRuntime({
+  execPath = process.execPath,
+  version = process.versions.node,
+} = {}) {
+  if (typeof execPath !== "string" || !isAbsolute(execPath) || resolve(execPath) !== execPath) {
+    fail("preflight", "runtime", "NODE24_REQUIRED");
+  }
+  const cleanVersion = typeof version === "string" && version.startsWith("v") ? version.slice(1) : version;
+  if (typeof cleanVersion !== "string" || !/^24\./.test(cleanVersion)) {
+    fail("preflight", "runtime", "NODE24_REQUIRED");
+  }
+  return Object.freeze({
+    execPath,
+    pathDirectory: dirname(execPath),
+    version: cleanVersion,
+  });
 }
 
 function diagnosticFrom(error, phase, category, code) {
@@ -821,11 +839,13 @@ function responderPrompt(template, value) {
   return template.replace(RESPONDER_INVITATION_PLACEHOLDER, invitation(value));
 }
 
-function childEnvironment(room, credentials) {
+function childEnvironment(room, credentials, runtime) {
   if (credentials === null || typeof credentials !== "object" || Array.isArray(credentials)) fail();
   for (const [key, value] of Object.entries(credentials)) {
     if (!/^[A-Z][A-Z0-9_]*$/.test(key) || typeof value !== "string" || value.length === 0) fail();
   }
+  const basePath = process.env.PATH ?? "/usr/bin:/bin";
+  const path = runtime === undefined ? basePath : `${runtime.pathDirectory}:${basePath}`;
   return Object.freeze({
     ...credentials,
     CODEX_HOME: room.home,
@@ -835,7 +855,7 @@ function childEnvironment(room, credentials) {
     GIT_CONFIG_NOSYSTEM: "1",
     LANG: "C.UTF-8",
     LC_ALL: "C.UTF-8",
-    PATH: process.env.PATH ?? "/usr/bin:/bin",
+    PATH: path,
     TMPDIR: room.tmp,
     XDG_CACHE_HOME: room.cache,
   });
@@ -1196,6 +1216,8 @@ export async function runFreshAgentHandshake({
   prepareClient,
   prompts,
   release,
+  runtimeExecPath,
+  runtimeVersion,
   spawnProcess = spawn,
   timeoutMs = 10 * 60 * 1000,
 } = {}) {
@@ -1206,6 +1228,9 @@ export async function runFreshAgentHandshake({
   if (typeof configureClient !== "function" || typeof monitor !== "function" || typeof prepareClient !== "function") fail();
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60 * 60 * 1000) fail();
   const pin = validateReleaseAgreement(release);
+  const runtime = runtimeExecPath === undefined && runtimeVersion === undefined
+    ? undefined
+    : assertFreshAgentNodeRuntime({ execPath: runtimeExecPath, version: runtimeVersion });
   const canaries = ROLES.flatMap((role) => {
     if (!Array.isArray(secretCanaries[role]) || secretCanaries[role].some((entry) => typeof entry !== "string" || entry.length === 0)) fail();
     return [...Object.values(modelEnvironment[role]), ...secretCanaries[role]];
@@ -1218,7 +1243,7 @@ export async function runFreshAgentHandshake({
     const prepared = {};
     for (const role of ROLES) {
       const client = cleanClient(clients[role]);
-      const env = childEnvironment(run.roles[role], modelEnvironment[role]);
+      const env = childEnvironment(run.roles[role], modelEnvironment[role], runtime);
       const claudeSessionId = client === "claude" ? randomUUID() : undefined;
       const commands = buildClientCommands({ client, claudeSessionId, manifestDigest: pin.manifestDigest, prompt: "configured later", workspace: run.roles[role].workspace });
       const configure = commands.configure;
