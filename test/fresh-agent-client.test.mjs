@@ -1706,6 +1706,42 @@ test("streams more than one MiB of individually bounded agent events without abo
   assert.deepEqual(await readdir(parent), []);
 });
 
+test("accepts deeply nested non-authoritative client metadata without treating it as protocol data", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-deep-metadata-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const children = {};
+  let metadata = { leaf: true };
+  for (let depth = 0; depth < 20; depth += 1) metadata = { nested: metadata };
+  const spawnProcess = () => {
+    const role = children.initiator === undefined ? "initiator" : "responder";
+    const child = new EventEmitter();
+    child.pid = null;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {
+      queueMicrotask(() => {
+        if (role === "initiator") {
+          child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+          return;
+        }
+        children.initiator.stdout.emit("data", Buffer.from(streamEvent({ type: "system", metadata })));
+        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
+        children.initiator.emit("close", 0, null);
+        children.responder.emit("close", 0, null);
+      });
+    } };
+    child.kill = () => {};
+    children[role] = child;
+    return child;
+  };
+
+  const result = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, { spawnProcess }));
+
+  assert.equal(result.certificateVerified, true);
+  assert.deepEqual(await readdir(parent), []);
+});
+
 test("reports exact helper execution failures distinctly from missing terminal proof", async (t) => {
   for (const mode of ["codex", "claude"]) {
     await t.test(mode, async (t) => {

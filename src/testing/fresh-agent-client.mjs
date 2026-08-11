@@ -953,26 +953,33 @@ function parseJsonString(value) {
   try { return JSON.parse(candidate); } catch { return null; }
 }
 
-function inspectEvent(value, role, depth = 0) {
-  if (depth > 12) fail();
-  if (typeof value === "string") {
-    const parsed = parseJsonString(value);
-    return parsed === null ? {} : inspectEvent(parsed, role, depth + 1);
-  }
-  if (value === null || typeof value !== "object") return {};
-  if (Array.isArray(value)) {
-    return value.reduce((found, entry) => mergeObserved(found, inspectEvent(entry, role, depth + 1)), {});
-  }
+function inspectEvent(value, role) {
+  void role;
   let found = {};
-  if (["agent_message", "text"].includes(value.type) && Object.hasOwn(value, "text")) {
-    const candidate = invitationMessage(value.text);
-    if (candidate !== null) found = { invitation: candidate };
-  }
-  if (Object.hasOwn(value, "responderInvitation")) {
-    found = { invitation: invitation(value.responderInvitation) };
-  }
-  for (const entry of Object.values(value)) {
-    found = mergeObserved(found, inspectEvent(entry, role, depth + 1));
+  const pending = [value];
+  let visited = 0;
+  while (pending.length > 0) {
+    visited += 1;
+    if (visited > 50_000) fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
+    const current = pending.pop();
+    if (typeof current === "string") {
+      const parsed = parseJsonString(current);
+      if (parsed !== null) pending.push(parsed);
+      continue;
+    }
+    if (current === null || typeof current !== "object") continue;
+    if (Array.isArray(current)) {
+      pending.push(...current);
+      continue;
+    }
+    if (["agent_message", "text"].includes(current.type) && Object.hasOwn(current, "text")) {
+      const candidate = invitationMessage(current.text);
+      if (candidate !== null) found = mergeObserved(found, { invitation: candidate });
+    }
+    if (Object.hasOwn(current, "responderInvitation")) {
+      found = mergeObserved(found, { invitation: invitation(current.responderInvitation) });
+    }
+    pending.push(...Object.values(current));
   }
   return found;
 }
@@ -1411,14 +1418,31 @@ function observeChild(child, role, all, canaries, { adapter, expectedInvitation,
     function reject(error = diagnostic("agent-exit", "agent", "AGENT_FAILED")) {
       if (settled) return;
       settled = true;
+      traceLifecycle({
+        phase: "observer-reject",
+        role,
+        diagnostic: error instanceof FreshAgentDiagnosticError ? error.diagnostic : null,
+        bufferedLineBytes: Buffer.byteLength(lineBuffer),
+        stderrBytes: Buffer.byteLength(stderr),
+      });
       all.forEach(killProcessGroup);
       rejectInvitation?.(error);
       rejectPromise(error);
     }
-    child.stdout?.on("data", (chunk) => { try { processChunk(chunk); } catch (error) { reject(error); } });
-    child.stderr?.on("data", (chunk) => { try { stderr = append(stderr, chunk); } catch (error) { reject(error); } });
-    child.once("error", reject);
-    child.stdin?.once?.("error", reject);
+    child.stdout?.on("data", (chunk) => {
+      try { processChunk(chunk); } catch (error) {
+        reject(error instanceof FreshAgentDiagnosticError && error.diagnostic.code !== "UNKNOWN"
+          ? error
+          : diagnostic("agent-exit", "validation", "AGENT_OUTPUT_INVALID"));
+      }
+    });
+    child.stderr?.on("data", (chunk) => {
+      try { stderr = append(stderr, chunk); } catch {
+        reject(diagnostic("agent-exit", "validation", "AGENT_OUTPUT_INVALID"));
+      }
+    });
+    child.once("error", () => reject(diagnostic("agent-exit", "process", "AGENT_EXIT")));
+    child.stdin?.once?.("error", () => reject(diagnostic("agent-exit", "process", "AGENT_EXIT")));
     child.once("close", (code) => {
       traceLifecycle({ phase: "close", role, code: Number.isSafeInteger(code) ? code : null, stderrBytes: Buffer.byteLength(stderr) });
       child.__freshAgentClosed = true;
