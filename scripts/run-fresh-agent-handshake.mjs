@@ -59,19 +59,26 @@ function roots(name) {
   return result;
 }
 
-async function authenticationFor(client) {
+export async function loadFreshAgentAuthentication(client, { env = process.env, home = homedir() } = {}) {
   const key = client === "codex" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY";
-  const credential = process.env[key];
-  if (typeof credential === "string" && credential.length > 0) {
+  const credential = env[key];
+  const oauthToken = client === "claude" ? env.CLAUDE_CODE_OAUTH_TOKEN : undefined;
+  const supplied = [credential, oauthToken].filter((entry) => typeof entry === "string" && entry.length > 0);
+  if (supplied.length > 1) throw new Error("invalid");
+  if (supplied.length === 1) {
+    const environmentKey = typeof credential === "string" && credential.length > 0
+      ? key
+      : "CLAUDE_CODE_OAUTH_TOKEN";
     return Object.freeze({
       client,
-      environment: Object.freeze({ [key]: credential }),
-      secretCanaries: Object.freeze([credential]),
+      environment: Object.freeze({ [environmentKey]: supplied[0] }),
+      secretCanaries: Object.freeze([supplied[0]]),
+      serialized: null,
       source: null,
     });
   }
   const override = client === "codex" ? "CLOCKCHAIN_CODEX_AUTH_FILE" : "CLOCKCHAIN_CLAUDE_AUTH_FILE";
-  const source = process.env[override] ?? join(homedir(), client === "codex" ? ".codex/auth.json" : ".claude/.credentials.json");
+  const source = env[override] ?? join(home, client === "codex" ? ".codex/auth.json" : ".claude/.credentials.json");
   return loadAppleClientAuthentication({ client, nowMs: Date.now(), source });
 }
 
@@ -201,8 +208,8 @@ async function main() {
         let authentication;
         try {
           authentication = {
-            initiator: await authenticationFor(clients.initiator),
-            responder: await authenticationFor(clients.responder),
+            initiator: await loadFreshAgentAuthentication(clients.initiator),
+            responder: await loadFreshAgentAuthentication(clients.responder),
           };
         } catch {
           throw new FreshAgentDiagnosticError({ phase: "preflight", category: "authentication", code: "AUTHENTICATION_FAILED" });

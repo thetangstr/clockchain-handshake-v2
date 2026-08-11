@@ -584,6 +584,25 @@ test("CLI attempt captures preflight failures as one typed durable artifact", as
   assert.deepEqual(calls[0].error.diagnostic, { phase: "preflight", category: "runtime", code: "NODE24_REQUIRED" });
 });
 
+test("Claude automation uses the official inference-only OAuth token without importing host state", async () => {
+  const runner = await import("../scripts/run-fresh-agent-handshake.mjs");
+  assert.equal(typeof runner.loadFreshAgentAuthentication, "function");
+  const token = "sk-ant-oat01-test-only-token";
+
+  const authentication = await runner.loadFreshAgentAuthentication("claude", {
+    env: { CLAUDE_CODE_OAUTH_TOKEN: token },
+    home: "/Users/example",
+  });
+
+  assert.deepEqual(authentication, {
+    client: "claude",
+    environment: { CLAUDE_CODE_OAUTH_TOKEN: token },
+    secretCanaries: [token],
+    serialized: null,
+    source: null,
+  });
+});
+
 test("fresh-agent monitor retries transient 502 until a valid complete snapshot succeeds", async (t) => {
   const previousEndpoint = process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL;
   process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL = "https://monitor.example.test/session";
@@ -734,7 +753,10 @@ test("fresh-client runbook states current runtime, auth, and verification bounda
   const runbook = await readFile(new URL("../docs/agent-handshake-fresh-client-runbook.md", import.meta.url), "utf8");
   assert.match(runbook, /CLOCKCHAIN_FRESH_AGENT_RESULT_DIR/);
   assert.match(runbook, /Node(?:\.js)? 24 is enforced/i);
-  assert.match(runbook, /Codex\/Claude CLI auth files/i);
+  assert.match(runbook, /macOS Keychain/i);
+  assert.match(runbook, /CLAUDE_CODE_OAUTH_TOKEN/);
+  assert.match(runbook, /claude setup-token/);
+  assert.match(runbook, /inference-only/i);
   assert.match(runbook, /API keys are optional/i);
   assert.match(runbook, /Claude receives no general `Write` permission/i);
   assert.match(runbook, /Bash is still general within the configured sandbox/i);
