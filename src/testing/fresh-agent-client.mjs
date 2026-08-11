@@ -1228,7 +1228,12 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
       if (block?.type !== "tool_use" || block?.name !== "Bash") continue;
       if (typeof block.id !== "string" || block.id.length === 0 || typeof block?.input?.command !== "string") fail();
       if (claudeBashCommands.has(block.id)) fail();
-      const command = stripLiteralShellLineContinuations(block.input.command);
+      const rawCommand = block.input.command;
+      const helperShaped = rawCommand.includes("clockchain-agent-authorize") ||
+        fingerprintHelperExecutionCommand(rawCommand).helperBootstrap === true;
+      const command = helperShaped
+        ? stripLiteralShellLineContinuations(rawCommand)
+        : rawCommand;
       const binding = bindHelperExecution(command, expectedHelperCommands);
       claudeBashCommands.set(block.id, Object.freeze({
         command: binding.bound ? binding.expected.shellCommand : command,
