@@ -759,6 +759,7 @@ if (!/^[0-9a-f]{64}$/.test(digest)) stop();
 const root = dirname(dirname(__filename));
 const pending = join(root, "pending", digest + ".json");
 const running = join(root, "running", digest + "." + process.pid + ".json");
+let retryable = false;
 try { renameSync(pending, running); } catch { stop(); }
 try {
   const envelope = JSON.parse(readFileSync(running, "utf8"));
@@ -774,11 +775,21 @@ try {
   const state = resolve(body.stateDir);
   if (!tmp || !state.startsWith(tmp + "/")) stop();
   mkdirSync(state, { recursive: true, mode: 0o700 });
+  retryable = true;
   const child = spawnSync(body.file, body.args, { cwd: body.cwd, env: process.env, stdio: "inherit" });
   if (child.error || !Number.isSafeInteger(child.status)) stop();
+  retryable = child.status !== 0;
   process.exitCode = child.status;
 } catch { stop(); }
-finally { try { rmSync(running, { force: true }); } catch {} }
+finally {
+  try {
+    if (retryable) renameSync(running, pending);
+    else rmSync(running, { force: true });
+  } catch {
+    try { rmSync(running, { force: true }); } catch {}
+    process.exitCode = 86;
+  }
+}
 `;
 }
 

@@ -999,8 +999,6 @@ test("harness adapter executes the exact MCP-bound argv after only a short diges
     }],
   });
   const manifestDigest = createHash("sha256").update(manifest).digest("hex");
-  await writeFile(join(room.workspace, "manifest.json"), manifest, { mode: 0o600 });
-  await writeFile(join(room.workspace, "clockchain-agent-handshake.cjs"), helperSource, { mode: 0o600 });
   const command = `node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${manifestDigest} ./manifest.json ./clockchain-agent-handshake.cjs init --state-dir "$TMPDIR/.clockchain/handshakes/${SESSION}/initiator"`;
   const step = helperStep(command);
   const adapter = await prepareAgentHarnessAdapter({ manifestDigest, room, runtimeExecPath: process.execPath });
@@ -1012,6 +1010,16 @@ test("harness adapter executes the exact MCP-bound argv after only a short diges
       env: { ...process.env, PATH: `${adapter.bin}:${process.env.PATH}`, TMPDIR: room.tmp },
     }),
   );
+  await assert.rejects(
+    execFileAsync(join(adapter.bin, "clockchain-agent-authorize"), [step.commandSha256], {
+      cwd: room.workspace,
+      env: { ...process.env, PATH: `${adapter.bin}:${process.env.PATH}`, TMPDIR: room.tmp },
+    }),
+  );
+  assert.deepEqual(await readdir(adapter.pending), [`${step.commandSha256}.json`]);
+
+  await writeFile(join(room.workspace, "manifest.json"), manifest, { mode: 0o600 });
+  await writeFile(join(room.workspace, "clockchain-agent-handshake.cjs"), helperSource, { mode: 0o600 });
   const { stdout } = await execFileAsync(join(adapter.bin, "clockchain-agent-authorize"), [step.commandSha256], {
     cwd: room.workspace,
     env: { ...process.env, PATH: `${adapter.bin}:${process.env.PATH}`, TMPDIR: room.tmp },
