@@ -956,9 +956,11 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
     assert.match(prompt, /retry also fails/i);
     assert.doesNotMatch(prompt, /curl --location|retryAfterMs|localAction|mkdir -m|agent_handshake_next/);
   }
-  assert.match(fixture.initiator, /First, create the one-time Responder invitation/);
+  assert.match(fixture.initiator, /First and immediately, create the one-time Responder invitation/);
+  assert.ok(fixture.initiator.indexOf("create the one-time Responder invitation") < fixture.initiator.indexOf("inspect the downloaded manifest"));
   assert.match(fixture.initiator, /copy it from the MCP result/);
-  assert.match(fixture.responder, /Claim it exactly once/);
+  assert.match(fixture.responder, /First and immediately, accept this invitation exactly once/);
+  assert.ok(fixture.responder.indexOf("accept this invitation exactly once") < fixture.responder.indexOf("inspect the downloaded manifest"));
   assert.match(fixture.responder, /<PASTE THE INITIATOR INVITATION>/);
   assert.match(fixture.responder, /do not submit acceptance\/signature/i);
   assert.match(fixture.responder, /stop safely and report the mismatch/i);
