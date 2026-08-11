@@ -468,7 +468,7 @@ test("builds exact endpoint configuration for Codex and Claude Code", () => {
     },
   });
   assert.deepEqual(claude.launch.args, [
-    "--print", "--resume", SESSION, "--model", "sonnet", "--effort", "low", "--disable-slash-commands", "--no-chrome",
+    "--print", "--resume", SESSION, "--model", "sonnet", "--effort", "high", "--disable-slash-commands", "--no-chrome",
     "--strict-mcp-config", "--mcp-config",
     JSON.stringify({ mcpServers: { "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL } } }),
     "--permission-mode", "dontAsk", "--setting-sources", "",
