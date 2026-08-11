@@ -18,6 +18,7 @@ import {
   fingerprintHelperExecutionCommand,
   createFreshAgentRun,
   runFreshAgentHandshake,
+  unwrapCodexCommandExecution,
   writeFreshAgentAttemptArtifact,
   validateHelperCommand,
   validateClaudePreparation,
@@ -46,6 +47,43 @@ function streamEvent(value) {
   return `${JSON.stringify(value)}\n`;
 }
 
+function rustShlexQuote(value) {
+  if (value === "") return "''";
+  const unquotedOkay = (char) => /^[+\-.\/:@\]_0-9A-Za-z]$/.test(char);
+  const singleQuotedOkay = (char) => char !== "'" && char !== "^" && char !== "\\";
+  const doubleQuotedOkay = (char) => !["`", "$", "!", "^"].includes(char);
+  let remaining = value;
+  let output = "";
+  while (remaining.length > 0) {
+    let allowed = [true, true, true];
+    let index = 0;
+    if (remaining[0] === "^") {
+      allowed = [false, true, false];
+      index = 1;
+    }
+    for (; index < remaining.length; index += 1) {
+      const char = remaining[index];
+      const current = [
+        allowed[0] && unquotedOkay(char),
+        allowed[1] && singleQuotedOkay(char),
+        allowed[2] && doubleQuotedOkay(char),
+      ];
+      if (!current.some(Boolean)) break;
+      allowed = current;
+    }
+    const chunk = remaining.slice(0, index);
+    remaining = remaining.slice(index);
+    if (allowed[0]) output += chunk;
+    else if (allowed[1]) output += `'${chunk}'`;
+    else output += `"${chunk.replace(/["\\]/g, (char) => `\\${char}`)}"`;
+  }
+  return output;
+}
+
+function codexCommandExecutionDisplay(command) {
+  return ["/bin/zsh", "-lc", command].map(rustShlexQuote).join(" ");
+}
+
 function codexHelperProofEvent(result, { command = verifyCertificateCommand(result.role) } = {}) {
   return streamEvent({
     type: "item.completed",
@@ -53,7 +91,7 @@ function codexHelperProofEvent(result, { command = verifyCertificateCommand(resu
       type: "command_execution",
       status: "completed",
       exit_code: 0,
-      command,
+      command: codexCommandExecutionDisplay(command),
       aggregated_output: JSON.stringify(result),
     },
   });
@@ -926,6 +964,25 @@ test("stakeholder prompts leave mechanics to MCP and direct inspection to downlo
   assert.match(fixture.initiator, /do not stop, return, or wait for another prompt/i);
 });
 
+test("unwraps Codex's canonical shell display before binding the exact helper command", () => {
+  const command = nonterminalHelperCommand("initiator", "init");
+  const display = codexCommandExecutionDisplay(command);
+  assert.equal(Buffer.byteLength(display), Buffer.byteLength(command) + 48);
+  assert.equal(unwrapCodexCommandExecution(display), command);
+
+  for (const unsafe of [
+    command,
+    `bash -lc ${rustShlexQuote(command)}`,
+    `${display} extra`,
+    ` ${display}`,
+    "/bin/zsh -lc foo;bar",
+    '/bin/zsh -lc "foo$bar"',
+    "/bin/zsh -lc 'unterminated",
+  ]) {
+    assert.throws(() => unwrapCodexCommandExecution(unsafe), /failed safely/);
+  }
+});
+
 test("fresh-client runbook states current runtime, auth, and verification boundaries", async () => {
   const runbook = await readFile(new URL("../docs/agent-handshake-fresh-client-runbook.md", import.meta.url), "utf8");
   assert.match(runbook, /CLOCKCHAIN_FRESH_AGENT_RESULT_DIR/);
@@ -1368,7 +1425,7 @@ test("rejects helper-shaped output not produced by the exact pinned verification
             const initiator = helperProof("initiator");
             const responder = helperProof("responder");
             children.initiator.stdout.emit("data", Buffer.from(mode === "codex-arbitrary-command"
-              ? streamEvent({ type: "item.completed", item: { type: "command_execution", status: "completed", exit_code: 0, command: "printf forged", aggregated_output: JSON.stringify(initiator) } })
+              ? streamEvent({ type: "item.completed", item: { type: "command_execution", status: "completed", exit_code: 0, command: codexCommandExecutionDisplay("printf forged"), aggregated_output: JSON.stringify(initiator) } })
               : codexHelperProofEvent(initiator)));
             children.responder.stdout.emit("data", Buffer.from(mode === "claude-unmatched-result"
               ? claudeHelperProofEvent(responder, { includeToolUse: false })
@@ -1471,7 +1528,7 @@ test("reports exact helper execution failures distinctly from missing terminal p
               children.initiator.stdout.emit("data", Buffer.from(codexExpectedHelperEvent(command)));
               children.initiator.stdout.emit("data", Buffer.from(streamEvent({
                 type: "item.completed",
-                item: { type: "command_execution", status: "failed", exit_code: 1, command, aggregated_output: "helper rejected request" },
+                item: { type: "command_execution", status: "failed", exit_code: 1, command: codexCommandExecutionDisplay(command), aggregated_output: "helper rejected request" },
               })));
             } else {
               children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));

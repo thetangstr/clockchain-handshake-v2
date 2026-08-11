@@ -318,6 +318,76 @@ export function classifyHelperExecutionCommand(value) {
   });
 }
 
+function splitCodexCommandDisplay(value) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 1024 * 1024) fail();
+  const words = [];
+  let current = "";
+  let started = false;
+  let quote = null;
+  let quotedLength = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (quote === "single") {
+      if (char === "'") quote = null;
+      else {
+        if (char === "\\" || (char === "^" && quotedLength !== 0)) fail();
+        current += char;
+        quotedLength += 1;
+      }
+      continue;
+    }
+    if (quote === "double") {
+      if (char === '"') {
+        quote = null;
+        continue;
+      }
+      if (char === "\\") {
+        const next = value[index + 1];
+        if (next === undefined || !['"', "\\"].includes(next)) fail();
+        index += 1;
+        current += next;
+        continue;
+      }
+      if (["$", "`", "!", "^"].includes(char)) fail();
+      current += char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (started) {
+        words.push(current);
+        current = "";
+        started = false;
+      }
+      continue;
+    }
+    if (char === "'") {
+      quote = "single";
+      quotedLength = 0;
+      started = true;
+      continue;
+    }
+    if (char === '"') {
+      quote = "double";
+      quotedLength = 0;
+      started = true;
+      continue;
+    }
+    if (char === "\\" || !/^[+\-.\/:@\]_0-9A-Za-z]$/.test(char)) fail();
+    current += char;
+    started = true;
+  }
+  if (quote !== null) fail();
+  if (started) words.push(current);
+  return words;
+}
+
+export function unwrapCodexCommandExecution(value) {
+  if (typeof value !== "string" || value !== value.trim() || !value.startsWith("/bin/zsh -lc ")) fail();
+  const words = splitCodexCommandDisplay(value);
+  if (words.length !== 3 || words[0] !== "/bin/zsh" || words[1] !== "-lc" || words[2].length === 0) fail();
+  return words[2];
+}
+
 export function fingerprintHelperExecutionCommand(value) {
   const shape = classifyHelperExecutionCommand(value);
   const stateMatch = value.match(new RegExp(`\\.clockchain/handshakes/(${UUID.source.slice(1, -1)})/(initiator|responder)(?=[\\s"']|$)`));
@@ -870,7 +940,8 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
     event?.type === "item.completed" && event?.item?.type === "command_execution" &&
     typeof event.item.command === "string"
   ) {
-    const binding = bindHelperExecution(event.item.command, expectedHelperCommands);
+    const command = unwrapCodexCommandExecution(event.item.command);
+    const binding = bindHelperExecution(command, expectedHelperCommands);
     if (
       binding.bound &&
       (event.item.status === "failed" || (event.item.status === "completed" && event.item.exit_code !== 0))
@@ -881,7 +952,7 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
     if (event.item.status !== "completed" || event.item.exit_code !== 0) return null;
     const proof = parsedHelperProof(event.item.aggregated_output, role);
     if (proof === null) return null;
-    HELPER_CERTIFICATE_BINDINGS.set(proof, validateVerifyCertificateCommand(event.item.command, proof, manifestDigest));
+    HELPER_CERTIFICATE_BINDINGS.set(proof, validateVerifyCertificateCommand(command, proof, manifestDigest));
     return proof;
   }
   if (event?.type === "assistant" && Array.isArray(event?.message?.content)) {
@@ -1015,7 +1086,7 @@ function observeChild(child, role, all, canaries, { expectedInvitation, manifest
               status: ["in_progress", "completed", "failed"].includes(event.item.status) ? event.item.status : null,
               exitCode: Number.isSafeInteger(event.item.exit_code) ? event.item.exit_code : null,
               helperShape: event.item.type === "command_execution" && typeof event.item.command === "string"
-                ? fingerprintHelperExecutionCommand(event.item.command)
+                ? fingerprintHelperExecutionCommand(unwrapCodexCommandExecution(event.item.command))
                 : null,
               text: event.item.type === "agent_message" ? traceText(event.item.text, canaries) : null,
               accessPresent: event.item.type === "mcp_tool_call" && [
