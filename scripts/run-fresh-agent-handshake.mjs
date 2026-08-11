@@ -180,6 +180,17 @@ export async function monitor({ sessionId, retryDelayMs = 1_000, timeoutMs = 120
   throw safeMonitorError("deadline", "TIMEOUT");
 }
 
+export function hardenFreshAgentPrompt(prompt) {
+  if (typeof prompt !== "string" || prompt.length === 0) throw new Error("invalid");
+  return prompt
+    .replaceAll("before downloading or inspecting any helper asset", "before inspecting the preloaded helper assets")
+    .replaceAll("inspect the downloaded manifest and helper source", "inspect the preloaded manifest and helper source")
+    .replaceAll(
+      "authorize only its exact short approvalCommand",
+      "run only its exact short approvalCommand as the complete command. Do not prefix it with cd, env, or another command, and do not append any shell operator",
+    );
+}
+
 export async function runFreshAgentCliAttempt({
   artifactDirectory,
   attemptId = randomUUID(),
@@ -273,7 +284,10 @@ async function main() {
         },
         monitor,
         parent,
-        prompts: { initiator: prompts.initiator, responder: prompts.responder },
+        prompts: {
+          initiator: hardenFreshAgentPrompt(prompts.initiator),
+          responder: hardenFreshAgentPrompt(prompts.responder),
+        },
         release: {
           mcp: {
             manifestDigest: value("CLOCKCHAIN_MCP_RELEASE_MANIFEST_DIGEST"),

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash, generateKeyPairSync, randomUUID, sign as signBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
-import { chmod, mkdir, realpath, rm } from "node:fs/promises";
+import { chmod, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -76,7 +76,7 @@ const DIAGNOSTIC_CATEGORIES = Object.freeze(new Set([
 ]));
 const DIAGNOSTIC_CODES = Object.freeze(new Set([
   "AGENT_EXIT", "AGENT_FAILED", "AGENT_OUTPUT_INVALID", "CONFIGURE_FAILED", "HELPER_PROOF_MISSING",
-  "HELPER_COMMAND_MISMATCH", "HELPER_EXECUTION_FAILED",
+  "HELPER_COMMAND_MISMATCH", "HELPER_ACTION_EXPIRED", "HELPER_ACTION_REPLAYED", "HELPER_EXECUTION_FAILED",
   "INVALID_RETRY_DELAY", "INVALID_TIMEOUT", "INVITATION_MISSING", "MONITOR_FAILED", "MONITOR_RESULT_INVALID",
   "NODE24_REQUIRED", "PREPARE_FAILED", "AUTHENTICATION_FAILED", "TIMEOUT", "UNKNOWN",
 ]));
@@ -157,14 +157,15 @@ function cleanDiagnosticCode(value) {
   return DIAGNOSTIC_CODES.has(value) || /^HTTP_[1-5][0-9]{2}$/.test(value) ? value : "UNKNOWN";
 }
 
-function cleanCommandDiagnostic(value) {
+function cleanCommandDiagnostic(value, { allowUnknownOperation = false } = {}) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([
     "commandLength", "commandSha256", "operation", "role", "sessionId",
   ])) return null;
   if (
     !Number.isSafeInteger(value.commandLength) || value.commandLength < 1 || value.commandLength > MAX_OUTPUT_BYTES ||
-    !SHA256.test(value.commandSha256) || !HELPER_OPERATIONS.includes(value.operation) ||
+    !SHA256.test(value.commandSha256) ||
+    !(HELPER_OPERATIONS.includes(value.operation) || (allowUnknownOperation && value.operation === null)) ||
     !(value.role === null || ROLES.includes(value.role)) ||
     !(value.sessionId === null || UUID.test(value.sessionId))
   ) return null;
@@ -182,7 +183,7 @@ function cleanHelperDiagnosticDetails(code, value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(["actual", "expected"])) return null;
   const expected = cleanCommandDiagnostic(value.expected);
-  const actual = cleanCommandDiagnostic(value.actual);
+  const actual = cleanCommandDiagnostic(value.actual, { allowUnknownOperation: true });
   return expected === null || actual === null ? null : Object.freeze({ expected, actual });
 }
 
@@ -602,8 +603,6 @@ export function buildClaudeSandboxSettings({ hostHome = homedir(), hostUid = pro
       }),
       network: Object.freeze({
         allowedDomains: Object.freeze([
-          "github.com",
-          "release-assets.githubusercontent.com",
           "11155111.rpc.thirdweb.com",
           "ethereum-sepolia-rpc.publicnode.com",
         ]),
@@ -751,32 +750,82 @@ export async function createFreshAgentRun({ parent, runId = randomUUID() } = {})
 function adapterExecutable(runtimeExecPath, publicKeyDer) {
   return `#!${runtimeExecPath}\n` + String.raw`"use strict";
 const { spawnSync } = require("node:child_process");
-const { createPublicKey, verify } = require("node:crypto");
-const { mkdirSync, readFileSync, renameSync, rmSync } = require("node:fs");
+const { createHash, createPublicKey, verify } = require("node:crypto");
+const { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } = require("node:fs");
 const { dirname, join, resolve } = require("node:path");
-function stop() { process.exit(86); }
-const digest = process.argv.length === 3 ? process.argv[2] : "";
-if (!/^[0-9a-f]{64}$/.test(digest)) stop();
-const root = dirname(dirname(__filename));
-const pending = join(root, "pending", digest + ".json");
-const running = join(root, "running", digest + "." + process.pid + ".json");
-try { renameSync(pending, running); } catch { stop(); }
-try {
-  const envelope = JSON.parse(readFileSync(running, "utf8"));
+const SHA256 = /^[0-9a-f]{64}$/;
+const ROLES = new Set(["initiator", "responder"]);
+const OPERATIONS = new Set(["init", "policy", "inspect", "register", "sign", "verify-certificate"]);
+function stop(code = "HELPER_COMMAND_MISMATCH") {
+  try { process.stderr.write(JSON.stringify({ code }) + "\n"); } catch {}
+  process.exit(86);
+}
+function exact(value, keys) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) stop();
+  if (Object.keys(value).sort().join(",") !== keys.slice().sort().join(",")) stop();
+  return value;
+}
+function readEnvelope(path, digest) {
+  const envelope = JSON.parse(readFileSync(path, "utf8"));
   if (!envelope || Object.keys(envelope).sort().join(",") !== "body,schema,signature" || envelope.schema !== "clockchain.agent-harness-bound-action/v1") stop();
   const bodyBytes = Buffer.from(JSON.stringify(envelope.body), "utf8");
   const key = createPublicKey({ key: Buffer.from("${publicKeyDer}", "base64"), format: "der", type: "spki" });
   if (!verify(null, bodyBytes, key, Buffer.from(envelope.signature, "base64"))) stop();
-  const body = envelope.body;
-  if (!body || Object.keys(body).sort().join(",") !== "args,commandLength,commandSha256,cwd,file,operation,role,schema,sessionId,stateDir") stop();
-  if (body.schema !== "clockchain.agent-harness-bound-action-body/v1" || body.commandSha256 !== digest || !Number.isSafeInteger(body.commandLength)) stop();
+  const body = exact(envelope.body, ["args", "commandLength", "commandSha256", "cwd", "expiresAtMs", "file", "manifestDigest", "operation", "policyDigest", "role", "schema", "sessionId", "stateDir"]);
+  if (
+    body.schema !== "clockchain.agent-harness-bound-action-body/v1" || body.commandSha256 !== digest ||
+    !Number.isSafeInteger(body.commandLength) || body.commandLength < 1 || body.commandLength > 1024 * 1024 ||
+    !SHA256.test(body.manifestDigest) || !(body.policyDigest === null || SHA256.test(body.policyDigest)) ||
+    !OPERATIONS.has(body.operation) || !ROLES.has(body.role) || !Number.isSafeInteger(body.expiresAtMs)
+  ) stop();
+  if (Date.now() > body.expiresAtMs) stop("HELPER_ACTION_EXPIRED");
   if (body.file !== process.execPath || body.cwd !== process.cwd() || !Array.isArray(body.args) || body.args.some((value) => typeof value !== "string")) stop();
   const tmp = resolve(process.env.TMPDIR || "");
   const state = resolve(body.stateDir);
   if (!tmp || !state.startsWith(tmp + "/")) stop();
+  return body;
+}
+function verifyAssets(body) {
+  const args = body.args;
+  if (
+    args.length < 9 || args[0] !== "--input-type=commonjs" || args[1] !== "--eval" ||
+    args[3] !== body.manifestDigest || args[6] !== body.operation
+  ) stop();
+  const manifestBytes = readFileSync(args[4]);
+  if (createHash("sha256").update(manifestBytes).digest("hex") !== body.manifestDigest) stop();
+  const manifest = JSON.parse(manifestBytes);
+  if (
+    manifest.schema !== "clockchain.agent-handshake-release-manifest/v1" || manifest.version !== "2.1.2" ||
+    !Array.isArray(manifest.assets) || manifest.assets.length !== 1
+  ) stop();
+  const asset = manifest.assets[0];
+  if (asset.filename !== "clockchain-agent-handshake.cjs" || !SHA256.test(asset.sha256)) stop();
+  const helperBytes = readFileSync(args[5]);
+  if (createHash("sha256").update(helperBytes).digest("hex") !== asset.sha256) stop();
+}
+const digest = process.argv.length === 3 ? process.argv[2] : "";
+if (!SHA256.test(digest)) stop();
+const root = dirname(dirname(__filename));
+const pending = join(root, "pending", digest + ".json");
+const running = join(root, "running", digest + "." + process.pid + ".json");
+const consumed = join(root, "consumed", digest + ".json");
+let body;
+try {
+  try { readFileSync(consumed); stop("HELPER_ACTION_REPLAYED"); } catch (error) { if (error && error.code !== "ENOENT") stop(); }
+  body = readEnvelope(pending, digest);
+  verifyAssets(body);
+  try { renameSync(pending, running); } catch {
+    try { readFileSync(consumed); stop("HELPER_ACTION_REPLAYED"); } catch {}
+    stop();
+  }
+  writeFileSync(consumed, JSON.stringify({ schema: "clockchain.agent-harness-consumed-action/v1", commandSha256: body.commandSha256 }) + "\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
+  const state = resolve(body.stateDir);
   mkdirSync(state, { recursive: true, mode: 0o700 });
   const child = spawnSync(body.file, body.args, { cwd: body.cwd, env: process.env, stdio: "inherit" });
   if (child.error || !Number.isSafeInteger(child.status)) stop();
+  if (child.status !== 0) {
+    try { process.stderr.write(JSON.stringify({ code: "HELPER_EXECUTION_FAILED" }) + "\n"); } catch {}
+  }
   process.exitCode = child.status;
 } catch { stop(); }
 finally { try { rmSync(running, { force: true }); } catch {} }
@@ -794,16 +843,67 @@ process.exitCode = child.status;
 `;
 }
 
-export async function prepareAgentHarnessAdapter({ manifestDigest, room, runtimeExecPath = process.execPath } = {}) {
+async function fetchReleaseAsset(fetchImpl, url, maxBytes) {
+  let response;
+  try {
+    response = await fetchImpl(url);
+  } catch {
+    fail();
+  }
+  if (response?.ok !== true || typeof response.arrayBuffer !== "function") fail();
+  let bytes;
+  try {
+    bytes = Buffer.from(await response.arrayBuffer());
+  } catch {
+    fail();
+  }
+  if (bytes.length < 1 || bytes.length > maxBytes) fail();
+  return bytes;
+}
+
+async function preloadVerifiedReleaseAssets({ fetchImpl, manifestDigest, workspace }) {
+  if (typeof fetchImpl !== "function") fail();
+  const manifestBytes = await fetchReleaseAsset(fetchImpl, `${RELEASE_PREFIX}manifest.json`, 64 * 1024);
+  if (createHash("sha256").update(manifestBytes).digest("hex") !== manifestDigest) fail();
+  let manifest;
+  try { manifest = JSON.parse(manifestBytes.toString("utf8")); } catch { fail(); }
+  if (
+    manifest?.schema !== "clockchain.agent-handshake-release-manifest/v1" ||
+    manifest?.version !== "2.1.2" || typeof manifest?.nodeRuntime !== "string" ||
+    !/^24\./.test(manifest.nodeRuntime) || !Array.isArray(manifest?.assets) ||
+    manifest.assets.length !== 1
+  ) fail();
+  const asset = manifest.assets[0];
+  const helperUrl = `${RELEASE_PREFIX}clockchain-agent-handshake.cjs`;
+  if (
+    asset?.filename !== "clockchain-agent-handshake.cjs" || asset?.url !== helperUrl ||
+    typeof asset?.sha256 !== "string" || !SHA256.test(asset.sha256)
+  ) fail();
+  const helperBytes = await fetchReleaseAsset(fetchImpl, helperUrl, 1024 * 1024);
+  if (createHash("sha256").update(helperBytes).digest("hex") !== asset.sha256) fail();
+  await writeFile(join(workspace, "manifest.json"), manifestBytes, { mode: 0o600 });
+  await writeFile(join(workspace, "clockchain-agent-handshake.cjs"), helperBytes, { mode: 0o600 });
+}
+
+export async function prepareAgentHarnessAdapter({
+  actionTtlMs = 5 * 60_000,
+  fetchImpl = globalThis.fetch,
+  manifestDigest,
+  room,
+  runtimeExecPath = process.execPath,
+} = {}) {
   if (!SHA256.test(manifestDigest) || room === null || typeof room !== "object" || Array.isArray(room)) fail();
+  if (!Number.isSafeInteger(actionTtlMs)) fail();
   const workspace = absolute(room.workspace);
   const tmp = descendant(workspace, room.tmp);
   const runtime = absolute(runtimeExecPath);
+  await preloadVerifiedReleaseAssets({ fetchImpl, manifestDigest, workspace });
   const root = join(workspace, ".clockchain-adapter");
   const bin = join(root, "bin");
   const pending = join(root, "pending");
   const running = join(root, "running");
-  for (const path of [root, bin, pending, running]) await privateDirectory(path);
+  const consumed = join(root, "consumed");
+  for (const path of [root, bin, pending, running, consumed]) await privateDirectory(path);
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const publicKeyDer = publicKey.export({ type: "spki", format: "der" }).toString("base64");
   const executable = join(bin, "clockchain-agent-authorize");
@@ -828,8 +928,11 @@ export async function prepareAgentHarnessAdapter({ manifestDigest, room, runtime
       commandSha256: expected.commandSha256,
       commandLength: expected.commandLength,
       operation: expected.operation,
+      manifestDigest,
+      policyDigest: expected.policyDigest,
       role: expected.role,
       sessionId: expected.sessionId,
+      expiresAtMs: Date.now() + actionTtlMs,
       file: runtime,
       args: Object.freeze(argv.slice(1)),
       cwd: workspace,
@@ -846,7 +949,7 @@ export async function prepareAgentHarnessAdapter({ manifestDigest, room, runtime
     return expected;
   }
 
-  return Object.freeze({ bin, pending, record, root });
+  return Object.freeze({ bin, consumed, pending, record, root });
 }
 
 function append(output, chunk) {
@@ -1115,6 +1218,7 @@ function expectedHelperCommand(value) {
     commandLength,
     commandSha256,
     operation,
+    policyDigest: SHA256.test(step.policyDigest) ? step.policyDigest : fingerprint.request?.policyDigest ?? null,
     role,
     sessionId,
     shellCommand: step.shellCommand,
@@ -1170,8 +1274,9 @@ function bindHelperExecution(command, expectedHelperCommands) {
   const approvalDigest = approvalCommandDigest(command);
   const approvalMatches = expected.approvalCommand !== null && approvalDigest === expected.commandSha256;
   const helperActual = fingerprintHelperExecutionCommand(command);
-  const approvalShaped = approvalDigest !== null;
-  if (!approvalShaped && helperActual.helperBootstrap !== true) {
+  const containsApproval = /(^|[;&|\s])clockchain-agent-authorize\s+[0-9a-f]{64}(?:\s|$)/.test(command);
+  const helperExecutionShaped = command.startsWith("node --input-type=commonjs --eval ");
+  if (!containsApproval && !helperExecutionShaped) {
     return Object.freeze({ bound: false, actual: helperActual });
   }
   const actual = approvalMatches
@@ -1181,7 +1286,7 @@ function bindHelperExecution(command, expectedHelperCommands) {
         state: Object.freeze({ role: expected.role, sessionId: expected.sessionId }),
       })
     : helperActual;
-  const actualArgv = parseLiteralShellWords(command);
+  const actualArgv = expected.approvalCommand === null ? parseLiteralShellWords(command) : [];
   const argvMatches = actualArgv.length === expected.argv.length &&
     actualArgv.every((entry, index) => entry === expected.argv[index]);
   const rawCommandMatches = actual.commandSha256 === expected.commandSha256 &&
@@ -1202,8 +1307,12 @@ function bindHelperExecution(command, expectedHelperCommands) {
       sessionId: actual.state?.sessionId ?? null,
     }),
   });
+  if (expected.approvalCommand !== null && !approvalMatches) {
+    traceLifecycle({ phase: "helper-command-mismatch", details });
+    fail("agent-exit", "validation", "HELPER_COMMAND_MISMATCH", details);
+  }
   if (
-    (expected.approvalCommand !== null ? !approvalMatches : (!rawCommandMatches && !argvMatches)) ||
+    (expected.approvalCommand === null && !rawCommandMatches && !argvMatches) ||
     actual.operation !== expected.operation ||
     actual.state?.role !== expected.role ||
     actual.state?.sessionId !== expected.sessionId
@@ -1992,6 +2101,7 @@ export async function runFreshAgentHandshake({
   hostEnvironment = process.env,
   hostHome = homedir(),
   parent,
+  prepareAdapter = prepareAgentHarnessAdapter,
   prepareClient,
   prompts,
   release,
@@ -2005,7 +2115,10 @@ export async function runFreshAgentHandshake({
   exactObject(prompts, ROLES);
   exactObject(modelEnvironment, ROLES);
   exactObject(secretCanaries, ROLES);
-  if (typeof configureClient !== "function" || typeof monitor !== "function" || typeof prepareClient !== "function") fail();
+  if (
+    typeof configureClient !== "function" || typeof monitor !== "function" ||
+    typeof prepareAdapter !== "function" || typeof prepareClient !== "function"
+  ) fail();
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60 * 60 * 1000) fail();
   const pin = validateReleaseAgreement(release);
   const runtime = runtimeExecPath === undefined && runtimeVersion === undefined
@@ -2024,7 +2137,7 @@ export async function runFreshAgentHandshake({
     for (const role of ROLES) {
       const client = cleanClient(clients[role]);
       const authenticationMode = cleanAuthenticationMode(client, authenticationModes[role]);
-      const adapter = await prepareAgentHarnessAdapter({
+      const adapter = await prepareAdapter({
         manifestDigest: pin.manifestDigest,
         room: run.roles[role],
         runtimeExecPath: runtime?.execPath ?? process.execPath,

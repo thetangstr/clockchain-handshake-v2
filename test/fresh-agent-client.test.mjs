@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -30,6 +30,7 @@ import {
   validateReleaseAgreement,
 } from "../src/testing/fresh-agent-client.mjs";
 import {
+  hardenFreshAgentPrompt,
   monitor as runFreshAgentMonitor,
   runFreshAgentCliAttempt,
 } from "../scripts/run-fresh-agent-handshake.mjs";
@@ -440,12 +441,20 @@ function baseFreshAgentRunOptions(parent, overrides = {}) {
       USER: "tester",
     },
     parent,
+    prepareAdapter: prepareTestAdapter,
     prompts: { initiator: "init", responder: "respond <PASTE THE INITIATOR INVITATION>" },
     release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
     spawnProcess: successfulFreshAgentSpawn(),
     timeoutMs: 2_000,
     ...overrides,
   };
+}
+
+async function prepareTestAdapter({ room }) {
+  const root = join(room.workspace, ".clockchain-adapter");
+  const bin = join(root, "bin");
+  await mkdir(bin, { recursive: true, mode: 0o700 });
+  return Object.freeze({ bin, record: () => {} });
 }
 
 async function rejectsFreshAgentRun(parent, overrides) {
@@ -494,8 +503,6 @@ test("builds exact endpoint configuration for Codex and Claude Code", () => {
       },
       network: {
         allowedDomains: [
-          "github.com",
-          "release-assets.githubusercontent.com",
           "11155111.rpc.thirdweb.com",
           "ethereum-sepolia-rpc.publicnode.com",
         ],
@@ -951,8 +958,9 @@ test("live canary preflight requires Node 24 but does not pin an exact patch", (
 test("rejects unsafe command fixtures before a signer or registration can run", async () => {
   const fixture = JSON.parse(await readFile(new URL("./fixtures/fresh-agent/prompts.json", import.meta.url), "utf8"));
   assert.equal(fixture.endpoint, CLOCKCHAIN_HANDSHAKE_MCP_URL);
-  for (const prompt of [fixture.initiator, fixture.responder]) {
-    assert.ok(prompt.length < 1_800);
+  const prompts = [hardenFreshAgentPrompt(fixture.initiator), hardenFreshAgentPrompt(fixture.responder)];
+  for (const prompt of prompts) {
+    assert.ok(prompt.length < 2_000);
     assert.match(prompt, /direct authorization/i);
     assert.match(prompt, /controlled Sepolia test/i);
     assert.match(prompt, /fresh ERC-8004 identity/i);
@@ -962,17 +970,19 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
     assert.match(prompt, /locally verif/i);
     assert.match(prompt, /statementDigest.*canonical full terms object.*not.*raw statement text/i);
     assert.match(prompt, /Keep role access and private key material local/i);
-    assert.match(prompt, /authorize only its exact short approvalCommand/i);
+    assert.match(prompt, /run only its exact short approvalCommand/i);
+    assert.match(prompt, /complete command/i);
+    assert.match(prompt, /Do not prefix it with cd, env, or another command/i);
     assert.match(prompt, /adapter executes Clockchain's bound arguments directly/i);
     assert.match(prompt, /never run or reconstruct shellCommand yourself/i);
     assert.match(prompt, /retry also fails/i);
     assert.doesNotMatch(prompt, /curl --location|retryAfterMs|localAction|mkdir -m|agent_handshake_next/);
   }
   assert.match(fixture.initiator, /First and immediately, create the one-time Responder invitation/);
-  assert.ok(fixture.initiator.indexOf("create the one-time Responder invitation") < fixture.initiator.indexOf("inspect the downloaded manifest"));
+  assert.ok(prompts[0].indexOf("create the one-time Responder invitation") < prompts[0].indexOf("inspect the preloaded manifest"));
   assert.match(fixture.initiator, /copy it from the MCP result/);
   assert.match(fixture.responder, /First and immediately, accept this invitation exactly once/);
-  assert.ok(fixture.responder.indexOf("accept this invitation exactly once") < fixture.responder.indexOf("inspect the downloaded manifest"));
+  assert.ok(prompts[1].indexOf("accept this invitation exactly once") < prompts[1].indexOf("inspect the preloaded manifest"));
   assert.match(fixture.responder, /<PASTE THE INITIATOR INVITATION>/);
   assert.match(fixture.responder, /do not submit acceptance\/signature/i);
   assert.match(fixture.responder, /stop safely and report the mismatch/i);
@@ -1013,10 +1023,34 @@ test("harness adapter executes the exact MCP-bound argv after only a short diges
   const manifestDigest = createHash("sha256").update(manifest).digest("hex");
   await writeFile(join(room.workspace, "manifest.json"), manifest, { mode: 0o600 });
   await writeFile(join(room.workspace, "clockchain-agent-handshake.cjs"), helperSource, { mode: 0o600 });
+  const fetchImpl = async (url) => ({
+    ok: true,
+    arrayBuffer: async () => Buffer.from(url.endsWith("/manifest.json") ? manifest : helperSource),
+  });
   const command = `node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${manifestDigest} ./manifest.json ./clockchain-agent-handshake.cjs init --state-dir "$TMPDIR/.clockchain/handshakes/${SESSION}/initiator"`;
   const step = helperStep(command);
-  const adapter = await prepareAgentHarnessAdapter({ manifestDigest, room, runtimeExecPath: process.execPath });
+  const adapter = await prepareAgentHarnessAdapter({ fetchImpl, manifestDigest, room, runtimeExecPath: process.execPath });
   adapter.record(step);
+  const initRecord = JSON.parse(await readFile(join(adapter.pending, `${step.commandSha256}.json`), "utf8"));
+  assert.equal(initRecord.body.policyDigest, null);
+  assert.equal(initRecord.body.manifestDigest, manifestDigest);
+
+  const policyDigest = "7".repeat(64);
+  const signPayload = Buffer.from(JSON.stringify({
+    schema: "clockchain.agent-handshake-sign-request/v1",
+    helperVersion: "2.1.2",
+    operation: "sign",
+    role: "initiator",
+    sessionId: SESSION,
+    policyDigest,
+    bytesSha256: "8".repeat(64),
+  }), "utf8").toString("base64url");
+  const signCommand = `node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${manifestDigest} ./manifest.json ./clockchain-agent-handshake.cjs sign --state-dir "$TMPDIR/.clockchain/handshakes/${SESSION}/initiator" --payload-base64url ${signPayload}`;
+  const signStep = helperStep(signCommand);
+  adapter.record(signStep);
+  const signRecord = JSON.parse(await readFile(join(adapter.pending, `${signStep.commandSha256}.json`), "utf8"));
+  assert.equal(signRecord.body.policyDigest, policyDigest);
+  assert.equal(signRecord.body.manifestDigest, manifestDigest);
 
   await assert.rejects(
     execFileAsync(join(adapter.bin, "clockchain-agent-authorize"), ["f".repeat(64)], {
@@ -1029,17 +1063,165 @@ test("harness adapter executes the exact MCP-bound argv after only a short diges
     env: { ...process.env, PATH: `${adapter.bin}:${process.env.PATH}`, TMPDIR: room.tmp },
   });
   assert.equal(JSON.parse(stdout).operation, "init");
+  assert.deepEqual(await readdir(adapter.pending), [`${signStep.commandSha256}.json`]);
+  assert.deepEqual(await readdir(adapter.consumed), [`${step.commandSha256}.json`]);
+});
+
+test("harness adapter rejects unknown, replayed, and expired retained short-digest approvals with typed failures", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-adapter-decisions-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const run = await createFreshAgentRun({ parent });
+  const room = run.roles.initiator;
+  const helperSource = `process.stdout.write(JSON.stringify({schema:"clockchain.agent-handshake-cli-result/v1",helperVersion:"2.1.2",operation:"init",address:"0x${"2".repeat(40)}"})+"\\n");`;
+  const helperDigest = createHash("sha256").update(helperSource).digest("hex");
+  const manifest = JSON.stringify({
+    schema: "clockchain.agent-handshake-release-manifest/v1",
+    version: "2.1.2",
+    nodeRuntime: "24.0.0",
+    assets: [{
+      filename: "clockchain-agent-handshake.cjs",
+      url: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/clockchain-agent-handshake.cjs",
+      sha256: helperDigest,
+    }],
+  });
+  const manifestDigest = createHash("sha256").update(manifest).digest("hex");
+  await writeFile(join(room.workspace, "manifest.json"), manifest, { mode: 0o600 });
+  await writeFile(join(room.workspace, "clockchain-agent-handshake.cjs"), helperSource, { mode: 0o600 });
+  const fetchImpl = async (url) => ({
+    ok: true,
+    arrayBuffer: async () => Buffer.from(url.endsWith("/manifest.json") ? manifest : helperSource),
+  });
+  const command = `node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${manifestDigest} ./manifest.json ./clockchain-agent-handshake.cjs init --state-dir "$TMPDIR/.clockchain/handshakes/${SESSION}/initiator"`;
+  const step = helperStep(command);
+  const adapter = await prepareAgentHarnessAdapter({ fetchImpl, manifestDigest, room, runtimeExecPath: process.execPath });
+  adapter.record(step);
+  const runDecision = (targetAdapter, targetRoom, digest) => execFileAsync(join(targetAdapter.bin, "clockchain-agent-authorize"), [digest], {
+    cwd: targetRoom.workspace,
+    env: { ...process.env, PATH: `${targetAdapter.bin}:${process.env.PATH}`, TMPDIR: targetRoom.tmp },
+  });
+  const rejectsWithCode = async (targetAdapter, targetRoom, digest, code) => {
+    await assert.rejects(async () => runDecision(targetAdapter, targetRoom, digest), (error) => {
+      assert.match(error.stderr, new RegExp(code));
+      return true;
+    });
+  };
+
+  await rejectsWithCode(adapter, room, "f".repeat(64), "HELPER_COMMAND_MISMATCH");
+
+  await runDecision(adapter, room, step.commandSha256);
+  await rejectsWithCode(adapter, room, step.commandSha256, "HELPER_ACTION_REPLAYED");
+
+  const expiredAdapter = await prepareAgentHarnessAdapter({ actionTtlMs: -1, fetchImpl, manifestDigest, room: run.roles.responder, runtimeExecPath: process.execPath });
+  const expiredCommand = command.replace("/initiator", "/responder");
+  const expired = expiredAdapter.record(helperStep(expiredCommand));
+  await rejectsWithCode(expiredAdapter, run.roles.responder, expired.commandSha256, "HELPER_ACTION_EXPIRED");
+});
+
+test("harness adapter does not consume a retained action until preloaded helper assets still verify", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-adapter-predispatch-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const run = await createFreshAgentRun({ parent });
+  const room = run.roles.initiator;
+  const helperSource = `process.stdout.write(JSON.stringify({schema:"clockchain.agent-handshake-cli-result/v1",helperVersion:"2.1.2",operation:"init",address:"0x${"3".repeat(40)}"})+"\\n");`;
+  const helperDigest = createHash("sha256").update(helperSource).digest("hex");
+  const manifest = JSON.stringify({
+    schema: "clockchain.agent-handshake-release-manifest/v1",
+    version: "2.1.2",
+    nodeRuntime: "24.0.0",
+    assets: [{
+      filename: "clockchain-agent-handshake.cjs",
+      url: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/clockchain-agent-handshake.cjs",
+      sha256: helperDigest,
+    }],
+  });
+  const manifestDigest = createHash("sha256").update(manifest).digest("hex");
+  const fetchImpl = async (url) => ({
+    ok: true,
+    arrayBuffer: async () => Buffer.from(url.endsWith("/manifest.json") ? manifest : helperSource),
+  });
+  const command = `node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${manifestDigest} ./manifest.json ./clockchain-agent-handshake.cjs init --state-dir "$TMPDIR/.clockchain/handshakes/${SESSION}/initiator"`;
+  const adapter = await prepareAgentHarnessAdapter({ fetchImpl, manifestDigest, room, runtimeExecPath: process.execPath });
+  const retained = adapter.record(helperStep(command));
+  const options = {
+    cwd: room.workspace,
+    env: { ...process.env, PATH: `${adapter.bin}:${process.env.PATH}`, TMPDIR: room.tmp },
+  };
+
+  await writeFile(join(room.workspace, "clockchain-agent-handshake.cjs"), "tampered", { mode: 0o600 });
+  await assert.rejects(
+    execFileAsync(join(adapter.bin, "clockchain-agent-authorize"), [retained.commandSha256], options),
+    (error) => {
+      assert.match(error.stderr, /HELPER_COMMAND_MISMATCH/);
+      return true;
+    },
+  );
+  assert.deepEqual(await readdir(adapter.pending), [`${retained.commandSha256}.json`]);
+
+  await writeFile(join(room.workspace, "manifest.json"), manifest, { mode: 0o600 });
+  await writeFile(join(room.workspace, "clockchain-agent-handshake.cjs"), helperSource, { mode: 0o600 });
+  const { stdout } = await execFileAsync(join(adapter.bin, "clockchain-agent-authorize"), [retained.commandSha256], options);
+  assert.equal(JSON.parse(stdout).operation, "init");
   assert.deepEqual(await readdir(adapter.pending), []);
 });
 
-test("stakeholder prompts leave mechanics to MCP and direct inspection to downloaded assets", async () => {
+test("harness adapter consumes a retained action once dispatch starts even if exact helper execution fails", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-adapter-failclosed-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const run = await createFreshAgentRun({ parent });
+  const room = run.roles.initiator;
+  const helperSource = "process.exit(7);";
+  const helperDigest = createHash("sha256").update(helperSource).digest("hex");
+  const manifest = JSON.stringify({
+    schema: "clockchain.agent-handshake-release-manifest/v1",
+    version: "2.1.2",
+    nodeRuntime: "24.0.0",
+    assets: [{
+      filename: "clockchain-agent-handshake.cjs",
+      url: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/clockchain-agent-handshake.cjs",
+      sha256: helperDigest,
+    }],
+  });
+  const manifestDigest = createHash("sha256").update(manifest).digest("hex");
+  await writeFile(join(room.workspace, "manifest.json"), manifest, { mode: 0o600 });
+  await writeFile(join(room.workspace, "clockchain-agent-handshake.cjs"), helperSource, { mode: 0o600 });
+  const fetchImpl = async (url) => ({
+    ok: true,
+    arrayBuffer: async () => Buffer.from(url.endsWith("/manifest.json") ? manifest : helperSource),
+  });
+  const command = `node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${manifestDigest} ./manifest.json ./clockchain-agent-handshake.cjs init --state-dir "$TMPDIR/.clockchain/handshakes/${SESSION}/initiator"`;
+  const adapter = await prepareAgentHarnessAdapter({ fetchImpl, manifestDigest, room, runtimeExecPath: process.execPath });
+  const retained = adapter.record(helperStep(command));
+  const options = {
+    cwd: room.workspace,
+    env: { ...process.env, PATH: `${adapter.bin}:${process.env.PATH}`, TMPDIR: room.tmp },
+  };
+
+  await assert.rejects(
+    execFileAsync(join(adapter.bin, "clockchain-agent-authorize"), [retained.commandSha256], options),
+    (error) => {
+      assert.match(error.stderr, /HELPER_EXECUTION_FAILED/);
+      return true;
+    },
+  );
+  await assert.rejects(
+    execFileAsync(join(adapter.bin, "clockchain-agent-authorize"), [retained.commandSha256], options),
+    (error) => {
+      assert.match(error.stderr, /HELPER_ACTION_REPLAYED/);
+      return true;
+    },
+  );
+});
+
+test("stakeholder prompts leave mechanics to MCP and direct inspection to preloaded assets", async () => {
   const fixture = JSON.parse(await readFile(new URL("./fixtures/fresh-agent/prompts.json", import.meta.url), "utf8"));
-  for (const prompt of [fixture.initiator, fixture.responder]) {
-    assert.match(prompt, /inspect the downloaded manifest and helper source/i);
+  const prompts = [hardenFreshAgentPrompt(fixture.initiator), hardenFreshAgentPrompt(fixture.responder)];
+  for (const prompt of prompts) {
+    assert.match(prompt, /inspect the preloaded manifest and helper source/i);
+    assert.match(prompt, /run only its exact short approvalCommand as the complete command/i);
     assert.doesNotMatch(prompt, /inspect the public manifest/i);
   }
-  assert.match(fixture.initiator, /copy it from the MCP result/i);
-  assert.match(fixture.initiator, /do not stop, return, or wait for another prompt/i);
+  assert.match(prompts[0], /copy it from the MCP result/i);
+  assert.match(prompts[0], /do not stop, return, or wait for another prompt/i);
 });
 
 test("unwraps Codex's canonical shell display before binding the exact helper command", () => {
@@ -1261,6 +1443,7 @@ test("starts the Responder only after the Initiator emits its actual one-time in
       USER: "tester",
     },
     parent,
+    prepareAdapter: prepareTestAdapter,
     prompts: { initiator: "init prompt", responder: "consume <PASTE THE INITIATOR INVITATION> now" },
     release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
     hostHome: "/Users/tester",
@@ -1412,6 +1595,7 @@ test("rejects model-authored certificate claims without completed helper executi
   await assert.rejects(() => runFreshAgentHandshake({
     clients: { initiator: "codex", responder: "claude" },
     configureClient: async () => {}, prepareClient: async () => true,
+    prepareAdapter: prepareTestAdapter,
     modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
     monitor: async () => monitorProjection(), parent,
     prompts: { initiator: "init", responder: "respond <PASTE THE INITIATOR INVITATION>" },
@@ -1504,6 +1688,7 @@ test("rejects helper-shaped output not produced by the exact pinned verification
       await assert.rejects(() => runFreshAgentHandshake({
         clients: { initiator: "codex", responder: "claude" },
         configureClient: async () => {}, prepareClient: async () => true,
+        prepareAdapter: prepareTestAdapter,
         modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
         monitor: async () => monitorProjection(), parent,
         prompts: { initiator: "init", responder: "respond <PASTE THE INITIATOR INVITATION>" },
@@ -2080,6 +2265,7 @@ test("times out both process groups and removes both clean rooms", async (t) => 
     clients: { initiator: "codex", responder: "claude" },
     configureClient: async () => {},
     prepareClient: async () => true,
+    prepareAdapter: prepareTestAdapter,
     modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
     monitor: async () => { throw new Error("unreachable"); },
     parent,
@@ -2114,6 +2300,7 @@ test("rejects a three-segment invitation lookalike before starting the Responder
     clients: { initiator: "codex", responder: "claude" },
     configureClient: async () => {},
     prepareClient: async () => true,
+    prepareAdapter: prepareTestAdapter,
     modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
     monitor: async () => { throw new Error("unreachable"); },
     parent,
@@ -2154,6 +2341,7 @@ test("ignores nested metadata invitations before starting the Responder", async 
     clients: { initiator: "codex", responder: "claude" },
     configureClient: async () => {},
     prepareClient: async () => true,
+    prepareAdapter: prepareTestAdapter,
     modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
     monitor: async () => { throw new Error("unreachable"); },
     parent,
@@ -2186,6 +2374,7 @@ test("ignores top-level responder invitations from the wrong Codex MCP tool befo
     clients: { initiator: "codex", responder: "claude" },
     configureClient: async () => {},
     prepareClient: async () => true,
+    prepareAdapter: prepareTestAdapter,
     modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
     monitor: async () => { throw new Error("unreachable"); },
     parent,
@@ -2227,6 +2416,7 @@ test("ignores Claude Bash output invitations before starting the Responder", asy
     clients: { initiator: "claude", responder: "codex" },
     configureClient: async () => {},
     prepareClient: async () => true,
+    prepareAdapter: prepareTestAdapter,
     modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
     monitor: async () => { throw new Error("unreachable"); },
     parent,
@@ -2269,6 +2459,7 @@ test("rejects an Initiator role capability when an agent prints it as the invita
     clients: { initiator: "codex", responder: "claude" },
     configureClient: async () => {},
     prepareClient: async () => true,
+    prepareAdapter: prepareTestAdapter,
     modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
     monitor: async () => { throw new Error("unreachable"); },
     parent,
