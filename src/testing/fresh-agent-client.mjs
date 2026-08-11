@@ -156,14 +156,15 @@ function cleanDiagnosticCode(value) {
   return DIAGNOSTIC_CODES.has(value) || /^HTTP_[1-5][0-9]{2}$/.test(value) ? value : "UNKNOWN";
 }
 
-function cleanCommandDiagnostic(value) {
+function cleanCommandDiagnostic(value, { allowUnknownOperation = false } = {}) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([
     "commandLength", "commandSha256", "operation", "role", "sessionId",
   ])) return null;
   if (
     !Number.isSafeInteger(value.commandLength) || value.commandLength < 1 || value.commandLength > MAX_OUTPUT_BYTES ||
-    !SHA256.test(value.commandSha256) || !HELPER_OPERATIONS.includes(value.operation) ||
+    !SHA256.test(value.commandSha256) ||
+    !(HELPER_OPERATIONS.includes(value.operation) || (allowUnknownOperation && value.operation === null)) ||
     !(value.role === null || ROLES.includes(value.role)) ||
     !(value.sessionId === null || UUID.test(value.sessionId))
   ) return null;
@@ -181,7 +182,7 @@ function cleanHelperDiagnosticDetails(code, value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(["actual", "expected"])) return null;
   const expected = cleanCommandDiagnostic(value.expected);
-  const actual = cleanCommandDiagnostic(value.actual);
+  const actual = cleanCommandDiagnostic(value.actual, { allowUnknownOperation: true });
   return expected === null || actual === null ? null : Object.freeze({ expected, actual });
 }
 
@@ -601,8 +602,6 @@ export function buildClaudeSandboxSettings({ hostHome = homedir(), hostUid = pro
       }),
       network: Object.freeze({
         allowedDomains: Object.freeze([
-          "github.com",
-          "release-assets.githubusercontent.com",
           "11155111.rpc.thirdweb.com",
           "ethereum-sepolia-rpc.publicnode.com",
         ]),
@@ -804,11 +803,67 @@ process.exitCode = child.status;
 `;
 }
 
-export async function prepareAgentHarnessAdapter({ manifestDigest, room, runtimeExecPath = process.execPath } = {}) {
+async function fetchReleaseAsset(fetchImpl, url, maxBytes) {
+  let response;
+  try {
+    response = await fetchImpl(url);
+  } catch {
+    fail();
+  }
+  if (response?.ok !== true || typeof response.arrayBuffer !== "function") fail();
+  let bytes;
+  try {
+    bytes = Buffer.from(await response.arrayBuffer());
+  } catch {
+    fail();
+  }
+  if (bytes.length < 1 || bytes.length > maxBytes) fail();
+  return bytes;
+}
+
+async function preloadVerifiedReleaseAssets({ fetchImpl, manifestDigest, workspace }) {
+  if (typeof fetchImpl !== "function") fail();
+  const manifestBytes = await fetchReleaseAsset(
+    fetchImpl,
+    `${RELEASE_PREFIX}manifest.json`,
+    64 * 1024,
+  );
+  if (createHash("sha256").update(manifestBytes).digest("hex") !== manifestDigest) fail();
+  let manifest;
+  try {
+    manifest = JSON.parse(manifestBytes.toString("utf8"));
+  } catch {
+    fail();
+  }
+  if (
+    manifest?.schema !== "clockchain.agent-handshake-release-manifest/v1" ||
+    manifest?.version !== "2.1.2" ||
+    typeof manifest?.nodeRuntime !== "string" || !/^24\./.test(manifest.nodeRuntime) ||
+    !Array.isArray(manifest?.assets) || manifest.assets.length !== 1
+  ) fail();
+  const asset = manifest.assets[0];
+  const helperUrl = `${RELEASE_PREFIX}clockchain-agent-handshake.cjs`;
+  if (
+    asset?.filename !== "clockchain-agent-handshake.cjs" || asset?.url !== helperUrl ||
+    typeof asset?.sha256 !== "string" || !SHA256.test(asset.sha256)
+  ) fail();
+  const helperBytes = await fetchReleaseAsset(fetchImpl, helperUrl, 1024 * 1024);
+  if (createHash("sha256").update(helperBytes).digest("hex") !== asset.sha256) fail();
+  await writePrivateFile({ path: join(workspace, "manifest.json"), bytes: manifestBytes });
+  await writePrivateFile({ path: join(workspace, "clockchain-agent-handshake.cjs"), bytes: helperBytes });
+}
+
+export async function prepareAgentHarnessAdapter({
+  fetchImpl = globalThis.fetch,
+  manifestDigest,
+  room,
+  runtimeExecPath = process.execPath,
+} = {}) {
   if (!SHA256.test(manifestDigest) || room === null || typeof room !== "object" || Array.isArray(room)) fail();
   const workspace = absolute(room.workspace);
   const tmp = descendant(workspace, room.tmp);
   const runtime = absolute(runtimeExecPath);
+  await preloadVerifiedReleaseAssets({ fetchImpl, manifestDigest, workspace });
   const root = join(workspace, ".clockchain-adapter");
   const bin = join(root, "bin");
   const pending = join(root, "pending");
@@ -1130,9 +1185,9 @@ function bindHelperExecution(command, expectedHelperCommands) {
   }
   const approvalMatches = expected.approvalCommand !== null && command === expected.approvalCommand;
   const helperActual = fingerprintHelperExecutionCommand(command);
-  const approvalShaped = command.startsWith("clockchain-agent-authorize ");
+  const containsApproval = /(^|[;&|\s])clockchain-agent-authorize\s+[0-9a-f]{64}(?:\s|$)/.test(command);
   const helperExecutionShaped = command.startsWith("node --input-type=commonjs --eval ");
-  if (!approvalShaped && !helperExecutionShaped) {
+  if (!containsApproval && !helperExecutionShaped) {
     return Object.freeze({ bound: false, actual: helperActual });
   }
   const actual = approvalMatches
@@ -1142,9 +1197,6 @@ function bindHelperExecution(command, expectedHelperCommands) {
         state: Object.freeze({ role: expected.role, sessionId: expected.sessionId }),
       })
     : helperActual;
-  const actualArgv = parseLiteralShellWords(command);
-  const argvMatches = actualArgv.length === expected.argv.length &&
-    actualArgv.every((entry, index) => entry === expected.argv[index]);
   const rawCommandMatches = actual.commandSha256 === expected.commandSha256 &&
     Buffer.byteLength(command) === expected.commandLength;
   const details = Object.freeze({
@@ -1163,8 +1215,15 @@ function bindHelperExecution(command, expectedHelperCommands) {
       sessionId: actual.state?.sessionId ?? null,
     }),
   });
+  if (expected.approvalCommand !== null && !approvalMatches) {
+    traceLifecycle({ phase: "helper-command-mismatch", details });
+    fail("agent-exit", "validation", "HELPER_COMMAND_MISMATCH", details);
+  }
+  const actualArgv = expected.approvalCommand === null ? parseLiteralShellWords(command) : [];
+  const argvMatches = actualArgv.length === expected.argv.length &&
+    actualArgv.every((entry, index) => entry === expected.argv[index]);
   if (
-    (expected.approvalCommand !== null ? !approvalMatches : (!rawCommandMatches && !argvMatches)) ||
+    (expected.approvalCommand === null && !rawCommandMatches && !argvMatches) ||
     actual.operation !== expected.operation ||
     actual.state?.role !== expected.role ||
     actual.state?.sessionId !== expected.sessionId
@@ -1947,6 +2006,7 @@ export async function runFreshAgentHandshake({
   hostEnvironment = process.env,
   hostHome = homedir(),
   parent,
+  prepareAdapter = prepareAgentHarnessAdapter,
   prepareClient,
   prompts,
   release,
@@ -1960,7 +2020,10 @@ export async function runFreshAgentHandshake({
   exactObject(prompts, ROLES);
   exactObject(modelEnvironment, ROLES);
   exactObject(secretCanaries, ROLES);
-  if (typeof configureClient !== "function" || typeof monitor !== "function" || typeof prepareClient !== "function") fail();
+  if (
+    typeof configureClient !== "function" || typeof monitor !== "function" ||
+    typeof prepareAdapter !== "function" || typeof prepareClient !== "function"
+  ) fail();
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60 * 60 * 1000) fail();
   const pin = validateReleaseAgreement(release);
   const runtime = runtimeExecPath === undefined && runtimeVersion === undefined
@@ -1979,7 +2042,7 @@ export async function runFreshAgentHandshake({
     for (const role of ROLES) {
       const client = cleanClient(clients[role]);
       const authenticationMode = cleanAuthenticationMode(client, authenticationModes[role]);
-      const adapter = await prepareAgentHarnessAdapter({
+      const adapter = await prepareAdapter({
         manifestDigest: pin.manifestDigest,
         room: run.roles[role],
         runtimeExecPath: runtime?.execPath ?? process.execPath,
