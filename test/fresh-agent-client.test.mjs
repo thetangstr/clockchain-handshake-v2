@@ -262,6 +262,13 @@ function baseFreshAgentRunOptions(parent, overrides = {}) {
     modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
     secretCanaries: { initiator: ["canary-initiator-secret"], responder: ["canary-responder-secret"] },
     monitor: async () => monitorProjection(),
+    hostEnvironment: {
+      LOGNAME: "tester",
+      PATH: "/usr/bin:/bin",
+      SSH_AUTH_SOCK: "/tmp/test-ssh-agent.sock",
+      UNRELATED_HOST_SECRET: "must-not-be-inherited",
+      USER: "tester",
+    },
     parent,
     prompts: { initiator: "init", responder: "respond <PASTE THE INITIATOR INVITATION>" },
     release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
@@ -331,6 +338,7 @@ test("builds exact endpoint configuration for Codex and Claude Code", () => {
     "--permission-mode", "dontAsk", "--setting-sources", "",
     "--settings", JSON.stringify(sandboxSettings),
     "--output-format", "stream-json", "--verbose",
+    "--tools", "Bash,Read,ToolSearch",
     "--allowedTools",
     ["ToolSearch", "Bash"].concat([
       "agent_handshake_invite", "agent_handshake_accept_invitation", "agent_handshake_join",
@@ -342,6 +350,31 @@ test("builds exact endpoint configuration for Codex and Claude Code", () => {
     ]).join(","),
   ]);
   assert.equal(claude.launch.input, "hello");
+});
+
+test("macOS Keychain Claude mode keeps authentication while explicitly disabling inherited agent state", () => {
+  const claude = buildClientCommands({
+    client: "claude",
+    claudeAuthenticationMode: "existing_login_isolated",
+    claudeSessionId: SESSION,
+    hostHome: "/Users/tester",
+    hostUid: 501,
+    manifestDigest: DIGEST,
+    prompt: "hello",
+    workspace: "/tmp/b",
+  });
+
+  assert.deepEqual(claude.configure.args, ["auth", "status"]);
+  assert.equal(claude.prepare.args.includes("--safe-mode"), false);
+  assert.equal(claude.prepare.args.includes("--no-session-persistence"), true);
+  assert.equal(claude.prepare.args.includes("--session-id"), false);
+  assert.equal(claude.launch.args.includes("--safe-mode"), false);
+  assert.equal(claude.launch.args.includes("--no-session-persistence"), true);
+  assert.equal(claude.launch.args.includes("--strict-mcp-config"), true);
+  assert.equal(claude.launch.args.includes("--disable-slash-commands"), true);
+  assert.equal(claude.launch.args.includes("--setting-sources"), true);
+  assert.equal(claude.launch.args.includes("--resume"), false);
+  assert.deepEqual(claude.launch.args.slice(0, 4), ["--print", "--session-id", SESSION, "--model"]);
 });
 
 test("creates disjoint empty homes, workspaces, caches, state, and workspace-confined temp roots", async (t) => {
@@ -603,6 +636,34 @@ test("Claude automation uses the official inference-only OAuth token without imp
   });
 });
 
+test("Claude can use an approved existing macOS Keychain login without extracting its credential", async () => {
+  const runner = await import("../scripts/run-fresh-agent-handshake.mjs");
+  let probes = 0;
+
+  const authentication = await runner.loadFreshAgentAuthentication("claude", {
+    env: { CLOCKCHAIN_CLAUDE_EXISTING_LOGIN: "1" },
+    home: "/Users/example",
+    existingLoginProbe: async () => { probes += 1; return true; },
+  });
+
+  assert.deepEqual(authentication, {
+    client: "claude",
+    environment: {},
+    existingLoginIsolated: true,
+    secretCanaries: [],
+    serialized: null,
+    source: null,
+  });
+  assert.equal(probes, 1);
+  await assert.rejects(
+    () => runner.loadFreshAgentAuthentication("claude", {
+      env: { CLOCKCHAIN_CLAUDE_EXISTING_LOGIN: "1" },
+      home: "/Users/example",
+      existingLoginProbe: async () => false,
+    }),
+  );
+});
+
 test("fresh-agent monitor retries transient 502 until a valid complete snapshot succeeds", async (t) => {
   const previousEndpoint = process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL;
   process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL = "https://monitor.example.test/session";
@@ -754,8 +815,13 @@ test("fresh-client runbook states current runtime, auth, and verification bounda
   assert.match(runbook, /CLOCKCHAIN_FRESH_AGENT_RESULT_DIR/);
   assert.match(runbook, /Node(?:\.js)? 24 is enforced/i);
   assert.match(runbook, /macOS Keychain/i);
+  assert.match(runbook, /CLOCKCHAIN_CLAUDE_EXISTING_LOGIN=1/);
+  assert.match(runbook, /never extracted, printed, copied/i);
+  assert.match(runbook, /CLAUDE\.md, auto-memory, bundled skills/i);
+  assert.match(runbook, /--strict-mcp-config/);
   assert.match(runbook, /CLAUDE_CODE_OAUTH_TOKEN/);
   assert.match(runbook, /claude setup-token/);
+  assert.match(runbook, /not required for this approved Apple-device canary/i);
   assert.match(runbook, /inference-only/i);
   assert.match(runbook, /API keys are optional/i);
   assert.match(runbook, /Claude receives no general `Write` permission/i);
@@ -899,6 +965,7 @@ test("starts the Responder only after the Initiator emits its actual one-time in
     return child;
   };
   const result = await runFreshAgentHandshake({
+    authenticationModes: { initiator: "disposable", responder: "existing_login_isolated" },
     clients: { initiator: "codex", responder: "claude" },
     configureClient: async (entry) => calls.push({ configure: entry.client }),
     prepareClient: async (entry) => { calls.push({ prepare: entry.client }); return true; },
@@ -911,9 +978,17 @@ test("starts the Responder only after the Initiator emits its actual one-time in
       responder: [`${secret}-claude-auth`],
     },
     monitor: async () => monitorProjection(),
+    hostEnvironment: {
+      LOGNAME: "tester",
+      PATH: "/usr/bin:/bin",
+      SSH_AUTH_SOCK: "/tmp/test-ssh-agent.sock",
+      UNRELATED_HOST_SECRET: "must-not-be-inherited",
+      USER: "tester",
+    },
     parent,
     prompts: { initiator: "init prompt", responder: "consume <PASTE THE INITIATOR INVITATION> now" },
     release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
+    hostHome: "/Users/tester",
     runtimeExecPath: "/opt/homebrew/opt/node@24/bin/node",
     runtimeVersion: "24.19.3",
     spawnProcess,
@@ -927,6 +1002,16 @@ test("starts the Responder only after the Initiator emits its actual one-time in
     assert.equal(spawned.options.env.CLAUDE_CODE_TMPDIR, join(spawned.options.cwd, ".tmp"));
     assert.equal(spawned.options.env.PATH.startsWith("/opt/homebrew/opt/node@24/bin:"), true);
   }
+  const responderSpawn = calls.find((entry) => entry.file === "claude");
+  assert.equal(responderSpawn.options.env.HOME, "/Users/tester");
+  assert.equal(Object.hasOwn(responderSpawn.options.env, "CLAUDE_CONFIG_DIR"), false);
+  assert.equal(responderSpawn.options.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, "1");
+  assert.equal(responderSpawn.options.env.CLAUDE_CODE_DISABLE_BUNDLED_SKILLS, "1");
+  assert.equal(responderSpawn.options.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS, "1");
+  assert.equal(responderSpawn.options.env.CLAUDE_CODE_DISABLE_WORKFLOWS, "1");
+  assert.equal(responderSpawn.options.env.USER, "tester");
+  assert.equal(responderSpawn.options.env.SSH_AUTH_SOCK, "/tmp/test-ssh-agent.sock");
+  assert.equal(Object.hasOwn(responderSpawn.options.env, "UNRELATED_HOST_SECRET"), false);
   assert.equal(calls.find((entry) => entry.role === "initiator" && entry.input !== undefined).input, "init prompt");
   assert.equal(calls.find((entry) => entry.file === "claude").args.join(" ").includes(INVITATION), false);
   const responderInput = calls.find((entry) => entry.role === "responder" && entry.input !== undefined).input;

@@ -59,12 +59,43 @@ function roots(name) {
   return result;
 }
 
-export async function loadFreshAgentAuthentication(client, { env = process.env, home = homedir() } = {}) {
+async function probeClaudeExistingLogin() {
+  try {
+    const { stdout } = await execFileAsync("claude", ["auth", "status"], {
+      env: process.env,
+      maxBuffer: 64 * 1024,
+      timeout: 30_000,
+      windowsHide: true,
+    });
+    const status = JSON.parse(stdout);
+    return status?.loggedIn === true && status?.authMethod === "claude.ai";
+  } catch {
+    return false;
+  }
+}
+
+export async function loadFreshAgentAuthentication(client, {
+  env = process.env,
+  home = homedir(),
+  existingLoginProbe = probeClaudeExistingLogin,
+} = {}) {
   const key = client === "codex" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY";
   const credential = env[key];
   const oauthToken = client === "claude" ? env.CLAUDE_CODE_OAUTH_TOKEN : undefined;
   const supplied = [credential, oauthToken].filter((entry) => typeof entry === "string" && entry.length > 0);
   if (supplied.length > 1) throw new Error("invalid");
+  const existingLoginIsolated = client === "claude" && env.CLOCKCHAIN_CLAUDE_EXISTING_LOGIN === "1";
+  if (existingLoginIsolated) {
+    if (supplied.length !== 0 || typeof existingLoginProbe !== "function" || await existingLoginProbe() !== true) throw new Error("invalid");
+    return Object.freeze({
+      client,
+      environment: Object.freeze({}),
+      existingLoginIsolated: true,
+      secretCanaries: Object.freeze([]),
+      serialized: null,
+      source: null,
+    });
+  }
   if (supplied.length === 1) {
     const environmentKey = typeof credential === "string" && credential.length > 0
       ? key
@@ -225,6 +256,10 @@ async function main() {
         });
       },
       runHandshake: ({ authentication, runtime }) => runFreshAgentHandshake({
+        authenticationModes: {
+          initiator: authentication.initiator.existingLoginIsolated === true ? "existing_login_isolated" : "disposable",
+          responder: authentication.responder.existingLoginIsolated === true ? "existing_login_isolated" : "disposable",
+        },
         clients,
         configureClient: (entry) => configureClient({ ...entry, authentication: authentication[entry.role] }),
         prepareClient: (entry) => prepareClient({ ...entry, authentication: authentication[entry.role] }),

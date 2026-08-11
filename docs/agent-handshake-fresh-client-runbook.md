@@ -1,6 +1,6 @@
 # Fresh Codex + Claude Code Handshake Canary
 
-This runbook proves the production stakeholder flow from two empty client homes. It does not clone a Clockchain repository into either client workspace, install a plugin, open a browser, share a role capability, or retain model credentials or private signing state.
+This runbook proves the production stakeholder flow from two fresh clients in isolated empty workspaces. It does not clone a Clockchain repository into either client workspace, install a plugin, open a browser, share a role capability, or retain model credentials or private signing state.
 
 ## Public endpoint
 
@@ -8,12 +8,14 @@ Both clients connect to the same dedicated seven-tool endpoint:
 
 `https://mcp.clockchain.network/handshake/mcp`
 
-One-time commands inside the disposable homes are:
+Equivalent one-time commands for manual clients are:
 
 ```text
 codex mcp add clockchain-handshake --url https://mcp.clockchain.network/handshake/mcp
 claude mcp add --transport http --scope user clockchain-handshake https://mcp.clockchain.network/handshake/mcp
 ```
+
+The automated canary does not mutate the stakeholder's Claude configuration. It supplies that same endpoint inline with `--strict-mcp-config` for the one isolated process.
 
 The endpoint instructions provide the pinned helper manifest URL, the SHA-256 of the exact manifest bytes, supported operations, and protocol loop. For today's Apple-device path, Node 24 is enforced and the fresh client downloads the single portable `clockchain-agent-handshake.cjs` bundle. Every helper invocation runs through one fixed bootstrap command that hashes the exact manifest bytes against the independently agreed pin, requires the manifest `nodeRuntime` and executing process to be Node 24.x, reads the helper SHA-256 from that verified manifest, hashes the helper, and executes only those already-verified helper bytes from memory. Claude receives no general `Write` permission, but Bash is still general within the configured sandbox. Authorization evidence is accepted only from the exact pinned helper command plus parent verification. The local helper creates the role key, commits the exact local policy, registers a fresh ERC-8004 identity when the Initiator requires it, signs only policy-approved bytes, and verifies the final host certificate. The MCP server never receives a private key.
 
@@ -26,7 +28,7 @@ The canary remains disabled until all four values below agree with the independe
 - `CLOCKCHAIN_MCP_HOST_ROOT_FINGERPRINTS`
 - `CLOCKCHAIN_RESEARCH_HOST_ROOT_FINGERPRINTS`
 
-Set `CLOCKCHAIN_RESEARCH_MONITOR_URL=https://clockchain-research.vercel.app/api/handshake/monitor`. Set `CLOCKCHAIN_FRESH_AGENT_RESULT_DIR` to an explicit private directory where the attempt artifact will be written. Codex may copy its private `~/.codex/auth.json` into its disposable home. Current Claude Code stores an interactive macOS login in the encrypted macOS Keychain; that Keychain entry is deliberately not extracted or made visible to a disposable client. For the automated empty-home canary, generate Claude's official inference-only automation credential with `claude setup-token` and supply it as `CLAUDE_CODE_OAUTH_TOKEN`. API keys are optional alternatives: when `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is present, the harness passes that key only to the matching disposable client process. Every supplied credential is also treated as a secret canary and must be absent from retained proof.
+Set `CLOCKCHAIN_RESEARCH_MONITOR_URL=https://clockchain-research.vercel.app/api/handshake/monitor`. Set `CLOCKCHAIN_FRESH_AGENT_RESULT_DIR` to an explicit private directory where the attempt artifact will be written. Codex may copy its private `~/.codex/auth.json` into its disposable home. Current Claude Code can use an existing interactive macOS Keychain login when the operator explicitly sets `CLOCKCHAIN_CLAUDE_EXISTING_LOGIN=1`; the Keychain credential is never extracted, printed, copied, or made available to the agent. The runner asks the authenticated Claude CLI to confirm its existing first-party login; it contains no OS credential-store reader. The Claude process retains the real macOS home only for first-party authentication. Its agent runs from an empty workspace with CLAUDE.md, auto-memory, bundled skills, workflows, plugins, hooks, slash commands, session persistence, and inherited MCP configuration disabled. The launch uses `--strict-mcp-config` with only Clockchain, and the tool sandbox denies reads and writes to the real home. Only a fixed allowlist of non-secret macOS session variables is inherited. Claude's official inference-only `claude setup-token` via `CLAUDE_CODE_OAUTH_TOKEN` remains an alternative for fully disposable automation; it is not required for this approved Apple-device canary. API keys are optional alternatives: when `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` is present, the harness passes that key only to the matching disposable client process. Every supplied credential is also treated as a secret canary and must be absent from retained proof.
 
 Node 24 is enforced before starting either fresh client. On this demo Mac, the isolated runtime is `/opt/homebrew/opt/node@24/bin/node`; launch the canary with `/opt/homebrew/opt/node@24/bin` first in `PATH`. The same validated runtime directory is prepended to child process `PATH` so helper `node` execution resolves to the checked runtime. No Apple Developer account, notarization credential, npm login, plugin, or repository checkout is required for this Apple-device demo path.
 

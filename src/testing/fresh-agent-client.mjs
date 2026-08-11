@@ -28,6 +28,7 @@ const RELEASE_PREFIX = "https://github.com/thetangstr/clockchain-handshake-v2/re
 
 export const CLOCKCHAIN_HANDSHAKE_MCP_URL = "https://mcp.clockchain.network/handshake/mcp";
 export const FRESH_AGENT_CLIENTS = Object.freeze(["codex", "claude"]);
+export const CLAUDE_AUTHENTICATION_MODES = Object.freeze(["disposable", "existing_login_isolated"]);
 export const CLOCKCHAIN_HANDSHAKE_TOOLS = Object.freeze([
   "agent_handshake_invite",
   "agent_handshake_accept_invitation",
@@ -169,6 +170,15 @@ function exactObject(value, keys) {
 
 function cleanClient(value) {
   if (!FRESH_AGENT_CLIENTS.includes(value)) fail();
+  return value;
+}
+
+function cleanAuthenticationMode(client, value) {
+  if (client === "codex") {
+    if (value !== "disposable") fail();
+    return value;
+  }
+  if (!CLAUDE_AUTHENTICATION_MODES.includes(value)) fail();
   return value;
 }
 
@@ -344,7 +354,16 @@ export function buildClaudeSandboxSettings({ hostHome = homedir(), hostUid = pro
   });
 }
 
-export function buildClientCommands({ client, claudeSessionId, hostHome = homedir(), hostUid = process.getuid?.(), manifestDigest, prompt, workspace } = {}) {
+export function buildClientCommands({
+  client,
+  claudeAuthenticationMode = "disposable",
+  claudeSessionId,
+  hostHome = homedir(),
+  hostUid = process.getuid?.(),
+  manifestDigest,
+  prompt,
+  workspace,
+} = {}) {
   const clean = cleanClient(client);
   const cwd = absolute(workspace);
   if (!SHA256.test(manifestDigest)) fail();
@@ -367,15 +386,23 @@ export function buildClientCommands({ client, claudeSessionId, hostHome = homedi
       }),
     });
   }
+  const authenticationMode = cleanAuthenticationMode(clean, claudeAuthenticationMode);
   if (!UUID.test(claudeSessionId)) fail();
   const sandboxSettings = buildClaudeSandboxSettings({ hostHome, hostUid, workspace: cwd });
+  const existingLoginIsolated = authenticationMode === "existing_login_isolated";
   return Object.freeze({
     configure: Object.freeze({
-      args: Object.freeze(["mcp", "add", "--transport", "http", "--scope", "user", "clockchain-handshake", CLOCKCHAIN_HANDSHAKE_MCP_URL]),
+      args: Object.freeze(existingLoginIsolated
+        ? ["auth", "status"]
+        : ["mcp", "add", "--transport", "http", "--scope", "user", "clockchain-handshake", CLOCKCHAIN_HANDSHAKE_MCP_URL]),
       file: "claude",
     }),
     prepare: Object.freeze({
-      args: Object.freeze([
+      args: Object.freeze(existingLoginIsolated ? [
+        "--print", "--model", "sonnet", "--effort", "low", "--no-session-persistence",
+        "--disable-slash-commands", "--no-chrome", "--permission-mode", "dontAsk",
+        "--setting-sources", "", "--tools", "", "--output-format", "json",
+      ] : [
         "--print", "--model", "sonnet", "--effort", "low", "--session-id", claudeSessionId,
         "--disable-slash-commands", "--no-chrome", "--permission-mode", "dontAsk",
         "--setting-sources", "", "--output-format", "json",
@@ -385,7 +412,10 @@ export function buildClientCommands({ client, claudeSessionId, hostHome = homedi
     }),
     launch: Object.freeze({
       args: Object.freeze([
-        "--print", "--resume", claudeSessionId, "--model", "sonnet", "--effort", "low", "--disable-slash-commands", "--no-chrome",
+        "--print", existingLoginIsolated ? "--session-id" : "--resume", claudeSessionId,
+        "--model", "sonnet", "--effort", "low",
+        ...(existingLoginIsolated ? ["--no-session-persistence"] : []),
+        "--disable-slash-commands", "--no-chrome",
         "--strict-mcp-config", "--mcp-config", JSON.stringify({
           mcpServers: { "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL } },
         }),
@@ -394,6 +424,7 @@ export function buildClientCommands({ client, claudeSessionId, hostHome = homedi
         "--settings", JSON.stringify(sandboxSettings),
         "--output-format", "stream-json",
         "--verbose",
+        "--tools", "Bash,Read,ToolSearch",
         "--allowedTools", ["ToolSearch", "Bash"].concat(CLOCKCHAIN_HANDSHAKE_TOOLS
           .map((tool) => `mcp__clockchain-handshake__${tool}`)
           .concat(["Read(./manifest.json)", "Read(./clockchain-agent-handshake.cjs)"]))
@@ -839,25 +870,61 @@ function responderPrompt(template, value) {
   return template.replace(RESPONDER_INVITATION_PLACEHOLDER, invitation(value));
 }
 
-function childEnvironment(room, credentials, runtime) {
+const CLAUDE_EXISTING_LOGIN_SESSION_ENV = Object.freeze([
+  "LOGNAME",
+  "SHELL",
+  "SSH_AUTH_SOCK",
+  "TERM",
+  "USER",
+  "XPC_FLAGS",
+  "XPC_SERVICE_NAME",
+  "__CF_USER_TEXT_ENCODING",
+]);
+
+function childEnvironment(room, credentials, runtime, {
+  authenticationMode = "disposable",
+  client,
+  hostEnvironment = process.env,
+  hostHome = homedir(),
+} = {}) {
   if (credentials === null || typeof credentials !== "object" || Array.isArray(credentials)) fail();
   for (const [key, value] of Object.entries(credentials)) {
     if (!/^[A-Z][A-Z0-9_]*$/.test(key) || typeof value !== "string" || value.length === 0) fail();
   }
-  const basePath = process.env.PATH ?? "/usr/bin:/bin";
+  const basePath = hostEnvironment.PATH ?? "/usr/bin:/bin";
   const path = runtime === undefined ? basePath : `${runtime.pathDirectory}:${basePath}`;
-  return Object.freeze({
+  const common = {
     ...credentials,
     CODEX_HOME: room.home,
     CLAUDE_CODE_TMPDIR: room.tmp,
-    HOME: room.home,
-    CLAUDE_CONFIG_DIR: join(room.home, ".claude"),
     GIT_CONFIG_NOSYSTEM: "1",
     LANG: "C.UTF-8",
     LC_ALL: "C.UTF-8",
     PATH: path,
     TMPDIR: room.tmp,
     XDG_CACHE_HOME: room.cache,
+  };
+  const mode = cleanAuthenticationMode(cleanClient(client), authenticationMode);
+  if (client === "claude" && mode === "existing_login_isolated") {
+    const sessionEnvironment = {};
+    for (const name of CLAUDE_EXISTING_LOGIN_SESSION_ENV) {
+      const value = hostEnvironment[name];
+      if (typeof value === "string" && value.length > 0) sessionEnvironment[name] = value;
+    }
+    return Object.freeze({
+      ...common,
+      ...sessionEnvironment,
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+      CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1",
+      CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
+      CLAUDE_CODE_DISABLE_WORKFLOWS: "1",
+      HOME: absolute(hostHome),
+    });
+  }
+  return Object.freeze({
+    ...common,
+    CLAUDE_CONFIG_DIR: join(room.home, ".claude"),
+    HOME: room.home,
   });
 }
 
@@ -1207,11 +1274,14 @@ function verifyParentCertificateBinding({ initiatorProof, monitorResult, pin, re
 }
 
 export async function runFreshAgentHandshake({
+  authenticationModes = { initiator: "disposable", responder: "disposable" },
   clients,
   configureClient,
   modelEnvironment = {},
   secretCanaries = { initiator: [], responder: [] },
   monitor,
+  hostEnvironment = process.env,
+  hostHome = homedir(),
   parent,
   prepareClient,
   prompts,
@@ -1221,6 +1291,7 @@ export async function runFreshAgentHandshake({
   spawnProcess = spawn,
   timeoutMs = 10 * 60 * 1000,
 } = {}) {
+  exactObject(authenticationModes, ROLES);
   exactObject(clients, ROLES);
   exactObject(prompts, ROLES);
   exactObject(modelEnvironment, ROLES);
@@ -1243,9 +1314,23 @@ export async function runFreshAgentHandshake({
     const prepared = {};
     for (const role of ROLES) {
       const client = cleanClient(clients[role]);
-      const env = childEnvironment(run.roles[role], modelEnvironment[role], runtime);
+      const authenticationMode = cleanAuthenticationMode(client, authenticationModes[role]);
+      const env = childEnvironment(run.roles[role], modelEnvironment[role], runtime, {
+        authenticationMode,
+        client,
+        hostEnvironment,
+        hostHome,
+      });
       const claudeSessionId = client === "claude" ? randomUUID() : undefined;
-      const commands = buildClientCommands({ client, claudeSessionId, manifestDigest: pin.manifestDigest, prompt: "configured later", workspace: run.roles[role].workspace });
+      const commands = buildClientCommands({
+        client,
+        claudeAuthenticationMode: authenticationMode,
+        claudeSessionId,
+        hostHome,
+        manifestDigest: pin.manifestDigest,
+        prompt: "configured later",
+        workspace: run.roles[role].workspace,
+      });
       const configure = commands.configure;
       traceLifecycle({ phase: "configure", role, client, status: "started" });
       try {
@@ -1265,7 +1350,7 @@ export async function runFreshAgentHandshake({
         if (ready !== true) fail("prepare", "client", "PREPARE_FAILED");
         traceLifecycle({ phase: "prepare", role, client, status: "completed" });
       }
-      prepared[role] = { claudeSessionId, client, env };
+      prepared[role] = { authenticationMode, claudeSessionId, client, env };
     }
     const timedOut = new Promise((_, rejectPromise) => {
       timer = setTimeout(() => {
@@ -1275,7 +1360,9 @@ export async function runFreshAgentHandshake({
     });
     const initiatorCommands = buildClientCommands({
       client: prepared.initiator.client,
+      claudeAuthenticationMode: prepared.initiator.authenticationMode,
       claudeSessionId: prepared.initiator.claudeSessionId,
+      hostHome,
       manifestDigest: pin.manifestDigest,
       prompt: prompts.initiator,
       workspace: run.roles.initiator.workspace,
@@ -1300,7 +1387,9 @@ export async function runFreshAgentHandshake({
     ]);
     const responderCommands = buildClientCommands({
       client: prepared.responder.client,
+      claudeAuthenticationMode: prepared.responder.authenticationMode,
       claudeSessionId: prepared.responder.claudeSessionId,
+      hostHome,
       manifestDigest: pin.manifestDigest,
       prompt: responderPrompt(prompts.responder, actualInvitation),
       workspace: run.roles.responder.workspace,
