@@ -31,6 +31,7 @@ export const CLOCKCHAIN_HANDSHAKE_TOOLS = Object.freeze([
 export const VERIFIED_HELPER_BOOTSTRAP = 'const fs=require("node:fs");const crypto=require("node:crypto");const Module=require("node:module");const argv=process.argv.slice(1);const expected=argv.shift();const manifestPath=argv.shift();const helperPath=argv.shift();const manifestBytes=fs.readFileSync(manifestPath);const manifestDigest=crypto.createHash("sha256").update(manifestBytes).digest("hex");if(manifestDigest!==expected)process.exit(86);const manifest=JSON.parse(manifestBytes);if(manifest.schema!=="clockchain.agent-handshake-release-manifest/v1"||manifest.version!=="2.1.2"||!Array.isArray(manifest.assets)||manifest.assets.length!==1)process.exit(86);const asset=manifest.assets[0];if(asset.filename!=="clockchain-agent-handshake.cjs"||asset.url!=="https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/clockchain-agent-handshake.cjs"||typeof asset.sha256!=="string"||!/^[0-9a-f]{64}$/.test(asset.sha256))process.exit(86);const helperBytes=fs.readFileSync(helperPath);const helperDigest=crypto.createHash("sha256").update(helperBytes).digest("hex");if(helperDigest!==asset.sha256)process.exit(86);process.argv=[process.execPath].concat(helperPath).concat(argv);const loaded=new Module(helperPath);loaded.filename=helperPath;loaded.paths=[];const compile=loaded._compile.bind(loaded);compile(...[helperBytes.toString("utf8")].concat(helperPath));';
 
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
+const SHA = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ADDRESS = /^0x[0-9a-f]{40}$/;
@@ -507,17 +508,61 @@ function parsedHelperProof(value, role) {
   return validateHelperProof(parsed, role);
 }
 
-function helperProofFromEvent(event, role) {
+function validateVerifyCertificateCommand(value, proof, manifestDigest) {
+  if (typeof value !== "string" || value !== value.trim() || !SHA256.test(manifestDigest)) fail();
+  const stateDir = `$TMPDIR/.clockchain/handshakes/${proof.sessionId}/${proof.role}`;
+  const prefix = `node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${manifestDigest} ./manifest.json ./clockchain-agent-handshake.cjs verify-certificate --state-dir "${stateDir}" --payload-base64url `;
+  if (!value.startsWith(prefix)) fail();
+  const encoded = value.slice(prefix.length);
+  if (!BASE64URL.test(encoded)) fail();
+  const bytes = Buffer.from(encoded, "base64url");
+  if (bytes.toString("base64url") !== encoded) fail();
+  let parsed;
+  try { parsed = JSON.parse(bytes.toString("utf8")); } catch { fail(); }
+  const payload = exactObject(parsed, [
+    "schema", "helperVersion", "role", "sessionId", "repositorySha", "sessionDeadlineMs",
+    "certificate", "externalBusinessActionPerformed",
+  ]);
+  if (
+    payload.schema !== "clockchain.agent-handshake-certificate-verification/v1" ||
+    payload.helperVersion !== "2.1.2" || payload.role !== proof.role ||
+    payload.sessionId !== proof.sessionId || !SHA.test(payload.repositorySha) ||
+    !DECIMAL.test(payload.sessionDeadlineMs) || payload.certificate === null ||
+    typeof payload.certificate !== "object" || Array.isArray(payload.certificate) ||
+    payload.externalBusinessActionPerformed !== false
+  ) fail();
+}
+
+function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands) {
   if (
     event?.type === "item.completed" && event?.item?.type === "command_execution" &&
     event.item.status === "completed" && event.item.exit_code === 0
-  ) return parsedHelperProof(event.item.aggregated_output, role);
+  ) {
+    const proof = parsedHelperProof(event.item.aggregated_output, role);
+    if (proof === null) return null;
+    validateVerifyCertificateCommand(event.item.command, proof, manifestDigest);
+    return proof;
+  }
+  if (event?.type === "assistant" && Array.isArray(event?.message?.content)) {
+    for (const block of event.message.content) {
+      if (block?.type !== "tool_use" || block?.name !== "Bash") continue;
+      if (typeof block.id !== "string" || block.id.length === 0 || typeof block?.input?.command !== "string") fail();
+      if (claudeBashCommands.has(block.id)) fail();
+      claudeBashCommands.set(block.id, block.input.command);
+    }
+    return null;
+  }
   if (event?.type !== "user" || !Array.isArray(event?.message?.content)) return null;
   let found = null;
   for (const block of event.message.content) {
     if (block?.type !== "tool_result" || block.is_error === true) continue;
     const parsed = parsedHelperProof(block.content, role);
     if (parsed === null) continue;
+    if (typeof block.tool_use_id !== "string") fail();
+    const command = claudeBashCommands.get(block.tool_use_id);
+    if (typeof command !== "string") fail();
+    validateVerifyCertificateCommand(command, parsed, manifestDigest);
+    claudeBashCommands.set(block.tool_use_id, null);
     if (found !== null && JSON.stringify(found) !== JSON.stringify(parsed)) fail();
     found = parsed;
   }
@@ -533,7 +578,8 @@ function killProcessGroup(child) {
   } catch { child.kill?.("SIGTERM"); }
 }
 
-function observeChild(child, role, all, canaries, { expectedInvitation, requireInvitation = false } = {}) {
+function observeChild(child, role, all, canaries, { expectedInvitation, manifestDigest, requireInvitation = false } = {}) {
+  if (!SHA256.test(manifestDigest)) fail();
   let resolveInvitation;
   let rejectInvitation;
   const invitationPromise = requireInvitation ? new Promise((resolvePromise, rejectPromise) => {
@@ -545,13 +591,14 @@ function observeChild(child, role, all, canaries, { expectedInvitation, requireI
     let stderr = "";
     let lineBuffer = "";
     let observed = {};
+    const claudeBashCommands = new Map();
     let settled = false;
     function processLine(line) {
       if (line.trim().length === 0) return;
       let event;
       try { event = JSON.parse(line); } catch { fail(); }
       observed = mergeObserved(observed, inspectEvent(event, role));
-      const helperProof = helperProofFromEvent(event, role);
+      const helperProof = helperProofFromEvent(event, role, manifestDigest, claudeBashCommands);
       if (helperProof !== null) observed = mergeObserved(observed, { helperProof });
       traceLifecycle({
         phase: "event",
@@ -877,7 +924,10 @@ export async function runFreshAgentHandshake({
     });
     children.push(initiatorChild);
     traceLifecycle({ phase: "spawn", role: "initiator" });
-    const initiatorObserved = observeChild(initiatorChild, "initiator", children, canaries, { requireInvitation: true });
+    const initiatorObserved = observeChild(initiatorChild, "initiator", children, canaries, {
+      manifestDigest: pin.manifestDigest,
+      requireInvitation: true,
+    });
     sendPrompt(initiatorChild, initiatorCommands.launch.input);
     const actualInvitation = await Promise.race([
       initiatorObserved.invitation,
@@ -901,6 +951,7 @@ export async function runFreshAgentHandshake({
     traceLifecycle({ phase: "spawn", role: "responder" });
     const responderObserved = observeChild(responderChild, "responder", children, canaries, {
       expectedInvitation: actualInvitation,
+      manifestDigest: pin.manifestDigest,
     });
     sendPrompt(responderChild, responderCommands.launch.input);
     const results = await Promise.race([
