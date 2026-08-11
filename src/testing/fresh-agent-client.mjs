@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, realpath, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -73,6 +73,7 @@ const DIAGNOSTIC_CATEGORIES = Object.freeze(new Set([
 ]));
 const DIAGNOSTIC_CODES = Object.freeze(new Set([
   "AGENT_EXIT", "AGENT_FAILED", "AGENT_OUTPUT_INVALID", "CONFIGURE_FAILED", "HELPER_PROOF_MISSING",
+  "HELPER_COMMAND_MISMATCH", "HELPER_EXECUTION_FAILED",
   "INVALID_RETRY_DELAY", "INVALID_TIMEOUT", "INVITATION_MISSING", "MONITOR_FAILED", "MONITOR_RESULT_INVALID",
   "NODE24_REQUIRED", "PREPARE_FAILED", "AUTHENTICATION_FAILED", "TIMEOUT", "UNKNOWN",
 ]));
@@ -282,6 +283,44 @@ export function classifyHelperExecutionCommand(value) {
     operation,
     payloadFlag: value.includes("--payload-base64url"),
     statePathClass,
+  });
+}
+
+export function fingerprintHelperExecutionCommand(value) {
+  const shape = classifyHelperExecutionCommand(value);
+  const stateMatch = value.match(new RegExp(`\\.clockchain/handshakes/(${UUID.source.slice(1, -1)})/(initiator|responder)(?=[\\s"']|$)`));
+  let request = null;
+  if (shape.operation === "sign") {
+    const payloadMatch = value.match(/--payload-base64url\s+([A-Za-z0-9_-]+)/);
+    if (payloadMatch !== null) {
+      let bytes;
+      let parsed;
+      try {
+        bytes = Buffer.from(payloadMatch[1], "base64url");
+        parsed = JSON.parse(bytes.toString("utf8"));
+      } catch {
+        bytes = Buffer.alloc(0);
+        parsed = null;
+      }
+      const record = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+      request = Object.freeze({
+        bytesSha256: SHA256.test(record.bytesSha256) ? record.bytesSha256 : null,
+        encodingCanonical: bytes.length > 0 && bytes.toString("base64url") === payloadMatch[1],
+        helperVersion: typeof record.helperVersion === "string" ? record.helperVersion : null,
+        jsonSha256: createHash("sha256").update(bytes).digest("hex"),
+        operation: typeof record.operation === "string" ? record.operation : null,
+        policyDigest: SHA256.test(record.policyDigest) ? record.policyDigest : null,
+        role: ROLES.includes(record.role) ? record.role : null,
+        schema: typeof record.schema === "string" ? record.schema : null,
+        sessionId: UUID.test(record.sessionId) ? record.sessionId : null,
+      });
+    }
+  }
+  return Object.freeze({
+    ...shape,
+    commandSha256: createHash("sha256").update(value, "utf8").digest("hex"),
+    request,
+    state: stateMatch === null ? null : Object.freeze({ sessionId: stateMatch[1], role: stateMatch[2] }),
   });
 }
 
@@ -659,6 +698,85 @@ function parsedHelperProof(value, role) {
   return validateHelperProof(parsed, role);
 }
 
+function expectedHelperCommand(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const step = value;
+  if (typeof step.shellCommand !== "string" || step.shellCommand.length === 0) return null;
+  const operation = typeof step.operation === "string" ? step.operation : null;
+  const role = ROLES.includes(step.role) ? step.role : null;
+  const sessionId = UUID.test(step.sessionId) ? step.sessionId : null;
+  const commandLength = Number.isSafeInteger(step.commandLength)
+    ? step.commandLength
+    : Buffer.byteLength(step.shellCommand);
+  const commandSha256 = typeof step.commandSha256 === "string" && SHA256.test(step.commandSha256)
+    ? step.commandSha256
+    : createHash("sha256").update(step.shellCommand, "utf8").digest("hex");
+  if (
+    commandLength !== Buffer.byteLength(step.shellCommand) ||
+    commandSha256 !== createHash("sha256").update(step.shellCommand, "utf8").digest("hex")
+  ) {
+    fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
+  }
+  return Object.freeze({ commandLength, commandSha256, operation, role, sessionId });
+}
+
+function collectExpectedHelperCommands(value, found = [], seen = new Set()) {
+  if (typeof value === "string") {
+    const parsed = parseJsonString(value);
+    if (parsed !== null) collectExpectedHelperCommands(parsed, found, seen);
+    return found;
+  }
+  if (value === null || typeof value !== "object") return found;
+  if (Array.isArray(value)) {
+    for (const entry of value) collectExpectedHelperCommands(entry, found, seen);
+    return found;
+  }
+  const localAction = value.localAction;
+  if (localAction !== null && typeof localAction === "object" && !Array.isArray(localAction)) {
+    const helperStep = expectedHelperCommand(localAction.helperStep);
+    if (helperStep !== null) {
+      const key = `${helperStep.commandSha256}:${helperStep.commandLength}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        found.push(helperStep);
+      }
+    }
+    if (Array.isArray(localAction.helperSteps)) {
+      for (const step of localAction.helperSteps) {
+        const helper = expectedHelperCommand(step);
+        if (helper !== null) {
+          const key = `${helper.commandSha256}:${helper.commandLength}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            found.push(helper);
+          }
+        }
+      }
+    }
+  }
+  for (const entry of Object.values(value)) {
+    collectExpectedHelperCommands(entry, found, seen);
+  }
+  return found;
+}
+
+function bindHelperExecution(command, expectedHelperCommands) {
+  const actual = fingerprintHelperExecutionCommand(command);
+  if (actual.operation === null) return Object.freeze({ bound: false, actual });
+  const expected = expectedHelperCommands.shift();
+  if (expected === undefined) return Object.freeze({ bound: false, actual });
+  if (
+    actual.commandSha256 !== expected.commandSha256 ||
+    Buffer.byteLength(command) !== expected.commandLength ||
+    actual.operation !== expected.operation ||
+    actual.state?.role !== expected.role ||
+    actual.state?.sessionId !== expected.sessionId
+  ) {
+    fail("agent-exit", "validation", "HELPER_COMMAND_MISMATCH");
+  }
+  return Object.freeze({ bound: true, actual, expected });
+}
+
 function validateVerifyCertificateCommand(value, proof, manifestDigest) {
   if (typeof value !== "string" || value !== value.trim() || !SHA256.test(manifestDigest)) fail();
   const stateDir = `$TMPDIR/.clockchain/handshakes/${proof.sessionId}/${proof.role}`;
@@ -689,11 +807,19 @@ function validateVerifyCertificateCommand(value, proof, manifestDigest) {
   });
 }
 
-function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands) {
+function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, expectedHelperCommands, helperExecutionState) {
   if (
     event?.type === "item.completed" && event?.item?.type === "command_execution" &&
-    event.item.status === "completed" && event.item.exit_code === 0
+    typeof event.item.command === "string"
   ) {
+    const binding = bindHelperExecution(event.item.command, expectedHelperCommands);
+    if (
+      binding.bound &&
+      (event.item.status === "failed" || (event.item.status === "completed" && event.item.exit_code !== 0))
+    ) {
+      helperExecutionState.failed = true;
+    }
+    if (event.item.status !== "completed" || event.item.exit_code !== 0) return null;
     const proof = parsedHelperProof(event.item.aggregated_output, role);
     if (proof === null) return null;
     HELPER_CERTIFICATE_BINDINGS.set(proof, validateVerifyCertificateCommand(event.item.command, proof, manifestDigest));
@@ -704,6 +830,7 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands) {
       if (block?.type !== "tool_use" || block?.name !== "Bash") continue;
       if (typeof block.id !== "string" || block.id.length === 0 || typeof block?.input?.command !== "string") fail();
       if (claudeBashCommands.has(block.id)) fail();
+      bindHelperExecution(block.input.command, expectedHelperCommands);
       claudeBashCommands.set(block.id, block.input.command);
     }
     return null;
@@ -711,7 +838,14 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands) {
   if (event?.type !== "user" || !Array.isArray(event?.message?.content)) return null;
   let found = null;
   for (const block of event.message.content) {
-    if (block?.type !== "tool_result" || block.is_error === true) continue;
+    if (block?.type !== "tool_result") continue;
+    if (block.is_error === true) {
+      if (typeof block.tool_use_id === "string" && typeof claudeBashCommands.get(block.tool_use_id) === "string") {
+        helperExecutionState.failed = true;
+        claudeBashCommands.set(block.tool_use_id, null);
+      }
+      continue;
+    }
     const parsed = parsedHelperProof(block.content, role);
     if (parsed === null) continue;
     if (typeof block.tool_use_id !== "string") fail();
@@ -748,13 +882,16 @@ function observeChild(child, role, all, canaries, { expectedInvitation, manifest
     let lineBuffer = "";
     let observed = {};
     const claudeBashCommands = new Map();
+    const expectedHelperCommands = [];
+    const helperExecutionState = { failed: false };
     let settled = false;
     function processLine(line) {
       if (line.trim().length === 0) return;
       let event;
       try { event = JSON.parse(line); } catch { fail(); }
+      expectedHelperCommands.push(...collectExpectedHelperCommands(event));
       observed = mergeObserved(observed, inspectEvent(event, role));
-      const helperProof = helperProofFromEvent(event, role, manifestDigest, claudeBashCommands);
+      const helperProof = helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, expectedHelperCommands, helperExecutionState);
       if (helperProof !== null) observed = mergeObserved(observed, { helperProof });
       traceLifecycle({
         phase: "event",
@@ -777,7 +914,7 @@ function observeChild(child, role, all, canaries, { expectedInvitation, manifest
                 ? classifyClaudeBashCommand(block.input.command)
                 : null,
               helperShape: block?.name === "Bash" && typeof block?.input?.command === "string"
-                ? classifyHelperExecutionCommand(block.input.command)
+                ? fingerprintHelperExecutionCommand(block.input.command)
                 : null,
             }))
           : [],
@@ -813,7 +950,7 @@ function observeChild(child, role, all, canaries, { expectedInvitation, manifest
               status: ["in_progress", "completed", "failed"].includes(event.item.status) ? event.item.status : null,
               exitCode: Number.isSafeInteger(event.item.exit_code) ? event.item.exit_code : null,
               helperShape: event.item.type === "command_execution" && typeof event.item.command === "string"
-                ? classifyHelperExecutionCommand(event.item.command)
+                ? fingerprintHelperExecutionCommand(event.item.command)
                 : null,
               text: event.item.type === "agent_message" ? traceText(event.item.text, canaries) : null,
               accessPresent: event.item.type === "mcp_tool_call" && [
@@ -870,8 +1007,8 @@ function observeChild(child, role, all, canaries, { expectedInvitation, manifest
       rejectInvitation?.(error);
       rejectPromise(error);
     }
-    child.stdout?.on("data", (chunk) => { try { processChunk(chunk); } catch { reject(); } });
-    child.stderr?.on("data", (chunk) => { try { stderr = append(stderr, chunk); } catch { reject(); } });
+    child.stdout?.on("data", (chunk) => { try { processChunk(chunk); } catch (error) { reject(error); } });
+    child.stderr?.on("data", (chunk) => { try { stderr = append(stderr, chunk); } catch (error) { reject(error); } });
     child.once("error", reject);
     child.stdin?.once?.("error", reject);
     child.once("close", (code) => {
@@ -889,7 +1026,9 @@ function observeChild(child, role, all, canaries, { expectedInvitation, manifest
         assertSecretFree(stdout, canaries);
         assertSecretFree(stderr, canaries);
         if (requireInvitation && observed.invitation === undefined) fail("invitation", "agent", "INVITATION_MISSING");
-        if (observed.helperProof === undefined) fail("agent-exit", "agent", "HELPER_PROOF_MISSING");
+        if (observed.helperProof === undefined) {
+          fail("agent-exit", "agent", helperExecutionState.failed ? "HELPER_EXECUTION_FAILED" : "HELPER_PROOF_MISSING");
+        }
         resolvePromise(observed.helperProof);
       } catch (error) {
         error = diagnosticFrom(error, "agent-exit", "validation", "AGENT_OUTPUT_INVALID");

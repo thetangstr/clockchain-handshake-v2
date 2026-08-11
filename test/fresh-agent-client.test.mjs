@@ -15,6 +15,7 @@ import {
   buildClaudeSandboxSettings,
   classifyClaudeBashCommand,
   classifyHelperExecutionCommand,
+  fingerprintHelperExecutionCommand,
   createFreshAgentRun,
   runFreshAgentHandshake,
   writeFreshAgentAttemptArtifact,
@@ -90,6 +91,41 @@ function verifyCertificateCommand(role, overrides = {}) {
     ...overrides,
   };
   return `node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${DIGEST} ./manifest.json ./clockchain-agent-handshake.cjs verify-certificate --state-dir "$TMPDIR/.clockchain/handshakes/${SESSION}/${role}" --payload-base64url ${Buffer.from(JSON.stringify(payload), "utf8").toString("base64url")}`;
+}
+
+function helperStep(command) {
+  const fingerprint = fingerprintHelperExecutionCommand(command);
+  return {
+    operation: fingerprint.operation,
+    role: fingerprint.state?.role,
+    sessionId: fingerprint.state?.sessionId,
+    commandLength: Buffer.byteLength(command),
+    commandSha256: fingerprint.commandSha256,
+    shellCommand: command,
+  };
+}
+
+function codexExpectedHelperEvent(command) {
+  const response = { localAction: { helperStep: helperStep(command) } };
+  return streamEvent({
+    type: "item.completed",
+    item: {
+      type: "mcp_tool_call",
+      tool: "agent_handshake_next",
+      status: "completed",
+      result: {
+        content: [{ type: "text", text: JSON.stringify(response) }],
+        structuredContent: response,
+      },
+    },
+  });
+}
+
+function claudeExpectedHelperEvent(command) {
+  return streamEvent({
+    type: "user",
+    message: { content: [{ type: "tool_result", tool_use_id: "mcp-tool", content: JSON.stringify({ localAction: { helperStep: helperStep(command) } }), is_error: false }] },
+  });
 }
 
 function nonterminalHelperCommand(role, operation) {
@@ -825,6 +861,9 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
     assert.match(prompt, /locally verif/i);
     assert.match(prompt, /statementDigest.*canonical full terms object.*not.*raw statement text/i);
     assert.match(prompt, /Keep role access and private key material local/i);
+    assert.match(prompt, /Execute every returned pinned-helper command verbatim/i);
+    assert.match(prompt, /Never reconstruct, re-encode, copy-edit, or manually rebuild its payload/i);
+    assert.match(prompt, /retry also fails/i);
     assert.doesNotMatch(prompt, /curl --location|retryAfterMs|localAction|mkdir -m|agent_handshake_next/);
   }
   assert.match(fixture.initiator, /First, create the one-time Responder invitation/);
@@ -966,6 +1005,42 @@ test("classifies helper executions without retaining payloads or private paths",
     payloadFlag: false,
     statePathClass: null,
   });
+});
+
+test("fingerprints signing commands without retaining the command, payload, or private path", () => {
+  const request = {
+    schema: "clockchain.agent-handshake-signing-request/v1",
+    helperVersion: "2.1.2",
+    operation: "identity_claim",
+    role: "initiator",
+    sessionId: SESSION,
+    repositorySha: REPOSITORY_SHA,
+    sessionDeadlineMs: SESSION_DEADLINE_MS,
+    hostSessionKeyCertificate: V2_FIXTURE.hostSessionKeyCertificate,
+    terms: TERMS,
+    policyDigest: "7".repeat(64),
+    bytesGzipBase64Url: "safe_payload",
+    bytesSha256: "8".repeat(64),
+    externalBusinessActionPerformed: false,
+  };
+  const encoded = Buffer.from(JSON.stringify(request), "utf8").toString("base64url");
+  const privateState = `/private/tmp/private-canary/.clockchain/handshakes/${SESSION}/initiator`;
+  const command = `node --input-type=commonjs --eval '<bootstrap>' digest ./manifest.json ./clockchain-agent-handshake.cjs sign --state-dir "${privateState}" --payload-base64url ${encoded}`;
+  const fingerprint = fingerprintHelperExecutionCommand(command);
+  assert.deepEqual(fingerprint.state, { role: "initiator", sessionId: SESSION });
+  assert.equal(fingerprint.request.schema, request.schema);
+  assert.equal(fingerprint.request.helperVersion, "2.1.2");
+  assert.equal(fingerprint.request.operation, "identity_claim");
+  assert.equal(fingerprint.request.role, "initiator");
+  assert.equal(fingerprint.request.sessionId, SESSION);
+  assert.equal(fingerprint.request.policyDigest, request.policyDigest);
+  assert.equal(fingerprint.request.bytesSha256, request.bytesSha256);
+  assert.match(fingerprint.commandSha256, /^[0-9a-f]{64}$/);
+  assert.match(fingerprint.request.jsonSha256, /^[0-9a-f]{64}$/);
+  const serialized = JSON.stringify(fingerprint);
+  assert.doesNotMatch(serialized, new RegExp(encoded));
+  assert.doesNotMatch(serialized, /private-canary/);
+  assert.doesNotMatch(serialized, /safe_payload/);
 });
 
 test("starts the Responder only after the Initiator emits its actual one-time invitation", async (t) => {
@@ -1288,6 +1363,105 @@ test("rejects helper-shaped output not produced by the exact pinned verification
         release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
         spawnProcess, timeoutMs: 2_000,
       }), /failed safely/);
+      assert.deepEqual(await readdir(parent), []);
+    });
+  }
+});
+
+test("rejects agent-mutated helper commands against the last MCP-returned command binding", async (t) => {
+  for (const mode of ["codex", "claude"]) {
+    await t.test(mode, async (t) => {
+      const parent = await mkdtemp(join(tmpdir(), `fresh-agent-helper-command-mismatch-${mode}-`));
+      t.after(() => rm(parent, { recursive: true, force: true }));
+      const children = {};
+      const spawnProcess = () => {
+        const role = children.initiator === undefined ? "initiator" : "responder";
+        const child = new EventEmitter();
+        child.pid = null;
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.stdin = { end() {
+          queueMicrotask(() => {
+            if (role === "initiator") {
+              child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+              return;
+            }
+            const command = verifyCertificateCommand(mode === "codex" ? "initiator" : "responder");
+            const mutated = command.replace("verify-certificate", "verify-certificate ");
+            if (mode === "codex") {
+              children.initiator.stdout.emit("data", Buffer.from(codexExpectedHelperEvent(command)));
+              children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"), { command: mutated })));
+            } else {
+              children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+              children.responder.stdout.emit("data", Buffer.from(claudeExpectedHelperEvent(command)));
+              children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"), { command: mutated })));
+            }
+            children.initiator.emit("close", 0, null);
+            children.responder.emit("close", 0, null);
+          });
+        } };
+        child.kill = () => {};
+        children[role] = child;
+        return child;
+      };
+
+      const error = await rejectsFreshAgentRun(parent, { spawnProcess });
+
+      assert.deepEqual(error.diagnostic, { phase: "agent-exit", category: "validation", code: "HELPER_COMMAND_MISMATCH" });
+      assert.deepEqual(await readdir(parent), []);
+    });
+  }
+});
+
+test("reports exact helper execution failures distinctly from missing terminal proof", async (t) => {
+  for (const mode of ["codex", "claude"]) {
+    await t.test(mode, async (t) => {
+      const parent = await mkdtemp(join(tmpdir(), `fresh-agent-helper-execution-failed-${mode}-`));
+      t.after(() => rm(parent, { recursive: true, force: true }));
+      const children = {};
+      const spawnProcess = () => {
+        const role = children.initiator === undefined ? "initiator" : "responder";
+        const child = new EventEmitter();
+        child.pid = null;
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.stdin = { end() {
+          queueMicrotask(() => {
+            if (role === "initiator") {
+              child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+              return;
+            }
+            const command = verifyCertificateCommand(mode === "codex" ? "initiator" : "responder");
+            if (mode === "codex") {
+              children.initiator.stdout.emit("data", Buffer.from(codexExpectedHelperEvent(command)));
+              children.initiator.stdout.emit("data", Buffer.from(streamEvent({
+                type: "item.completed",
+                item: { type: "command_execution", status: "failed", exit_code: 1, command, aggregated_output: "helper rejected request" },
+              })));
+            } else {
+              children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+              children.responder.stdout.emit("data", Buffer.from(claudeExpectedHelperEvent(command)));
+              children.responder.stdout.emit("data", Buffer.from(streamEvent({
+                type: "assistant",
+                message: { content: [{ type: "tool_use", id: "failed-bash", name: "Bash", input: { command } }] },
+              })));
+              children.responder.stdout.emit("data", Buffer.from(streamEvent({
+                type: "user",
+                message: { content: [{ type: "tool_result", tool_use_id: "failed-bash", content: "helper rejected request", is_error: true }] },
+              })));
+            }
+            children.initiator.emit("close", 0, null);
+            children.responder.emit("close", 0, null);
+          });
+        } };
+        child.kill = () => {};
+        children[role] = child;
+        return child;
+      };
+
+      const error = await rejectsFreshAgentRun(parent, { spawnProcess });
+
+      assert.deepEqual(error.diagnostic, { phase: "agent-exit", category: "agent", code: "HELPER_EXECUTION_FAILED" });
       assert.deepEqual(await readdir(parent), []);
     });
   }
