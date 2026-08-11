@@ -2,15 +2,40 @@
 
 import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { runFreshAgentHandshake } from "../src/testing/fresh-agent-client.mjs";
+import {
+  runFreshAgentHandshake,
+  validateClaudePreparation,
+  validateFreshAgentMonitorSnapshot,
+} from "../src/testing/fresh-agent-client.mjs";
+import {
+  installAppleClientAuthentication,
+  loadAppleClientAuthentication,
+} from "../src/testing/apple-client-auth.mjs";
 
 const execFileAsync = promisify(execFile);
 const SAFE_ERROR = "Fresh agent compatibility check failed safely.\n";
 const SHA256 = /^[0-9a-f]{64}$/;
+
+function failureCategory(value) {
+  if (typeof value !== "string") return null;
+  const text = value.toLowerCase();
+  for (const [category, needles] of [
+    ["authentication", ["authentication", "api key", "oauth", "log in", "login"]],
+    ["billing", ["credit balance", "billing"]],
+    ["model", ["model", "sonnet"]],
+    ["permission", ["permission", "denied", "not allowed"]],
+    ["rate-limit", ["rate limit", "too many requests"]],
+    ["session", ["session"]],
+    ["arguments", ["unknown option", "unknown argument", "invalid argument"]],
+  ]) {
+    if (needles.some((needle) => text.includes(needle))) return category;
+  }
+  return "other";
+}
 
 function value(name) {
   const result = process.env[name];
@@ -24,12 +49,26 @@ function roots(name) {
   return result;
 }
 
-function credentialFor(client) {
+async function authenticationFor(client) {
   const key = client === "codex" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY";
-  return { [key]: value(key) };
+  const credential = process.env[key];
+  if (typeof credential === "string" && credential.length > 0) {
+    return Object.freeze({
+      client,
+      environment: Object.freeze({ [key]: credential }),
+      secretCanaries: Object.freeze([credential]),
+      source: null,
+    });
+  }
+  const override = client === "codex" ? "CLOCKCHAIN_CODEX_AUTH_FILE" : "CLOCKCHAIN_CLAUDE_AUTH_FILE";
+  const source = process.env[override] ?? join(homedir(), client === "codex" ? ".codex/auth.json" : ".claude/.credentials.json");
+  return loadAppleClientAuthentication({ client, source });
 }
 
-async function configureClient({ command, env }) {
+async function configureClient({ authentication, command, env, room }) {
+  if (typeof authentication.source === "string" || typeof authentication.serialized === "string") {
+    await installAppleClientAuthentication({ authentication, home: room.home });
+  }
   await execFileAsync(command.file, command.args, {
     env,
     maxBuffer: 64 * 1024,
@@ -38,23 +77,43 @@ async function configureClient({ command, env }) {
   });
 }
 
+async function prepareClient({ authentication, command, env, room }) {
+  let stdout;
+  try {
+    ({ stdout } = await execFileAsync(command.file, [...command.args, command.input], {
+      cwd: room.workspace,
+      env,
+      maxBuffer: 1024 * 1024,
+      timeout: 60_000,
+      windowsHide: true,
+    }));
+  } catch (error) {
+    if (process.env.CLOCKCHAIN_FRESH_AGENT_TRACE === "1") {
+      process.stderr.write(`${JSON.stringify({
+        phase: "prepare-process",
+        client: "claude",
+        code: Number.isSafeInteger(error?.code) ? error.code : null,
+        signal: typeof error?.signal === "string" ? error.signal : null,
+        killed: error?.killed === true,
+        stdoutBytes: typeof error?.stdout === "string" ? Buffer.byteLength(error.stdout) : 0,
+        stderrBytes: typeof error?.stderr === "string" ? Buffer.byteLength(error.stderr) : 0,
+        stdoutCategory: failureCategory(error?.stdout),
+        stderrCategory: failureCategory(error?.stderr),
+      })}\n`);
+    }
+    throw error;
+  }
+  return validateClaudePreparation(stdout, authentication.secretCanaries);
+}
+
 async function monitor({ sessionId }) {
   const endpoint = value("CLOCKCHAIN_RESEARCH_MONITOR_URL");
-  const chronology = [];
   const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
     const response = await fetch(endpoint, { cache: "no-store" });
     if (!response.ok) throw new Error("invalid");
-    const snapshot = await response.json();
-    if (snapshot.sessionId === sessionId) {
-      for (const entry of snapshot.stageHistory ?? []) {
-        if (typeof entry?.status === "string" && chronology.at(-1) !== entry.status) chronology.push(entry.status);
-      }
-      if (snapshot.certificate !== null && snapshot.certificate !== undefined) {
-        if (chronology.at(-1) !== "CERTIFIED") chronology.push("CERTIFIED");
-        return { chronology, sessionId };
-      }
-    }
+    const completed = validateFreshAgentMonitorSnapshot(await response.json(), sessionId);
+    if (completed !== null) return completed;
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_000));
   }
   throw new Error("invalid");
@@ -66,15 +125,24 @@ async function main() {
     initiator: process.env.CLOCKCHAIN_INITIATOR_CLIENT ?? "codex",
     responder: process.env.CLOCKCHAIN_RESPONDER_CLIENT ?? "claude",
   };
+  const authentication = {
+    initiator: await authenticationFor(clients.initiator),
+    responder: await authenticationFor(clients.responder),
+  };
   const ownsParent = process.env.CLOCKCHAIN_FRESH_AGENT_PARENT === undefined;
   const parent = process.env.CLOCKCHAIN_FRESH_AGENT_PARENT ?? await mkdtemp(join(tmpdir(), "clockchain-fresh-agent-"));
   try {
     const evidence = await runFreshAgentHandshake({
       clients,
-      configureClient,
+      configureClient: (entry) => configureClient({ ...entry, authentication: authentication[entry.role] }),
+      prepareClient: (entry) => prepareClient({ ...entry, authentication: authentication[entry.role] }),
       modelEnvironment: {
-        initiator: credentialFor(clients.initiator),
-        responder: credentialFor(clients.responder),
+        initiator: authentication.initiator.environment,
+        responder: authentication.responder.environment,
+      },
+      secretCanaries: {
+        initiator: authentication.initiator.secretCanaries,
+        responder: authentication.responder.secretCanaries,
       },
       monitor,
       parent,

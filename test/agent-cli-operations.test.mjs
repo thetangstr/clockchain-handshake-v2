@@ -52,7 +52,7 @@ test("dispatcher exposes exactly init, policy, inspect, register, sign, and veri
     stateDir,
     payload: {
       schema: "clockchain.agent-handshake-certificate-verification/v1",
-      helperVersion: "2.1.0",
+      helperVersion: "2.1.2",
       role: "initiator",
       sessionId: fixture.request.sessionId,
       repositorySha: fixture.request.repositorySha,
@@ -64,4 +64,29 @@ test("dispatcher exposes exactly init, policy, inspect, register, sign, and veri
   assert.equal(verified.certificateVerified, true);
   await assert.rejects(() => operations.dispatch({ operation: "shell", stateDir }));
   assert.equal(calls.length, 1);
+});
+
+test("inspect reports a committed required-fresh policy before registration", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "clockchain-agent-preregister-"));
+  await rm(stateDir, { recursive: true });
+  t.after(() => rm(stateDir, { force: true, recursive: true }));
+  const fixture = await buildAgentCliFixture();
+  const address = fixture.parties.initiator.sessionKeyAddress;
+  const operations = createAgentCliOperations({
+    bridge: {
+      initializeWallet: async () => ({ address }),
+      inspectWallet: async () => ({ address, registration: null }),
+    },
+  });
+
+  await operations.dispatch({ operation: "init", stateDir });
+  const committed = await operations.dispatch({ operation: "policy", stateDir, payload: fixture.policy });
+  assert.deepEqual(await operations.dispatch({ operation: "inspect", stateDir }), {
+    schema: "clockchain.agent-handshake-cli-result/v1",
+    helperVersion: "2.1.2",
+    operation: "inspect",
+    address: address.toLowerCase(),
+    policyDigest: committed.policyDigest,
+    registration: null,
+  });
 });
