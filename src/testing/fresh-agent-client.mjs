@@ -40,6 +40,7 @@ export const CLOCKCHAIN_HANDSHAKE_TOOLS = Object.freeze([
   "agent_handshake_submit",
   "agent_handshake_get_certificate",
 ]);
+const CLAUDE_INVITE_TOOL = "mcp__clockchain-handshake__agent_handshake_invite";
 export const VERIFIED_HELPER_BOOTSTRAP = 'const fs=require("node:fs");const crypto=require("node:crypto");const Module=require("node:module");const argv=process.argv.slice(1);const expected=argv.shift();const manifestPath=argv.shift();const helperPath=argv.shift();const manifestBytes=fs.readFileSync(manifestPath);const manifestDigest=crypto.createHash("sha256").update(manifestBytes).digest("hex");if(manifestDigest!==expected)process.exit(86);const manifest=JSON.parse(manifestBytes);if(manifest.schema!=="clockchain.agent-handshake-release-manifest/v1"||manifest.version!=="2.1.2"||!/^24\\./.test(manifest.nodeRuntime)||!/^24\\./.test(process.versions.node)||!Array.isArray(manifest.assets)||manifest.assets.length!==1)process.exit(86);const asset=manifest.assets[0];if(asset.filename!=="clockchain-agent-handshake.cjs"||asset.url!=="https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/clockchain-agent-handshake.cjs"||typeof asset.sha256!=="string"||!/^[0-9a-f]{64}$/.test(asset.sha256))process.exit(86);const helperBytes=fs.readFileSync(helperPath);const helperDigest=crypto.createHash("sha256").update(helperBytes).digest("hex");if(helperDigest!==asset.sha256)process.exit(86);process.argv=[process.execPath].concat(helperPath).concat(argv);const loaded=new Module(helperPath);loaded.filename=helperPath;loaded.paths=[];const compile=loaded._compile.bind(loaded);compile(...[helperBytes.toString("utf8")].concat(helperPath));';
 
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
@@ -1007,27 +1008,43 @@ function inspectAuthoritativeInvitationText(value) {
   return found;
 }
 
-function inspectEvent(value, role) {
+function inspectEvent(value, role, invitationState) {
   void role;
   let found = {};
   if (value?.type === "item.completed") {
-    if (value.item?.type === "agent_message" && typeof value.item.text === "string") {
-      found = mergeObserved(found, inspectAuthoritativeInvitationText(value.item.text));
-    }
-    if (value.item?.type === "mcp_tool_call" && value.item.result !== null && typeof value.item.result === "object" && !Array.isArray(value.item.result)) {
+    if (
+      value.item?.type === "mcp_tool_call" &&
+      value.item.tool === "agent_handshake_invite" &&
+      value.item.status === "completed" &&
+      value.item.result !== null && typeof value.item.result === "object" && !Array.isArray(value.item.result)
+    ) {
       found = mergeObserved(found, inspectAuthoritativeInvitationPayload(value.item.result));
     }
   }
   if (value?.type === "assistant" && Array.isArray(value?.message?.content)) {
     for (const block of value.message.content) {
-      if (block?.type === "text" && typeof block.text === "string") {
-        found = mergeObserved(found, inspectAuthoritativeInvitationText(block.text));
+      if (block?.type !== "tool_use") continue;
+      if (typeof block.id !== "string" || block.id.length === 0 || typeof block.name !== "string") fail();
+      if (invitationState.claudeToolUseIds.has(block.id)) fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
+      invitationState.claudeToolUseIds.add(block.id);
+      if (invitationState.claudeToolUseIds.size > 10_000) fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
+      if (block.name === CLAUDE_INVITE_TOOL) {
+        invitationState.claudeInviteToolUseIds.add(block.id);
       }
     }
   }
   if (value?.type === "user" && Array.isArray(value?.message?.content)) {
     for (const block of value.message.content) {
-      if (block?.type === "tool_result" && typeof block.content === "string" && block.is_error !== true) {
+      if (block?.type !== "tool_result") continue;
+      if (typeof block.tool_use_id !== "string" || block.tool_use_id.length === 0) fail();
+      if (invitationState.claudeCompletedToolUseIds.has(block.tool_use_id)) fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
+      invitationState.claudeCompletedToolUseIds.add(block.tool_use_id);
+      if (invitationState.claudeCompletedToolUseIds.size > 10_000) fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
+      if (
+        invitationState.claudeInviteToolUseIds.has(block.tool_use_id) &&
+        typeof block.content === "string" && block.is_error !== true
+      ) {
+        invitationState.claudeInviteToolUseIds.delete(block.tool_use_id);
         found = mergeObserved(found, inspectAuthoritativeInvitationText(block.content));
       }
     }
@@ -1344,6 +1361,11 @@ function observeChild(child, role, all, canaries, { adapter, expectedInvitation,
     const stdoutDecoder = new StringDecoder("utf8");
     let rejectedEvent = null;
     let observed = {};
+    const invitationState = {
+      claudeToolUseIds: new Set(),
+      claudeInviteToolUseIds: new Set(),
+      claudeCompletedToolUseIds: new Set(),
+    };
     const claudeBashCommands = new Map();
     const expectedHelperCommands = [];
     const helperExecutionState = { failed: false, details: null };
@@ -1357,7 +1379,7 @@ function observeChild(child, role, all, canaries, { adapter, expectedInvitation,
         if (command.approvalCommand !== null) adapter.record(command);
       }
       expectedHelperCommands.push(...discoveredHelperCommands);
-      observed = mergeObserved(observed, inspectEvent(event, role));
+      observed = mergeObserved(observed, inspectEvent(event, role, invitationState));
       const helperProof = helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, expectedHelperCommands, helperExecutionState);
       if (helperProof !== null) observed = mergeObserved(observed, { helperProof });
       traceLifecycle({

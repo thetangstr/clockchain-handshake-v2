@@ -225,6 +225,21 @@ function roleAccess(role, allowedTools) {
 
 const INVITATION = roleAccess("responder", ["agent_handshake_accept_invitation"]);
 
+function codexInviteEvent({ tool = "agent_handshake_invite", status = "completed", invitation = INVITATION } = {}) {
+  return streamEvent({
+    type: "item.completed",
+    item: {
+      type: "mcp_tool_call",
+      tool,
+      status,
+      result: {
+        content: [{ type: "text", text: JSON.stringify({ responderInvitation: invitation }) }],
+        responderInvitation: invitation,
+      },
+    },
+  });
+}
+
 function helperProof(role) {
   const party = V2_FIXTURE.parties[role];
   return {
@@ -392,10 +407,7 @@ function successfulFreshAgentSpawn(calls = [], { command = verifyCertificateComm
       calls.push({ input, role });
       queueMicrotask(() => {
         if (role === "initiator") {
-          child.stdout.emit("data", Buffer.from(streamEvent({
-            type: "item.completed",
-            item: { type: "agent_message", text: INVITATION },
-          })));
+          child.stdout.emit("data", Buffer.from(codexInviteEvent()));
           return;
         }
         const initiatorProof = helper("initiator");
@@ -1214,22 +1226,7 @@ test("starts the Responder only after the Initiator emits its actual one-time in
     children[role] = child;
     if (role === "initiator") {
       queueMicrotask(() => {
-        child.stdout.emit("data", Buffer.from(streamEvent({
-          type: "item.completed",
-          item: {
-            type: "mcp_tool_call",
-            tool: "agent_handshake_invite",
-            status: "completed",
-            result: {
-              content: [{ type: "text", text: "Invitation created successfully." }],
-              structured_content: null,
-            },
-          },
-        })));
-        child.stdout.emit("data", Buffer.from(streamEvent({
-          type: "item.completed",
-          item: { type: "agent_message", text: INVITATION },
-        })));
+        child.stdout.emit("data", Buffer.from(codexInviteEvent()));
       });
     } else {
       assert.equal(args.join(" ").includes(INVITATION), false);
@@ -1398,7 +1395,7 @@ test("rejects model-authored certificate claims without completed helper executi
     child.stdin = { end() {
       queueMicrotask(() => {
         if (role === "initiator") {
-          child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+          child.stdout.emit("data", Buffer.from(codexInviteEvent()));
         } else {
           for (const [name, entry] of [["initiator", child.initiator], ["responder", child]]) {
             entry.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(helperProof(name)) } })));
@@ -1437,10 +1434,7 @@ test("ignores nonterminal helper results before exact terminal certificate proof
     child.stdin = { end() {
       queueMicrotask(() => {
         if (role === "initiator") {
-          child.stdout.emit("data", Buffer.from(streamEvent({
-            type: "item.completed",
-            item: { type: "agent_message", text: INVITATION },
-          })));
+          child.stdout.emit("data", Buffer.from(codexInviteEvent()));
           return;
         }
         for (const operation of NONTERMINAL_HELPER_OPERATIONS) {
@@ -1488,7 +1482,7 @@ test("rejects helper-shaped output not produced by the exact pinned verification
         child.stdin = { end() {
           queueMicrotask(() => {
             if (role === "initiator") {
-              child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+              child.stdout.emit("data", Buffer.from(codexInviteEvent()));
               return;
             }
             const initiator = helperProof("initiator");
@@ -1538,7 +1532,7 @@ test("rejects agent-mutated helper commands against the last MCP-returned comman
         child.stdin = { end() {
           queueMicrotask(() => {
             if (role === "initiator") {
-              child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+              child.stdout.emit("data", Buffer.from(codexInviteEvent()));
               return;
             }
             if (mode === "codex") {
@@ -1599,7 +1593,7 @@ test("accepts Claude line wrapping only when the exact helper command bytes are 
     child.stdin = { end() {
       queueMicrotask(() => {
         if (role === "initiator") {
-          child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+          child.stdout.emit("data", Buffer.from(codexInviteEvent()));
           return;
         }
         children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
@@ -1635,7 +1629,7 @@ test("ignores ordinary approval-token inspection while a digest-bound helper app
     child.stdin = { end() {
       queueMicrotask(() => {
         if (role === "initiator") {
-          child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+          child.stdout.emit("data", Buffer.from(codexInviteEvent()));
           return;
         }
         children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
@@ -1684,7 +1678,7 @@ test("does not bind helper source inspection that merely mentions an operation",
     child.stdin = { end() {
       queueMicrotask(() => {
         if (role === "initiator") {
-          child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+          child.stdout.emit("data", Buffer.from(codexInviteEvent()));
           return;
         }
         children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
@@ -1731,7 +1725,7 @@ test("does not apply strict helper shell parsing to ordinary Claude inspection",
     child.stdin = { end() {
       queueMicrotask(() => {
         if (role === "initiator") {
-          child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+          child.stdout.emit("data", Buffer.from(codexInviteEvent()));
           return;
         }
         children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
@@ -1782,7 +1776,7 @@ test("streams more than one MiB of individually bounded agent events without abo
     child.stdin = { end() {
       queueMicrotask(() => {
         if (role === "initiator") {
-          child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+          child.stdout.emit("data", Buffer.from(codexInviteEvent()));
           return;
         }
         for (let index = 0; index < 20; index += 1) {
@@ -1820,7 +1814,7 @@ test("accepts deeply nested non-authoritative client metadata without treating i
     child.stdin = { end() {
       queueMicrotask(() => {
         if (role === "initiator") {
-          child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+          child.stdout.emit("data", Buffer.from(codexInviteEvent()));
           return;
         }
         children.initiator.stdout.emit("data", Buffer.from(streamEvent({ type: "system", metadata })));
@@ -1857,7 +1851,7 @@ test("reports exact helper execution failures distinctly from missing terminal p
         child.stdin = { end() {
           queueMicrotask(() => {
             if (role === "initiator") {
-              child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+              child.stdout.emit("data", Buffer.from(codexInviteEvent()));
               return;
             }
             if (mode === "codex") {
@@ -1922,7 +1916,7 @@ test("keeps a failed exact helper command pending so the agent may retry it befo
         child.stdin = { end() {
           queueMicrotask(() => {
             if (childRole === "initiator") {
-              child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+              child.stdout.emit("data", Buffer.from(codexInviteEvent()));
               return;
             }
             if (mode === "codex") {
@@ -2003,7 +1997,7 @@ test("binds setup and registration helper steps that derive role and session fro
     child.stdin = { end() {
       queueMicrotask(() => {
         if (role === "initiator") {
-          child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+          child.stdout.emit("data", Buffer.from(codexInviteEvent()));
           return;
         }
         const setupOperations = ["init", "policy", "inspect"];
@@ -2158,6 +2152,79 @@ test("ignores nested metadata invitations before starting the Responder", async 
   };
   await assert.rejects(() => runFreshAgentHandshake({
     clients: { initiator: "codex", responder: "claude" },
+    configureClient: async () => {},
+    prepareClient: async () => true,
+    modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
+    monitor: async () => { throw new Error("unreachable"); },
+    parent,
+    prompts: { initiator: "init", responder: `respond ${"<PASTE THE INITIATOR INVITATION>"}` },
+    release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
+    spawnProcess,
+    timeoutMs: 100,
+  }), /failed safely/);
+  assert.equal(spawned, 1);
+  assert.deepEqual(await readdir(parent), []);
+});
+
+test("ignores top-level responder invitations from the wrong Codex MCP tool before starting the Responder", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-wrong-tool-invitation-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  let spawned = 0;
+  const spawnProcess = () => {
+    spawned += 1;
+    const child = new EventEmitter();
+    child.pid = null;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {
+      queueMicrotask(() => child.stdout.emit("data", Buffer.from(codexInviteEvent({ tool: "agent_handshake_status" }))));
+    } };
+    child.kill = () => {};
+    return child;
+  };
+  await assert.rejects(() => runFreshAgentHandshake({
+    clients: { initiator: "codex", responder: "claude" },
+    configureClient: async () => {},
+    prepareClient: async () => true,
+    modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
+    monitor: async () => { throw new Error("unreachable"); },
+    parent,
+    prompts: { initiator: "init", responder: `respond ${"<PASTE THE INITIATOR INVITATION>"}` },
+    release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
+    spawnProcess,
+    timeoutMs: 100,
+  }), /failed safely/);
+  assert.equal(spawned, 1);
+  assert.deepEqual(await readdir(parent), []);
+});
+
+test("ignores Claude Bash output invitations before starting the Responder", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-bash-invitation-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  let spawned = 0;
+  const spawnProcess = () => {
+    spawned += 1;
+    const child = new EventEmitter();
+    child.pid = null;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {
+      queueMicrotask(() => {
+        child.stdout.emit("data", Buffer.from(streamEvent({
+          type: "assistant",
+          message: { content: [{ type: "tool_use", id: "bash-invite", name: "Bash", input: { command: "printf invitation" } }] },
+        })));
+        child.stdout.emit("data", Buffer.from(streamEvent({
+          type: "user",
+          message: { content: [{ type: "tool_result", tool_use_id: "bash-invite", content: INVITATION, is_error: false }] },
+        })));
+      });
+    } };
+    child.kill = () => {};
+    return child;
+  };
+  await assert.rejects(() => runFreshAgentHandshake({
+    clients: { initiator: "claude", responder: "codex" },
     configureClient: async () => {},
     prepareClient: async () => true,
     modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
