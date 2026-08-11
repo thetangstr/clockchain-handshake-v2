@@ -45,8 +45,10 @@ const SHA = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ADDRESS = /^0x[0-9a-f]{40}$/;
+const PUBLIC_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const TX = /^0x[0-9a-f]{64}$/;
+const SIGNATURE = /^0x[0-9a-f]{130}$/;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
 const ROLE_TOKEN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const ROLE_ACCESS_KEYS = Object.freeze([
@@ -532,6 +534,43 @@ function validateHelperProof(parsed, role) {
   });
 }
 
+function validateNonterminalHelperResult(parsed) {
+  if (parsed.operation === "init") {
+    const item = exactObject(parsed, ["address", "helperVersion", "operation", "schema"]);
+    if (item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.2" || !PUBLIC_ADDRESS.test(item.address)) fail();
+    return;
+  }
+  if (parsed.operation === "policy") {
+    const item = exactObject(parsed, ["helperVersion", "operation", "policyDigest", "schema"]);
+    if (item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.2" || !SHA256.test(item.policyDigest)) fail();
+    return;
+  }
+  if (parsed.operation === "inspect") {
+    const item = exactObject(parsed, ["address", "helperVersion", "operation", "policyDigest", "registration", "schema"]);
+    if (
+      item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.2" ||
+      !ADDRESS.test(item.address) || item.policyDigest !== null && !SHA256.test(item.policyDigest)
+    ) fail();
+    if (item.registration !== null) validateRegistration(item.registration);
+    return;
+  }
+  if (parsed.operation === "register") {
+    const item = exactObject(parsed, ["address", "helperVersion", "operation", "registration", "schema"]);
+    if (item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.2" || !ADDRESS.test(item.address)) fail();
+    validateRegistration(item.registration);
+    return;
+  }
+  if (parsed.operation === "sign") {
+    const item = exactObject(parsed, ["address", "bytesSha256", "helperVersion", "operation", "schema", "signatureHex"]);
+    if (
+      item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.2" ||
+      !ADDRESS.test(item.address) || !SHA256.test(item.bytesSha256) || !SIGNATURE.test(item.signatureHex)
+    ) fail();
+    return;
+  }
+  fail();
+}
+
 function invitation(value) {
   if (typeof value !== "string" || value.length < 80 || value.length > 4096 || !ROLE_TOKEN.test(value)) fail();
   const [payloadSegment, signatureSegment] = value.split(".");
@@ -613,6 +652,10 @@ function parsedHelperProof(value, role) {
   if (typeof value !== "string") return null;
   const parsed = parseJsonString(value);
   if (parsed === null || parsed?.schema !== HELPER_RESULT_SCHEMA) return null;
+  if (parsed.operation !== "verify-certificate") {
+    validateNonterminalHelperResult(parsed);
+    return null;
+  }
   return validateHelperProof(parsed, role);
 }
 

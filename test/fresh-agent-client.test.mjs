@@ -58,8 +58,7 @@ function codexHelperProofEvent(result, { command = verifyCertificateCommand(resu
   });
 }
 
-function claudeHelperProofEvent(result, { command = verifyCertificateCommand(result.role), includeToolUse = true } = {}) {
-  const id = `tool-${result.role}`;
+function claudeHelperProofEvent(result, { command = verifyCertificateCommand(result.role), id = `tool-${result.role}`, includeToolUse = true } = {}) {
   return (includeToolUse ? streamEvent({
     type: "assistant",
     message: { content: [{ type: "tool_use", id, name: "Bash", input: { command } }] },
@@ -72,6 +71,11 @@ function claudeHelperProofEvent(result, { command = verifyCertificateCommand(res
 const DIGEST = "a".repeat(64);
 const ROOT = ed25519PublicKeyFingerprint(V2_FIXTURE.hostSessionKeyCertificate.rootSignature.publicKey);
 const SESSION = SESSION_ID;
+const NONTERMINAL_HELPER_OPERATIONS = Object.freeze(["init", "policy", "inspect", "register", "sign"]);
+const MIXED_CASE_INIT_ADDRESSES = Object.freeze({
+  initiator: "0x52908400098527886E0F7030069857D2E4169EE7",
+  responder: "0x8617E340B3D01FA5F11F306F4090FD50E238070D",
+});
 
 function verifyCertificateCommand(role, overrides = {}) {
   const payload = {
@@ -86,6 +90,10 @@ function verifyCertificateCommand(role, overrides = {}) {
     ...overrides,
   };
   return `node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${DIGEST} ./manifest.json ./clockchain-agent-handshake.cjs verify-certificate --state-dir "$TMPDIR/.clockchain/handshakes/${SESSION}/${role}" --payload-base64url ${Buffer.from(JSON.stringify(payload), "utf8").toString("base64url")}`;
+}
+
+function nonterminalHelperCommand(role, operation) {
+  return `node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${DIGEST} ./manifest.json ./clockchain-agent-handshake.cjs ${operation} --state-dir "$TMPDIR/.clockchain/handshakes/${SESSION}/${role}"`;
 }
 
 function roleAccess(role, allowedTools) {
@@ -127,6 +135,48 @@ function helperProof(role) {
     role,
     sessionId: SESSION,
     statementDigest: V2_FIXTURE.verdict.statementDigest,
+  };
+}
+
+function nonterminalHelperResult(role, operation) {
+  const party = V2_FIXTURE.parties[role];
+  const base = {
+    schema: "clockchain.agent-handshake-cli-result/v1",
+    helperVersion: "2.1.2",
+    operation,
+  };
+  if (operation === "init") {
+    return {
+      ...base,
+      address: MIXED_CASE_INIT_ADDRESSES[role],
+    };
+  }
+  if (operation === "policy") {
+    return {
+      ...base,
+      policyDigest: party.policyDigest,
+    };
+  }
+  if (operation === "inspect") {
+    return {
+      ...base,
+      address: party.sessionKeyAddress,
+      policyDigest: party.policyDigest,
+      registration: null,
+    };
+  }
+  if (operation === "register") {
+    return {
+      ...base,
+      address: party.sessionKeyAddress,
+      registration: party.erc8004,
+    };
+  }
+  return {
+    ...base,
+    address: party.sessionKeyAddress,
+    bytesSha256: "5".repeat(64),
+    signatureHex: `0x${"6".repeat(130)}`,
   };
 }
 
@@ -1143,6 +1193,54 @@ test("rejects model-authored certificate claims without completed helper executi
     release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
     spawnProcess, timeoutMs: 2_000,
   }), /failed safely/);
+  assert.deepEqual(await readdir(parent), []);
+});
+
+test("ignores nonterminal helper results before exact terminal certificate proofs", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-nonterminal-helper-results-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const children = {};
+  const spawnProcess = () => {
+    const role = children.initiator === undefined ? "initiator" : "responder";
+    const child = new EventEmitter();
+    child.pid = null;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {
+      queueMicrotask(() => {
+        if (role === "initiator") {
+          child.stdout.emit("data", Buffer.from(streamEvent({
+            type: "item.completed",
+            item: { type: "agent_message", text: INVITATION },
+          })));
+          return;
+        }
+        for (const operation of NONTERMINAL_HELPER_OPERATIONS) {
+          children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(
+            nonterminalHelperResult("initiator", operation),
+            { command: nonterminalHelperCommand("initiator", operation) },
+          )));
+          children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(
+            nonterminalHelperResult("responder", operation),
+            { command: nonterminalHelperCommand("responder", operation), id: `tool-responder-${operation}` },
+          )));
+        }
+        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
+        children.initiator.emit("close", 0, null);
+        children.responder.emit("close", 0, null);
+      });
+    } };
+    child.kill = () => {};
+    children[role] = child;
+    return child;
+  };
+
+  const result = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, { spawnProcess }));
+
+  assert.equal(result.certificateVerified, true);
+  assert.equal(result.roles.initiator.role, "initiator");
+  assert.equal(result.roles.responder.role, "responder");
   assert.deepEqual(await readdir(parent), []);
 });
 
