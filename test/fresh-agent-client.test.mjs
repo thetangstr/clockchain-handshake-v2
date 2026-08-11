@@ -81,7 +81,7 @@ function rustShlexQuote(value) {
 }
 
 function codexCommandExecutionDisplay(command) {
-  return ["/bin/zsh", "-lc", command].map(rustShlexQuote).join(" ");
+  return ["/bin/zsh", "-c", command].map(rustShlexQuote).join(" ");
 }
 
 function codexHelperProofEvent(result, { command = verifyCertificateCommand(result.role) } = {}) {
@@ -434,6 +434,7 @@ test("builds exact endpoint configuration for Codex and Claude Code", () => {
   assert.deepEqual(codex.launch.args, [
     "exec", "--model", "gpt-5.6-terra", "--skip-git-repo-check", "--strict-config", "--ignore-rules", "--ephemeral",
     "--sandbox", "workspace-write", "--config", 'approval_policy="never"',
+    "--config", "allow_login_shell=false",
     "--config", "sandbox_workspace_write.network_access=true", "--json", "--cd", "/tmp/a", "-",
   ]);
   assert.equal(codex.launch.input, "hello");
@@ -967,17 +968,18 @@ test("stakeholder prompts leave mechanics to MCP and direct inspection to downlo
 test("unwraps Codex's canonical shell display before binding the exact helper command", () => {
   const command = nonterminalHelperCommand("initiator", "init");
   const display = codexCommandExecutionDisplay(command);
-  assert.equal(Buffer.byteLength(display), Buffer.byteLength(command) + 48);
+  assert.equal(Buffer.byteLength(display), Buffer.byteLength(command) + 47);
   assert.equal(unwrapCodexCommandExecution(display), command);
 
   for (const unsafe of [
     command,
     `bash -lc ${rustShlexQuote(command)}`,
+    ["/bin/zsh", "-lc", command].map(rustShlexQuote).join(" "),
     `${display} extra`,
     ` ${display}`,
-    "/bin/zsh -lc foo;bar",
-    '/bin/zsh -lc "foo$bar"',
-    "/bin/zsh -lc 'unterminated",
+    "/bin/zsh -c foo;bar",
+    '/bin/zsh -c "foo$bar"',
+    "/bin/zsh -c 'unterminated",
   ]) {
     assert.throws(() => unwrapCodexCommandExecution(unsafe), /failed safely/);
   }
@@ -1562,6 +1564,93 @@ test("reports exact helper execution failures distinctly from missing terminal p
           actual: publicCommandDetails(command),
         },
       });
+      assert.deepEqual(await readdir(parent), []);
+    });
+  }
+});
+
+test("keeps a failed exact helper command pending so the agent may retry it before the next step", async (t) => {
+  for (const mode of ["codex", "claude"]) {
+    await t.test(mode, async (t) => {
+      const parent = await mkdtemp(join(tmpdir(), `fresh-agent-helper-retry-${mode}-`));
+      t.after(() => rm(parent, { recursive: true, force: true }));
+      const children = {};
+      const role = mode === "codex" ? "initiator" : "responder";
+      const initCommand = nonterminalHelperCommand(role, "init");
+      const policyCommand = nonterminalHelperCommand(role, "policy");
+      const expected = { localAction: { helperSteps: [helperStep(initCommand), helperStep(policyCommand)] } };
+      const spawnProcess = () => {
+        const childRole = children.initiator === undefined ? "initiator" : "responder";
+        const child = new EventEmitter();
+        child.pid = null;
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.stdin = { end() {
+          queueMicrotask(() => {
+            if (childRole === "initiator") {
+              child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+              return;
+            }
+            if (mode === "codex") {
+              children.initiator.stdout.emit("data", Buffer.from(streamEvent({
+                type: "item.completed",
+                item: {
+                  type: "mcp_tool_call",
+                  tool: "agent_handshake_join",
+                  status: "completed",
+                  result: { content: [{ type: "text", text: JSON.stringify(expected) }], structuredContent: expected },
+                },
+              })));
+              children.initiator.stdout.emit("data", Buffer.from(streamEvent({
+                type: "item.completed",
+                item: { type: "command_execution", status: "failed", exit_code: 86, command: codexCommandExecutionDisplay(initCommand), aggregated_output: "" },
+              })));
+              children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(
+                nonterminalHelperResult(role, "init"),
+                { command: initCommand },
+              )));
+              children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(
+                nonterminalHelperResult(role, "policy"),
+                { command: policyCommand },
+              )));
+              children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+              children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
+            } else {
+              children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+              children.responder.stdout.emit("data", Buffer.from(streamEvent({
+                type: "user",
+                message: { content: [{ type: "tool_result", tool_use_id: "mcp-setup", content: JSON.stringify(expected), is_error: false }] },
+              })));
+              children.responder.stdout.emit("data", Buffer.from(streamEvent({
+                type: "assistant",
+                message: { content: [{ type: "tool_use", id: "init-failed", name: "Bash", input: { command: initCommand } }] },
+              })));
+              children.responder.stdout.emit("data", Buffer.from(streamEvent({
+                type: "user",
+                message: { content: [{ type: "tool_result", tool_use_id: "init-failed", content: "", is_error: true }] },
+              })));
+              children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(
+                nonterminalHelperResult(role, "init"),
+                { command: initCommand, id: "init-retry" },
+              )));
+              children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(
+                nonterminalHelperResult(role, "policy"),
+                { command: policyCommand, id: "policy" },
+              )));
+              children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
+            }
+            children.initiator.emit("close", 0, null);
+            children.responder.emit("close", 0, null);
+          });
+        } };
+        child.kill = () => {};
+        children[childRole] = child;
+        return child;
+      };
+
+      const result = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, { spawnProcess }));
+
+      assert.equal(result.certificateVerified, true);
       assert.deepEqual(await readdir(parent), []);
     });
   }

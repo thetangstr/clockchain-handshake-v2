@@ -382,9 +382,9 @@ function splitCodexCommandDisplay(value) {
 }
 
 export function unwrapCodexCommandExecution(value) {
-  if (typeof value !== "string" || value !== value.trim() || !value.startsWith("/bin/zsh -lc ")) fail();
+  if (typeof value !== "string" || value !== value.trim() || !value.startsWith("/bin/zsh -c ")) fail();
   const words = splitCodexCommandDisplay(value);
-  if (words.length !== 3 || words[0] !== "/bin/zsh" || words[1] !== "-lc" || words[2].length === 0) fail();
+  if (words.length !== 3 || words[0] !== "/bin/zsh" || words[1] !== "-c" || words[2].length === 0) fail();
   return words[2];
 }
 
@@ -521,6 +521,7 @@ export function buildClientCommands({
         args: Object.freeze([
           "exec", "--model", "gpt-5.6-terra", "--skip-git-repo-check", "--strict-config", "--ignore-rules", "--ephemeral",
           "--sandbox", "workspace-write", "--config", 'approval_policy="never"',
+          "--config", "allow_login_shell=false",
           "--config", "sandbox_workspace_write.network_access=true", "--json", "--cd", cwd, "-",
         ]),
         file: "codex",
@@ -789,15 +790,17 @@ function mergeObserved(left, right) {
   return merged;
 }
 
-function parsedHelperProof(value, role) {
-  if (typeof value !== "string") return null;
+function parsedHelperOutput(value, role) {
+  if (typeof value !== "string") return Object.freeze({ matched: false, proof: null });
   const parsed = parseJsonString(value);
-  if (parsed === null || parsed?.schema !== HELPER_RESULT_SCHEMA) return null;
+  if (parsed === null || parsed?.schema !== HELPER_RESULT_SCHEMA) {
+    return Object.freeze({ matched: false, proof: null });
+  }
   if (parsed.operation !== "verify-certificate") {
     validateNonterminalHelperResult(parsed);
-    return null;
+    return Object.freeze({ matched: true, proof: null });
   }
-  return validateHelperProof(parsed, role);
+  return Object.freeze({ matched: true, proof: validateHelperProof(parsed, role) });
 }
 
 function expectedHelperCommand(value) {
@@ -874,7 +877,7 @@ function collectExpectedHelperCommands(value, found = [], seen = new Set()) {
 function bindHelperExecution(command, expectedHelperCommands) {
   const actual = fingerprintHelperExecutionCommand(command);
   if (actual.operation === null) return Object.freeze({ bound: false, actual });
-  const expected = expectedHelperCommands.shift();
+  const expected = expectedHelperCommands[0];
   if (expected === undefined) return Object.freeze({ bound: false, actual });
   const details = Object.freeze({
     expected: Object.freeze({
@@ -903,6 +906,12 @@ function bindHelperExecution(command, expectedHelperCommands) {
     fail("agent-exit", "validation", "HELPER_COMMAND_MISMATCH", details);
   }
   return Object.freeze({ bound: true, actual, expected, details });
+}
+
+function consumeHelperExecution(binding, expectedHelperCommands) {
+  if (!binding.bound) return;
+  if (expectedHelperCommands[0] !== binding.expected) fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
+  expectedHelperCommands.shift();
 }
 
 function validateVerifyCertificateCommand(value, proof, manifestDigest) {
@@ -950,7 +959,10 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
       helperExecutionState.details = binding.details;
     }
     if (event.item.status !== "completed" || event.item.exit_code !== 0) return null;
-    const proof = parsedHelperProof(event.item.aggregated_output, role);
+    const output = parsedHelperOutput(event.item.aggregated_output, role);
+    if (binding.bound && !output.matched) fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
+    consumeHelperExecution(binding, expectedHelperCommands);
+    const proof = output.proof;
     if (proof === null) return null;
     HELPER_CERTIFICATE_BINDINGS.set(proof, validateVerifyCertificateCommand(command, proof, manifestDigest));
     return proof;
@@ -981,11 +993,28 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
       }
       continue;
     }
-    const parsed = parsedHelperProof(block.content, role);
-    if (parsed === null) continue;
-    if (typeof block.tool_use_id !== "string") fail();
+    const output = parsedHelperOutput(block.content, role);
+    if (typeof block.tool_use_id !== "string") {
+      if (output.matched) fail();
+      continue;
+    }
     const execution = claudeBashCommands.get(block.tool_use_id);
+    if (execution === undefined) {
+      if (output.matched) fail();
+      continue;
+    }
     if (execution === null || typeof execution !== "object" || typeof execution.command !== "string") fail();
+    if (execution.details !== null && !output.matched) fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
+    if (execution.details !== null) {
+      const expected = expectedHelperCommands[0];
+      if (
+        expected === undefined || expected.commandSha256 !== execution.details.expected.commandSha256 ||
+        expected.commandLength !== execution.details.expected.commandLength
+      ) fail();
+      expectedHelperCommands.shift();
+    }
+    const parsed = output.proof;
+    if (parsed === null) continue;
     const command = execution.command;
     HELPER_CERTIFICATE_BINDINGS.set(parsed, validateVerifyCertificateCommand(command, parsed, manifestDigest));
     claudeBashCommands.set(block.tool_use_id, null);
