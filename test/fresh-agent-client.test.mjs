@@ -1618,6 +1618,52 @@ test("accepts Claude line wrapping only when the exact helper command bytes are 
   assert.deepEqual(await readdir(parent), []);
 });
 
+test("ignores ordinary asset inspection while a digest-bound helper approval is pending", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-adapter-inspection-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const children = {};
+  const command = verifyCertificateCommand("responder");
+  const spawnProcess = () => {
+    const role = children.initiator === undefined ? "initiator" : "responder";
+    const child = new EventEmitter();
+    child.pid = null;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {
+      queueMicrotask(() => {
+        if (role === "initiator") {
+          child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+          return;
+        }
+        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+        children.responder.stdout.emit("data", Buffer.from(claudeExpectedHelperEvent(command)));
+        children.responder.stdout.emit("data", Buffer.from(streamEvent({
+          type: "assistant",
+          message: { content: [{ type: "tool_use", id: "inspect", name: "Bash", input: { command: "curl --fail --location https://example.test/manifest" } }] },
+        })));
+        children.responder.stdout.emit("data", Buffer.from(streamEvent({
+          type: "user",
+          message: { content: [{ type: "tool_result", tool_use_id: "inspect", content: "downloaded", is_error: false }] },
+        })));
+        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(
+          helperProof("responder"),
+          { command: approvalCommand(command), id: "approval" },
+        )));
+        children.initiator.emit("close", 0, null);
+        children.responder.emit("close", 0, null);
+      });
+    } };
+    child.kill = () => {};
+    children[role] = child;
+    return child;
+  };
+
+  const result = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, { spawnProcess }));
+
+  assert.equal(result.certificateVerified, true);
+  assert.deepEqual(await readdir(parent), []);
+});
+
 test("reports exact helper execution failures distinctly from missing terminal proof", async (t) => {
   for (const mode of ["codex", "claude"]) {
     await t.test(mode, async (t) => {
