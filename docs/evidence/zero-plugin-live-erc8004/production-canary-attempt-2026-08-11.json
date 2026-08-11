@@ -1,0 +1,28 @@
+{
+  "schema": "clockchain.fresh-agent-canary-attempt/v1",
+  "attemptId": "5043ea99-3212-460c-93d6-710e3d5e8250",
+  "recordedAt": "2026-08-11T16:34:12Z",
+  "outcome": "failure",
+  "diagnostic": {
+    "phase": "invitation",
+    "category": "agent",
+    "code": "INVITATION_MISSING"
+  },
+  "freshClientPreflight": {
+    "codex": "passed",
+    "claudeCode": "passed"
+  },
+  "responderStarted": false,
+  "protocolObjectsCreated": false,
+  "externalBusinessActionPerformed": false,
+  "namedCause": "host_session_rotation_race",
+  "repair": {
+    "repository": "clockchain-developer-tools",
+    "commit": "33be79df907694868de53ebf05ced5695f541d27",
+    "deployed": true,
+    "focusedTestsPassed": 9,
+    "packageTestsPassed": 291
+  },
+  "researchReadinessEnabled": false,
+  "nextGate": "successful_two_computer_stakeholder_proof"
+}

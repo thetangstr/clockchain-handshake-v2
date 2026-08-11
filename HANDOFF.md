@@ -84,6 +84,22 @@ public discovery URL, with payer/requestor kits joining from a clean clone.
 
 *(append dated entries here; format: what you ran, what you expected, what you saw)*
 
+- 2026-08-11 — **Research readiness remains disabled pending a successful
+  two-computer stakeholder proof.** The single authorized production canary
+  (`5043ea99-3212-460c-93d6-710e3d5e8250`) passed both fresh-client
+  authentication preflights, started the Codex/Terra Initiator, and then stopped
+  safely when `agent_handshake_invite` returned terminal
+  `HANDSHAKE_UNAVAILABLE`. No Responder was started; no invitation, wallet,
+  ERC-8004 registration, signature, funding, anchor, certificate, or external
+  business action was created. Production logs proved a host rotation race: the
+  invite reached MCP roughly 0.53 seconds before the current discovery window
+  expired and the host reopened the session. MCP commit
+  `33be79df907694868de53ebf05ced5695f541d27` changes only that stale-window
+  branch to the existing retryable coordinator error and is deployed, but the
+  consumed one-attempt gate was not repeated. A future, separately authorized
+  two-computer run must produce the complete certificate proof before Research
+  readiness can be enabled.
+
 - 2026-08-10 — **Resolved for today's Apple-device demo.** The original signed
   native-helper release was waiting on nine repository
   credentials. Workflow run
@@ -304,6 +320,27 @@ public discovery URL, with payer/requestor kits joining from a clean clone.
 
 *(gate results land here: gate id, date, session id, block heights, anything a skeptic
 would ask for)*
+
+- 2026-08-11 — **One-attempt fresh-client canary failed safely and the named
+  infrastructure cause was repaired.** Attempt
+  `5043ea99-3212-460c-93d6-710e3d5e8250` used Codex `gpt-5.6-terra` as
+  Initiator and Claude Code `sonnet` as Responder against production MCP, with
+  independently pinned helper manifest digest
+  `fa3c408a3739227b5bdb71486b4d291b8f4dffdb0d1f2fa79dd59644ba5e09ad`
+  and host-root fingerprint
+  `da2771c36bf2298525d2bbd8351b6122bb67115e9979624e8bb56537bcf71ed8`.
+  Both credential preflights passed; the Initiator stopped at invitation with
+  `INVITATION_MISSING`, so the Responder never launched and no protocol-side
+  objects were created. The retained public artifact is
+  `docs/evidence/zero-plugin-live-erc8004/production-canary-attempt-2026-08-11.json`.
+  The MCP regression was established RED, fixed at commit `33be79d`, and passed
+  9/9 focused coordinator/public-server tests plus the full 291/291 package
+  suite. The AWS checkout is clean at that exact commit; the running container's
+  compiled coordinator calls `transient()` at the expired invitation-window
+  branch. Both MCP health hostnames and the public manifest returned 200 after
+  deployment, and relay discovery plus the Research monitor agreed on a fresh,
+  untouched v2 session with `externalBusinessActionPerformed:false`. This is
+  deployment evidence, not a successful stakeholder canary.
 
 - 2026-08-07 — certificate path (pre-G0 live run): session verified end-to-end, operator
   published certificate, requestor + independent third read both verified it against the
