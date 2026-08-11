@@ -441,7 +441,7 @@ async function prepareTestAdapter({ room }) {
   const root = join(room.workspace, ".clockchain-adapter");
   const bin = join(root, "bin");
   await mkdir(bin, { recursive: true, mode: 0o700 });
-  return Object.freeze({ bin, record: () => {} });
+  return Object.freeze({ authorize: async () => {}, bin, close: async () => {}, record: () => {} });
 }
 
 async function rejectsFreshAgentRun(parent, overrides) {
@@ -1029,10 +1029,14 @@ test("harness adapter executes the exact MCP-bound argv after only a short diges
   ]);
   assert.equal(await readFile(join(room.workspace, "manifest.json"), "utf8"), manifest);
   assert.equal(await readFile(join(room.workspace, "clockchain-agent-handshake.cjs"), "utf8"), helperSource);
-  const { stdout } = await execFileAsync(join(adapter.bin, "clockchain-agent-authorize"), [step.commandSha256], {
+  const approved = execFileAsync(join(adapter.bin, "clockchain-agent-authorize"), [step.commandSha256], {
     cwd: room.workspace,
     env: { ...process.env, PATH: `${adapter.bin}:${process.env.PATH}`, TMPDIR: room.tmp },
   });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(await readdir(adapter.pending), [`${step.commandSha256}.json`]);
+  await adapter.authorize(step);
+  const { stdout } = await approved;
   assert.equal(JSON.parse(stdout).operation, "init");
   assert.deepEqual(await readdir(adapter.pending), []);
 });

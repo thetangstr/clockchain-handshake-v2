@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { createHash, generateKeyPairSync, randomUUID, sign as signBytes } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID, sign as signBytes, verify as verifyBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
-import { chmod, mkdir, realpath, rm } from "node:fs/promises";
+import { chmod, mkdir, readFile, realpath, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -748,47 +748,32 @@ export async function createFreshAgentRun({ parent, runId = randomUUID() } = {})
 
 function adapterExecutable(runtimeExecPath, publicKeyDer) {
   return `#!${runtimeExecPath}\n` + String.raw`"use strict";
-const { spawnSync } = require("node:child_process");
 const { createPublicKey, verify } = require("node:crypto");
-const { mkdirSync, readFileSync, renameSync, rmSync } = require("node:fs");
-const { dirname, join, resolve } = require("node:path");
+const { existsSync, readFileSync, rmSync } = require("node:fs");
+const { dirname, join } = require("node:path");
 function stop() { process.exit(86); }
 const digest = process.argv.length === 3 ? process.argv[2] : "";
 if (!/^[0-9a-f]{64}$/.test(digest)) stop();
 const root = dirname(dirname(__filename));
-const pending = join(root, "pending", digest + ".json");
-const running = join(root, "running", digest + "." + process.pid + ".json");
-let retryable = false;
-try { renameSync(pending, running); } catch { stop(); }
-try {
-  const envelope = JSON.parse(readFileSync(running, "utf8"));
-  if (!envelope || Object.keys(envelope).sort().join(",") !== "body,schema,signature" || envelope.schema !== "clockchain.agent-harness-bound-action/v1") stop();
-  const bodyBytes = Buffer.from(JSON.stringify(envelope.body), "utf8");
-  const key = createPublicKey({ key: Buffer.from("${publicKeyDer}", "base64"), format: "der", type: "spki" });
-  if (!verify(null, bodyBytes, key, Buffer.from(envelope.signature, "base64"))) stop();
-  const body = envelope.body;
-  if (!body || Object.keys(body).sort().join(",") !== "args,commandLength,commandSha256,cwd,file,operation,role,schema,sessionId,stateDir") stop();
-  if (body.schema !== "clockchain.agent-harness-bound-action-body/v1" || body.commandSha256 !== digest || !Number.isSafeInteger(body.commandLength)) stop();
-  if (body.file !== process.execPath || body.cwd !== process.cwd() || !Array.isArray(body.args) || body.args.some((value) => typeof value !== "string")) stop();
-  const tmp = resolve(process.env.TMPDIR || "");
-  const state = resolve(body.stateDir);
-  if (!tmp || !state.startsWith(tmp + "/")) stop();
-  mkdirSync(state, { recursive: true, mode: 0o700 });
-  retryable = true;
-  const child = spawnSync(body.file, body.args, { cwd: body.cwd, env: process.env, stdio: "inherit" });
-  if (child.error || !Number.isSafeInteger(child.status)) stop();
-  retryable = child.status !== 0;
-  process.exitCode = child.status;
-} catch { stop(); }
-finally {
-  try {
-    if (retryable) renameSync(running, pending);
-    else rmSync(running, { force: true });
-  } catch {
-    try { rmSync(running, { force: true }); } catch {}
-    process.exitCode = 86;
-  }
+const response = join(root, "responses", digest + ".json");
+if (!existsSync(join(root, "pending", digest + ".json")) && !existsSync(join(root, "running", digest + ".json")) && !existsSync(response)) stop();
+let record = null;
+for (let attempt = 0; attempt < 1800 && record === null; attempt += 1) {
+  try { record = JSON.parse(readFileSync(response, "utf8")); }
+  catch { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); }
 }
+if (!record || Object.keys(record).sort().join(",") !== "body,schema,signature" || record.schema !== "clockchain.agent-harness-action-result-envelope/v1") stop();
+const bodyBytes = Buffer.from(JSON.stringify(record.body), "utf8");
+const key = createPublicKey({ key: Buffer.from("${publicKeyDer}", "base64"), format: "der", type: "spki" });
+if (typeof record.signature !== "string" || !verify(null, bodyBytes, key, Buffer.from(record.signature, "base64"))) stop();
+const body = record.body;
+if (!body || Object.keys(body).sort().join(",") !== "exitCode,schema,stderrBase64,stdoutBase64" || body.schema !== "clockchain.agent-harness-action-result/v1") stop();
+if (!Number.isSafeInteger(body.exitCode) || body.exitCode < 0 || body.exitCode > 255) stop();
+for (const name of ["stdoutBase64", "stderrBase64"]) if (typeof body[name] !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(body[name])) stop();
+try { rmSync(response); } catch { stop(); }
+process.stdout.write(Buffer.from(body.stdoutBase64, "base64"));
+process.stderr.write(Buffer.from(body.stderrBase64, "base64"));
+process.exitCode = body.exitCode;
 `;
 }
 
@@ -868,7 +853,8 @@ export async function prepareAgentHarnessAdapter({
   const bin = join(root, "bin");
   const pending = join(root, "pending");
   const running = join(root, "running");
-  for (const path of [root, bin, pending, running]) await privateDirectory(path);
+  const responses = join(root, "responses");
+  for (const path of [root, bin, pending, running, responses]) await privateDirectory(path);
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const publicKeyDer = publicKey.export({ type: "spki", format: "der" }).toString("base64");
   const executable = join(bin, "clockchain-agent-authorize");
@@ -877,6 +863,7 @@ export async function prepareAgentHarnessAdapter({
   const nodeShim = join(bin, "node");
   await writePrivateFile({ path: nodeShim, bytes: Buffer.from(adapterNodeShim(runtime), "utf8") });
   await chmod(nodeShim, 0o500);
+  const active = new Map();
 
   function record(value) {
     const expected = expectedHelperCommand(value);
@@ -911,7 +898,109 @@ export async function prepareAgentHarnessAdapter({
     return expected;
   }
 
-  return Object.freeze({ bin, pending, record, root });
+  async function authorize(value) {
+    const expected = expectedHelperCommand(value);
+    if (expected === null || expected.approvalCommand === null) fail();
+    if (active.has(expected.commandSha256)) return active.get(expected.commandSha256);
+    const task = (async () => {
+      const pendingPath = join(pending, `${expected.commandSha256}.json`);
+      const runningPath = join(running, `${expected.commandSha256}.json`);
+      const responsePath = join(responses, `${expected.commandSha256}.json`);
+      let retryable = true;
+      let child = null;
+      const writeResponse = async (exitCode, output = { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) }) => {
+        const body = Object.freeze({
+          schema: "clockchain.agent-harness-action-result/v1",
+          exitCode,
+          stdoutBase64: output.stdout.toString("base64"),
+          stderrBase64: output.stderr.toString("base64"),
+        });
+        const signature = signBytes(null, Buffer.from(JSON.stringify(body), "utf8"), privateKey).toString("base64");
+        await writePrivateFile({
+          path: responsePath,
+          bytes: Buffer.from(`${JSON.stringify({
+            schema: "clockchain.agent-harness-action-result-envelope/v1",
+            body,
+            signature,
+          })}\n`, "utf8"),
+        });
+      };
+      try {
+        await rename(pendingPath, runningPath);
+        const envelope = JSON.parse(await readFile(runningPath, "utf8"));
+        const body = exactObject(envelope, ["body", "schema", "signature"]);
+        if (body.schema !== "clockchain.agent-harness-bound-action/v1" || typeof body.signature !== "string") fail();
+        const action = exactObject(body.body, [
+          "args", "commandLength", "commandSha256", "cwd", "file", "operation",
+          "role", "schema", "sessionId", "stateDir",
+        ]);
+        if (
+          action.schema !== "clockchain.agent-harness-bound-action-body/v1" ||
+          action.commandSha256 !== expected.commandSha256 ||
+          action.commandLength !== expected.commandLength || action.operation !== expected.operation ||
+          action.role !== expected.role || action.sessionId !== expected.sessionId ||
+          action.file !== runtime || action.cwd !== workspace ||
+          !Array.isArray(action.args) || action.args.some((entry) => typeof entry !== "string") ||
+          descendant(tmp, action.stateDir) !== action.stateDir
+        ) fail();
+        const verified = verifyBytes(
+          null,
+          Buffer.from(JSON.stringify(action), "utf8"),
+          publicKey,
+          Buffer.from(body.signature, "base64"),
+        );
+        if (!verified) fail();
+        await mkdir(action.stateDir, { recursive: true, mode: 0o700 });
+        if (process.platform !== "win32") await chmod(action.stateDir, 0o700);
+        const output = { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+        child = spawn(action.file, action.args, {
+          cwd: action.cwd,
+          env: {
+            HOME: room.home,
+            LANG: "C.UTF-8",
+            LC_ALL: "C.UTF-8",
+            PATH: `${dirname(runtime)}:/usr/bin:/bin`,
+            TMPDIR: tmp,
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        active.set(`${expected.commandSha256}:child`, child);
+        const appendOutput = (name, chunk) => {
+          const next = Buffer.concat([output[name], Buffer.from(chunk)]);
+          if (next.length > MAX_OUTPUT_BYTES) child.kill("SIGTERM");
+          else output[name] = next;
+        };
+        child.stdout.on("data", (chunk) => appendOutput("stdout", chunk));
+        child.stderr.on("data", (chunk) => appendOutput("stderr", chunk));
+        const exitCode = await new Promise((resolveExit) => {
+          child.once("error", () => resolveExit(86));
+          child.once("close", (code) => resolveExit(Number.isSafeInteger(code) && code >= 0 && code <= 255 ? code : 86));
+        });
+        retryable = exitCode !== 0;
+        await writeResponse(exitCode, output);
+      } catch {
+        await writeResponse(86).catch(() => {});
+      } finally {
+        active.delete(`${expected.commandSha256}:child`);
+        if (retryable) await rename(runningPath, pendingPath).catch(() => {});
+        else await rm(runningPath, { force: true }).catch(() => {});
+      }
+    })();
+    active.set(expected.commandSha256, task);
+    task.finally(() => active.delete(expected.commandSha256));
+    return task;
+  }
+
+  async function close() {
+    for (const [key, value] of active) {
+      if (key.endsWith(":child")) value.kill?.("SIGTERM");
+    }
+    await Promise.allSettled([...active.entries()]
+      .filter(([key]) => !key.endsWith(":child"))
+      .map(([, value]) => value));
+  }
+
+  return Object.freeze({ authorize, bin, close, pending, record, root });
 }
 
 function append(output, chunk) {
@@ -1270,13 +1359,23 @@ function validateVerifyCertificateCommand(value, proof, manifestDigest) {
   });
 }
 
-function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, expectedHelperCommands, helperExecutionState) {
+function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, expectedHelperCommands, helperExecutionState, adapter) {
+  if (
+    event?.type === "item.started" && event?.item?.type === "command_execution" &&
+    typeof event.item.command === "string"
+  ) {
+    const command = unwrapCodexCommandExecution(event.item.command);
+    const binding = bindHelperExecution(command, expectedHelperCommands);
+    if (binding.bound) adapter.authorize(binding.expected).catch(() => {});
+    return null;
+  }
   if (
     event?.type === "item.completed" && event?.item?.type === "command_execution" &&
     typeof event.item.command === "string"
   ) {
     const command = unwrapCodexCommandExecution(event.item.command);
     const binding = bindHelperExecution(command, expectedHelperCommands);
+    if (binding.bound) adapter.authorize(binding.expected).catch(() => {});
     if (
       binding.bound &&
       (event.item.status === "failed" || (event.item.status === "completed" && event.item.exit_code !== 0))
@@ -1305,6 +1404,7 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
         ? stripLiteralShellLineContinuations(rawCommand)
         : rawCommand;
       const binding = bindHelperExecution(command, expectedHelperCommands);
+      if (binding.bound) adapter.authorize(binding.expected).catch(() => {});
       claudeBashCommands.set(block.id, Object.freeze({
         command: binding.bound ? binding.expected.shellCommand : command,
         details: binding.bound ? binding.details : null,
@@ -1367,7 +1467,10 @@ function killProcessGroup(child) {
 
 function observeChild(child, role, all, canaries, { adapter, expectedInvitation, manifestDigest, requireInvitation = false } = {}) {
   if (!SHA256.test(manifestDigest)) fail();
-  if (adapter === null || typeof adapter !== "object" || typeof adapter.record !== "function") fail();
+  if (
+    adapter === null || typeof adapter !== "object" ||
+    typeof adapter.authorize !== "function" || typeof adapter.record !== "function"
+  ) fail();
   let resolveInvitation;
   let rejectInvitation;
   const invitationPromise = requireInvitation ? new Promise((resolvePromise, rejectPromise) => {
@@ -1394,7 +1497,15 @@ function observeChild(child, role, all, canaries, { adapter, expectedInvitation,
       }
       expectedHelperCommands.push(...discoveredHelperCommands);
       observed = mergeObserved(observed, inspectEvent(event, role));
-      const helperProof = helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, expectedHelperCommands, helperExecutionState);
+      const helperProof = helperProofFromEvent(
+        event,
+        role,
+        manifestDigest,
+        claudeBashCommands,
+        expectedHelperCommands,
+        helperExecutionState,
+        adapter,
+      );
       if (helperProof !== null) observed = mergeObserved(observed, { helperProof });
       traceLifecycle({
         phase: "event",
@@ -2035,6 +2146,7 @@ export async function runFreshAgentHandshake({
   });
   let run;
   const children = [];
+  const adapters = [];
   let timer;
   try {
     run = await createFreshAgentRun({ parent });
@@ -2047,6 +2159,7 @@ export async function runFreshAgentHandshake({
         room: run.roles[role],
         runtimeExecPath: runtime?.execPath ?? process.execPath,
       });
+      adapters.push(adapter);
       const env = childEnvironment(run.roles[role], modelEnvironment[role], runtime, {
         adapterBin: adapter.bin,
         authenticationMode,
@@ -2189,6 +2302,7 @@ export async function runFreshAgentHandshake({
       cleanup: Object.freeze({ completed: true }),
     });
     assertSecretFree(evidence, [...canaries, actualInvitation, run.root]);
+    await Promise.allSettled(adapters.map((adapter) => adapter.close?.()));
     await rm(run.root, { recursive: true, force: true });
     run = undefined;
     return evidence;
@@ -2197,6 +2311,7 @@ export async function runFreshAgentHandshake({
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     children.forEach(killProcessGroup);
+    await Promise.allSettled(adapters.map((adapter) => adapter.close?.()));
     if (run !== undefined) await rm(run.root, { recursive: true, force: true }).catch(() => {});
   }
 }
