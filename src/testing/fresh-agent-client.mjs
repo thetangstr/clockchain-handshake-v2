@@ -318,6 +318,100 @@ export function classifyHelperExecutionCommand(value) {
   });
 }
 
+function stripLiteralShellLineContinuations(value) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 1024 * 1024) fail();
+  let quote = null;
+  let normalized = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    if (quote === "single") {
+      if (char === "'") quote = null;
+      normalized += char;
+      continue;
+    }
+    if (quote === "double") {
+      if (char === '"') {
+        quote = null;
+        normalized += char;
+      }
+      else if (char === "\\" && value[index + 1] === "\n") index += 1;
+      else {
+        if (char === "\\" || char === "`" || char === "\r") fail();
+        normalized += char;
+      }
+      continue;
+    }
+    if (char === "\\" && value[index + 1] === "\n") {
+      index += 1;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      normalized += char;
+      continue;
+    }
+    if (char === "'") {
+      quote = "single";
+      normalized += char;
+      continue;
+    }
+    if (char === '"') {
+      quote = "double";
+      normalized += char;
+      continue;
+    }
+    normalized += char;
+  }
+  if (quote !== null) fail();
+  return normalized;
+}
+
+function parseLiteralShellWords(value) {
+  value = stripLiteralShellLineContinuations(value);
+  const words = [];
+  let quote = null;
+  let word = "";
+  let started = false;
+  for (const char of value) {
+    if (quote === "single") {
+      if (char === "'") quote = null;
+      else word += char;
+      continue;
+    }
+    if (quote === "double") {
+      if (char === '"') quote = null;
+      else {
+        if (char === "\\" || char === "`" || char === "\r") fail();
+        word += char;
+      }
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (started) {
+        words.push(word);
+        word = "";
+        started = false;
+      }
+      continue;
+    }
+    if (char === "'") {
+      quote = "single";
+      started = true;
+      continue;
+    }
+    if (char === '"') {
+      quote = "double";
+      started = true;
+      continue;
+    }
+    if (char === "\\" || /[;&|<>`()[\]{}*?!#~$]/.test(char)) fail();
+    word += char;
+    started = true;
+  }
+  if (quote !== null) fail();
+  if (started) words.push(word);
+  return words;
+}
+
 function splitCodexCommandDisplay(value) {
   if (typeof value !== "string" || value.length === 0 || value.length > 1024 * 1024) fail();
   const words = [];
@@ -831,7 +925,15 @@ function expectedHelperCommand(value) {
   ) {
     fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
   }
-  return Object.freeze({ commandLength, commandSha256, operation, role, sessionId });
+  return Object.freeze({
+    argv: Object.freeze(parseLiteralShellWords(step.shellCommand)),
+    commandLength,
+    commandSha256,
+    operation,
+    role,
+    sessionId,
+    shellCommand: step.shellCommand,
+  });
 }
 
 function collectExpectedHelperCommands(value, found = [], seen = new Set()) {
@@ -879,6 +981,11 @@ function bindHelperExecution(command, expectedHelperCommands) {
   if (actual.operation === null) return Object.freeze({ bound: false, actual });
   const expected = expectedHelperCommands[0];
   if (expected === undefined) return Object.freeze({ bound: false, actual });
+  const actualArgv = parseLiteralShellWords(command);
+  const argvMatches = actualArgv.length === expected.argv.length &&
+    actualArgv.every((entry, index) => entry === expected.argv[index]);
+  const rawCommandMatches = actual.commandSha256 === expected.commandSha256 &&
+    Buffer.byteLength(command) === expected.commandLength;
   const details = Object.freeze({
     expected: Object.freeze({
       commandSha256: expected.commandSha256,
@@ -896,8 +1003,7 @@ function bindHelperExecution(command, expectedHelperCommands) {
     }),
   });
   if (
-    actual.commandSha256 !== expected.commandSha256 ||
-    Buffer.byteLength(command) !== expected.commandLength ||
+    (!rawCommandMatches && !argvMatches) ||
     actual.operation !== expected.operation ||
     actual.state?.role !== expected.role ||
     actual.state?.sessionId !== expected.sessionId
@@ -964,7 +1070,8 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
     consumeHelperExecution(binding, expectedHelperCommands);
     const proof = output.proof;
     if (proof === null) return null;
-    HELPER_CERTIFICATE_BINDINGS.set(proof, validateVerifyCertificateCommand(command, proof, manifestDigest));
+    const verifiedCommand = binding.bound ? binding.expected.shellCommand : command;
+    HELPER_CERTIFICATE_BINDINGS.set(proof, validateVerifyCertificateCommand(verifiedCommand, proof, manifestDigest));
     return proof;
   }
   if (event?.type === "assistant" && Array.isArray(event?.message?.content)) {
@@ -972,9 +1079,10 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
       if (block?.type !== "tool_use" || block?.name !== "Bash") continue;
       if (typeof block.id !== "string" || block.id.length === 0 || typeof block?.input?.command !== "string") fail();
       if (claudeBashCommands.has(block.id)) fail();
-      const binding = bindHelperExecution(block.input.command, expectedHelperCommands);
+      const command = stripLiteralShellLineContinuations(block.input.command);
+      const binding = bindHelperExecution(command, expectedHelperCommands);
       claudeBashCommands.set(block.id, Object.freeze({
-        command: block.input.command,
+        command: binding.bound ? binding.expected.shellCommand : command,
         details: binding.bound ? binding.details : null,
       }));
     }

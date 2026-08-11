@@ -1461,7 +1461,7 @@ test("rejects agent-mutated helper commands against the last MCP-returned comman
       t.after(() => rm(parent, { recursive: true, force: true }));
       const children = {};
       const command = verifyCertificateCommand(mode === "codex" ? "initiator" : "responder");
-      const mutated = command.replace("verify-certificate", "verify-certificate ");
+      const mutated = `${command.slice(0, -1)}${command.endsWith("A") ? "B" : "A"}`;
       const spawnProcess = () => {
         const role = children.initiator === undefined ? "initiator" : "responder";
         const child = new EventEmitter();
@@ -1505,6 +1505,52 @@ test("rejects agent-mutated helper commands against the last MCP-returned comman
       assert.deepEqual(await readdir(parent), []);
     });
   }
+});
+
+test("accepts Claude line wrapping only when the exact helper command bytes are otherwise unchanged", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-claude-line-wrap-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const children = {};
+  const command = verifyCertificateCommand("responder");
+  const stateDir = `\"$TMPDIR/.clockchain/handshakes/${SESSION}/responder\"`;
+  const wrapped = command
+    .replace(`' ${DIGEST} `, `' \\\n${DIGEST} \\\n`)
+    .replace("./manifest.json ", "./manifest.json \\\n")
+    .replace("./clockchain-agent-handshake.cjs ", "./clockchain-agent-handshake.cjs \\\n")
+    .replace("verify-certificate ", "verify-certificate \\\n")
+    .replace("--state-dir ", "--state-dir \\\n")
+    .replace(`${stateDir} `, `${stateDir} \\\n`)
+    .replace("--payload-base64url ", "--payload-base64url \\\n");
+  assert.equal(Buffer.byteLength(wrapped), Buffer.byteLength(command) + 16);
+
+  const spawnProcess = () => {
+    const role = children.initiator === undefined ? "initiator" : "responder";
+    const child = new EventEmitter();
+    child.pid = null;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {
+      queueMicrotask(() => {
+        if (role === "initiator") {
+          child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+          return;
+        }
+        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+        children.responder.stdout.emit("data", Buffer.from(claudeExpectedHelperEvent(command)));
+        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"), { command: wrapped })));
+        children.initiator.emit("close", 0, null);
+        children.responder.emit("close", 0, null);
+      });
+    } };
+    child.kill = () => {};
+    children[role] = child;
+    return child;
+  };
+
+  const result = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, { spawnProcess }));
+
+  assert.equal(result.certificateVerified, true);
+  assert.deepEqual(await readdir(parent), []);
 });
 
 test("reports exact helper execution failures distinctly from missing terminal proof", async (t) => {
