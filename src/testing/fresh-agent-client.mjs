@@ -107,6 +107,24 @@ function traceAccessClaims(value) {
   }
 }
 
+function traceEventTransportShape(line) {
+  const lineBytes = Buffer.byteLength(line);
+  let event;
+  try { event = JSON.parse(line); } catch {
+    return Object.freeze({ lineBytes, parseable: false });
+  }
+  const content = Array.isArray(event?.message?.content) ? event.message.content : [];
+  return Object.freeze({
+    lineBytes,
+    parseable: true,
+    type: typeof event?.type === "string" ? event.type.slice(0, 64) : null,
+    subtype: typeof event?.subtype === "string" ? event.subtype.slice(0, 64) : null,
+    itemType: typeof event?.item?.type === "string" ? event.item.type.slice(0, 64) : null,
+    blockTypes: Object.freeze(content.slice(0, 32).map((block) => typeof block?.type === "string" ? block.type.slice(0, 64) : null)),
+    toolNames: Object.freeze(content.slice(0, 32).map((block) => typeof block?.name === "string" ? block.name.slice(0, 64) : null)),
+  });
+}
+
 export class FreshAgentDiagnosticError extends Error {
   constructor({ phase = "unknown", category = "unknown", code = "UNKNOWN", details } = {}) {
     super("Fresh agent compatibility check failed safely.");
@@ -1285,6 +1303,7 @@ function observeChild(child, role, all, canaries, { adapter, expectedInvitation,
     let stderr = "";
     let lineBuffer = "";
     const stdoutDecoder = new StringDecoder("utf8");
+    let rejectedEvent = null;
     let observed = {};
     const claudeBashCommands = new Map();
     const expectedHelperCommands = [];
@@ -1408,10 +1427,12 @@ function observeChild(child, role, all, canaries, { adapter, expectedInvitation,
       while ((newlineIndex = lineBuffer.indexOf("\n")) >= 0) {
         const rawLine = lineBuffer.slice(0, newlineIndex);
         lineBuffer = lineBuffer.slice(newlineIndex + 1);
+        rejectedEvent = traceEventTransportShape(rawLine);
         if (Buffer.byteLength(rawLine) > MAX_OUTPUT_BYTES) fail();
         const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
         assertSecretFree(line, canaries);
         processLine(line);
+        rejectedEvent = null;
       }
       if (Buffer.byteLength(lineBuffer) > MAX_OUTPUT_BYTES) fail();
     }
@@ -1424,6 +1445,7 @@ function observeChild(child, role, all, canaries, { adapter, expectedInvitation,
         diagnostic: error instanceof FreshAgentDiagnosticError ? error.diagnostic : null,
         bufferedLineBytes: Buffer.byteLength(lineBuffer),
         stderrBytes: Buffer.byteLength(stderr),
+        event: rejectedEvent,
       });
       all.forEach(killProcessGroup);
       rejectInvitation?.(error);
