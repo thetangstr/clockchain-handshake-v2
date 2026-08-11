@@ -51,6 +51,17 @@ const RESPONDER_INVITATION_PLACEHOLDER = "<PASTE THE INITIATOR INVITATION>";
 export const CLAUDE_CONTEXT_MARKER = "CLOCKCHAIN_CONTEXT_RECEIVED";
 export const CLAUDE_CONTEXT_PROMPT = `I am using this fresh disposable workspace for an expected Clockchain test. In my next message I will provide a concrete role-specific request. Do not perform any action now; evaluate that later request on its own exact scope and safety boundaries. Reply exactly ${CLAUDE_CONTEXT_MARKER}.`;
 const TRACE_LIFECYCLE = process.env.CLOCKCHAIN_FRESH_AGENT_TRACE === "1";
+const DIAGNOSTIC_PHASES = Object.freeze(new Set([
+  "agent-exit", "configure", "invitation", "monitor", "prepare", "timeout", "unknown",
+]));
+const DIAGNOSTIC_CATEGORIES = Object.freeze(new Set([
+  "agent", "client", "deadline", "http", "monitor", "process", "unknown", "validation",
+]));
+const DIAGNOSTIC_CODES = Object.freeze(new Set([
+  "AGENT_EXIT", "AGENT_FAILED", "AGENT_OUTPUT_INVALID", "CONFIGURE_FAILED", "HELPER_PROOF_MISSING",
+  "INVALID_RETRY_DELAY", "INVALID_TIMEOUT", "INVITATION_MISSING", "MONITOR_FAILED", "MONITOR_RESULT_INVALID",
+  "PREPARE_FAILED", "TIMEOUT", "UNKNOWN",
+]));
 
 function traceLifecycle(value) {
   if (TRACE_LIFECYCLE) process.stderr.write(`${JSON.stringify(value)}\n`);
@@ -79,8 +90,45 @@ function traceAccessClaims(value) {
   }
 }
 
-function fail() {
-  throw new Error("Fresh agent compatibility check failed safely.");
+export class FreshAgentDiagnosticError extends Error {
+  constructor({ phase = "unknown", category = "unknown", code = "UNKNOWN" } = {}) {
+    super("Fresh agent compatibility check failed safely.");
+    this.name = "FreshAgentDiagnosticError";
+    this.diagnostic = Object.freeze({
+      phase: cleanDiagnosticPhase(phase),
+      category: cleanDiagnosticCategory(category),
+      code: cleanDiagnosticCode(code),
+    });
+  }
+
+  toJSON() {
+    return { name: this.name, message: this.message, diagnostic: this.diagnostic };
+  }
+}
+
+function cleanDiagnosticPhase(value) {
+  return DIAGNOSTIC_PHASES.has(value) ? value : "unknown";
+}
+
+function cleanDiagnosticCategory(value) {
+  return DIAGNOSTIC_CATEGORIES.has(value) ? value : "unknown";
+}
+
+function cleanDiagnosticCode(value) {
+  return DIAGNOSTIC_CODES.has(value) || /^HTTP_[1-5][0-9]{2}$/.test(value) ? value : "UNKNOWN";
+}
+
+function diagnostic(phase, category, code) {
+  return new FreshAgentDiagnosticError({ phase, category, code });
+}
+
+function fail(phase = "unknown", category = "unknown", code = "UNKNOWN") {
+  throw diagnostic(phase, category, code);
+}
+
+function diagnosticFrom(error, phase, category, code) {
+  if (error instanceof FreshAgentDiagnosticError) return error;
+  return diagnostic(phase, category, code);
 }
 
 function exactObject(value, keys) {
@@ -707,11 +755,10 @@ function observeChild(child, role, all, canaries, { expectedInvitation, manifest
       lineBuffer = lines.pop() ?? "";
       lines.forEach(processLine);
     }
-    function reject() {
+    function reject(error = diagnostic("agent-exit", "agent", "AGENT_FAILED")) {
       if (settled) return;
       settled = true;
       all.forEach(killProcessGroup);
-      const error = new Error("Fresh agent compatibility check failed safely.");
       rejectInvitation?.(error);
       rejectPromise(error);
     }
@@ -725,7 +772,7 @@ function observeChild(child, role, all, canaries, { expectedInvitation, manifest
       if (settled) return;
       settled = true;
       if (code !== 0) {
-        const error = new Error("Fresh agent compatibility check failed safely.");
+        const error = diagnostic("agent-exit", "process", "AGENT_EXIT");
         rejectInvitation?.(error);
         return rejectPromise(error);
       }
@@ -733,10 +780,11 @@ function observeChild(child, role, all, canaries, { expectedInvitation, manifest
         if (lineBuffer.trim().length > 0) processLine(lineBuffer);
         assertSecretFree(stdout, canaries);
         assertSecretFree(stderr, canaries);
-        if (observed.helperProof === undefined || (requireInvitation && observed.invitation === undefined)) fail();
+        if (requireInvitation && observed.invitation === undefined) fail("invitation", "agent", "INVITATION_MISSING");
+        if (observed.helperProof === undefined) fail("agent-exit", "agent", "HELPER_PROOF_MISSING");
         resolvePromise(observed.helperProof);
-      } catch {
-        const error = new Error("Fresh agent compatibility check failed safely.");
+      } catch (error) {
+        error = diagnosticFrom(error, "agent-exit", "validation", "AGENT_OUTPUT_INVALID");
         rejectInvitation?.(error);
         rejectPromise(error);
       }
@@ -893,12 +941,21 @@ export async function runFreshAgentHandshake({
       const commands = buildClientCommands({ client, claudeSessionId, manifestDigest: pin.manifestDigest, prompt: "configured later", workspace: run.roles[role].workspace });
       const configure = commands.configure;
       traceLifecycle({ phase: "configure", role, client, status: "started" });
-      await configureClient(Object.freeze({ client, command: configure, env, role, room: run.roles[role] }));
+      try {
+        await configureClient(Object.freeze({ client, command: configure, env, role, room: run.roles[role] }));
+      } catch (error) {
+        throw diagnosticFrom(error, "configure", "client", "CONFIGURE_FAILED");
+      }
       traceLifecycle({ phase: "configure", role, client, status: "completed" });
       if (client === "claude") {
         traceLifecycle({ phase: "prepare", role, client, status: "started" });
-        const ready = await prepareClient(Object.freeze({ client, command: commands.prepare, env, role, room: run.roles[role] }));
-        if (ready !== true) fail();
+        let ready;
+        try {
+          ready = await prepareClient(Object.freeze({ client, command: commands.prepare, env, role, room: run.roles[role] }));
+        } catch (error) {
+          throw diagnosticFrom(error, "prepare", "client", "PREPARE_FAILED");
+        }
+        if (ready !== true) fail("prepare", "client", "PREPARE_FAILED");
         traceLifecycle({ phase: "prepare", role, client, status: "completed" });
       }
       prepared[role] = { claudeSessionId, client, env };
@@ -906,7 +963,7 @@ export async function runFreshAgentHandshake({
     const timedOut = new Promise((_, rejectPromise) => {
       timer = setTimeout(() => {
         children.forEach(killProcessGroup);
-        rejectPromise(new Error("Fresh agent compatibility check failed safely."));
+        rejectPromise(diagnostic("timeout", "deadline", "TIMEOUT"));
       }, timeoutMs);
     });
     const initiatorCommands = buildClientCommands({
@@ -931,7 +988,7 @@ export async function runFreshAgentHandshake({
     sendPrompt(initiatorChild, initiatorCommands.launch.input);
     const actualInvitation = await Promise.race([
       initiatorObserved.invitation,
-      initiatorObserved.result.then(() => fail()),
+      initiatorObserved.result.then(() => fail("invitation", "agent", "INVITATION_MISSING")),
       timedOut,
     ]);
     const responderCommands = buildClientCommands({
@@ -962,7 +1019,18 @@ export async function runFreshAgentHandshake({
     timer = undefined;
     const [initiatorProof, responderProof] = results;
     if (initiatorProof.sessionId !== responderProof.sessionId) fail();
-    const monitorResult = validateMonitorResult(await monitor({ sessionId: initiatorProof.sessionId }), initiatorProof.sessionId);
+    let rawMonitorResult;
+    try {
+      rawMonitorResult = await monitor({ sessionId: initiatorProof.sessionId });
+    } catch (error) {
+      throw diagnosticFrom(error, "monitor", "monitor", "MONITOR_FAILED");
+    }
+    let monitorResult;
+    try {
+      monitorResult = validateMonitorResult(rawMonitorResult, initiatorProof.sessionId);
+    } catch {
+      throw diagnostic("monitor", "validation", "MONITOR_RESULT_INVALID");
+    }
     const initiator = publicRole(initiatorProof, monitorResult);
     const responder = publicRole(responderProof, monitorResult);
     if (initiator.address === responder.address || initiator.erc8004.agentId === responder.erc8004.agentId || initiator.policyDigest === responder.policyDigest) fail();
@@ -979,8 +1047,8 @@ export async function runFreshAgentHandshake({
     await rm(run.root, { recursive: true, force: true });
     run = undefined;
     return evidence;
-  } catch {
-    fail();
+  } catch (error) {
+    throw diagnosticFrom(error, "unknown", "unknown", "UNKNOWN");
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     children.forEach(killProcessGroup);

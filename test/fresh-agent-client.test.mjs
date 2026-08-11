@@ -20,6 +20,7 @@ import {
   validateFreshAgentMonitorSnapshot,
   validateReleaseAgreement,
 } from "../src/testing/fresh-agent-client.mjs";
+import { monitor as runFreshAgentMonitor } from "../scripts/run-fresh-agent-handshake.mjs";
 
 function streamEvent(value) {
   return `${JSON.stringify(value)}\n`;
@@ -193,6 +194,65 @@ function monitorResult() {
   };
 }
 
+function successfulFreshAgentSpawn(calls = []) {
+  const children = {};
+  return (file, args, options) => {
+    calls.push({ file, args, options });
+    const role = children.initiator === undefined ? "initiator" : "responder";
+    const child = new EventEmitter();
+    child.pid = null;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end(input) {
+      calls.push({ input, role });
+      queueMicrotask(() => {
+        if (role === "initiator") {
+          child.stdout.emit("data", Buffer.from(streamEvent({
+            type: "item.completed",
+            item: { type: "agent_message", text: INVITATION },
+          })));
+          return;
+        }
+        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
+        children.initiator.emit("close", 0, null);
+        children.responder.emit("close", 0, null);
+      });
+    } };
+    child.kill = (signal) => calls.push({ role, signal });
+    children[role] = child;
+    return child;
+  };
+}
+
+function baseFreshAgentRunOptions(parent, overrides = {}) {
+  return {
+    clients: { initiator: "codex", responder: "claude" },
+    configureClient: async () => {},
+    prepareClient: async () => true,
+    modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
+    secretCanaries: { initiator: ["canary-initiator-secret"], responder: ["canary-responder-secret"] },
+    monitor: async () => monitorResult(),
+    parent,
+    prompts: { initiator: "init", responder: "respond <PASTE THE INITIATOR INVITATION>" },
+    release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
+    spawnProcess: successfulFreshAgentSpawn(),
+    timeoutMs: 2_000,
+    ...overrides,
+  };
+}
+
+async function rejectsFreshAgentRun(parent, overrides) {
+  let thrown;
+  try {
+    await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, overrides));
+  } catch (error) {
+    thrown = error;
+  }
+  assert.ok(thrown instanceof Error);
+  return thrown;
+}
+
 test("builds exact endpoint configuration for Codex and Claude Code", () => {
   assert.equal(VERIFIED_HELPER_BOOTSTRAP.includes(","), false);
   assert.equal(VERIFIED_HELPER_BOOTSTRAP.includes("'"), false);
@@ -312,6 +372,67 @@ test("projects terminal evidence only from a complete, strictly validated v2 mon
   assert.equal(validateFreshAgentMonitorSnapshot(incomplete, SESSION), null);
   assert.equal(validateFreshAgentMonitorSnapshot(snapshot, "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"), null);
   assert.throws(() => validateFreshAgentMonitorSnapshot({ ...snapshot, externalBusinessActionPerformed: true }, SESSION));
+});
+
+test("fresh-agent monitor retries transient 502 until a valid complete snapshot succeeds", async (t) => {
+  const previousEndpoint = process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL;
+  process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL = "https://monitor.example.test/session";
+  t.after(() => {
+    if (previousEndpoint === undefined) delete process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL;
+    else process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL = previousEndpoint;
+  });
+  t.mock.method(globalThis, "fetch", async () => {
+    fetch.calls = (fetch.calls ?? 0) + 1;
+    if (fetch.calls === 1) return { ok: false, status: 502 };
+    return { ok: true, status: 200, json: async () => completeMonitorSnapshot() };
+  });
+  fetch.calls = 0;
+
+  const result = await runFreshAgentMonitor({ sessionId: SESSION, retryDelayMs: 1, timeoutMs: 1_000 });
+
+  assert.equal(result.sessionId, SESSION);
+  assert.equal(fetch.calls, 2);
+});
+
+test("fresh-agent monitor fails permanent 401 immediately with a safe diagnostic", async (t) => {
+  const previousEndpoint = process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL;
+  process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL = "https://monitor.example.test/session";
+  t.after(() => {
+    if (previousEndpoint === undefined) delete process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL;
+    else process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL = previousEndpoint;
+  });
+  t.mock.method(globalThis, "fetch", async () => {
+    fetch.calls = (fetch.calls ?? 0) + 1;
+    return { ok: false, status: 401 };
+  });
+  fetch.calls = 0;
+
+  await assert.rejects(
+    () => runFreshAgentMonitor({ sessionId: SESSION, retryDelayMs: 1, timeoutMs: 1_000 }),
+    (error) => {
+      assert.deepEqual(error.diagnostic, { phase: "monitor", category: "http", code: "HTTP_401" });
+      assert.equal(fetch.calls, 1);
+      assert.equal(JSON.stringify(error).includes("monitor.example"), false);
+      return true;
+    },
+  );
+});
+
+test("fresh-agent monitor rejects zero retry delay to prevent hot polling", async (t) => {
+  const previousEndpoint = process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL;
+  process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL = "https://monitor.example.test/session";
+  t.after(() => {
+    if (previousEndpoint === undefined) delete process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL;
+    else process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL = previousEndpoint;
+  });
+
+  await assert.rejects(
+    () => runFreshAgentMonitor({ sessionId: SESSION, retryDelayMs: 0, timeoutMs: 1_000 }),
+    (error) => {
+      assert.deepEqual(error.diagnostic, { phase: "monitor", category: "validation", code: "INVALID_RETRY_DELAY" });
+      return true;
+    },
+  );
 });
 
 test("allows only pinned downloads and a hash-verifying in-memory helper bootstrap", () => {
@@ -536,6 +657,88 @@ test("starts the Responder only after the Initiator emits its actual one-time in
   assert.equal(result.roles.initiator.certificateDigest, result.roles.responder.certificateDigest);
   assert.equal(JSON.stringify(result).includes(secret), false);
   assert.equal((await readdir(parent)).length, 0);
+});
+
+test("fresh-agent injected failures produce distinct safe diagnostics", async (t) => {
+  const cases = [
+    ["configure", {
+      configureClient: async () => { throw new Error("configure raw secret canary-initiator-secret"); },
+      expected: { phase: "configure", category: "client", code: "CONFIGURE_FAILED" },
+    }],
+    ["prepare", {
+      prepareClient: async () => { throw new Error("prepare raw secret canary-responder-secret"); },
+      expected: { phase: "prepare", category: "client", code: "PREPARE_FAILED" },
+    }],
+    ["prepare-false", {
+      prepareClient: async () => false,
+      expected: { phase: "prepare", category: "client", code: "PREPARE_FAILED" },
+    }],
+    ["invitation", {
+      spawnProcess: () => {
+        const child = new EventEmitter();
+        child.pid = null;
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.stdin = { end() { queueMicrotask(() => child.emit("close", 0, null)); } };
+        child.kill = () => {};
+        return child;
+      },
+      expected: { phase: "invitation", category: "agent", code: "INVITATION_MISSING" },
+    }],
+    ["monitor", {
+      monitor: async () => { throw new Error("monitor raw secret canary-initiator-secret"); },
+      expected: { phase: "monitor", category: "monitor", code: "MONITOR_FAILED" },
+    }],
+    ["monitor-validation", {
+      monitor: async () => ({ ...monitorResult(), sessionId: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff" }),
+      expected: { phase: "monitor", category: "validation", code: "MONITOR_RESULT_INVALID" },
+    }],
+    ["timeout", {
+      timeoutMs: 100,
+      spawnProcess: () => {
+        const child = new EventEmitter();
+        child.pid = null;
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.stdin = { end() {} };
+        child.kill = () => {};
+        return child;
+      },
+      expected: { phase: "timeout", category: "deadline", code: "TIMEOUT" },
+    }],
+  ];
+  const serialized = [];
+  for (const [name, entry] of cases) {
+    await t.test(name, async (t) => {
+      const parent = await mkdtemp(join(tmpdir(), `fresh-agent-diagnostic-${name}-`));
+      t.after(() => rm(parent, { recursive: true, force: true }));
+
+      const error = await rejectsFreshAgentRun(parent, entry);
+
+      assert.deepEqual(error.diagnostic, entry.expected);
+      serialized.push(JSON.stringify(error));
+      assert.deepEqual(await readdir(parent), []);
+    });
+  }
+  assert.ok(new Set(serialized).size >= 4);
+});
+
+test("fresh-agent diagnostics serialize without supplied canary secrets", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-secret-diagnostic-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+
+  const error = await rejectsFreshAgentRun(parent, {
+    configureClient: async () => { throw new Error("raw canary-provider-secret-value"); },
+    secretCanaries: {
+      initiator: ["canary-provider-secret-value"],
+      responder: ["canary-provider-secret-value-responder"],
+    },
+  });
+
+  const serialized = JSON.stringify(error);
+  assert.equal(serialized.includes("canary-provider-secret-value"), false);
+  assert.deepEqual(error.diagnostic, { phase: "configure", category: "client", code: "CONFIGURE_FAILED" });
+  assert.deepEqual(await readdir(parent), []);
 });
 
 test("rejects model-authored certificate claims without completed helper execution output", async (t) => {

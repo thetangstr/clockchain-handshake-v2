@@ -4,9 +4,11 @@ import { execFile } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import {
+  FreshAgentDiagnosticError,
   runFreshAgentHandshake,
   validateClaudePreparation,
   validateFreshAgentMonitorSnapshot,
@@ -19,6 +21,11 @@ import {
 const execFileAsync = promisify(execFile);
 const SAFE_ERROR = "Fresh agent compatibility check failed safely.\n";
 const SHA256 = /^[0-9a-f]{64}$/;
+const TRANSIENT_MONITOR_STATUSES = new Set([429, 502, 503, 504]);
+
+function safeMonitorError(category, code) {
+  return new FreshAgentDiagnosticError({ phase: "monitor", category, code });
+}
 
 function failureCategory(value) {
   if (typeof value !== "string") return null;
@@ -106,17 +113,30 @@ async function prepareClient({ authentication, command, env, room }) {
   return validateClaudePreparation(stdout, authentication.secretCanaries);
 }
 
-async function monitor({ sessionId }) {
+export async function monitor({ sessionId, retryDelayMs = 1_000, timeoutMs = 120_000 } = {}) {
   const endpoint = value("CLOCKCHAIN_RESEARCH_MONITOR_URL");
-  const deadline = Date.now() + 120_000;
+  if (!Number.isSafeInteger(retryDelayMs) || retryDelayMs < 1 || retryDelayMs > 60_000) throw safeMonitorError("validation", "INVALID_RETRY_DELAY");
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60 * 60 * 1000) throw safeMonitorError("validation", "INVALID_TIMEOUT");
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const response = await fetch(endpoint, { cache: "no-store" });
-    if (!response.ok) throw new Error("invalid");
+    let response;
+    try {
+      response = await fetch(endpoint, { cache: "no-store" });
+    } catch {
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, Math.min(retryDelayMs, Math.max(0, deadline - Date.now()))));
+      continue;
+    }
+    if (!response.ok) {
+      const status = Number.isSafeInteger(response.status) ? response.status : 0;
+      if (!TRANSIENT_MONITOR_STATUSES.has(status)) throw safeMonitorError("http", `HTTP_${status}`);
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, Math.min(retryDelayMs, Math.max(0, deadline - Date.now()))));
+      continue;
+    }
     const completed = validateFreshAgentMonitorSnapshot(await response.json(), sessionId);
     if (completed !== null) return completed;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_000));
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, Math.min(retryDelayMs, Math.max(0, deadline - Date.now()))));
   }
-  throw new Error("invalid");
+  throw safeMonitorError("deadline", "TIMEOUT");
 }
 
 async function main() {
@@ -164,7 +184,9 @@ async function main() {
   }
 }
 
-main().catch(() => {
-  process.stderr.write(SAFE_ERROR);
-  process.exitCode = 1;
-});
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch(() => {
+    process.stderr.write(SAFE_ERROR);
+    process.exitCode = 1;
+  });
+}
