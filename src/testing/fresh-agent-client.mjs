@@ -971,33 +971,66 @@ function parseJsonString(value) {
   try { return JSON.parse(candidate); } catch { return null; }
 }
 
+function approvalCommandDigest(value) {
+  if (typeof value !== "string") return null;
+  let argv;
+  try { argv = parseLiteralShellWords(value); } catch { return null; }
+  return argv.length === 2 && argv[0] === "clockchain-agent-authorize" && SHA256.test(argv[1])
+    ? argv[1]
+    : null;
+}
+
+function inspectAuthoritativeInvitationPayload(value) {
+  let found = {};
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return found;
+  if (Object.hasOwn(value, "responderInvitation")) {
+    found = mergeObserved(found, { invitation: invitation(value.responderInvitation) });
+  }
+  if (value.structuredContent !== null && typeof value.structuredContent === "object" && !Array.isArray(value.structuredContent)) {
+    found = mergeObserved(found, inspectAuthoritativeInvitationPayload(value.structuredContent));
+  }
+  if (Array.isArray(value.content)) {
+    for (const block of value.content) {
+      if (block?.type !== "text" || typeof block.text !== "string") continue;
+      found = mergeObserved(found, inspectAuthoritativeInvitationText(block.text));
+    }
+  }
+  return found;
+}
+
+function inspectAuthoritativeInvitationText(value) {
+  let found = {};
+  const candidate = invitationMessage(value);
+  if (candidate !== null) found = mergeObserved(found, { invitation: candidate });
+  const parsed = parseJsonString(value);
+  if (parsed !== null) found = mergeObserved(found, inspectAuthoritativeInvitationPayload(parsed));
+  return found;
+}
+
 function inspectEvent(value, role) {
   void role;
   let found = {};
-  const pending = [value];
-  let visited = 0;
-  while (pending.length > 0) {
-    visited += 1;
-    if (visited > 50_000) fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
-    const current = pending.pop();
-    if (typeof current === "string") {
-      const parsed = parseJsonString(current);
-      if (parsed !== null) pending.push(parsed);
-      continue;
+  if (value?.type === "item.completed") {
+    if (value.item?.type === "agent_message" && typeof value.item.text === "string") {
+      found = mergeObserved(found, inspectAuthoritativeInvitationText(value.item.text));
     }
-    if (current === null || typeof current !== "object") continue;
-    if (Array.isArray(current)) {
-      pending.push(...current);
-      continue;
+    if (value.item?.type === "mcp_tool_call" && value.item.result !== null && typeof value.item.result === "object" && !Array.isArray(value.item.result)) {
+      found = mergeObserved(found, inspectAuthoritativeInvitationPayload(value.item.result));
     }
-    if (["agent_message", "text"].includes(current.type) && Object.hasOwn(current, "text")) {
-      const candidate = invitationMessage(current.text);
-      if (candidate !== null) found = mergeObserved(found, { invitation: candidate });
+  }
+  if (value?.type === "assistant" && Array.isArray(value?.message?.content)) {
+    for (const block of value.message.content) {
+      if (block?.type === "text" && typeof block.text === "string") {
+        found = mergeObserved(found, inspectAuthoritativeInvitationText(block.text));
+      }
     }
-    if (Object.hasOwn(current, "responderInvitation")) {
-      found = mergeObserved(found, { invitation: invitation(current.responderInvitation) });
+  }
+  if (value?.type === "user" && Array.isArray(value?.message?.content)) {
+    for (const block of value.message.content) {
+      if (block?.type === "tool_result" && typeof block.content === "string" && block.is_error !== true) {
+        found = mergeObserved(found, inspectAuthoritativeInvitationText(block.content));
+      }
     }
-    pending.push(...Object.values(current));
   }
   return found;
 }
@@ -1117,9 +1150,10 @@ function bindHelperExecution(command, expectedHelperCommands) {
     const actual = fingerprintHelperExecutionCommand(command);
     return Object.freeze({ bound: false, actual });
   }
-  const approvalMatches = expected.approvalCommand !== null && command === expected.approvalCommand;
+  const approvalDigest = approvalCommandDigest(command);
+  const approvalMatches = expected.approvalCommand !== null && approvalDigest === expected.commandSha256;
   const helperActual = fingerprintHelperExecutionCommand(command);
-  const approvalShaped = command.includes("clockchain-agent-authorize");
+  const approvalShaped = approvalDigest !== null;
   if (!approvalShaped && helperActual.helperBootstrap !== true) {
     return Object.freeze({ bound: false, actual: helperActual });
   }
@@ -1229,7 +1263,7 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
       if (typeof block.id !== "string" || block.id.length === 0 || typeof block?.input?.command !== "string") fail();
       if (claudeBashCommands.has(block.id)) fail();
       const rawCommand = block.input.command;
-      const helperShaped = rawCommand.includes("clockchain-agent-authorize") ||
+      const helperShaped = approvalCommandDigest(rawCommand) !== null ||
         fingerprintHelperExecutionCommand(rawCommand).helperBootstrap === true;
       const command = helperShaped
         ? stripLiteralShellLineContinuations(rawCommand)

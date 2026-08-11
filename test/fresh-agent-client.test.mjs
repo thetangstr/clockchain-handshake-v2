@@ -1620,11 +1620,12 @@ test("accepts Claude line wrapping only when the exact helper command bytes are 
   assert.deepEqual(await readdir(parent), []);
 });
 
-test("ignores ordinary asset inspection while a digest-bound helper approval is pending", async (t) => {
+test("ignores ordinary approval-token inspection while a digest-bound helper approval is pending", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "fresh-agent-adapter-inspection-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
   const children = {};
   const command = verifyCertificateCommand("responder");
+  const inspection = "grep -n clockchain-agent-authorize ./clockchain-agent-handshake.cjs | head -20";
   const spawnProcess = () => {
     const role = children.initiator === undefined ? "initiator" : "responder";
     const child = new EventEmitter();
@@ -1641,7 +1642,7 @@ test("ignores ordinary asset inspection while a digest-bound helper approval is 
         children.responder.stdout.emit("data", Buffer.from(claudeExpectedHelperEvent(command)));
         children.responder.stdout.emit("data", Buffer.from(streamEvent({
           type: "assistant",
-          message: { content: [{ type: "tool_use", id: "inspect", name: "Bash", input: { command: "curl --fail --location https://example.test/manifest" } }] },
+          message: { content: [{ type: "tool_use", id: "inspect", name: "Bash", input: { command: inspection } }] },
         })));
         children.responder.stdout.emit("data", Buffer.from(streamEvent({
           type: "user",
@@ -2126,6 +2127,46 @@ test("rejects a three-segment invitation lookalike before starting the Responder
     release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
     spawnProcess,
     timeoutMs: 2_000,
+  }), /failed safely/);
+  assert.equal(spawned, 1);
+  assert.deepEqual(await readdir(parent), []);
+});
+
+test("ignores nested metadata invitations before starting the Responder", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-metadata-invitation-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  let spawned = 0;
+  const spawnProcess = () => {
+    spawned += 1;
+    const child = new EventEmitter();
+    child.pid = null;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {
+      queueMicrotask(() => child.stdout.emit("data", Buffer.from(streamEvent({
+        type: "item.completed",
+        item: {
+          type: "mcp_tool_call",
+          tool: "agent_handshake_status",
+          status: "completed",
+          result: { system: { metadata: { responderInvitation: INVITATION } } },
+        },
+      }))));
+    } };
+    child.kill = () => {};
+    return child;
+  };
+  await assert.rejects(() => runFreshAgentHandshake({
+    clients: { initiator: "codex", responder: "claude" },
+    configureClient: async () => {},
+    prepareClient: async () => true,
+    modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
+    monitor: async () => { throw new Error("unreachable"); },
+    parent,
+    prompts: { initiator: "init", responder: `respond ${"<PASTE THE INITIATOR INVITATION>"}` },
+    release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
+    spawnProcess,
+    timeoutMs: 100,
   }), /failed safely/);
   assert.equal(spawned, 1);
   assert.deepEqual(await readdir(parent), []);
