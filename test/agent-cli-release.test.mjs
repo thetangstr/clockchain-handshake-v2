@@ -100,10 +100,10 @@ test("binds the post-release pin to exact manifest bytes, helper bytes, and host
 test("tracks the independently published helper in a separate post-release pin", async () => {
   const pin = JSON.parse(await readFile(new URL("../release/agent-handshake/pin.json", import.meta.url), "utf8"));
   assert.deepEqual(pin, {
-    version: "2.1.1",
-    sourceCommit: "8f74f6d953631cbac057426e3540ba73bf607f3b",
-    manifestDigest: "681f61d4cde2537ec6953b134e8385e6a716c8d889db0f46fd566c10407c9402",
-    allowedAssetPrefix: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.1/",
+    version: "2.1.2",
+    sourceCommit: "583cd5091b9fabe575cecaa3a88ecce144135284",
+    manifestDigest: "fa3c408a3739227b5bdb71486b4d291b8f4dffdb0d1f2fa79dd59644ba5e09ad",
+    allowedAssetPrefix: prefix,
     hostRoots: [{
       kid: "root-2026-08",
       fingerprint: "da2771c36bf2298525d2bbd8351b6122bb67115e9979624e8bb56537bcf71ed8",
