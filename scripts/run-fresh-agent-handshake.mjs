@@ -19,6 +19,23 @@ const execFileAsync = promisify(execFile);
 const SAFE_ERROR = "Fresh agent compatibility check failed safely.\n";
 const SHA256 = /^[0-9a-f]{64}$/;
 
+function failureCategory(value) {
+  if (typeof value !== "string") return null;
+  const text = value.toLowerCase();
+  for (const [category, needles] of [
+    ["authentication", ["authentication", "api key", "oauth", "log in", "login"]],
+    ["billing", ["credit balance", "billing"]],
+    ["model", ["model", "sonnet"]],
+    ["permission", ["permission", "denied", "not allowed"]],
+    ["rate-limit", ["rate limit", "too many requests"]],
+    ["session", ["session"]],
+    ["arguments", ["unknown option", "unknown argument", "invalid argument"]],
+  ]) {
+    if (needles.some((needle) => text.includes(needle))) return category;
+  }
+  return "other";
+}
+
 function value(name) {
   const result = process.env[name];
   if (typeof result !== "string" || result.length === 0) throw new Error("invalid");
@@ -60,13 +77,31 @@ async function configureClient({ authentication, command, env, room }) {
 }
 
 async function prepareClient({ authentication, command, env, room }) {
-  const { stdout } = await execFileAsync(command.file, [...command.args, command.input], {
-    cwd: room.workspace,
-    env,
-    maxBuffer: 1024 * 1024,
-    timeout: 60_000,
-    windowsHide: true,
-  });
+  let stdout;
+  try {
+    ({ stdout } = await execFileAsync(command.file, [...command.args, command.input], {
+      cwd: room.workspace,
+      env,
+      maxBuffer: 1024 * 1024,
+      timeout: 60_000,
+      windowsHide: true,
+    }));
+  } catch (error) {
+    if (process.env.CLOCKCHAIN_FRESH_AGENT_TRACE === "1") {
+      process.stderr.write(`${JSON.stringify({
+        phase: "prepare-process",
+        client: "claude",
+        code: Number.isSafeInteger(error?.code) ? error.code : null,
+        signal: typeof error?.signal === "string" ? error.signal : null,
+        killed: error?.killed === true,
+        stdoutBytes: typeof error?.stdout === "string" ? Buffer.byteLength(error.stdout) : 0,
+        stderrBytes: typeof error?.stderr === "string" ? Buffer.byteLength(error.stderr) : 0,
+        stdoutCategory: failureCategory(error?.stdout),
+        stderrCategory: failureCategory(error?.stderr),
+      })}\n`);
+    }
+    throw error;
+  }
   return validateClaudePreparation(stdout, authentication.secretCanaries);
 }
 

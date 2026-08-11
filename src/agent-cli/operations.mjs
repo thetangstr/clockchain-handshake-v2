@@ -50,6 +50,7 @@ function exact(value, keys) {
 }
 function publicRegistration(record, identityPolicy) {
   if (identityPolicy.erc8004 === "not_required") return null;
+  if (record === null) return null;
   if (record?.schema !== "clockchain.handshake-registration-recovery/v1") invalid();
   const registration = {
     agentId: record.agentId,

@@ -11,7 +11,7 @@ import {
 } from "../scripts/verify-agent-handshake-release.mjs";
 import { canonicalBytes } from "../src/core/canonical.mjs";
 
-const prefix = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.1/";
+const prefix = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/";
 const sourceCommit = "a".repeat(40);
 const bytes = Buffer.from("asset");
 const sha256 = createHash("sha256").update(bytes).digest("hex");
@@ -40,7 +40,7 @@ function asset() {
 function manifest() {
   return {
     schema: "clockchain.agent-handshake-release-manifest/v1",
-    version: "2.1.1",
+    version: "2.1.2",
     sourceCommit,
     nodeRuntime: "24.6.0",
     assets: [asset()],
@@ -75,7 +75,7 @@ test("binds the post-release pin to exact manifest bytes, helper bytes, and host
   const value = manifest();
   const manifestBytes = canonicalBytes(value);
   const pin = {
-    version: "2.1.1",
+    version: "2.1.2",
     sourceCommit,
     manifestDigest: createHash("sha256").update(manifestBytes).digest("hex"),
     allowedAssetPrefix: prefix,
@@ -103,7 +103,7 @@ test("tracks the independently published helper in a separate post-release pin",
     version: "2.1.1",
     sourceCommit: "8f74f6d953631cbac057426e3540ba73bf607f3b",
     manifestDigest: "681f61d4cde2537ec6953b134e8385e6a716c8d889db0f46fd566c10407c9402",
-    allowedAssetPrefix: prefix,
+    allowedAssetPrefix: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.1/",
     hostRoots: [{
       kid: "root-2026-08",
       fingerprint: "da2771c36bf2298525d2bbd8351b6122bb67115e9979624e8bb56537bcf71ed8",
@@ -137,7 +137,7 @@ test("release workflow publishes only the portable helper without external signi
   for (const required of [
     "24.18.0", "ubuntu-24.04", "build-agent-handshake-release.mjs bundle",
     "dist/clockchain-agent-handshake.cjs", "actions/attest-build-provenance@v2",
-    "gh release create v2.1.1",
+    "gh release create v2.1.2",
   ]) assert.ok(workflow.includes(required), required);
   assert.equal(workflow.includes("self-hosted"), false);
   for (const forbidden of [

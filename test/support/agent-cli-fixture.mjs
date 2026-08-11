@@ -25,7 +25,7 @@ export async function buildAgentCliFixture(role = "initiator") {
     policy,
     request: {
       schema: "clockchain.agent-handshake-signing-request/v1",
-      helperVersion: "2.1.1",
+      helperVersion: "2.1.2",
       operation: role === "initiator" ? "proposal" : "acceptance",
       role,
       sessionId: SESSION_ID,

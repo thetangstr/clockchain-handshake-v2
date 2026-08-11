@@ -46,12 +46,12 @@ test("verified bootstrap hashes the manifest and exact helper bytes before every
   const helperBytes = await readFile(helperPath);
   const manifestBytes = Buffer.from(JSON.stringify({
     schema: "clockchain.agent-handshake-release-manifest/v1",
-    version: "2.1.1",
+    version: "2.1.2",
     sourceCommit: "a".repeat(40),
     nodeRuntime: "24.19.0",
     assets: [{
       filename: "clockchain-agent-handshake.cjs",
-      url: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.1/clockchain-agent-handshake.cjs",
+      url: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/clockchain-agent-handshake.cjs",
       sha256: createHash("sha256").update(helperBytes).digest("hex"),
     }],
   }));
@@ -70,7 +70,7 @@ test("npm developer fallback executes the same public CLI entry point", async (t
   const packageDir = join(directory, "package");
   const buildScript = new URL("../scripts/build-agent-handshake-npm.mjs", import.meta.url).pathname;
   const built = await execFileAsync(process.execPath, [buildScript, packageDir], { cwd: directory });
-  assert.equal(JSON.parse(built.stdout).version, "2.1.1");
+  assert.equal(JSON.parse(built.stdout).version, "2.1.2");
   const packageJson = JSON.parse(await readFile(join(packageDir, "package.json"), "utf8"));
   assert.deepEqual(packageJson.bin, { "clockchain-agent-handshake": "index.cjs" });
   const stateDir = join(directory, "npm-state");

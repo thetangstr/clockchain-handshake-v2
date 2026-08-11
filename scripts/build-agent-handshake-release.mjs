@@ -97,7 +97,7 @@ export async function recordAgentHandshakeAsset({
     arch,
     upstreamSupport,
     filename,
-    url: `https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.1/${filename}`,
+    url: `https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/${filename}`,
     byteLength: String(bytes.length),
     sha256: createHash("sha256").update(bytes).digest("hex"),
     nativeSignature: {

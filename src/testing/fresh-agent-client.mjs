@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmod, mkdir, realpath, rm } from "node:fs/promises";
+import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 
 import { assertSecretFree } from "../core/redact.mjs";
@@ -9,7 +10,7 @@ const ROLES = Object.freeze(["initiator", "responder"]);
 const HELPER_OPERATIONS = Object.freeze([
   "init", "policy", "inspect", "register", "sign", "verify-certificate",
 ]);
-const RELEASE_PREFIX = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.1/";
+const RELEASE_PREFIX = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/";
 
 export const CLOCKCHAIN_HANDSHAKE_MCP_URL = "https://mcp.clockchain.network/handshake/mcp";
 export const FRESH_AGENT_CLIENTS = Object.freeze(["codex", "claude"]);
@@ -22,7 +23,7 @@ export const CLOCKCHAIN_HANDSHAKE_TOOLS = Object.freeze([
   "agent_handshake_submit",
   "agent_handshake_get_certificate",
 ]);
-export const VERIFIED_HELPER_BOOTSTRAP = 'const fs=require("node:fs");const crypto=require("node:crypto");const Module=require("node:module");const argv=process.argv.slice(1);const expected=argv.shift();const manifestPath=argv.shift();const helperPath=argv.shift();const manifestBytes=fs.readFileSync(manifestPath);const manifestDigest=crypto.createHash("sha256").update(manifestBytes).digest("hex");if(manifestDigest!==expected)process.exit(86);const manifest=JSON.parse(manifestBytes);if(manifest.schema!=="clockchain.agent-handshake-release-manifest/v1"||manifest.version!=="2.1.1"||!Array.isArray(manifest.assets)||manifest.assets.length!==1)process.exit(86);const asset=manifest.assets[0];if(asset.filename!=="clockchain-agent-handshake.cjs"||asset.url!=="https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.1/clockchain-agent-handshake.cjs"||typeof asset.sha256!=="string"||!/^[0-9a-f]{64}$/.test(asset.sha256))process.exit(86);const helperBytes=fs.readFileSync(helperPath);const helperDigest=crypto.createHash("sha256").update(helperBytes).digest("hex");if(helperDigest!==asset.sha256)process.exit(86);process.argv=[process.execPath].concat(helperPath).concat(argv);const loaded=new Module(helperPath);loaded.filename=helperPath;loaded.paths=[];const compile=loaded._compile.bind(loaded);compile(...[helperBytes.toString("utf8")].concat(helperPath));';
+export const VERIFIED_HELPER_BOOTSTRAP = 'const fs=require("node:fs");const crypto=require("node:crypto");const Module=require("node:module");const argv=process.argv.slice(1);const expected=argv.shift();const manifestPath=argv.shift();const helperPath=argv.shift();const manifestBytes=fs.readFileSync(manifestPath);const manifestDigest=crypto.createHash("sha256").update(manifestBytes).digest("hex");if(manifestDigest!==expected)process.exit(86);const manifest=JSON.parse(manifestBytes);if(manifest.schema!=="clockchain.agent-handshake-release-manifest/v1"||manifest.version!=="2.1.2"||!Array.isArray(manifest.assets)||manifest.assets.length!==1)process.exit(86);const asset=manifest.assets[0];if(asset.filename!=="clockchain-agent-handshake.cjs"||asset.url!=="https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/clockchain-agent-handshake.cjs"||typeof asset.sha256!=="string"||!/^[0-9a-f]{64}$/.test(asset.sha256))process.exit(86);const helperBytes=fs.readFileSync(helperPath);const helperDigest=crypto.createHash("sha256").update(helperBytes).digest("hex");if(helperDigest!==asset.sha256)process.exit(86);process.argv=[process.execPath].concat(helperPath).concat(argv);const loaded=new Module(helperPath);loaded.filename=helperPath;loaded.paths=[];const compile=loaded._compile.bind(loaded);compile(...[helperBytes.toString("utf8")].concat(helperPath));';
 
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -141,21 +142,52 @@ function validateAssetUrl(value) {
   return Object.freeze({ asset, url: raw });
 }
 
-function verifiedHelperCommand(manifestDigest, helperArguments) {
-  if (!SHA256.test(manifestDigest) || !Array.isArray(helperArguments)) fail();
-  return `Bash(node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${manifestDigest} ./manifest.json ./clockchain-agent-handshake.cjs ${helperArguments.join(" ")})`;
+const MANIFEST_DOWNLOAD_COMMAND =
+  `curl --fail --location --proto '=https' --proto-redir '=https' --output ./manifest.json '${RELEASE_PREFIX}manifest.json'`;
+const HELPER_DOWNLOAD_COMMAND =
+  `curl --fail --location --proto '=https' --proto-redir '=https' --output ./clockchain-agent-handshake.cjs '${RELEASE_PREFIX}clockchain-agent-handshake.cjs'`;
+
+export function classifyClaudeBashCommand(value) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 1024 * 1024) fail();
+  const trimmed = value.trim();
+  const kind = ["curl", "mkdir", "node"].find((name) => new RegExp(`(^|\\n)\\s*${name} `).test(trimmed)) ?? "other";
+  const operators = trimmed.match(/&&|\|\||;|\n/g) ?? [];
+  return Object.freeze({
+    compound: operators.length > 0,
+    contains: Object.freeze({
+      curl: /(^|[^a-z])curl(?:\s|$)/i.test(trimmed),
+      helperUrl: trimmed.includes(`${RELEASE_PREFIX}clockchain-agent-handshake.cjs`),
+      manifestUrl: trimmed.includes(`${RELEASE_PREFIX}manifest.json`),
+      mkdir: /(^|[^a-z])mkdir(?:\s|$)/i.test(trimmed),
+      node: /(^|[^a-z])node(?:\s|$)/i.test(trimmed),
+      sha256Command: /(^|[^a-z])(sha256sum|shasum)(?:\s|$)/i.test(trimmed),
+      shellWrapper: /(^|[;&|\n])\s*(set|sh|bash)(?:\s|$)/i.test(trimmed),
+    }),
+    exactDownload: trimmed === MANIFEST_DOWNLOAD_COMMAND
+      ? "manifest"
+      : trimmed === HELPER_DOWNLOAD_COMMAND ? "helper" : null,
+    hasLineContinuation: /\\\r?\n/.test(trimmed),
+    kind,
+    operatorCount: operators.length,
+    prefixed: kind !== "other" && !trimmed.startsWith(`${kind} `),
+  });
 }
 
-function claudeLocalAuthorityTools(manifestDigest) {
-  return Object.freeze([
-    "Read(./manifest.json)",
-    "Read(./clockchain-agent-handshake.cjs)",
-    `Bash(curl --fail --location --proto =https --proto-redir =https --output ./manifest.json ${RELEASE_PREFIX}manifest.json)`,
-    `Bash(curl --fail --location --proto =https --proto-redir =https --output ./clockchain-agent-handshake.cjs ${RELEASE_PREFIX}clockchain-agent-handshake.cjs)`,
-    "Bash(mkdir -m 700 ./clockchain-state)",
-    verifiedHelperCommand(manifestDigest, ["--version"]),
-    ...HELPER_OPERATIONS.map((operation) => verifiedHelperCommand(manifestDigest, [operation, "*"])),
-  ]);
+export function classifyHelperExecutionCommand(value) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 1024 * 1024) fail();
+  const operation = HELPER_OPERATIONS.find((name) =>
+    new RegExp(`clockchain-agent-handshake\\.cjs(?:["']|\\s)+${name}(?:\\s|$)`).test(value),
+  ) ?? null;
+  let statePathClass = null;
+  if (/\$TMPDIR\/\.clockchain\/handshakes\//.test(value)) statePathClass = "tmpdir-session";
+  else if (/\$PWD\/\.clockchain\/handshakes\//.test(value)) statePathClass = "pwd-session";
+  else if (/\/(?:[^\s"']+\/)*\.clockchain\/handshakes\//.test(value)) statePathClass = "absolute-session";
+  return Object.freeze({
+    helperBootstrap: value.includes("clockchain-agent-handshake.cjs") && value.includes("--input-type=commonjs"),
+    operation,
+    payloadFlag: value.includes("--payload-base64url"),
+    statePathClass,
+  });
 }
 
 function validateHelperArgv(argv, workspace, manifestDigest) {
@@ -197,7 +229,38 @@ export function validateHelperCommand({ argv, kind, manifestDigest, workspace } 
   fail();
 }
 
-export function buildClientCommands({ client, claudeSessionId, manifestDigest, prompt, workspace } = {}) {
+export function buildClaudeSandboxSettings({ hostHome = homedir(), hostUid = process.getuid?.(), workspace } = {}) {
+  const cleanHome = absolute(hostHome);
+  const cwd = absolute(workspace);
+  if (!Number.isSafeInteger(hostUid) || hostUid < 0) fail();
+  const deniedRead = Object.freeze([...new Set([cleanHome, "/Volumes", "/private/tmp"])]);
+  const deniedWrite = Object.freeze([...new Set([cleanHome, "/Volumes"])]);
+  return Object.freeze({
+    permissions: Object.freeze({
+      deny: Object.freeze(["Edit", "NotebookEdit", "WebFetch", "WebSearch", "Write"]),
+    }),
+    sandbox: Object.freeze({
+      allowUnsandboxedCommands: false,
+      autoAllowBashIfSandboxed: true,
+      enabled: true,
+      failIfUnavailable: true,
+      filesystem: Object.freeze({
+        allowRead: Object.freeze([cwd]),
+        denyRead: deniedRead,
+        denyWrite: deniedWrite,
+      }),
+      network: Object.freeze({
+        allowedDomains: Object.freeze([
+          "github.com",
+          "release-assets.githubusercontent.com",
+          "ethereum-sepolia-rpc.publicnode.com",
+        ]),
+      }),
+    }),
+  });
+}
+
+export function buildClientCommands({ client, claudeSessionId, hostHome = homedir(), hostUid = process.getuid?.(), manifestDigest, prompt, workspace } = {}) {
   const clean = cleanClient(client);
   const cwd = absolute(workspace);
   if (!SHA256.test(manifestDigest)) fail();
@@ -221,6 +284,7 @@ export function buildClientCommands({ client, claudeSessionId, manifestDigest, p
     });
   }
   if (!UUID.test(claudeSessionId)) fail();
+  const sandboxSettings = buildClaudeSandboxSettings({ hostHome, hostUid, workspace: cwd });
   return Object.freeze({
     configure: Object.freeze({
       args: Object.freeze(["mcp", "add", "--transport", "http", "--scope", "user", "clockchain-handshake", CLOCKCHAIN_HANDSHAKE_MCP_URL]),
@@ -243,11 +307,12 @@ export function buildClientCommands({ client, claudeSessionId, manifestDigest, p
         }),
         "--permission-mode", "dontAsk",
         "--setting-sources", "",
+        "--settings", JSON.stringify(sandboxSettings),
         "--output-format", "stream-json",
         "--verbose",
-        "--allowedTools", ["ToolSearch"].concat(CLOCKCHAIN_HANDSHAKE_TOOLS
+        "--allowedTools", ["ToolSearch", "Bash"].concat(CLOCKCHAIN_HANDSHAKE_TOOLS
           .map((tool) => `mcp__clockchain-handshake__${tool}`)
-          .concat(claudeLocalAuthorityTools(manifestDigest)))
+          .concat(["Read(./manifest.json)", "Read(./clockchain-agent-handshake.cjs)"]))
           .join(","),
       ]),
       file: "claude",
@@ -261,7 +326,18 @@ export function validateClaudePreparation(output, canaries = []) {
   if (typeof output !== "string" || !Array.isArray(canaries)) fail();
   assertSecretFree(output, canaries);
   let parsed;
-  try { parsed = JSON.parse(output); } catch { fail(); }
+  try { parsed = JSON.parse(output); } catch {
+    traceLifecycle({ phase: "prepare-result", client: "claude", parseable: false });
+    fail();
+  }
+  traceLifecycle({
+    phase: "prepare-result",
+    client: "claude",
+    parseable: true,
+    subtype: typeof parsed?.subtype === "string" ? parsed.subtype : null,
+    isError: parsed?.is_error === true,
+    markerMatches: typeof parsed?.result === "string" && parsed.result.trim() === CLAUDE_CONTEXT_MARKER,
+  });
   if (
     parsed === null || typeof parsed !== "object" || Array.isArray(parsed) ||
     parsed.subtype !== "success" || parsed.is_error !== false ||
@@ -287,10 +363,12 @@ export async function createFreshAgentRun({ parent, runId = randomUUID() } = {})
     const roleRoot = join(rolesRoot, role);
     await privateDirectory(roleRoot);
     const entry = { root: roleRoot };
-    for (const name of ["home", "workspace", "cache", "state", "tmp"]) {
+    for (const name of ["home", "workspace", "cache", "state"]) {
       entry[name] = join(roleRoot, name);
       await privateDirectory(entry[name]);
     }
+    entry.tmp = join(entry.workspace, ".tmp");
+    await privateDirectory(entry.tmp);
     roles[role] = Object.freeze(entry);
   }
   return Object.freeze({ root, roles: Object.freeze(roles), runId });
@@ -444,6 +522,12 @@ function observeChild(child, role, all, canaries, { expectedInvitation, requireI
                 CLOCKCHAIN_HANDSHAKE_TOOLS.some((name) => block.name.endsWith(`__${name}`)) ||
                 block.name === "Bash"
               ) ? block.name : null,
+              bashShape: block?.name === "Bash" && typeof block?.input?.command === "string"
+                ? classifyClaudeBashCommand(block.input.command)
+                : null,
+              helperShape: block?.name === "Bash" && typeof block?.input?.command === "string"
+                ? classifyHelperExecutionCommand(block.input.command)
+                : null,
             }))
           : [],
         userBlocks: event?.type === "user" && Array.isArray(event?.message?.content)
@@ -477,6 +561,9 @@ function observeChild(child, role, all, canaries, { expectedInvitation, requireI
                 : null,
               status: ["in_progress", "completed", "failed"].includes(event.item.status) ? event.item.status : null,
               exitCode: Number.isSafeInteger(event.item.exit_code) ? event.item.exit_code : null,
+              helperShape: event.item.type === "command_execution" && typeof event.item.command === "string"
+                ? classifyHelperExecutionCommand(event.item.command)
+                : null,
               text: event.item.type === "agent_message" ? traceText(event.item.text, canaries) : null,
               accessPresent: event.item.type === "mcp_tool_call" && [
                 "agent_handshake_join",
@@ -583,6 +670,7 @@ function childEnvironment(room, credentials) {
   return Object.freeze({
     ...credentials,
     CODEX_HOME: room.home,
+    CLAUDE_CODE_TMPDIR: room.tmp,
     HOME: room.home,
     CLAUDE_CONFIG_DIR: join(room.home, ".claude"),
     GIT_CONFIG_NOSYSTEM: "1",
@@ -644,10 +732,14 @@ export async function runFreshAgentHandshake({
       const claudeSessionId = client === "claude" ? randomUUID() : undefined;
       const commands = buildClientCommands({ client, claudeSessionId, manifestDigest: pin.manifestDigest, prompt: "configured later", workspace: run.roles[role].workspace });
       const configure = commands.configure;
+      traceLifecycle({ phase: "configure", role, client, status: "started" });
       await configureClient(Object.freeze({ client, command: configure, env, role, room: run.roles[role] }));
+      traceLifecycle({ phase: "configure", role, client, status: "completed" });
       if (client === "claude") {
+        traceLifecycle({ phase: "prepare", role, client, status: "started" });
         const ready = await prepareClient(Object.freeze({ client, command: commands.prepare, env, role, room: run.roles[role] }));
         if (ready !== true) fail();
+        traceLifecycle({ phase: "prepare", role, client, status: "completed" });
       }
       prepared[role] = { claudeSessionId, client, env };
     }

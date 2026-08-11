@@ -66,7 +66,7 @@ test("never reaches the signer for policy, trust, schema, operation, role, sessi
   let calls = 0;
   const sign = async () => { calls += 1; return {}; };
   const mutations = [
-    { ...fixture.request, helperVersion: "2.1.2" },
+    { ...fixture.request, helperVersion: "2.1.1" },
     { ...fixture.request, schema: "clockchain.agent-handshake-signing-request/v2" },
     { ...fixture.request, operation: "acceptance" },
     { ...fixture.request, role: "responder" },
