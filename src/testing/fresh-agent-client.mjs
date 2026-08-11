@@ -702,9 +702,18 @@ function expectedHelperCommand(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   const step = value;
   if (typeof step.shellCommand !== "string" || step.shellCommand.length === 0) return null;
-  const operation = typeof step.operation === "string" ? step.operation : null;
-  const role = ROLES.includes(step.role) ? step.role : null;
-  const sessionId = UUID.test(step.sessionId) ? step.sessionId : null;
+  const fingerprint = fingerprintHelperExecutionCommand(step.shellCommand);
+  if (
+    fingerprint.operation === null || fingerprint.state === null ||
+    (step.operation !== undefined && step.operation !== fingerprint.operation) ||
+    (step.role !== undefined && step.role !== fingerprint.state.role) ||
+    (step.sessionId !== undefined && step.sessionId !== fingerprint.state.sessionId)
+  ) {
+    fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
+  }
+  const operation = fingerprint.operation;
+  const role = fingerprint.state.role;
+  const sessionId = fingerprint.state.sessionId;
   const commandLength = Number.isSafeInteger(step.commandLength)
     ? step.commandLength
     : Buffer.byteLength(step.shellCommand);
