@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import {
   CLOCKCHAIN_HANDSHAKE_MCP_URL,
@@ -17,6 +20,7 @@ import {
   classifyHelperExecutionCommand,
   fingerprintHelperExecutionCommand,
   createFreshAgentRun,
+  prepareAgentHarnessAdapter,
   runFreshAgentHandshake,
   unwrapCodexCommandExecution,
   writeFreshAgentAttemptArtifact,
@@ -40,6 +44,8 @@ import {
   buildV2Fixture,
   ed25519,
 } from "./support/agent-handshake-v2-fixture.mjs";
+
+const execFileAsync = promisify(execFile);
 
 const V2_FIXTURE = await buildV2Fixture();
 
@@ -142,12 +148,29 @@ function publicCommandDetails(command) {
   };
 }
 
-function helperStep(command) {
+function approvalCommand(command) {
+  return `clockchain-agent-authorize ${fingerprintHelperExecutionCommand(command).commandSha256}`;
+}
+
+function publicApprovalDetails(command) {
+  const approval = approvalCommand(command);
+  const expected = publicCommandDetails(command);
+  return {
+    commandSha256: createHash("sha256").update(approval).digest("hex"),
+    commandLength: Buffer.byteLength(approval),
+    operation: expected.operation,
+    role: expected.role,
+    sessionId: expected.sessionId,
+  };
+}
+
+function helperStep(command, { approval = true } = {}) {
   const fingerprint = fingerprintHelperExecutionCommand(command);
   return {
     operation: fingerprint.operation,
     role: fingerprint.state?.role,
     sessionId: fingerprint.state?.sessionId,
+    ...(approval ? { approvalCommand: `clockchain-agent-authorize ${fingerprint.commandSha256}` } : {}),
     commandLength: Buffer.byteLength(command),
     commandSha256: fingerprint.commandSha256,
     shellCommand: command,
@@ -170,10 +193,10 @@ function codexExpectedHelperEvent(command) {
   });
 }
 
-function claudeExpectedHelperEvent(command) {
+function claudeExpectedHelperEvent(command, options) {
   return streamEvent({
     type: "user",
-    message: { content: [{ type: "tool_result", tool_use_id: "mcp-tool", content: JSON.stringify({ localAction: { helperStep: helperStep(command) } }), is_error: false }] },
+    message: { content: [{ type: "tool_result", tool_use_id: "mcp-tool", content: JSON.stringify({ localAction: { helperStep: helperStep(command, options) } }), is_error: false }] },
   });
 }
 
@@ -917,7 +940,7 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
   const fixture = JSON.parse(await readFile(new URL("./fixtures/fresh-agent/prompts.json", import.meta.url), "utf8"));
   assert.equal(fixture.endpoint, CLOCKCHAIN_HANDSHAKE_MCP_URL);
   for (const prompt of [fixture.initiator, fixture.responder]) {
-    assert.ok(prompt.length < 1_600);
+    assert.ok(prompt.length < 1_800);
     assert.match(prompt, /direct authorization/i);
     assert.match(prompt, /controlled Sepolia test/i);
     assert.match(prompt, /fresh ERC-8004 identity/i);
@@ -927,8 +950,9 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
     assert.match(prompt, /locally verif/i);
     assert.match(prompt, /statementDigest.*canonical full terms object.*not.*raw statement text/i);
     assert.match(prompt, /Keep role access and private key material local/i);
-    assert.match(prompt, /Execute every returned pinned-helper command verbatim/i);
-    assert.match(prompt, /Never reconstruct, re-encode, copy-edit, or manually rebuild its payload/i);
+    assert.match(prompt, /authorize only its exact short approvalCommand/i);
+    assert.match(prompt, /adapter executes Clockchain's bound arguments directly/i);
+    assert.match(prompt, /never run or reconstruct shellCommand yourself/i);
     assert.match(prompt, /retry also fails/i);
     assert.doesNotMatch(prompt, /curl --location|retryAfterMs|localAction|mkdir -m|agent_handshake_next/);
   }
@@ -953,6 +977,45 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
     { kind: "helper", manifestDigest: DIGEST, argv: ["node", "--input-type=commonjs", "--eval", VERIFIED_HELPER_BOOTSTRAP, DIGEST, "/tmp/role/manifest.json", "/tmp/role/clockchain-agent-handshake.cjs", "inspect", "--state-dir", "/tmp/other"], workspace: "/tmp/role" }
   ];
   for (const candidate of bad) assert.throws(() => validateHelperCommand(candidate));
+});
+
+test("harness adapter executes the exact MCP-bound argv after only a short digest approval", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-adapter-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const run = await createFreshAgentRun({ parent });
+  const room = run.roles.initiator;
+  const helperSource = `process.stdout.write(JSON.stringify({schema:"clockchain.agent-handshake-cli-result/v1",helperVersion:"2.1.2",operation:"init",address:"0x${"1".repeat(40)}"})+"\\n");`;
+  const helperDigest = createHash("sha256").update(helperSource).digest("hex");
+  const manifest = JSON.stringify({
+    schema: "clockchain.agent-handshake-release-manifest/v1",
+    version: "2.1.2",
+    nodeRuntime: "24.0.0",
+    assets: [{
+      filename: "clockchain-agent-handshake.cjs",
+      url: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/clockchain-agent-handshake.cjs",
+      sha256: helperDigest,
+    }],
+  });
+  const manifestDigest = createHash("sha256").update(manifest).digest("hex");
+  await writeFile(join(room.workspace, "manifest.json"), manifest, { mode: 0o600 });
+  await writeFile(join(room.workspace, "clockchain-agent-handshake.cjs"), helperSource, { mode: 0o600 });
+  const command = `node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${manifestDigest} ./manifest.json ./clockchain-agent-handshake.cjs init --state-dir "$TMPDIR/.clockchain/handshakes/${SESSION}/initiator"`;
+  const step = helperStep(command);
+  const adapter = await prepareAgentHarnessAdapter({ manifestDigest, room, runtimeExecPath: process.execPath });
+  adapter.record(step);
+
+  await assert.rejects(
+    execFileAsync(join(adapter.bin, "clockchain-agent-authorize"), ["f".repeat(64)], {
+      cwd: room.workspace,
+      env: { ...process.env, PATH: `${adapter.bin}:${process.env.PATH}`, TMPDIR: room.tmp },
+    }),
+  );
+  const { stdout } = await execFileAsync(join(adapter.bin, "clockchain-agent-authorize"), [step.commandSha256], {
+    cwd: room.workspace,
+    env: { ...process.env, PATH: `${adapter.bin}:${process.env.PATH}`, TMPDIR: room.tmp },
+  });
+  assert.equal(JSON.parse(stdout).operation, "init");
+  assert.deepEqual(await readdir(adapter.pending), []);
 });
 
 test("stakeholder prompts leave mechanics to MCP and direct inspection to downloaded assets", async () => {
@@ -1001,7 +1064,9 @@ test("fresh-client runbook states current runtime, auth, and verification bounda
   assert.match(runbook, /API keys are optional/i);
   assert.match(runbook, /Claude receives no general `Write` permission/i);
   assert.match(runbook, /Bash is still general within the configured sandbox/i);
-  assert.match(runbook, /exact pinned helper command plus parent verification/i);
+  assert.match(runbook, /short `approvalCommand`/i);
+  assert.match(runbook, /adapter verifies that digest.*structured argv.*model never transports.*payload through shell text/is);
+  assert.match(runbook, /node.*shim refuses direct helper operations/i);
   assert.match(runbook, /checker `VERIFIED`/i);
   assert.match(runbook, /closing certificate/i);
   for (const forbidden of [
@@ -1211,7 +1276,7 @@ test("starts the Responder only after the Initiator emits its actual one-time in
   for (const spawned of calls.filter((entry) => entry.options)) {
     assert.equal(spawned.options.env.TMPDIR, join(spawned.options.cwd, ".tmp"));
     assert.equal(spawned.options.env.CLAUDE_CODE_TMPDIR, join(spawned.options.cwd, ".tmp"));
-    assert.equal(spawned.options.env.PATH.startsWith("/opt/homebrew/opt/node@24/bin:"), true);
+    assert.match(spawned.options.env.PATH, /^.+\/\.clockchain-adapter\/bin:\/opt\/homebrew\/opt\/node@24\/bin:/);
   }
   const responderSpawn = calls.find((entry) => entry.file === "claude");
   assert.equal(responderSpawn.options.env.HOME, "/Users/tester");
@@ -1536,7 +1601,7 @@ test("accepts Claude line wrapping only when the exact helper command bytes are 
           return;
         }
         children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
-        children.responder.stdout.emit("data", Buffer.from(claudeExpectedHelperEvent(command)));
+        children.responder.stdout.emit("data", Buffer.from(claudeExpectedHelperEvent(command, { approval: false })));
         children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"), { command: wrapped })));
         children.initiator.emit("close", 0, null);
         children.responder.emit("close", 0, null);
@@ -1576,14 +1641,14 @@ test("reports exact helper execution failures distinctly from missing terminal p
               children.initiator.stdout.emit("data", Buffer.from(codexExpectedHelperEvent(command)));
               children.initiator.stdout.emit("data", Buffer.from(streamEvent({
                 type: "item.completed",
-                item: { type: "command_execution", status: "failed", exit_code: 1, command: codexCommandExecutionDisplay(command), aggregated_output: "helper rejected request" },
+                item: { type: "command_execution", status: "failed", exit_code: 1, command: codexCommandExecutionDisplay(approvalCommand(command)), aggregated_output: "helper rejected request" },
               })));
             } else {
               children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
               children.responder.stdout.emit("data", Buffer.from(claudeExpectedHelperEvent(command)));
               children.responder.stdout.emit("data", Buffer.from(streamEvent({
                 type: "assistant",
-                message: { content: [{ type: "tool_use", id: "failed-bash", name: "Bash", input: { command } }] },
+                message: { content: [{ type: "tool_use", id: "failed-bash", name: "Bash", input: { command: approvalCommand(command) } }] },
               })));
               children.responder.stdout.emit("data", Buffer.from(streamEvent({
                 type: "user",
@@ -1607,7 +1672,7 @@ test("reports exact helper execution failures distinctly from missing terminal p
         code: "HELPER_EXECUTION_FAILED",
         details: {
           expected: publicCommandDetails(command),
-          actual: publicCommandDetails(command),
+          actual: publicApprovalDetails(command),
         },
       });
       assert.deepEqual(await readdir(parent), []);
@@ -1649,15 +1714,15 @@ test("keeps a failed exact helper command pending so the agent may retry it befo
               })));
               children.initiator.stdout.emit("data", Buffer.from(streamEvent({
                 type: "item.completed",
-                item: { type: "command_execution", status: "failed", exit_code: 86, command: codexCommandExecutionDisplay(initCommand), aggregated_output: "" },
+                item: { type: "command_execution", status: "failed", exit_code: 86, command: codexCommandExecutionDisplay(approvalCommand(initCommand)), aggregated_output: "" },
               })));
               children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(
                 nonterminalHelperResult(role, "init"),
-                { command: initCommand },
+                { command: approvalCommand(initCommand) },
               )));
               children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(
                 nonterminalHelperResult(role, "policy"),
-                { command: policyCommand },
+                { command: approvalCommand(policyCommand) },
               )));
               children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
               children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
@@ -1669,7 +1734,7 @@ test("keeps a failed exact helper command pending so the agent may retry it befo
               })));
               children.responder.stdout.emit("data", Buffer.from(streamEvent({
                 type: "assistant",
-                message: { content: [{ type: "tool_use", id: "init-failed", name: "Bash", input: { command: initCommand } }] },
+                message: { content: [{ type: "tool_use", id: "init-failed", name: "Bash", input: { command: approvalCommand(initCommand) } }] },
               })));
               children.responder.stdout.emit("data", Buffer.from(streamEvent({
                 type: "user",
@@ -1677,11 +1742,11 @@ test("keeps a failed exact helper command pending so the agent may retry it befo
               })));
               children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(
                 nonterminalHelperResult(role, "init"),
-                { command: initCommand, id: "init-retry" },
+                { command: approvalCommand(initCommand), id: "init-retry" },
               )));
               children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(
                 nonterminalHelperResult(role, "policy"),
-                { command: policyCommand, id: "policy" },
+                { command: approvalCommand(policyCommand), id: "policy" },
               )));
               children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
             }

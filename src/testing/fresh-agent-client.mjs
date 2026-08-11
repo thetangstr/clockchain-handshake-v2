@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, generateKeyPairSync, randomUUID, sign as signBytes } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, realpath, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -727,6 +728,107 @@ export async function createFreshAgentRun({ parent, runId = randomUUID() } = {})
   return Object.freeze({ root, roles: Object.freeze(roles), runId });
 }
 
+function adapterExecutable(runtimeExecPath, publicKeyDer) {
+  return `#!${runtimeExecPath}\n` + String.raw`"use strict";
+const { spawnSync } = require("node:child_process");
+const { createPublicKey, verify } = require("node:crypto");
+const { mkdirSync, readFileSync, renameSync, rmSync } = require("node:fs");
+const { dirname, join, resolve } = require("node:path");
+function stop() { process.exit(86); }
+const digest = process.argv.length === 3 ? process.argv[2] : "";
+if (!/^[0-9a-f]{64}$/.test(digest)) stop();
+const root = dirname(dirname(__filename));
+const pending = join(root, "pending", digest + ".json");
+const running = join(root, "running", digest + "." + process.pid + ".json");
+try { renameSync(pending, running); } catch { stop(); }
+try {
+  const envelope = JSON.parse(readFileSync(running, "utf8"));
+  if (!envelope || Object.keys(envelope).sort().join(",") !== "body,schema,signature" || envelope.schema !== "clockchain.agent-harness-bound-action/v1") stop();
+  const bodyBytes = Buffer.from(JSON.stringify(envelope.body), "utf8");
+  const key = createPublicKey({ key: Buffer.from("${publicKeyDer}", "base64"), format: "der", type: "spki" });
+  if (!verify(null, bodyBytes, key, Buffer.from(envelope.signature, "base64"))) stop();
+  const body = envelope.body;
+  if (!body || Object.keys(body).sort().join(",") !== "args,commandLength,commandSha256,cwd,file,operation,role,schema,sessionId,stateDir") stop();
+  if (body.schema !== "clockchain.agent-harness-bound-action-body/v1" || body.commandSha256 !== digest || !Number.isSafeInteger(body.commandLength)) stop();
+  if (body.file !== process.execPath || body.cwd !== process.cwd() || !Array.isArray(body.args) || body.args.some((value) => typeof value !== "string")) stop();
+  const tmp = resolve(process.env.TMPDIR || "");
+  const state = resolve(body.stateDir);
+  if (!tmp || !state.startsWith(tmp + "/")) stop();
+  mkdirSync(state, { recursive: true, mode: 0o700 });
+  const child = spawnSync(body.file, body.args, { cwd: body.cwd, env: process.env, stdio: "inherit" });
+  if (child.error || !Number.isSafeInteger(child.status)) stop();
+  process.exitCode = child.status;
+} catch { stop(); }
+finally { try { rmSync(running, { force: true }); } catch {} }
+`;
+}
+
+function adapterNodeShim(runtimeExecPath) {
+  return `#!${runtimeExecPath}\n` + String.raw`"use strict";
+const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2);
+if (args[0] === "--input-type=commonjs" && args[1] === "--eval" && args.at(-1) !== "--version") process.exit(86);
+const child = spawnSync("${runtimeExecPath}", args, { env: process.env, stdio: "inherit" });
+if (child.error || !Number.isSafeInteger(child.status)) process.exit(86);
+process.exitCode = child.status;
+`;
+}
+
+export async function prepareAgentHarnessAdapter({ manifestDigest, room, runtimeExecPath = process.execPath } = {}) {
+  if (!SHA256.test(manifestDigest) || room === null || typeof room !== "object" || Array.isArray(room)) fail();
+  const workspace = absolute(room.workspace);
+  const tmp = descendant(workspace, room.tmp);
+  const runtime = absolute(runtimeExecPath);
+  const root = join(workspace, ".clockchain-adapter");
+  const bin = join(root, "bin");
+  const pending = join(root, "pending");
+  const running = join(root, "running");
+  for (const path of [root, bin, pending, running]) await privateDirectory(path);
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  const publicKeyDer = publicKey.export({ type: "spki", format: "der" }).toString("base64");
+  const executable = join(bin, "clockchain-agent-authorize");
+  await writePrivateFile({ path: executable, bytes: Buffer.from(adapterExecutable(runtime, publicKeyDer), "utf8") });
+  await chmod(executable, 0o500);
+  const nodeShim = join(bin, "node");
+  await writePrivateFile({ path: nodeShim, bytes: Buffer.from(adapterNodeShim(runtime), "utf8") });
+  await chmod(nodeShim, 0o500);
+
+  function record(value) {
+    const expected = expectedHelperCommand(value);
+    if (expected === null || expected.approvalCommand !== `clockchain-agent-authorize ${expected.commandSha256}`) fail();
+    const argv = [...expected.argv];
+    if (argv[0] !== "node") fail();
+    argv[5] = isAbsolute(argv[5]) ? descendant(workspace, argv[5]) : descendant(workspace, resolve(workspace, argv[5]));
+    argv[6] = isAbsolute(argv[6]) ? descendant(workspace, argv[6]) : descendant(workspace, resolve(workspace, argv[6]));
+    if (typeof argv[9] !== "string" || !argv[9].startsWith("$TMPDIR/")) fail();
+    argv[9] = descendant(tmp, resolve(tmp, argv[9].slice("$TMPDIR/".length)));
+    validateHelperCommand({ argv, kind: "helper", manifestDigest, workspace });
+    const body = Object.freeze({
+      schema: "clockchain.agent-harness-bound-action-body/v1",
+      commandSha256: expected.commandSha256,
+      commandLength: expected.commandLength,
+      operation: expected.operation,
+      role: expected.role,
+      sessionId: expected.sessionId,
+      file: runtime,
+      args: Object.freeze(argv.slice(1)),
+      cwd: workspace,
+      stateDir: argv[9],
+    });
+    const signature = signBytes(null, Buffer.from(JSON.stringify(body), "utf8"), privateKey).toString("base64");
+    const bytes = `${JSON.stringify({ schema: "clockchain.agent-harness-bound-action/v1", body, signature })}\n`;
+    const target = join(pending, `${expected.commandSha256}.json`);
+    try {
+      writeFileSync(target, bytes, { encoding: "utf8", flag: "wx", mode: 0o600 });
+    } catch (error) {
+      if (error?.code !== "EEXIST" || readFileSync(target, "utf8") !== bytes) fail();
+    }
+    return expected;
+  }
+
+  return Object.freeze({ bin, pending, record, root });
+}
+
 function append(output, chunk) {
   const next = output + Buffer.from(chunk).toString("utf8");
   if (Buffer.byteLength(next) > MAX_OUTPUT_BYTES) fail();
@@ -925,7 +1027,14 @@ function expectedHelperCommand(value) {
   ) {
     fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
   }
+  const approvalCommand = step.approvalCommand === undefined
+    ? null
+    : step.approvalCommand;
+  if (approvalCommand !== null && approvalCommand !== `clockchain-agent-authorize ${commandSha256}`) {
+    fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
+  }
   return Object.freeze({
+    approvalCommand,
     argv: Object.freeze(parseLiteralShellWords(step.shellCommand)),
     commandLength,
     commandSha256,
@@ -977,10 +1086,20 @@ function collectExpectedHelperCommands(value, found = [], seen = new Set()) {
 }
 
 function bindHelperExecution(command, expectedHelperCommands) {
-  const actual = fingerprintHelperExecutionCommand(command);
-  if (actual.operation === null) return Object.freeze({ bound: false, actual });
   const expected = expectedHelperCommands[0];
-  if (expected === undefined) return Object.freeze({ bound: false, actual });
+  if (expected === undefined) {
+    const actual = fingerprintHelperExecutionCommand(command);
+    return Object.freeze({ bound: false, actual });
+  }
+  const approvalMatches = expected.approvalCommand !== null && command === expected.approvalCommand;
+  const helperActual = fingerprintHelperExecutionCommand(command);
+  const actual = approvalMatches
+    ? Object.freeze({
+        ...helperActual,
+        operation: expected.operation,
+        state: Object.freeze({ role: expected.role, sessionId: expected.sessionId }),
+      })
+    : helperActual;
   const actualArgv = parseLiteralShellWords(command);
   const argvMatches = actualArgv.length === expected.argv.length &&
     actualArgv.every((entry, index) => entry === expected.argv[index]);
@@ -1003,7 +1122,7 @@ function bindHelperExecution(command, expectedHelperCommands) {
     }),
   });
   if (
-    (!rawCommandMatches && !argvMatches) ||
+    (expected.approvalCommand !== null ? !approvalMatches : (!rawCommandMatches && !argvMatches)) ||
     actual.operation !== expected.operation ||
     actual.state?.role !== expected.role ||
     actual.state?.sessionId !== expected.sessionId
@@ -1141,8 +1260,9 @@ function killProcessGroup(child) {
   } catch { child.kill?.("SIGTERM"); }
 }
 
-function observeChild(child, role, all, canaries, { expectedInvitation, manifestDigest, requireInvitation = false } = {}) {
+function observeChild(child, role, all, canaries, { adapter, expectedInvitation, manifestDigest, requireInvitation = false } = {}) {
   if (!SHA256.test(manifestDigest)) fail();
+  if (adapter === null || typeof adapter !== "object" || typeof adapter.record !== "function") fail();
   let resolveInvitation;
   let rejectInvitation;
   const invitationPromise = requireInvitation ? new Promise((resolvePromise, rejectPromise) => {
@@ -1162,7 +1282,11 @@ function observeChild(child, role, all, canaries, { expectedInvitation, manifest
       if (line.trim().length === 0) return;
       let event;
       try { event = JSON.parse(line); } catch { fail(); }
-      expectedHelperCommands.push(...collectExpectedHelperCommands(event));
+      const discoveredHelperCommands = collectExpectedHelperCommands(event);
+      for (const command of discoveredHelperCommands) {
+        if (command.approvalCommand !== null) adapter.record(command);
+      }
+      expectedHelperCommands.push(...discoveredHelperCommands);
       observed = mergeObserved(observed, inspectEvent(event, role));
       const helperProof = helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, expectedHelperCommands, helperExecutionState);
       if (helperProof !== null) observed = mergeObserved(observed, { helperProof });
@@ -1342,6 +1466,7 @@ const CLAUDE_EXISTING_LOGIN_SESSION_ENV = Object.freeze([
 ]);
 
 function childEnvironment(room, credentials, runtime, {
+  adapterBin,
   authenticationMode = "disposable",
   client,
   hostEnvironment = process.env,
@@ -1352,7 +1477,8 @@ function childEnvironment(room, credentials, runtime, {
     if (!/^[A-Z][A-Z0-9_]*$/.test(key) || typeof value !== "string" || value.length === 0) fail();
   }
   const basePath = hostEnvironment.PATH ?? "/usr/bin:/bin";
-  const path = runtime === undefined ? basePath : `${runtime.pathDirectory}:${basePath}`;
+  const runtimePath = runtime === undefined ? basePath : `${runtime.pathDirectory}:${basePath}`;
+  const path = adapterBin === undefined ? runtimePath : `${descendant(room.workspace, adapterBin)}:${runtimePath}`;
   const common = {
     ...credentials,
     CODEX_HOME: room.home,
@@ -1778,7 +1904,13 @@ export async function runFreshAgentHandshake({
     for (const role of ROLES) {
       const client = cleanClient(clients[role]);
       const authenticationMode = cleanAuthenticationMode(client, authenticationModes[role]);
+      const adapter = await prepareAgentHarnessAdapter({
+        manifestDigest: pin.manifestDigest,
+        room: run.roles[role],
+        runtimeExecPath: runtime?.execPath ?? process.execPath,
+      });
       const env = childEnvironment(run.roles[role], modelEnvironment[role], runtime, {
+        adapterBin: adapter.bin,
         authenticationMode,
         client,
         hostEnvironment,
@@ -1813,7 +1945,7 @@ export async function runFreshAgentHandshake({
         if (ready !== true) fail("prepare", "client", "PREPARE_FAILED");
         traceLifecycle({ phase: "prepare", role, client, status: "completed" });
       }
-      prepared[role] = { authenticationMode, claudeSessionId, client, env };
+      prepared[role] = { adapter, authenticationMode, claudeSessionId, client, env };
     }
     const timedOut = new Promise((_, rejectPromise) => {
       timer = setTimeout(() => {
@@ -1839,6 +1971,7 @@ export async function runFreshAgentHandshake({
     children.push(initiatorChild);
     traceLifecycle({ phase: "spawn", role: "initiator" });
     const initiatorObserved = observeChild(initiatorChild, "initiator", children, canaries, {
+      adapter: prepared.initiator.adapter,
       manifestDigest: pin.manifestDigest,
       requireInvitation: true,
     });
@@ -1866,6 +1999,7 @@ export async function runFreshAgentHandshake({
     children.push(responderChild);
     traceLifecycle({ phase: "spawn", role: "responder" });
     const responderObserved = observeChild(responderChild, "responder", children, canaries, {
+      adapter: prepared.responder.adapter,
       expectedInvitation: actualInvitation,
       manifestDigest: pin.manifestDigest,
     });
