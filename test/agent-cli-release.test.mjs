@@ -111,6 +111,14 @@ test("tracks the independently published helper in a separate post-release pin",
   });
 });
 
+test("checked-in JSON schemas describe the exact published helper release", async () => {
+  const pinSchema = JSON.parse(await readFile(new URL("../release/agent-handshake/pin.schema.json", import.meta.url), "utf8"));
+  const manifestSchema = JSON.parse(await readFile(new URL("../release/agent-handshake/manifest.schema.json", import.meta.url), "utf8"));
+  assert.equal(pinSchema.properties.version.const, "2.1.2");
+  assert.equal(pinSchema.properties.allowedAssetPrefix.const, prefix);
+  assert.equal(manifestSchema.properties.version.const, "2.1.2");
+});
+
 test("rejects unknown keys, duplicates, redirects, digest drift, and native executable substitutions", () => {
   const base = manifest();
   const mutations = [

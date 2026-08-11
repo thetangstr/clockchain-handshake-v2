@@ -5,6 +5,11 @@ import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 
 import { assertSecretFree } from "../core/redact.mjs";
+import { agentHandshakeV2StatementDigest } from "../agent-handshake/v2/terms.mjs";
+import {
+  AGENT_HANDSHAKE_V2_SNAPSHOT_SCHEMA,
+  buildAgentHandshakeV2Snapshot,
+} from "../monitor/agent-snapshot-v2.mjs";
 
 const ROLES = Object.freeze(["initiator", "responder"]);
 const HELPER_OPERATIONS = Object.freeze([
@@ -39,7 +44,7 @@ const ROLE_ACCESS_KEYS = Object.freeze([
 ]);
 const UNSAFE_SHELL = /[\0\r\n;&|`$<>]/;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
-const TERMINAL_SCHEMA = "clockchain.fresh-agent-terminal-proof/v1";
+const HELPER_RESULT_SCHEMA = "clockchain.agent-handshake-cli-result/v1";
 const EVIDENCE_SCHEMA = "clockchain.fresh-agent-canary-evidence/v1";
 const RESPONDER_INVITATION_PLACEHOLDER = "<PASTE THE INITIATOR INVITATION>";
 export const CLAUDE_CONTEXT_MARKER = "CLOCKCHAIN_CONTEXT_RECEIVED";
@@ -212,13 +217,13 @@ export function validateHelperCommand({ argv, kind, manifestDigest, workspace } 
   if (!Array.isArray(argv)) fail();
   if (kind === "download") {
     if (
-      argv.length !== 8 || argv[0] !== "curl" || argv[1] !== "--fail" ||
+      argv.length !== 10 || argv[0] !== "curl" || argv[1] !== "--fail" ||
       argv[2] !== "--location" || argv[3] !== "--proto" || argv[4] !== "=https" ||
-      argv[5] !== "--output"
+      argv[5] !== "--proto-redir" || argv[6] !== "=https" || argv[7] !== "--output"
     ) fail();
     argv.forEach(safeArg);
-    const output = descendant(cleanWorkspace, argv[6]);
-    const download = validateAssetUrl(argv[7]);
+    const output = descendant(cleanWorkspace, argv[8]);
+    const download = validateAssetUrl(argv[9]);
     if (basename(output) !== download.asset) fail();
     return true;
   }
@@ -381,22 +386,41 @@ function append(output, chunk) {
   return next;
 }
 
-function validateTerminal(parsed, role) {
-  exactObject(parsed, [
-    "schema", "role", "sessionId", "policyDigest", "address", "erc8004",
-    "receiptIds", "certificateDigest", "certificateVerified", "externalBusinessActionPerformed",
+function validateRegistration(parsed) {
+  const identity = exactObject(parsed, [
+    "agentId", "chainId", "reference", "registrationBlock", "registrationTx", "registryAddress",
   ]);
   if (
-    parsed.schema !== TERMINAL_SCHEMA || parsed.role !== role || !UUID.test(parsed.sessionId) ||
-    !SHA256.test(parsed.policyDigest) || !ADDRESS.test(parsed.address) || !SHA256.test(parsed.certificateDigest) ||
-    parsed.certificateVerified !== true || parsed.externalBusinessActionPerformed !== false
+    !DECIMAL.test(identity.agentId) || identity.chainId !== "eip155:11155111" ||
+    !ADDRESS.test(identity.registryAddress) ||
+    identity.reference !== `${identity.chainId}:${identity.registryAddress}:${identity.agentId}` ||
+    !TX.test(identity.registrationTx) || !DECIMAL.test(identity.registrationBlock)
   ) fail();
-  const identity = exactObject(parsed.erc8004, ["agentId", "reference", "registrationTx", "registrationBlock"]);
-  if (!DECIMAL.test(identity.agentId) || !DECIMAL.test(identity.registrationBlock) || !TX.test(identity.registrationTx)) fail();
-  if (typeof identity.reference !== "string" || !identity.reference.endsWith(`:${identity.agentId}`)) fail();
-  if (!Array.isArray(parsed.receiptIds) || parsed.receiptIds.length !== 3 || new Set(parsed.receiptIds).size !== 3) fail();
-  if (parsed.receiptIds.some((entry) => typeof entry !== "string" || entry.length === 0)) fail();
-  return Object.freeze({ ...parsed, erc8004: Object.freeze({ ...identity }), receiptIds: Object.freeze([...parsed.receiptIds]) });
+  return Object.freeze({ ...identity });
+}
+
+function validateHelperProof(parsed, role) {
+  exactObject(parsed, [
+    "certificateVerified", "externalBusinessActionPerformed", "helperVersion", "identity", "operation",
+    "outcome", "policyDigest", "role", "schema", "sessionId", "statementDigest",
+  ]);
+  if (
+    parsed.schema !== HELPER_RESULT_SCHEMA || parsed.helperVersion !== "2.1.2" ||
+    parsed.operation !== "verify-certificate" || parsed.outcome !== "VERIFIED" ||
+    parsed.role !== role || !UUID.test(parsed.sessionId) || !SHA256.test(parsed.policyDigest) ||
+    !SHA256.test(parsed.statementDigest) || parsed.certificateVerified !== true ||
+    parsed.externalBusinessActionPerformed !== false
+  ) fail();
+  const identity = exactObject(parsed.identity, ["erc8004", "policyDigest", "sessionKeyAddress"]);
+  if (!ADDRESS.test(identity.sessionKeyAddress) || identity.policyDigest !== parsed.policyDigest) fail();
+  return Object.freeze({
+    ...parsed,
+    identity: Object.freeze({
+      sessionKeyAddress: identity.sessionKeyAddress,
+      policyDigest: identity.policyDigest,
+      erc8004: validateRegistration(identity.erc8004),
+    }),
+  });
 }
 
 function invitation(value) {
@@ -460,9 +484,6 @@ function inspectEvent(value, role, depth = 0) {
   if (Object.hasOwn(value, "responderInvitation")) {
     found = { invitation: invitation(value.responderInvitation) };
   }
-  if (value.schema === TERMINAL_SCHEMA) {
-    found = mergeObserved(found, { terminal: validateTerminal(value, role) });
-  }
   for (const entry of Object.values(value)) {
     found = mergeObserved(found, inspectEvent(entry, role, depth + 1));
   }
@@ -471,12 +492,36 @@ function inspectEvent(value, role, depth = 0) {
 
 function mergeObserved(left, right) {
   const merged = { ...left };
-  for (const key of ["invitation", "terminal"]) {
+  for (const key of ["invitation", "helperProof"]) {
     if (right[key] === undefined) continue;
     if (merged[key] !== undefined && JSON.stringify(merged[key]) !== JSON.stringify(right[key])) fail();
     merged[key] = right[key];
   }
   return merged;
+}
+
+function parsedHelperProof(value, role) {
+  if (typeof value !== "string") return null;
+  const parsed = parseJsonString(value);
+  if (parsed === null || parsed?.schema !== HELPER_RESULT_SCHEMA) return null;
+  return validateHelperProof(parsed, role);
+}
+
+function helperProofFromEvent(event, role) {
+  if (
+    event?.type === "item.completed" && event?.item?.type === "command_execution" &&
+    event.item.status === "completed" && event.item.exit_code === 0
+  ) return parsedHelperProof(event.item.aggregated_output, role);
+  if (event?.type !== "user" || !Array.isArray(event?.message?.content)) return null;
+  let found = null;
+  for (const block of event.message.content) {
+    if (block?.type !== "tool_result" || block.is_error === true) continue;
+    const parsed = parsedHelperProof(block.content, role);
+    if (parsed === null) continue;
+    if (found !== null && JSON.stringify(found) !== JSON.stringify(parsed)) fail();
+    found = parsed;
+  }
+  return found;
 }
 
 function killProcessGroup(child) {
@@ -506,13 +551,15 @@ function observeChild(child, role, all, canaries, { expectedInvitation, requireI
       let event;
       try { event = JSON.parse(line); } catch { fail(); }
       observed = mergeObserved(observed, inspectEvent(event, role));
+      const helperProof = helperProofFromEvent(event, role);
+      if (helperProof !== null) observed = mergeObserved(observed, { helperProof });
       traceLifecycle({
         phase: "event",
         role,
         type: ["thread.started", "turn.started", "item.started", "item.completed", "turn.completed", "system", "assistant", "user", "result", "rate_limit_event"].includes(event?.type) ? event.type : "other",
         subtype: typeof event?.subtype === "string" && /^[a-z_.-]+$/.test(event.subtype) ? event.subtype : null,
         invitationObserved: observed.invitation !== undefined,
-        terminalObserved: observed.terminal !== undefined,
+        terminalObserved: observed.helperProof !== undefined,
         mcpConnected: event?.type === "system" && Array.isArray(event.mcp_servers)
           ? event.mcp_servers.some((entry) => entry?.name === "clockchain-handshake" && entry?.status === "connected")
           : false,
@@ -639,8 +686,8 @@ function observeChild(child, role, all, canaries, { expectedInvitation, requireI
         if (lineBuffer.trim().length > 0) processLine(lineBuffer);
         assertSecretFree(stdout, canaries);
         assertSecretFree(stderr, canaries);
-        if (observed.terminal === undefined || (requireInvitation && observed.invitation === undefined)) fail();
-        resolvePromise(observed.terminal);
+        if (observed.helperProof === undefined || (requireInvitation && observed.invitation === undefined)) fail();
+        resolvePromise(observed.helperProof);
       } catch {
         const error = new Error("Fresh agent compatibility check failed safely.");
         rejectInvitation?.(error);
@@ -683,15 +730,80 @@ function childEnvironment(room, credentials) {
   });
 }
 
-function publicRole(value) {
+function validateMonitorRole(value) {
+  const item = exactObject(value, ["address", "erc8004", "policyDigest"]);
+  if (!ADDRESS.test(item.address) || !SHA256.test(item.policyDigest)) fail();
+  return Object.freeze({ address: item.address, policyDigest: item.policyDigest, erc8004: validateRegistration(item.erc8004) });
+}
+
+function validateMonitorResult(value, expectedSessionId) {
+  const item = exactObject(value, [
+    "certificateDigest", "chronology", "externalBusinessActionPerformed", "receiptIds", "roles", "sessionId", "statementDigest",
+  ]);
+  if (
+    item.sessionId !== expectedSessionId || !UUID.test(item.sessionId) || !SHA256.test(item.certificateDigest) ||
+    !SHA256.test(item.statementDigest) || item.externalBusinessActionPerformed !== false ||
+    !Array.isArray(item.chronology) || item.chronology.at(-1) !== "CERTIFIED" ||
+    item.chronology.some((entry) => typeof entry !== "string" || entry.length === 0) ||
+    !Array.isArray(item.receiptIds) || item.receiptIds.length !== 3 || new Set(item.receiptIds).size !== 3 ||
+    item.receiptIds.some((entry) => typeof entry !== "string" || entry.length === 0)
+  ) fail();
+  const roles = exactObject(item.roles, ROLES);
   return Object.freeze({
-    address: value.address,
-    certificateDigest: value.certificateDigest,
+    ...item,
+    chronology: Object.freeze([...item.chronology]),
+    receiptIds: Object.freeze([...item.receiptIds]),
+    roles: Object.freeze({ initiator: validateMonitorRole(roles.initiator), responder: validateMonitorRole(roles.responder) }),
+  });
+}
+
+export function validateFreshAgentMonitorSnapshot(value, expectedSessionId) {
+  if (!UUID.test(expectedSessionId) || value?.schema !== AGENT_HANDSHAKE_V2_SNAPSHOT_SCHEMA) return null;
+  let snapshot;
+  try { snapshot = buildAgentHandshakeV2Snapshot(value); } catch { fail(); }
+  if (snapshot.sessionId !== expectedSessionId) return null;
+  if (snapshot.failure !== null || snapshot.checker.stage === "FAILED") fail();
+  const complete = snapshot.invitation.responderClaimedAtMs !== null &&
+    ROLES.every((role) => snapshot.policies[role] !== null && snapshot.parties[role] !== null && snapshot.evidence[role] !== null) &&
+    snapshot.statements.proposalDigest !== null && snapshot.statements.acceptanceDigest !== null &&
+    ["proposal", "acceptance", "acknowledgment"].every((kind) => snapshot.receipts[kind] !== null) &&
+    snapshot.checker.stage === "VERIFIED" && snapshot.certificate?.outcome === "VERIFIED";
+  if (!complete) return null;
+  const terms = { ...snapshot.terms, validForSeconds: snapshot.timing.agreementValidForSeconds };
+  return validateMonitorResult({
+    certificateDigest: snapshot.certificate.digest,
+    chronology: [
+      "SESSION_STARTED", "INVITATION_CLAIMED", "POLICIES_COMMITTED", "IDENTITIES_REGISTERED",
+      "STATEMENT_PROPOSED", "STATEMENT_ACCEPTED", "PROPOSED", "ACCEPTED", "ACKNOWLEDGED",
+      "EVIDENCE_RECEIVED", "VERIFIED", "CERTIFIED",
+    ],
+    externalBusinessActionPerformed: snapshot.externalBusinessActionPerformed,
+    receiptIds: [snapshot.receipts.proposal.ledgerId, snapshot.receipts.acceptance.ledgerId, snapshot.receipts.acknowledgment.ledgerId],
+    roles: Object.fromEntries(ROLES.map((role) => [role, {
+      address: snapshot.parties[role].sessionKeyAddress,
+      erc8004: snapshot.parties[role].erc8004,
+      policyDigest: snapshot.policies[role].digest,
+    }])),
+    sessionId: snapshot.sessionId,
+    statementDigest: agentHandshakeV2StatementDigest(terms),
+  }, expectedSessionId);
+}
+
+function publicRole(value, monitorResult) {
+  const role = monitorResult.roles[value.role];
+  if (
+    value.sessionId !== monitorResult.sessionId || value.statementDigest !== monitorResult.statementDigest ||
+    value.policyDigest !== role.policyDigest || value.identity.sessionKeyAddress !== role.address ||
+    JSON.stringify(value.identity.erc8004) !== JSON.stringify(role.erc8004)
+  ) fail();
+  return Object.freeze({
+    address: role.address,
+    certificateDigest: monitorResult.certificateDigest,
     certificateVerified: value.certificateVerified,
-    erc8004: value.erc8004,
+    erc8004: role.erc8004,
     externalBusinessActionPerformed: value.externalBusinessActionPerformed,
     policyDigest: value.policyDigest,
-    receiptIds: value.receiptIds,
+    receiptIds: monitorResult.receiptIds,
     role: value.role,
     sessionId: value.sessionId,
   });
@@ -797,19 +909,19 @@ export async function runFreshAgentHandshake({
     ]);
     clearTimeout(timer);
     timer = undefined;
-    const [initiator, responder] = results;
-    if (initiator.sessionId !== responder.sessionId || initiator.certificateDigest !== responder.certificateDigest) fail();
+    const [initiatorProof, responderProof] = results;
+    if (initiatorProof.sessionId !== responderProof.sessionId) fail();
+    const monitorResult = validateMonitorResult(await monitor({ sessionId: initiatorProof.sessionId }), initiatorProof.sessionId);
+    const initiator = publicRole(initiatorProof, monitorResult);
+    const responder = publicRole(responderProof, monitorResult);
     if (initiator.address === responder.address || initiator.erc8004.agentId === responder.erc8004.agentId || initiator.policyDigest === responder.policyDigest) fail();
-    const monitorResult = await monitor({ sessionId: initiator.sessionId });
-    const chronology = monitorResult?.chronology;
-    if (monitorResult?.sessionId !== initiator.sessionId || !Array.isArray(chronology) || chronology.at(-1) !== "CERTIFIED") fail();
     const evidence = Object.freeze({
       schema: EVIDENCE_SCHEMA,
       runId: run.runId,
       release: pin,
       clients: Object.freeze({ ...clients }),
-      roles: Object.freeze({ initiator: publicRole(initiator), responder: publicRole(responder) }),
-      monitor: Object.freeze({ chronology: Object.freeze([...chronology]), sessionId: monitorResult.sessionId }),
+      roles: Object.freeze({ initiator, responder }),
+      monitor: Object.freeze({ chronology: monitorResult.chronology, sessionId: monitorResult.sessionId }),
       cleanup: Object.freeze({ completed: true }),
     });
     assertSecretFree(evidence, [...canaries, actualInvitation, run.root]);

@@ -17,6 +17,7 @@ import {
   runFreshAgentHandshake,
   validateHelperCommand,
   validateClaudePreparation,
+  validateFreshAgentMonitorSnapshot,
   validateReleaseAgreement,
 } from "../src/testing/fresh-agent-client.mjs";
 
@@ -24,18 +25,18 @@ function streamEvent(value) {
   return `${JSON.stringify(value)}\n`;
 }
 
-function terminalEvent(result) {
+function codexHelperProofEvent(result) {
   return streamEvent({
     type: "item.completed",
-    item: { type: "agent_message", text: JSON.stringify(result) },
+    item: { type: "command_execution", status: "completed", exit_code: 0, aggregated_output: JSON.stringify(result) },
   });
 }
 
-function claudeTerminalEvent(result) {
+function claudeHelperProofEvent(result) {
   return streamEvent({
-    type: "assistant",
+    type: "user",
     message: {
-      content: [{ type: "text", text: `\`\`\`json\n${JSON.stringify(result)}\n\`\`\`` }],
+      content: [{ type: "tool_result", content: JSON.stringify(result), is_error: false }],
     },
   });
 }
@@ -43,6 +44,7 @@ function claudeTerminalEvent(result) {
 const DIGEST = "a".repeat(64);
 const ROOT = "b".repeat(64);
 const SESSION = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+const REGISTRY = "0x8004a818bfb912233c491871b3d84c89a494bd9e";
 
 function roleAccess(role, allowedTools) {
   const payload = Object.fromEntries(Object.entries({
@@ -65,23 +67,107 @@ function roleAccess(role, allowedTools) {
 
 const INVITATION = roleAccess("responder", ["agent_handshake_accept_invitation"]);
 
-function roleResult(role) {
+function helperProof(role) {
   return {
-    schema: "clockchain.fresh-agent-terminal-proof/v1",
+    schema: "clockchain.agent-handshake-cli-result/v1",
+    helperVersion: "2.1.2",
+    operation: "verify-certificate",
+    certificateVerified: true,
+    externalBusinessActionPerformed: false,
+    identity: {
+      sessionKeyAddress: role === "initiator" ? `0x${"1".repeat(40)}` : `0x${"2".repeat(40)}`,
+      policyDigest: role === "initiator" ? "c".repeat(64) : "d".repeat(64),
+      erc8004: {
+        agentId: role === "initiator" ? "9452" : "9453",
+        chainId: "eip155:11155111",
+        registryAddress: REGISTRY,
+        reference: `eip155:11155111:${REGISTRY}:${role === "initiator" ? "9452" : "9453"}`,
+        registrationTx: `0x${(role === "initiator" ? "3" : "4").repeat(64)}`,
+        registrationBlock: role === "initiator" ? "9001" : "9002",
+      },
+    },
+    outcome: "VERIFIED",
+    policyDigest: role === "initiator" ? "c".repeat(64) : "d".repeat(64),
     role,
     sessionId: SESSION,
-    policyDigest: role === "initiator" ? "c".repeat(64) : "d".repeat(64),
-    address: role === "initiator" ? `0x${"1".repeat(40)}` : `0x${"2".repeat(40)}`,
-    erc8004: {
-      agentId: role === "initiator" ? "9452" : "9453",
-      reference: `eip155:11155111:0x${"8".repeat(40)}:${role === "initiator" ? "9452" : "9453"}`,
-      registrationTx: `0x${(role === "initiator" ? "3" : "4").repeat(64)}`,
-      registrationBlock: role === "initiator" ? "9001" : "9002"
+    statementDigest: "9".repeat(64),
+  };
+}
+
+function completeMonitorSnapshot() {
+  const completed = monitorResult();
+  const receipt = (kind, index) => ({
+    blockHeight: String(7000 + index),
+    blockTimeRaw: `2026-08-10T19:0${index}:00.000Z`,
+    digest: String(index + 1).repeat(64),
+    explorerUrl: `https://clockchain.network/ledger/${completed.receiptIds[index]}`,
+    kind,
+    ledgerId: completed.receiptIds[index],
+  });
+  return {
+    schema: "clockchain.agent-handshake-snapshot/v2",
+    protocol: "clockchain.agent-handshake/v2",
+    sessionId: SESSION,
+    repositorySha: "f".repeat(40),
+    hostTrust: {
+      rootKid: "root-2026-08",
+      rootFingerprint: ROOT,
+      sessionPublicKey: "A".repeat(43) + "=",
+      sessionKeyCertificateDigest: "b".repeat(64),
     },
-    receiptIds: ["proposal", "acceptance", "acknowledgment"].map((kind) => `${kind}-${role}`),
+    timing: {
+      createdAtMs: 1786380000000,
+      invitationExpiresAtMs: 1786380120000,
+      sessionDeadlineMs: 1786380600000,
+      agreementValidForSeconds: "90",
+    },
+    invitation: { createdAtMs: 1786380001000, responderClaimedAtMs: 1786380002000 },
+    terms: {
+      reference: "NS-1847",
+      statement: "Northstar Logistics and Harbor Supply authorize these agents to communicate.",
+      identityPolicy: { erc8004: "required_fresh", chainId: "eip155:11155111", registryAddress: REGISTRY },
+    },
+    policies: {
+      initiator: { digest: completed.roles.initiator.policyDigest, committedAtMs: 1786380003000 },
+      responder: { digest: completed.roles.responder.policyDigest, committedAtMs: 1786380004000 },
+    },
+    parties: {
+      initiator: { sessionKeyAddress: completed.roles.initiator.address, erc8004: completed.roles.initiator.erc8004 },
+      responder: { sessionKeyAddress: completed.roles.responder.address, erc8004: completed.roles.responder.erc8004 },
+    },
+    statements: { proposalDigest: "1".repeat(64), acceptanceDigest: "2".repeat(64) },
+    receipts: { proposal: receipt("proposal", 0), acceptance: receipt("acceptance", 1), acknowledgment: receipt("acknowledgment", 2) },
+    evidence: {
+      initiator: { digest: "3".repeat(64), receivedAtMs: 1786380100000 },
+      responder: { digest: "4".repeat(64), receivedAtMs: 1786380100001 },
+    },
+    checker: { stage: "VERIFIED", lastSeenMs: 1786380101000 },
+    certificate: { digest: completed.certificateDigest, issuedAtMs: 1786380102000, outcome: "VERIFIED" },
+    freshness: {
+      initiator: { lastSeenMs: 1786380100000 }, responder: { lastSeenMs: 1786380100001 },
+      host: { lastSeenMs: 1786380101000 }, checker: { lastSeenMs: 1786380101000 },
+    },
+    failure: null,
+    externalBusinessActionPerformed: false,
+  };
+}
+
+function monitorResult() {
+  return {
+    chronology: ["SESSION_STARTED", "INVITATION_CLAIMED", "POLICIES_COMMITTED", "IDENTITIES_REGISTERED", "STATEMENT_PROPOSED", "STATEMENT_ACCEPTED", "PROPOSED", "ACCEPTED", "ACKNOWLEDGED", "EVIDENCE_RECEIVED", "VERIFIED", "CERTIFIED"],
+    sessionId: SESSION,
+    statementDigest: "9".repeat(64),
     certificateDigest: "e".repeat(64),
-    certificateVerified: true,
-    externalBusinessActionPerformed: false
+    receiptIds: [
+      "11111111-2222-4333-8444-555555555551",
+      "11111111-2222-4333-8444-555555555552",
+      "11111111-2222-4333-8444-555555555553",
+    ],
+    externalBusinessActionPerformed: false,
+    roles: {
+      initiator: { address: `0x${"1".repeat(40)}`, policyDigest: "c".repeat(64), erc8004: helperProof("initiator").identity.erc8004 },
+      responder: { address: `0x${"2".repeat(40)}`, policyDigest: "d".repeat(64), erc8004: helperProof("responder").identity.erc8004 },
+    },
   };
 }
 
@@ -188,11 +274,29 @@ test("requires independent Research and MCP release pins to agree exactly", () =
   ]) assert.throws(() => validateReleaseAgreement(candidate));
 });
 
+test("projects terminal evidence only from a complete, strictly validated v2 monitor snapshot", () => {
+  const snapshot = completeMonitorSnapshot();
+  const projected = validateFreshAgentMonitorSnapshot(snapshot, SESSION);
+  assert.equal(projected.sessionId, SESSION);
+  assert.equal(projected.certificateDigest, snapshot.certificate.digest);
+  assert.deepEqual(projected.receiptIds, Object.values(snapshot.receipts).map((entry) => entry.ledgerId));
+  assert.equal(projected.roles.initiator.erc8004.agentId, "9452");
+  assert.equal(projected.roles.responder.erc8004.agentId, "9453");
+  assert.equal(projected.chronology.at(-1), "CERTIFIED");
+
+  const incomplete = structuredClone(snapshot);
+  incomplete.certificate = null;
+  incomplete.checker.stage = "VERIFYING";
+  assert.equal(validateFreshAgentMonitorSnapshot(incomplete, SESSION), null);
+  assert.equal(validateFreshAgentMonitorSnapshot(snapshot, "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"), null);
+  assert.throws(() => validateFreshAgentMonitorSnapshot({ ...snapshot, externalBusinessActionPerformed: true }, SESSION));
+});
+
 test("allows only pinned downloads and a hash-verifying in-memory helper bootstrap", () => {
   const manifest = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/manifest.json";
   const asset = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/clockchain-agent-handshake.cjs";
-  assert.doesNotThrow(() => validateHelperCommand({ kind: "download", argv: ["curl", "--fail", "--location", "--proto", "=https", "--output", "/tmp/role/manifest.json", manifest], workspace: "/tmp/role" }));
-  assert.doesNotThrow(() => validateHelperCommand({ kind: "download", argv: ["curl", "--fail", "--location", "--proto", "=https", "--output", "/tmp/role/clockchain-agent-handshake.cjs", asset], workspace: "/tmp/role" }));
+  assert.doesNotThrow(() => validateHelperCommand({ kind: "download", argv: ["curl", "--fail", "--location", "--proto", "=https", "--proto-redir", "=https", "--output", "/tmp/role/manifest.json", manifest], workspace: "/tmp/role" }));
+  assert.doesNotThrow(() => validateHelperCommand({ kind: "download", argv: ["curl", "--fail", "--location", "--proto", "=https", "--proto-redir", "=https", "--output", "/tmp/role/clockchain-agent-handshake.cjs", asset], workspace: "/tmp/role" }));
   assert.doesNotThrow(() => validateHelperCommand({ kind: "helper", manifestDigest: DIGEST, argv: ["node", "--input-type=commonjs", "--eval", VERIFIED_HELPER_BOOTSTRAP, DIGEST, "/tmp/role/manifest.json", "/tmp/role/clockchain-agent-handshake.cjs", "--version"], workspace: "/tmp/role" }));
   for (const operation of ["init", "policy", "inspect", "register", "sign", "verify-certificate"]) {
     assert.doesNotThrow(() => validateHelperCommand({ kind: "helper", manifestDigest: DIGEST, argv: ["node", "--input-type=commonjs", "--eval", VERIFIED_HELPER_BOOTSTRAP, DIGEST, "/tmp/role/manifest.json", "/tmp/role/clockchain-agent-handshake.cjs", operation, "--state-dir", "/tmp/role/state"], workspace: "/tmp/role" }));
@@ -365,8 +469,8 @@ test("starts the Responder only after the Initiator emits its actual one-time in
     } else {
       assert.equal(args.join(" ").includes(INVITATION), false);
       queueMicrotask(() => {
-        children.initiator.stdout.emit("data", Buffer.from(terminalEvent(roleResult("initiator"))));
-        children.responder.stdout.emit("data", Buffer.from(claudeTerminalEvent(roleResult("responder"))));
+        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
         children.initiator.emit("close", 0, null);
         children.responder.emit("close", 0, null);
       });
@@ -385,7 +489,7 @@ test("starts the Responder only after the Initiator emits its actual one-time in
       initiator: [`${secret}-codex-auth`],
       responder: [`${secret}-claude-auth`],
     },
-    monitor: async () => ({ chronology: ["INVITATION_CREATED", "INVITATION_CLAIMED", "IDENTITIES_REGISTERED", "CERTIFIED"], sessionId: SESSION }),
+    monitor: async () => monitorResult(),
     parent,
     prompts: { initiator: "init prompt", responder: "consume <PASTE THE INITIATOR INVITATION> now" },
     release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
@@ -410,6 +514,45 @@ test("starts the Responder only after the Initiator emits its actual one-time in
   assert.equal(result.roles.initiator.certificateDigest, result.roles.responder.certificateDigest);
   assert.equal(JSON.stringify(result).includes(secret), false);
   assert.equal((await readdir(parent)).length, 0);
+});
+
+test("rejects model-authored certificate claims without completed helper execution output", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-model-proof-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  let spawned = 0;
+  const spawnProcess = () => {
+    const role = spawned++ === 0 ? "initiator" : "responder";
+    const child = new EventEmitter();
+    child.pid = null;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {
+      queueMicrotask(() => {
+        if (role === "initiator") {
+          child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+        } else {
+          for (const [name, entry] of [["initiator", child.initiator], ["responder", child]]) {
+            entry.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(helperProof(name)) } })));
+            entry.emit("close", 0, null);
+          }
+        }
+      });
+    } };
+    child.kill = () => {};
+    if (role === "initiator") spawnProcess.initiator = child;
+    child.initiator = spawnProcess.initiator;
+    return child;
+  };
+  await assert.rejects(() => runFreshAgentHandshake({
+    clients: { initiator: "codex", responder: "claude" },
+    configureClient: async () => {}, prepareClient: async () => true,
+    modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
+    monitor: async () => monitorResult(), parent,
+    prompts: { initiator: "init", responder: "respond <PASTE THE INITIATOR INVITATION>" },
+    release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
+    spawnProcess, timeoutMs: 2_000,
+  }), /failed safely/);
+  assert.deepEqual(await readdir(parent), []);
 });
 
 test("times out both process groups and removes both clean rooms", async (t) => {
