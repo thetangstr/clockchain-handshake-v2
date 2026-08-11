@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, realpath, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 import { assertSecretFree } from "../core/redact.mjs";
 import { preparePrivateDirectory, readPrivateText, writePrivateFile } from "../core/private-path.mjs";
@@ -1274,9 +1275,9 @@ function observeChild(child, role, all, canaries, { adapter, expectedInvitation,
     rejectInvitation = rejectPromise;
   }) : null;
   const result = new Promise((resolvePromise, rejectPromise) => {
-    let stdout = "";
     let stderr = "";
     let lineBuffer = "";
+    const stdoutDecoder = new StringDecoder("utf8");
     let observed = {};
     const claudeBashCommands = new Map();
     const expectedHelperCommands = [];
@@ -1395,11 +1396,17 @@ function observeChild(child, role, all, canaries, { adapter, expectedInvitation,
       }
     }
     function processChunk(chunk) {
-      stdout = append(stdout, chunk);
-      lineBuffer += Buffer.from(chunk).toString("utf8");
-      const lines = lineBuffer.split(/\r?\n/);
-      lineBuffer = lines.pop() ?? "";
-      lines.forEach(processLine);
+      lineBuffer += stdoutDecoder.write(Buffer.from(chunk));
+      let newlineIndex;
+      while ((newlineIndex = lineBuffer.indexOf("\n")) >= 0) {
+        const rawLine = lineBuffer.slice(0, newlineIndex);
+        lineBuffer = lineBuffer.slice(newlineIndex + 1);
+        if (Buffer.byteLength(rawLine) > MAX_OUTPUT_BYTES) fail();
+        const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+        assertSecretFree(line, canaries);
+        processLine(line);
+      }
+      if (Buffer.byteLength(lineBuffer) > MAX_OUTPUT_BYTES) fail();
     }
     function reject(error = diagnostic("agent-exit", "agent", "AGENT_FAILED")) {
       if (settled) return;
@@ -1423,8 +1430,10 @@ function observeChild(child, role, all, canaries, { adapter, expectedInvitation,
         return rejectPromise(error);
       }
       try {
+        lineBuffer += stdoutDecoder.end();
+        if (Buffer.byteLength(lineBuffer) > MAX_OUTPUT_BYTES) fail();
         if (lineBuffer.trim().length > 0) processLine(lineBuffer);
-        assertSecretFree(stdout, canaries);
+        assertSecretFree(lineBuffer, canaries);
         assertSecretFree(stderr, canaries);
         if (requireInvitation && observed.invitation === undefined) fail("invitation", "agent", "INVITATION_MISSING");
         if (observed.helperProof === undefined) {
