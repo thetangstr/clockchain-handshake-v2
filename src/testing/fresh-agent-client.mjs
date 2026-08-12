@@ -1017,7 +1017,7 @@ export async function prepareAgentHarnessAdapter({
       .map(([, value]) => value));
   }
 
-  return Object.freeze({ authorize, bin, close, pending, record, root });
+  return Object.freeze({ authorize, bin, close, executable, pending, record, root });
 }
 
 function append(output, chunk) {
@@ -1373,17 +1373,23 @@ function reconcileRecoveredHelperExecution(
   });
 }
 
-function bindHelperExecution(command, expectedHelperCommands) {
+function bindHelperExecution(command, expectedHelperCommands, approvalExecutable) {
   const expected = expectedHelperCommands[0];
   if (expected === undefined) {
     const actual = fingerprintHelperExecutionCommand(command);
     return Object.freeze({ bound: false, actual });
   }
-  const approvalMatches = expected.approvalCommand !== null && command === expected.approvalCommand;
+  let approvalMatches = expected.approvalCommand !== null && command === expected.approvalCommand;
+  if (!approvalMatches && expected.approvalCommand !== null) {
+    let words = [];
+    try { words = parseLiteralShellWords(command); } catch {}
+    approvalMatches = words.length === 2 && words[0] === approvalExecutable &&
+      words[1] === expected.commandSha256;
+  }
   const helperActual = fingerprintHelperExecutionCommand(command);
   const containsApproval = /(^|[;&|\s])clockchain-agent-authorize\s+[0-9a-f]{64}(?:\s|$)/.test(command);
   const helperExecutionShaped = command.startsWith("node --input-type=commonjs --eval ");
-  if (!containsApproval && !helperExecutionShaped) {
+  if (!approvalMatches && !containsApproval && !helperExecutionShaped) {
     return Object.freeze({ bound: false, actual: helperActual });
   }
   const actual = approvalMatches
@@ -1472,7 +1478,7 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
     typeof event.item.command === "string"
   ) {
     const command = unwrapCodexCommandExecution(event.item.command);
-    const binding = bindHelperExecution(command, expectedHelperCommands);
+    const binding = bindHelperExecution(command, expectedHelperCommands, adapter.executable);
     if (binding.bound) adapter.authorize(binding.expected).catch(() => {});
     return null;
   }
@@ -1481,7 +1487,7 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
     typeof event.item.command === "string"
   ) {
     const command = unwrapCodexCommandExecution(event.item.command);
-    const binding = bindHelperExecution(command, expectedHelperCommands);
+    const binding = bindHelperExecution(command, expectedHelperCommands, adapter.executable);
     if (binding.bound) adapter.authorize(binding.expected).catch(() => {});
     if (
       binding.bound &&
@@ -1510,7 +1516,7 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
       const command = helperShaped
         ? stripLiteralShellLineContinuations(rawCommand)
         : rawCommand;
-      const binding = bindHelperExecution(command, expectedHelperCommands);
+      const binding = bindHelperExecution(command, expectedHelperCommands, adapter.executable);
       if (binding.bound) adapter.authorize(binding.expected).catch(() => {});
       claudeBashCommands.set(block.id, Object.freeze({
         command: binding.bound ? binding.expected.shellCommand : command,
@@ -1577,7 +1583,8 @@ function observeChild(child, role, all, canaries, { adapter, client, expectedInv
   if (!FRESH_AGENT_CLIENTS.includes(client)) fail();
   if (
     adapter === null || typeof adapter !== "object" ||
-    typeof adapter.authorize !== "function" || typeof adapter.record !== "function"
+    typeof adapter.authorize !== "function" || typeof adapter.record !== "function" ||
+    typeof adapter.executable !== "string" || !isAbsolute(adapter.executable)
   ) fail();
   let resolveInvitation;
   let rejectInvitation;
