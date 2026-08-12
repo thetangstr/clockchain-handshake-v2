@@ -17,11 +17,11 @@ node scripts/run-mechanics-proof-fargate.mjs \
   --preflight \
   --pair codex:claude \
   --direct-a2a \
-  --evidence-dir /absolute/path/inside/repo/.tmp/phase6-evidence \
+  --evidence-dir /private/tmp/mechanics-proof-evidence \
   --app-image 123456789012.dkr.ecr.us-west-2.amazonaws.com/clockchain-mechanics-proof@sha256:<64 hex>
 ```
 
-The app image must be a Clockchain mechanics-proof application image pinned by immutable digest. The pinned Docker Hub Node base fixture is rejected for live preflight.
+The evidence directory must be an explicit mechanics-proof-prefixed absolute path under repo-local `.tmp` or directly under `/private/tmp` or the platform temp root. The path is printed only as a digest. The app image must be shaped like a Clockchain mechanics-proof application image pinned by immutable digest. The pinned Docker Hub Node base fixture is rejected, but Phase6 preflight does not yet prove ECR/image provenance, so `deploymentReady` remains `false` and `imageProvenanceVerified` remains `false`.
 
 Runtime requirements for a future live phase:
 

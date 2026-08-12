@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { execFile as nodeExecFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
-import { isAbsolute, relative, resolve } from "node:path";
+import { lstat, readFile, realpath } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { types } from "node:util";
 
 import { assertSecretFree } from "../core/redact.mjs";
@@ -169,22 +170,62 @@ function exactLiveOptions(optionsInput, expectedKeys) {
   }
 }
 
-function absoluteDescendant(root, value) {
+async function nearestExistingParent(path) {
+  let current = dirname(path);
+  for (;;) {
+    try {
+      await lstat(current);
+      return current;
+    } catch (error) {
+      if (error?.code !== "ENOENT") liveFail();
+      const next = dirname(current);
+      if (next === current) liveFail();
+      current = next;
+    }
+  }
+}
+
+function pathInside(root, value) {
+  const offset = relative(root, value);
+  return offset !== "" && !offset.startsWith("..") && !isAbsolute(offset);
+}
+
+async function safeEvidenceDirectory(root, value) {
   if (typeof value !== "string" || !isAbsolute(value) || resolve(value) !== value || value.includes("\0")) liveFail();
-  const cleanRoot = resolve(root);
-  const offset = relative(cleanRoot, value);
-  if (offset === "" || offset.startsWith("..") || isAbsolute(offset)) liveFail();
+  if (value === "/" || value === root || value === tmpdir() || value === "/private/tmp" || value.startsWith(`${process.env.HOME ?? "\0"}/`)) liveFail();
+  if (!/^mechanics-proof(?:[-_.][a-zA-Z0-9][a-zA-Z0-9._-]{0,96})?$/.test(basename(value))) liveFail();
+  const repoTmp = resolve(root, ".tmp");
+  const platformTmp = resolve(tmpdir());
+  const privateTmp = "/private/tmp";
+  const repoLocal = pathInside(repoTmp, value);
+  const directPlatformTmp = dirname(value) === platformTmp;
+  const directPrivateTmp = dirname(value) === privateTmp;
+  if (!repoLocal && !directPlatformTmp && !directPrivateTmp) liveFail();
+  const existingParent = await nearestExistingParent(value);
+  const parentReal = await realpath(existingParent).catch(() => liveFail());
+  if (repoLocal) {
+    const repoTmpReal = await realpath(repoTmp).catch(() => realpath(root));
+    if (parentReal !== repoTmpReal && !pathInside(repoTmpReal, parentReal)) liveFail();
+    return value;
+  }
+  const tmpRoot = directPrivateTmp ? privateTmp : platformTmp;
+  const tmpReal = await realpath(tmpRoot).catch(() => tmpRoot);
+  if (parentReal !== tmpReal) liveFail();
   return value;
 }
 
 async function defaultExecutor(command) {
+  const allowedGitArgs = [
+    JSON.stringify(["status", "--porcelain"]),
+    JSON.stringify(["rev-parse", "HEAD"]),
+  ];
   if (
     command === null ||
     typeof command !== "object" ||
     Array.isArray(command) ||
     command.cmd !== "git" ||
     !Array.isArray(command.args) ||
-    JSON.stringify(command.args) !== JSON.stringify(["rev-parse", "HEAD"]) ||
+    !allowedGitArgs.includes(JSON.stringify(command.args)) ||
     command.timeoutMs !== 5000
   ) liveFail();
   try {
@@ -208,11 +249,13 @@ async function defaultExecutor(command) {
 }
 
 async function resolveSourceCommit(executor) {
-  const command = Object.freeze({ cmd: "git", args: Object.freeze(["rev-parse", "HEAD"]), timeoutMs: 5000 });
-  const result = await executor(command);
-  const clean = exactLiveOptions(result, ["stdout", "stderr", "exitCode"]);
-  if (clean.stderr !== "" || clean.exitCode !== 0) liveFail();
-  const commit = typeof clean.stdout === "string" ? clean.stdout.trim() : "";
+  const statusCommand = Object.freeze({ cmd: "git", args: Object.freeze(["status", "--porcelain"]), timeoutMs: 5000 });
+  const status = exactLiveOptions(await executor(statusCommand), ["stdout", "stderr", "exitCode"]);
+  if (status.stderr !== "" || status.exitCode !== 0 || status.stdout !== "") liveFail();
+  const revCommand = Object.freeze({ cmd: "git", args: Object.freeze(["rev-parse", "HEAD"]), timeoutMs: 5000 });
+  const rev = exactLiveOptions(await executor(revCommand), ["stdout", "stderr", "exitCode"]);
+  if (rev.stderr !== "" || rev.exitCode !== 0) liveFail();
+  const commit = typeof rev.stdout === "string" ? rev.stdout.trim() : "";
   if (!SOURCE_COMMIT.test(commit)) liveFail();
   return commit;
 }
@@ -763,7 +806,7 @@ export async function buildFargateLivePreflightPlan(optionsInput = {}) {
     verified.network.assignPublicIp !== "DISABLED"
   ) liveFail();
   const { image, digest } = liveImage(options.appImage);
-  const evidenceDir = absoluteDescendant(process.cwd(), options.evidenceDir);
+  const evidenceDir = await safeEvidenceDirectory(process.cwd(), options.evidenceDir);
   const executor = options.executor === undefined ? defaultExecutor : options.executor;
   if (typeof executor !== "function") liveFail();
   const sourceCommit = await resolveSourceCommit(executor);
@@ -777,7 +820,9 @@ export async function buildFargateLivePreflightPlan(optionsInput = {}) {
     schema: FARGATE_LIVE_PREFLIGHT_SCHEMA,
     liveResourcesCreated: false,
     readyForMutation: false,
-    deploymentReady: true,
+    deploymentReady: false,
+    appImageShapeValid: true,
+    imageProvenanceVerified: false,
     pair: "codex:claude",
     clients: Object.freeze({ initiator: "codex", responder: "claude" }),
     directA2A: true,
