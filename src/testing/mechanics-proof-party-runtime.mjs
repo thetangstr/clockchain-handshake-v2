@@ -16,6 +16,7 @@ import { createDirectA2APartyBridge } from "../harness/direct-a2a-party-bridge.m
 import { createVerifiedReleaseActionRecorder } from "../harness/verified-release-action-recorder.mjs";
 import { ACP_VERSION_PINS } from "../harness/version-pins.mjs";
 import { digestHex } from "../core/canonical.mjs";
+import { installAppleClientAuthentication, loadAppleClientAuthentication } from "./apple-client-auth.mjs";
 import { createEphemeralTlsIdentity } from "./ephemeral-tls-identity.mjs";
 
 const ERROR = "Mechanics proof party runtime failed safely.";
@@ -35,6 +36,7 @@ const DEPENDENCY_KEYS = Object.freeze([
   "waitForInvitation",
 ]);
 const CODEX_PROVIDER_ENV = Object.freeze(["CODEX_API_KEY", "OPENAI_API_KEY", "CLOCKCHAIN_CODEX_MODEL"]);
+const CODEX_AUTH_JSON_BASE64 = "CLOCKCHAIN_CODEX_AUTH_JSON_BASE64";
 const CLAUDE_PROVIDER_ENV = Object.freeze([
   "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_MODEL", "AWS_REGION", "AWS_DEFAULT_REGION",
   "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI",
@@ -220,12 +222,42 @@ function bindingForCard(authorityBinding) {
   });
 }
 
-function providerEnvFor(harness, env = process.env) {
-  const allowed = harness === "codex" ? CODEX_PROVIDER_ENV : CLAUDE_PROVIDER_ENV;
+function hasEnv(env, key) {
+  return typeof env[key] === "string" && env[key].length > 0;
+}
+
+async function installCodexSerializedAuth(value, home) {
+  if (typeof value !== "string" || value.length < 4 || value.length > 96 * 1024 || !/^[A-Za-z0-9+/=]+$/.test(value)) fail();
+  let serialized;
+  try { serialized = Buffer.from(value, "base64").toString("utf8"); } catch { fail(); }
+  if (Buffer.byteLength(serialized, "utf8") < 2 || Buffer.byteLength(serialized, "utf8") > 64 * 1024) fail();
+  const authentication = await loadAppleClientAuthentication({ client: "codex", serialized }).catch(fail);
+  await installAppleClientAuthentication({ authentication, home }).catch(fail);
+}
+
+async function providerEnvFor(harness, home, env = process.env) {
   const result = {};
-  for (const key of allowed) {
-    const value = env[key];
-    if (typeof value === "string" && value.length > 0) result[key] = value;
+  if (harness === "codex") {
+    if (CLAUDE_PROVIDER_ENV.some((key) => hasEnv(env, key)) || hasEnv(env, "ANTHROPIC_API_KEY")) fail();
+    const authJson = env[CODEX_AUTH_JSON_BASE64];
+    const hasSerializedAuth = typeof authJson === "string" && authJson.length > 0;
+    const apiKeys = ["CODEX_API_KEY", "OPENAI_API_KEY"].filter((key) => hasEnv(env, key));
+    if (apiKeys.length > 1 || (hasSerializedAuth && apiKeys.length > 0) || (!hasSerializedAuth && apiKeys.length !== 1)) fail();
+    if (hasSerializedAuth) await installCodexSerializedAuth(authJson, home);
+    for (const key of CODEX_PROVIDER_ENV) {
+      const value = env[key];
+      if (typeof value === "string" && value.length > 0) result[key] = value;
+    }
+  } else {
+    if (
+      hasEnv(env, CODEX_AUTH_JSON_BASE64) || hasEnv(env, "CODEX_API_KEY") ||
+      hasEnv(env, "OPENAI_API_KEY") || hasEnv(env, "CLOCKCHAIN_CODEX_MODEL") ||
+      hasEnv(env, "ANTHROPIC_API_KEY")
+    ) fail();
+    for (const key of CLAUDE_PROVIDER_ENV) {
+      const value = env[key];
+      if (typeof value === "string" && value.length > 0) result[key] = value;
+    }
   }
   return Object.freeze(result);
 }
@@ -434,7 +466,7 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
             actionRecorder: actionRecorder.actionRecorder,
             env: {
               PATH: `${join(process.cwd(), "node_modules", ".bin")}:${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`,
-              ...providerEnvFor(options.harness),
+              ...await providerEnvFor(options.harness, paths.home),
             },
             harness: options.harness,
             home: paths.home,

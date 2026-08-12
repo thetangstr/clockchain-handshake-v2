@@ -10,6 +10,7 @@ const MCP_ENDPOINT = "https://mcp.clockchain.network/handshake/mcp";
 const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
 const SECRET_REF = /^arn:aws:(?:secretsmanager|ssm):[a-z0-9-]+:[0-9]{12}:(?:secret|parameter)[:/].+/;
+const CODEX_AUTH_BASE64 = /^[A-Za-z0-9+/=]{4,98304}$/;
 const PRIVATE_DNS = /^(?:[a-z0-9-]+\.)*(?:task\.local|internal|local)$/i;
 const MAX_STDIN_BYTES = 256 * 1024;
 
@@ -30,6 +31,38 @@ function rejectControllerAuthority(env) {
       throw new Error("authority");
     }
   }
+}
+
+function rejectCrossRoleProviderAuth(env, role) {
+  const codexKeys = ["CLOCKCHAIN_CODEX_AUTH_SECRET_REF", "CLOCKCHAIN_CODEX_AUTH_JSON_BASE64", "CODEX_API_KEY", "OPENAI_API_KEY", "CLOCKCHAIN_CODEX_MODEL"];
+  const claudeKeys = [
+    "CLOCKCHAIN_CLAUDE_PROVIDER", "CLOCKCHAIN_BEDROCK_MODEL_ID", "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_MODEL",
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN",
+  ];
+  const forbidden = role === "initiator" ? claudeKeys : codexKeys;
+  for (const key of forbidden) if (optional(env, key) !== null) throw new Error("cross-role");
+}
+
+function codexAuthMode(env) {
+  const modes = [];
+  const secretRef = optional(env, "CLOCKCHAIN_CODEX_AUTH_SECRET_REF");
+  const serialized = optional(env, "CLOCKCHAIN_CODEX_AUTH_JSON_BASE64");
+  const codexApiKey = optional(env, "CODEX_API_KEY");
+  const openaiApiKey = optional(env, "OPENAI_API_KEY");
+  if (secretRef !== null) {
+    if (!SECRET_REF.test(secretRef)) throw new Error("bad");
+    modes.push("codex-bootstrap-ref");
+  }
+  if (serialized !== null) {
+    if (!CODEX_AUTH_BASE64.test(serialized)) throw new Error("bad");
+    modes.push("codex-subscription-auth");
+  }
+  if (codexApiKey !== null) modes.push("codex-api-key");
+  if (openaiApiKey !== null) modes.push("openai-api-key");
+  if (modes.length !== 1) throw new Error("bad");
+  if (modes[0] !== "codex-bootstrap-ref" && optional(env, "CLOCKCHAIN_CODEX_MODEL") !== "gpt-5.6-terra") throw new Error("bad");
+  return modes[0];
 }
 
 function privateA2AEndpoint(raw) {
@@ -57,12 +90,16 @@ function capabilityPreflight(env) {
   const mcpUrl = value(env, "CLOCKCHAIN_MCP_URL");
   privateA2AEndpoint(value(env, "CLOCKCHAIN_A2A_PEER_ENDPOINT"));
   if (!SESSION.test(sessionId) || !["initiator", "responder"].includes(role) || mcpUrl !== MCP_ENDPOINT) throw new Error("bad");
+  rejectCrossRoleProviderAuth(env, role);
+  let provider;
   if (role === "initiator") {
-    if (client !== "codex" || !SECRET_REF.test(value(env, "CLOCKCHAIN_CODEX_AUTH_SECRET_REF"))) throw new Error("bad");
+    if (client !== "codex") throw new Error("bad");
+    provider = codexAuthMode(env);
   } else if (
     client !== "claude" || optional(env, "CLOCKCHAIN_CLAUDE_PROVIDER") !== "bedrock" ||
     optional(env, "CLOCKCHAIN_BEDROCK_MODEL_ID") !== "us.anthropic.claude-sonnet-4-6"
   ) throw new Error("bad");
+  else provider = "bedrock";
   for (const name of ["CLOCKCHAIN_WORKSPACE", "CLOCKCHAIN_HOME", "CLOCKCHAIN_STATE_DIR"]) value(env, name);
   if (value(env, "CLOCKCHAIN_A2A_PORT") !== "8443") throw new Error("bad");
   const partySigner = privateKeyToAccount(generatePrivateKey());
@@ -72,7 +109,7 @@ function capabilityPreflight(env) {
     sessionId,
     role,
     client,
-    provider: role === "responder" ? "bedrock" : "codex-bootstrap-ref",
+    provider,
     ...(role === "responder" ? { bedrockModelId: "us.anthropic.claude-sonnet-4-6" } : {}),
     mcpUrl,
     a2aPort: "8443",

@@ -62,7 +62,7 @@ export async function loadAppleClientAuthentication({ client, nowMs, serialized,
 export async function installAppleClientAuthentication({ authentication, home } = {}) {
   const clean = record(authentication);
   if (!CLIENTS.includes(clean.client) || typeof home !== "string" || !isAbsolute(home) || resolve(home) !== home) fail();
-  const directory = clean.client === "codex" ? home : join(home, ".claude");
+  const directory = join(home, clean.client === "codex" ? ".codex" : ".claude");
   await mkdir(directory, { recursive: true, mode: 0o700 }).catch(fail);
   if (process.platform !== "win32") await chmod(directory, 0o700).catch(fail);
   const destination = join(directory, clean.client === "codex" ? "auth.json" : ".credentials.json");

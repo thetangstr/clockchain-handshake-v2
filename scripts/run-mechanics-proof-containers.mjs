@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir, writeFile } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -12,6 +12,7 @@ const MCP_ENDPOINT = "https://mcp.clockchain.network/handshake/mcp";
 const DIGEST = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const IMAGE = /^[a-z0-9./:_-]+@sha256:[0-9a-f]{64}$/;
+const MAX_ENV_FILE_BYTES = 64 * 1024;
 const ROLES = Object.freeze(["initiator", "responder"]);
 const HARNESSES = Object.freeze({ initiator: "codex", responder: "claude" });
 const MANIFEST_DIGEST = "fa3c408a3739227b5bdb71486b4d291b8f4dffdb0d1f2fa79dd59644ba5e09ad";
@@ -68,6 +69,27 @@ function parseArgs(argv) {
   });
 }
 
+async function validateEnvFileRefs(envFiles) {
+  const result = {};
+  const identities = [];
+  for (const role of ROLES) {
+    const file = cleanPath(envFiles[role]);
+    const metadata = await lstat(file).catch(fail);
+    if (
+      !metadata.isFile() || metadata.isSymbolicLink() || metadata.size < 1 ||
+      metadata.size > MAX_ENV_FILE_BYTES
+    ) fail();
+    if (process.platform !== "win32") {
+      if ((metadata.mode & 0o077) !== 0) fail();
+      if (typeof process.getuid === "function" && metadata.uid !== process.getuid()) fail();
+    }
+    result[role] = file;
+    identities.push(`${metadata.dev}:${metadata.ino}`);
+  }
+  if (identities[0] === identities[1]) fail();
+  return Object.freeze(result);
+}
+
 function cleanBootstrap(value, role, runId) {
   const item = exact(value, ["bootstrapPublicKey", "harness", "role", "runId", "runtime", "schema", "tlsCertificate"]);
   if (item.schema !== "clockchain.mechanics-proof-party-bootstrap/v1" || item.role !== role || item.runId !== runId || item.harness !== HARNESSES[role]) fail();
@@ -103,9 +125,10 @@ function cleanIdentity(value) {
   const erc = exact(item.erc8004, ["agentId", "chainId", "reference", "registrationBlock", "registrationTx", "registryAddress"]);
   if (
     typeof item.sessionKeyAddress !== "string" || !/^0x[0-9a-f]{40}$/.test(item.sessionKeyAddress) ||
-    !DIGEST.test(item.policyDigest) || typeof erc.agentId !== "string" || erc.chainId !== "eip155:11155111" ||
+    !DIGEST.test(item.policyDigest) || typeof erc.agentId !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(erc.agentId) ||
+    erc.chainId !== "eip155:11155111" ||
     erc.registryAddress !== "0x8004a818bfb912233c491871b3d84c89a494bd9e" ||
-    typeof erc.reference !== "string" || !/^0x[0-9a-f]{64}$/.test(erc.registrationTx) ||
+    erc.reference !== `${erc.chainId}:${erc.registryAddress}:${erc.agentId}` || !/^0x[0-9a-f]{64}$/.test(erc.registrationTx) ||
     typeof erc.registrationBlock !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(erc.registrationBlock)
   ) fail();
   return Object.freeze({ sessionKeyAddress: item.sessionKeyAddress, policyDigest: item.policyDigest, erc8004: Object.freeze({ ...erc }) });
@@ -191,6 +214,7 @@ function containerConfig({ config, networkId, role, runId }) {
     readOnlyRootfs: true,
     root,
     network: networkId,
+    networkAlias: `${role}.task.local`,
     envFile: config.envFiles[role],
     tmpfs: Object.freeze([
       " /workspace:rw,nosuid,nodev,exec,mode=700,uid=1000,gid=1000".trim(),
@@ -243,7 +267,8 @@ function timeoutAfter(ms) {
 
 export async function runMechanicsProofContainers({ argv = process.argv, docker, nowMs = Date.now, runId = randomUUID() } = {}) {
   try {
-    const config = parseArgs(argv);
+    const parsed = parseArgs(argv);
+    const config = Object.freeze({ ...parsed, envFiles: await validateEnvFileRefs(parsed.envFiles) });
     if (!UUID.test(runId) || typeof nowMs !== "function") fail();
     const drySummary = Object.freeze({
       schema: "clockchain.mechanics-proof-two-container-plan/v1",
@@ -312,7 +337,11 @@ export async function runMechanicsProofContainers({ argv = process.argv, docker,
         ...[...ROLES].reverse().map((role) => containers[role] === undefined ? Promise.resolve() : docker.removeContainer(containers[role])),
         docker.removeNetwork(network),
       ]);
-      if (removals.some((result) => result.status === "rejected")) fail();
+      const absence = await Promise.allSettled([
+        ...[...ROLES].reverse().map((role) => containers[role] === undefined ? Promise.resolve() : docker.assertContainerAbsent(containers[role])),
+        docker.assertNetworkAbsent(network),
+      ]);
+      if ([...removals, ...absence].some((result) => result.status === "rejected")) fail();
     }
     const summary = Object.freeze({ ...proof, teardownObserved: true });
     await writeFile(join(config.evidenceDir, "two-container-summary.json"), `${JSON.stringify(summary)}\n`, { flag: "wx", mode: 0o600 });
@@ -320,16 +349,19 @@ export async function runMechanicsProofContainers({ argv = process.argv, docker,
   } catch (error) { sanitize(error); }
 }
 
-export function createDockerCliDriver() {
-  function run(args) {
-    const child = spawn("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
+export function createDockerCliDriver({ spawnImpl = spawn } = {}) {
+  function run(args, { expectFailure = false } = {}) {
+    const child = spawnImpl("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
     return new Promise((resolve, reject) => {
       let stdout = "";
       let stderr = "";
       child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
       child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8").slice(0, 4096); });
       child.on("error", reject);
-      child.on("close", (code) => code === 0 ? resolve(stdout.trim()) : reject(new Error(stderr || "docker failed")));
+      child.on("close", (code) => {
+        if (expectFailure ? code !== 0 : code === 0) resolve(stdout.trim());
+        else reject(new Error(stderr || "docker failed"));
+      });
     });
   }
   return Object.freeze({
@@ -342,6 +374,7 @@ export function createDockerCliDriver() {
     async createContainer(input) {
       const args = [
         "create", "--name", input.name, "--read-only", "--network", input.network,
+        "--network-alias", input.networkAlias,
         "--env-file", input.envFile, "--label", `clockchain.mechanics-proof.run-id=${input.labels["clockchain.mechanics-proof.run-id"]}`,
         "--label", `clockchain.mechanics-proof.role=${input.role}`,
       ];
@@ -352,8 +385,8 @@ export function createDockerCliDriver() {
       return Object.freeze({ id: id || input.name, role: input.role, name: input.name });
     },
     async attach(container) {
-      const child = spawn("docker", ["attach", "--no-stdin", container.name], { stdio: ["ignore", "pipe", "pipe"] });
-      const input = spawn("docker", ["attach", container.name], { stdio: ["pipe", "ignore", "pipe"] });
+      const child = spawnImpl("docker", ["attach", "--no-stdin", container.name], { stdio: ["ignore", "pipe", "pipe"] });
+      const input = spawnImpl("docker", ["attach", container.name], { stdio: ["pipe", "ignore", "pipe"] });
       const lines = createInterface({ input: child.stdout });
       const iterator = lines[Symbol.asyncIterator]();
       return Object.freeze({
@@ -375,6 +408,8 @@ export function createDockerCliDriver() {
     async start(container) { await run(["start", container.name]); },
     async removeContainer(container) { await run(["rm", "-f", container.name]); },
     async removeNetwork(network) { await run(["network", "rm", network.name ?? network.id]); },
+    async assertContainerAbsent(container) { await run(["container", "inspect", container.name], { expectFailure: true }); },
+    async assertNetworkAbsent(network) { await run(["network", "inspect", network.name ?? network.id], { expectFailure: true }); },
   });
 }
 

@@ -74,6 +74,58 @@ test("mechanics proof party entrypoint selects Claude Bedrock identity without A
   assert.doesNotMatch(stdout, /ANTHROPIC_API_KEY|cc_secret|privateKey/i);
 });
 
+test("mechanics proof party entrypoint accepts one private Codex subscription auth channel only", async () => {
+  const { stdout } = await execFileAsync(process.execPath, ["bin/mechanics-proof-party.mjs", "--capability-preflight"], {
+    cwd: process.cwd(),
+    env: env({
+      CLOCKCHAIN_CODEX_AUTH_SECRET_REF: undefined,
+      CLOCKCHAIN_CODEX_AUTH_JSON_BASE64: Buffer.from(JSON.stringify({ tokens: { access_token: "codex-access-secret", id_token: "codex-id-secret", refresh_token: "codex-refresh-secret" } }), "utf8").toString("base64"),
+      CLOCKCHAIN_CODEX_MODEL: "gpt-5.6-terra",
+    }),
+  });
+  const output = JSON.parse(stdout);
+  assert.equal(output.provider, "codex-subscription-auth");
+  assert.equal(output.providerCredentialValueAccepted, false);
+  assert.doesNotMatch(stdout, /codex-access-secret|codex-id-secret|codex-refresh-secret|CLOCKCHAIN_CODEX_AUTH_JSON_BASE64/i);
+  for (const candidate of [
+    env({ CLOCKCHAIN_CODEX_AUTH_JSON_BASE64: "abcd", CODEX_API_KEY: "codex-api-secret" }),
+    env({ CLOCKCHAIN_CODEX_AUTH_SECRET_REF: undefined, CLOCKCHAIN_CODEX_AUTH_JSON_BASE64: "abcd", OPENAI_API_KEY: "openai-api-secret" }),
+    env({ CLOCKCHAIN_CODEX_AUTH_SECRET_REF: undefined, CODEX_API_KEY: "codex-api-secret", OPENAI_API_KEY: "openai-api-secret" }),
+    env({ CLOCKCHAIN_CODEX_AUTH_SECRET_REF: undefined, CLOCKCHAIN_CODEX_AUTH_JSON_BASE64: undefined }),
+  ]) {
+    await assert.rejects(
+      () => execFileAsync(process.execPath, ["bin/mechanics-proof-party.mjs", "--capability-preflight"], { cwd: process.cwd(), env: candidate }),
+      /Command failed/,
+    );
+  }
+});
+
+test("mechanics proof party entrypoint rejects cross-role provider auth", async () => {
+  for (const candidate of [
+    env({
+      CLOCKCHAIN_CODEX_AUTH_SECRET_REF: undefined,
+      CLOCKCHAIN_CODEX_AUTH_JSON_BASE64: "abcd",
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      ANTHROPIC_MODEL: "us.anthropic.claude-sonnet-4-6",
+    }),
+    env({
+      CLOCKCHAIN_ROLE: "responder",
+      CLOCKCHAIN_CLIENT: "claude",
+      CLOCKCHAIN_A2A_PEER_ENDPOINT: "https://initiator.task.local:8443",
+      CLOCKCHAIN_CLAUDE_PROVIDER: "bedrock",
+      CLOCKCHAIN_BEDROCK_MODEL_ID: "us.anthropic.claude-sonnet-4-6",
+      CLOCKCHAIN_CODEX_AUTH_JSON_BASE64: "abcd",
+      CLOCKCHAIN_CODEX_MODEL: "gpt-5.6-terra",
+      CLOCKCHAIN_CODEX_AUTH_SECRET_REF: undefined,
+    }),
+  ]) {
+    await assert.rejects(
+      () => execFileAsync(process.execPath, ["bin/mechanics-proof-party.mjs", "--capability-preflight"], { cwd: process.cwd(), env: candidate }),
+      /Command failed/,
+    );
+  }
+});
+
 test("mechanics proof party entrypoint rejects controller signer material and unsafe modes", async () => {
   for (const candidate of [
     env({ CLOCKCHAIN_SIGNER_PRIVATE_KEY: "0x1234" }),

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -62,6 +63,7 @@ function peerDescriptor(overrides = {}) {
 }
 
 function dependencies(calls, overrides = {}) {
+  const { bridgeEvidence: customBridgeEvidence, ...dependencyOverrides } = overrides;
   const invitation = {
     async close() { calls.push("invitation.close"); return { closed: true }; },
     publicEvidence() { return { sessionId: PROTOCOL_SESSION_ID, invitations: [{ direction: "inbound" }] }; },
@@ -128,7 +130,7 @@ function dependencies(calls, overrides = {}) {
       calls.push("bridge.create");
       return {
         async destroy() { calls.push("bridge.destroy"); return { destroyed: true }; },
-        publicEvidence() { return bridgeEvidence; },
+        publicEvidence() { return customBridgeEvidence ?? bridgeEvidence; },
         observeToolResult() {},
       };
     },
@@ -139,7 +141,11 @@ function dependencies(calls, overrides = {}) {
         async launchSession(input) {
           calls.push("agent.launch");
           assert.equal(input.runtime.sessionId, RUN_ID);
-          assert.equal(input.a2aConfig.invitationPath.endsWith("/responder-invitation.txt"), true);
+          if (input.runtime.role === "responder") {
+            assert.equal(input.a2aConfig.invitationPath.endsWith("/responder-invitation.txt"), true);
+          } else {
+            assert.equal("invitationPath" in input.a2aConfig, false);
+          }
           return { sessionId: RUN_ID, role: "responder", harness: "claude" };
         },
         async terminateSession() { calls.push("agent.terminate"); return { terminated: true }; },
@@ -149,8 +155,38 @@ function dependencies(calls, overrides = {}) {
         },
       };
     },
-    ...overrides,
+    ...dependencyOverrides,
   };
+}
+
+async function usingTemporaryEnv(values, fn) {
+  const previous = {};
+  for (const key of Object.keys(values)) previous[key] = process.env[key];
+  for (const [key, value] of Object.entries(values)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+function codexSerializedAuth() {
+  return JSON.stringify({
+    auth_mode: "chatgpt",
+    last_refresh: "2026-08-12T00:00:00.000Z",
+    tokens: {
+      access_token: "codex-access-secret",
+      id_token: "codex-id-secret",
+      refresh_token: "codex-refresh-secret",
+      account_id: "acct-test",
+    },
+  });
 }
 
 test("one responder runtime listens before launch and returns only digest-bound terminal evidence", async (t) => {
@@ -190,6 +226,122 @@ test("one responder runtime listens before launch and returns only digest-bound 
   assert.doesNotMatch(JSON.stringify(events), /private-invitation|BEGIN|bootstrapPublicKey/i);
   for (const expected of ["agent.terminate", "bridge.destroy", "recorder.close", "invitation.close", "bootstrap.destroy", "tls.destroy"]) {
     assert.ok(calls.includes(expected), expected);
+  }
+});
+
+test("initiator runtime installs serialized Codex subscription auth into isolated HOME without leaking it", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-codex-auth-"));
+  const root = join(parent, "initiator");
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const serialized = codexSerializedAuth();
+  await usingTemporaryEnv({
+    CLOCKCHAIN_CODEX_AUTH_JSON_BASE64: Buffer.from(serialized, "utf8").toString("base64"),
+    CLOCKCHAIN_CODEX_MODEL: "gpt-5.6-terra",
+    CODEX_API_KEY: undefined,
+    OPENAI_API_KEY: undefined,
+    CLAUDE_CODE_USE_BEDROCK: undefined,
+    ANTHROPIC_MODEL: undefined,
+    AWS_ACCESS_KEY_ID: undefined,
+    AWS_SECRET_ACCESS_KEY: undefined,
+    AWS_SESSION_TOKEN: undefined,
+  }, async () => {
+    const calls = [];
+    const initiatorBridgeEvidence = {
+      ...dependencies([]).createBridge().publicEvidence(),
+      role: "initiator",
+      deliveries: [{
+        acknowledged: true,
+        artifactDigest: DIGEST,
+        artifactType: "proposal",
+        checkpointDigest: OTHER_DIGEST,
+        messageDigests: [DIGEST, OTHER_DIGEST],
+      }],
+    };
+    let transportEnv;
+    const runtime = await createMechanicsProofPartyRuntime(options(root, {
+      harness: "codex",
+      publicEndpoint: "https://initiator.task.local:8443",
+      role: "initiator",
+      runtimeId: "runtime-initiator",
+      taskId: "task-initiator",
+    }), dependencies(calls, {
+      bridgeEvidence: initiatorBridgeEvidence,
+      createProcessTransport(input) {
+        calls.push("transport.create");
+        transportEnv = input.env;
+        const installed = readFileSync(join(root, "home", ".codex", "auth.json"), "utf8");
+        assert.deepEqual(JSON.parse(installed), JSON.parse(serialized));
+        return {};
+      },
+    }));
+    const evidence = await runtime.run({
+      peerDescriptor: peerDescriptor({
+        harness: "claude",
+        role: "responder",
+        runtime: {
+          endpoint: "https://responder.task.local:8443",
+          runtimeId: "runtime-responder",
+          taskId: "task-responder",
+          tlsCertificateSha256: OTHER_DIGEST,
+          workloadAttestationDigest: OTHER_DIGEST,
+        },
+      }),
+    });
+    assert.equal(evidence.role, "initiator");
+    assert.equal(transportEnv.CLOCKCHAIN_CODEX_MODEL, "gpt-5.6-terra");
+    assert.equal("CLOCKCHAIN_CODEX_AUTH_JSON_BASE64" in transportEnv, false);
+    assert.equal("CODEX_API_KEY" in transportEnv, false);
+    assert.equal("OPENAI_API_KEY" in transportEnv, false);
+    assert.doesNotMatch(JSON.stringify({ evidence, calls, transportEnv }), /codex-access-secret|codex-id-secret|codex-refresh-secret|CLOCKCHAIN_CODEX_AUTH_JSON_BASE64/i);
+  });
+});
+
+test("party runtime rejects mixed and cross-role provider authentication", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-auth-reject-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const serialized = Buffer.from(codexSerializedAuth(), "utf8").toString("base64");
+  for (const [name, harness, envValues] of [
+    ["codex-missing", "codex", {}],
+    ["codex-mixed", "codex", { CLOCKCHAIN_CODEX_AUTH_JSON_BASE64: serialized, CODEX_API_KEY: "codex-api-secret", OPENAI_API_KEY: undefined }],
+    ["codex-claude-env", "codex", { CLAUDE_CODE_USE_BEDROCK: "1", ANTHROPIC_MODEL: "us.anthropic.claude-sonnet-4-6", CLOCKCHAIN_CODEX_AUTH_JSON_BASE64: serialized }],
+    ["claude-codex-env", "claude", { CLOCKCHAIN_CODEX_AUTH_JSON_BASE64: serialized, CLOCKCHAIN_CODEX_MODEL: "gpt-5.6-terra" }],
+    ["claude-anthropic-key", "claude", { ANTHROPIC_API_KEY: "anthropic-secret", CLAUDE_CODE_USE_BEDROCK: "1", ANTHROPIC_MODEL: "us.anthropic.claude-sonnet-4-6" }],
+  ]) {
+    await usingTemporaryEnv({
+      CLOCKCHAIN_CODEX_AUTH_JSON_BASE64: undefined,
+      CODEX_API_KEY: undefined,
+      OPENAI_API_KEY: undefined,
+      CLOCKCHAIN_CODEX_MODEL: undefined,
+      CLAUDE_CODE_USE_BEDROCK: undefined,
+      ANTHROPIC_MODEL: undefined,
+      AWS_ACCESS_KEY_ID: undefined,
+      AWS_SECRET_ACCESS_KEY: undefined,
+      AWS_SESSION_TOKEN: undefined,
+      ANTHROPIC_API_KEY: undefined,
+      ...envValues,
+    }, async () => {
+      const root = join(parent, name);
+      const runtime = await createMechanicsProofPartyRuntime(options(root, {
+        harness,
+        publicEndpoint: harness === "codex" ? "https://initiator.task.local:8443" : "https://responder.task.local:8443",
+        role: harness === "codex" ? "initiator" : "responder",
+        runtimeId: `runtime-${name}`,
+        taskId: `task-${name}`,
+      }), dependencies([]));
+      await assert.rejects(() => runtime.run({
+        peerDescriptor: peerDescriptor(harness === "codex" ? {
+          harness: "claude",
+          role: "responder",
+          runtime: {
+            endpoint: "https://responder.task.local:8443",
+            runtimeId: "runtime-responder",
+            taskId: "task-responder",
+            tlsCertificateSha256: OTHER_DIGEST,
+            workloadAttestationDigest: OTHER_DIGEST,
+          },
+        } : {}),
+      }), /Mechanics proof party runtime failed safely/);
+    });
   }
 });
 

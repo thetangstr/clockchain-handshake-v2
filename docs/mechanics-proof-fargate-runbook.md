@@ -73,6 +73,17 @@ PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/run-mechanics-proof-contai
   --max-concurrency 2
 ```
 
-Credential files are role-specific and private. The controller treats their paths as references only; credential values must not appear in argv, labels, compose YAML, logs, or retained evidence. For the local matrix, the initiator env file may provide Codex auth plus `CLOCKCHAIN_CODEX_MODEL=gpt-5.6-terra`; the responder env file uses Claude Bedrock with `CLAUDE_CODE_USE_BEDROCK=1`, `ANTHROPIC_MODEL=us.anthropic.claude-sonnet-4-6`, region, and exactly one AWS credential mechanism. `ANTHROPIC_API_KEY` is rejected.
+Credential files are role-specific and private. Before dry-run or run success, both env-file references are checked with `lstat`: each path must be absolute and normalized, regular, non-symlink, nonempty, bounded to 64 KiB, owned by the current user where POSIX ownership is available, mode `0600`, and a distinct inode/device pair. The controller treats these paths as references only; it never reads or retains credential values, and those values must not appear in argv, labels, compose YAML, logs, or retained evidence.
+
+For the local matrix, the initiator env file may provide exactly one Codex auth mechanism. Subscription-backed Codex auth is carried as a role-private base64 env-file value and installed inside the initiator's isolated runtime HOME as `$HOME/.codex/auth.json`; it is mutually exclusive with `CODEX_API_KEY` and `OPENAI_API_KEY`. Prepare the initiator file with a local command shaped like this, then inspect only file metadata:
+
+```bash
+umask 077
+node -e 'const fs=require("node:fs"); const path=require("node:path"); const source=path.join(process.env.HOME,".codex","auth.json"); const stat=fs.lstatSync(source); if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0 || stat.size < 2 || stat.size > 65536) process.exit(1); process.stdout.write("CLOCKCHAIN_CODEX_AUTH_JSON_BASE64="+fs.readFileSync(source).toString("base64")+"\nCLOCKCHAIN_CODEX_MODEL=gpt-5.6-terra\n");' \
+  > /private/tmp/clockchain-mechanics-proof-initiator.env
+chmod 600 /private/tmp/clockchain-mechanics-proof-initiator.env
+```
+
+The responder env file uses Claude Bedrock only: `CLAUDE_CODE_USE_BEDROCK=1`, `ANTHROPIC_MODEL=us.anthropic.claude-sonnet-4-6`, region, and exactly one AWS credential mechanism. For the local Docker canary, a responder-only static AWS trio is allowed when needed: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optional `AWS_SESSION_TOKEN`. ECS/web-identity credential mechanisms remain supported for later Fargate. Mixed mechanisms, cross-role provider variables, and `ANTHROPIC_API_KEY` are rejected.
 
 The retained proof is `two-container-summary.json` only after protocol validation and exact teardown both succeed. It contains the matching verified certificate digest, distinct party/runtime/workload identities, fresh public ERC-8004 registration facts, each role's direct delivery and checkpoint acknowledgment, exactly three matching Clockchain receipt summaries, `externalBusinessActionPerformed:false`, zero exits, and `teardownObserved:true`. Cleanup failure makes the command fail and prevents verified evidence retention.

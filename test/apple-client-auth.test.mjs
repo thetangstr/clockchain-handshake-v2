@@ -36,7 +36,7 @@ test("Codex authentication is the only existing state installed into a disposabl
     "codex-access-secret", "codex-id-secret", "codex-refresh-secret",
   ]);
   const destination = await installAppleClientAuthentication({ authentication, home });
-  assert.equal(destination, join(home, "auth.json"));
+  assert.equal(destination, join(home, ".codex", "auth.json"));
   assert.deepEqual(JSON.parse(await readFile(destination, "utf8")), value);
   assert.equal((await stat(destination)).mode & 0o777, 0o600);
 });

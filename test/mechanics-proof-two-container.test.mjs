@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { EventEmitter } from "node:events";
+import { chmod, link, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import {
+  createDockerCliDriver,
   runMechanicsProofContainers,
   validateMechanicsProofContainerPair,
 } from "../scripts/run-mechanics-proof-containers.mjs";
@@ -140,17 +142,39 @@ function fakeDocker(calls) {
     async removeNetwork(network) {
       calls.push(["network.remove", network.id]);
     },
+    async assertContainerAbsent(container) {
+      calls.push(["container.absent", container.role]);
+    },
+    async assertNetworkAbsent(network) {
+      calls.push(["network.absent", network.id]);
+    },
     processes,
   };
 }
 
-function successfulArgs(evidenceDir) {
+async function privateEnvFiles(t, { sameInode = false } = {}) {
+  const root = await mkdtemp(join(tmpdir(), "mechanics-proof-env-files-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const initiator = join(root, "initiator.env");
+  const responder = join(root, "responder.env");
+  await writeFile(initiator, "CLOCKCHAIN_CODEX_AUTH_JSON_BASE64=placeholder\n", { mode: 0o600 });
+  if (sameInode) {
+    await link(initiator, responder);
+  } else {
+    await writeFile(responder, "CLAUDE_CODE_USE_BEDROCK=1\n", { mode: 0o600 });
+  }
+  await chmod(initiator, 0o600);
+  if (!sameInode) await chmod(responder, 0o600);
+  return { initiator, responder, root };
+}
+
+function successfulArgs(evidenceDir, envFiles) {
   return [
     "node", "runner", "--run",
     "--app-image", IMAGE,
     "--mcp-endpoint", MCP,
-    "--initiator-env-file", "/private/tmp/init.env",
-    "--responder-env-file", "/private/tmp/resp.env",
+    "--initiator-env-file", envFiles.initiator,
+    "--responder-env-file", envFiles.responder,
     "--evidence-dir", evidenceDir,
     "--ttl-seconds", "600",
     "--max-concurrency", "2",
@@ -160,10 +184,11 @@ function successfulArgs(evidenceDir) {
 test("two-container controller enforces isolated roots, descriptor swap order, proof validation, and cleanup", async (t) => {
   const evidenceDir = await mkdtemp(join(tmpdir(), "mechanics-proof-two-container-"));
   t.after(() => rm(evidenceDir, { recursive: true, force: true }));
+  const envFiles = await privateEnvFiles(t);
   const calls = [];
   const docker = fakeDocker(calls);
   const summary = await runMechanicsProofContainers({
-    argv: successfulArgs(evidenceDir),
+    argv: successfulArgs(evidenceDir, envFiles),
     docker,
     nowMs: () => 1786337160000,
     runId: RUN_ID,
@@ -183,6 +208,7 @@ test("two-container controller enforces isolated roots, descriptor swap order, p
     assert.equal(config.image, IMAGE);
     assert.equal(config.readOnlyRootfs, true);
     assert.equal(config.network, "network-id");
+    assert.equal(config.networkAlias, `${config.role}.task.local`);
     assert.deepEqual(config.mounts, []);
     assert.deepEqual(config.command, ["--run"]);
     assert.equal("user" in config, false);
@@ -198,19 +224,21 @@ test("two-container controller enforces isolated roots, descriptor swap order, p
   assert.equal(calls.findIndex((call) => call[0] === "container.start" && call[1] === "responder") <
     calls.findIndex((call) => call[0] === "stdin.write" && call[1] === "initiator"), true);
   assert.deepEqual(calls.filter((call) => call[0] === "container.remove").map((call) => call[1]).sort(), ["initiator", "responder"]);
-  assert.equal(calls.at(-1)[0], "network.remove");
+  assert.deepEqual(calls.filter((call) => call[0] === "container.absent").map((call) => call[1]).sort(), ["initiator", "responder"]);
+  assert.equal(calls.at(-1)[0], "network.absent");
 });
 
 test("two-container dry-run validates immutable inputs without touching Docker or leaking credential refs", async (t) => {
   const evidenceDir = await mkdtemp(join(tmpdir(), "mechanics-proof-two-container-dry-"));
   t.after(() => rm(evidenceDir, { recursive: true, force: true }));
+  const envFiles = await privateEnvFiles(t);
   const summary = await runMechanicsProofContainers({
     argv: [
       "node", "runner", "--dry-run",
       "--app-image", IMAGE,
       "--mcp-endpoint", MCP,
-      "--initiator-env-file", "/private/tmp/init.env",
-      "--responder-env-file", "/private/tmp/resp.env",
+      "--initiator-env-file", envFiles.initiator,
+      "--responder-env-file", envFiles.responder,
       "--evidence-dir", evidenceDir,
       "--ttl-seconds", "600",
       "--max-concurrency", "2",
@@ -220,15 +248,15 @@ test("two-container dry-run validates immutable inputs without touching Docker o
   assert.equal(summary.mode, "dry-run");
   assert.equal(summary.networkInternal, false);
   assert.equal(summary.sharedVolumes, false);
-  assert.doesNotMatch(JSON.stringify(summary), /init\.env|resp\.env|secret|token|credential/i);
+  assert.doesNotMatch(JSON.stringify(summary), /initiator\.env|responder\.env|secret|token|credential/i);
   await assert.rejects(
     () => runMechanicsProofContainers({
       argv: [
         "node", "runner", "--dry-run",
         "--app-image", "node:24",
         "--mcp-endpoint", MCP,
-        "--initiator-env-file", "/private/tmp/init.env",
-        "--responder-env-file", "/private/tmp/resp.env",
+        "--initiator-env-file", envFiles.initiator,
+        "--responder-env-file", envFiles.responder,
         "--evidence-dir", evidenceDir,
         "--ttl-seconds", "600",
         "--max-concurrency", "2",
@@ -238,9 +266,51 @@ test("two-container dry-run validates immutable inputs without touching Docker o
   );
 });
 
+test("two-container env-file refs are private regular distinct files for dry-run and run", async (t) => {
+  const evidenceDir = await mkdtemp(join(tmpdir(), "mechanics-proof-two-container-env-reject-"));
+  t.after(() => rm(evidenceDir, { recursive: true, force: true }));
+  const safe = await privateEnvFiles(t);
+  const open = await privateEnvFiles(t);
+  await chmod(open.initiator, 0o640);
+  await assert.rejects(
+    () => runMechanicsProofContainers({ argv: successfulArgs(evidenceDir, open).with(2, "--dry-run") }),
+    /Mechanics proof container runner failed safely/,
+  );
+  const empty = await privateEnvFiles(t);
+  await writeFile(empty.initiator, "", { mode: 0o600 });
+  await assert.rejects(
+    () => runMechanicsProofContainers({ argv: successfulArgs(evidenceDir, empty).with(2, "--dry-run") }),
+    /Mechanics proof container runner failed safely/,
+  );
+  const hardlink = await privateEnvFiles(t, { sameInode: true });
+  await assert.rejects(
+    () => runMechanicsProofContainers({ argv: successfulArgs(evidenceDir, hardlink).with(2, "--dry-run") }),
+    /Mechanics proof container runner failed safely/,
+  );
+  const symlinkCase = await privateEnvFiles(t);
+  await rm(symlinkCase.responder);
+  await symlink(safe.responder, symlinkCase.responder);
+  await assert.rejects(
+    () => runMechanicsProofContainers({ argv: successfulArgs(evidenceDir, symlinkCase).with(2, "--dry-run") }),
+    /Mechanics proof container runner failed safely/,
+  );
+  const missing = { initiator: join(evidenceDir, "missing.env"), responder: safe.responder };
+  await assert.rejects(
+    () => runMechanicsProofContainers({ argv: successfulArgs(evidenceDir, missing).with(2, "--dry-run") }),
+    /Mechanics proof container runner failed safely/,
+  );
+  const oversize = await privateEnvFiles(t);
+  await writeFile(oversize.initiator, "A".repeat(65 * 1024), { mode: 0o600 });
+  await assert.rejects(
+    () => runMechanicsProofContainers({ argv: successfulArgs(evidenceDir, oversize).with(2, "--dry-run") }),
+    /Mechanics proof container runner failed safely/,
+  );
+});
+
 test("two-container controller does not retain verified evidence when exact teardown fails", async (t) => {
   const evidenceDir = await mkdtemp(join(tmpdir(), "mechanics-proof-two-container-teardown-"));
   t.after(() => rm(evidenceDir, { recursive: true, force: true }));
+  const envFiles = await privateEnvFiles(t);
   const calls = [];
   const docker = fakeDocker(calls);
   docker.removeNetwork = async () => {
@@ -249,7 +319,7 @@ test("two-container controller does not retain verified evidence when exact tear
   };
   await assert.rejects(
     () => runMechanicsProofContainers({
-      argv: successfulArgs(evidenceDir),
+      argv: successfulArgs(evidenceDir, envFiles),
       docker,
       nowMs: () => 1786337160000,
       runId: RUN_ID,
@@ -257,6 +327,65 @@ test("two-container controller does not retain verified evidence when exact tear
     /Mechanics proof container runner failed safely/,
   );
   assert.deepEqual(calls.filter((call) => call[0] === "container.remove").map((call) => call[1]).sort(), ["initiator", "responder"]);
+  await assert.rejects(() => readFile(join(evidenceDir, "two-container-summary.json")), { code: "ENOENT" });
+});
+
+test("two-container teardown fails if Docker reports removed resources still present", async (t) => {
+  const evidenceDir = await mkdtemp(join(tmpdir(), "mechanics-proof-two-container-absent-"));
+  t.after(() => rm(evidenceDir, { recursive: true, force: true }));
+  const envFiles = await privateEnvFiles(t);
+  const calls = [];
+  const docker = fakeDocker(calls);
+  docker.assertContainerAbsent = async (container) => {
+    calls.push(["container.present", container.role]);
+    if (container.role === "initiator") throw new Error("still present");
+  };
+  await assert.rejects(
+    () => runMechanicsProofContainers({
+      argv: successfulArgs(evidenceDir, envFiles),
+      docker,
+      nowMs: () => 1786337160000,
+      runId: RUN_ID,
+    }),
+    /Mechanics proof container runner failed safely/,
+  );
+  assert.equal(calls.some((call) => call[0] === "network.absent"), true);
+  await assert.rejects(() => readFile(join(evidenceDir, "two-container-summary.json")), { code: "ENOENT" });
+});
+
+test("real Docker driver argv includes per-role network aliases and not credential values", async () => {
+  const calls = [];
+  function fakeSpawn(command, args) {
+    calls.push([command, args]);
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    queueMicrotask(() => {
+      child.stdout.emit("data", Buffer.from("created-id\n"));
+      child.emit("close", 0);
+    });
+    return child;
+  }
+  const driver = createDockerCliDriver({ spawnImpl: fakeSpawn });
+  await driver.createContainer({
+    role: "initiator",
+    name: "container-name",
+    image: IMAGE,
+    readOnlyRootfs: true,
+    network: "network-id",
+    networkAlias: "initiator.task.local",
+    envFile: "/private/tmp/private.env",
+    tmpfs: ["/workspace:rw,nosuid,nodev,exec,mode=700,uid=1000,gid=1000"],
+    labels: { "clockchain.mechanics-proof.run-id": RUN_ID, "clockchain.mechanics-proof.role": "initiator" },
+    env: { CLOCKCHAIN_MCP_URL: MCP },
+    command: ["--run"],
+  });
+  const args = calls[0][1];
+  assert.equal(args.includes("--network-alias"), true);
+  assert.equal(args[args.indexOf("--network-alias") + 1], "initiator.task.local");
+  assert.equal(args.includes("--env-file"), true);
+  assert.equal(args.includes("/private/tmp/private.env"), true);
+  assert.doesNotMatch(args.join(" "), /secret|token|credential/i);
 });
 
 test("two-container proof rejects fake success missing required public proof", () => {
@@ -283,6 +412,34 @@ test("two-container proof rejects fake success missing required public proof", (
       initiator: terminal("initiator"),
       responder: terminal("responder"),
       exits: { initiator: { code: 0 }, responder: { code: 1 } },
+      teardownObserved: true,
+    }),
+    /Mechanics proof container runner failed safely/,
+  );
+  assert.throws(
+    () => validateMechanicsProofContainerPair({
+      initiator: terminal("initiator", {
+        identity: {
+          ...terminal("initiator").identity,
+          erc8004: { ...terminal("initiator").identity.erc8004, reference: "eip155:11155111:wrong:9452" },
+        },
+      }),
+      responder: terminal("responder"),
+      exits: { initiator: { code: 0 }, responder: { code: 0 } },
+      teardownObserved: true,
+    }),
+    /Mechanics proof container runner failed safely/,
+  );
+  assert.throws(
+    () => validateMechanicsProofContainerPair({
+      initiator: terminal("initiator", {
+        identity: {
+          ...terminal("initiator").identity,
+          erc8004: { ...terminal("initiator").identity.erc8004, agentId: "09452" },
+        },
+      }),
+      responder: terminal("responder"),
+      exits: { initiator: { code: 0 }, responder: { code: 0 } },
       teardownObserved: true,
     }),
     /Mechanics proof container runner failed safely/,
