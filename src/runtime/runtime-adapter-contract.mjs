@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 
 export const RUNTIME_EVIDENCE_SCHEMA = "clockchain.runtime-evidence/v1";
 export const LOCAL_RUNTIME_EVIDENCE_SCHEMA = "clockchain.local-runtime-evidence/v1";
+export const FARGATE_LIVE_RESULT_SCHEMA = "clockchain.fargate-live-result/v1";
+export const FARGATE_LIVE_STATUS_SUCCEEDED = "SUCCEEDED";
+export const FARGATE_LIVE_STATUS_CLEANUP_UNCONFIRMED = "CLEANUP_UNCONFIRMED";
+export const FARGATE_LIVE_STATUS_PROTOCOL_FAILED_CLEAN = "PROTOCOL_FAILED_CLEAN";
 
 const ROLES = Object.freeze(["initiator", "responder"]);
 const SHA = /^[0-9a-f]{64}$/;

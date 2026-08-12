@@ -1,0 +1,194 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { createAwsCliControlPlane } from "../src/runtime/aws-cli-control-plane.mjs";
+
+test("AWS CLI control plane uses only execFile aws argv and parses JSON responses", async () => {
+  const calls = [];
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    executor: async (file, argv, options) => {
+      calls.push({ file, argv, options });
+      assert.equal(file, "aws");
+      assert.equal(argv.includes("--output"), true);
+      assert.equal(argv.at(-1), "json");
+      assert.equal(argv.includes("--region"), true);
+      assert.equal(argv[argv.indexOf("--region") + 1], "us-west-2");
+      return { stdout: JSON.stringify({ Account: "123456789012", Arn: "arn:aws:iam::123456789012:user/controller", UserId: "AIDA" }), stderr: "", exitCode: 0 };
+    },
+  });
+
+  assert.deepEqual(await control.getCallerIdentity(), {
+    accountId: "123456789012",
+    arn: "arn:aws:iam::123456789012:user/controller",
+    userId: "AIDA",
+  });
+  assert.deepEqual(calls[0].argv, ["sts", "get-caller-identity", "--region", "us-west-2", "--output", "json"]);
+});
+
+test("AWS CLI control plane rejects unexpected commands, non-json, stderr, timeout, oversized output, or shell-shaped input", async () => {
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    executor: async () => ({ stdout: "not-json", stderr: "", exitCode: 0 }),
+  });
+  await assert.rejects(() => control.callAws(["sts", "get-caller-identity", "--region", "us-west-2", "--output", "json"]), /AWS CLI control-plane validation failed safely/);
+
+  for (const executor of [
+    async () => ({ stdout: "{}", stderr: "warning", exitCode: 0 }),
+    async () => ({ stdout: "{}", stderr: "", exitCode: 1 }),
+    async () => ({ stdout: "{}".padEnd(2_000_000, " "), stderr: "", exitCode: 0 }),
+    async () => { const error = new Error("timeout"); error.killed = true; throw error; },
+    async () => { const error = new Error("signal"); error.signal = "SIGTERM"; throw error; },
+    async () => ({ stdout: JSON.stringify({ StackResourceSummaries: [] }), stderr: "", exitCode: 0 }),
+  ]) {
+    const bad = createAwsCliControlPlane({ region: "us-west-2", executor });
+    await assert.rejects(() => bad.listStackResources({ stackName: "clockchain-11111111-2222-4333-8444-555555555555" }), /AWS CLI control-plane validation failed safely/);
+  }
+
+  const safe = createAwsCliControlPlane({ region: "us-west-2", executor: async () => ({ stdout: "{}", stderr: "", exitCode: 0 }) });
+  await assert.rejects(() => safe.callAws(["cloudformation", "delete-stack;rm", "--region", "us-west-2", "--output", "json"]), /AWS CLI control-plane validation failed safely/);
+  await assert.rejects(() => safe.callAws(["s3", "ls", "--region", "us-west-2", "--output", "json"]), /AWS CLI control-plane validation failed safely/);
+  await assert.rejects(() => safe.callAws(["sts", "get-caller-identity", "--region", "us-east-1", "--output", "json"]), /AWS CLI control-plane validation failed safely/);
+  await assert.rejects(() => safe.getCallerIdentity(), /AWS CLI control-plane validation failed safely/);
+});
+
+test("AWS CLI control plane accepts empty wait/delete output but does not treat auth failures as absent", async () => {
+  const calls = [];
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    executor: async (file, argv) => {
+      calls.push(argv);
+      if (argv[0] === "cloudformation" && argv[1] === "wait") return { stdout: "", stderr: "", exitCode: 0 };
+      if (argv[0] === "cloudformation" && argv[1] === "delete-stack") return { stdout: "", stderr: "", exitCode: 0 };
+      return { stdout: JSON.stringify({ __type: "AccessDenied", message: "denied" }), stderr: "", exitCode: 254 };
+    },
+  });
+  await assert.doesNotReject(() => control.waitStackDeleteComplete({ stackName: "clockchain-11111111-2222-4333-8444-555555555555" }));
+  await assert.doesNotReject(() => control.deleteStack({ stackName: "clockchain-11111111-2222-4333-8444-555555555555" }));
+  await assert.rejects(() => control.stackExists({ stackName: "clockchain-11111111-2222-4333-8444-555555555555" }), /AWS CLI control-plane validation failed safely/);
+});
+
+test("AWS CLI control plane has exact allowlisted argv shapes for Task 4 actions", async () => {
+  const calls = [];
+  const responseFor = (argv) => {
+    const key = argv.slice(0, argv[0] === "cloudformation" && argv[1] === "wait" || argv[0] === "ecs" && argv[1] === "wait" ? 3 : 2).join(" ");
+    if (key === "sts get-caller-identity") return { Account: "123456789012", Arn: "arn:aws:iam::123456789012:user/controller", UserId: "AIDA" };
+    if (key === "cloudformation describe-stacks") return { Stacks: [{ Outputs: [{ OutputKey: "ClusterArn", OutputValue: "arn:aws:ecs:us-west-2:123456789012:cluster/c" }] }] };
+    if (key === "cloudformation list-stack-resources") return { StackResourceSummaries: [{ StackId: "stack-id", LogicalResourceId: "Cluster", PhysicalResourceId: "cluster", ResourceType: "AWS::ECS::Cluster" }] };
+    if (key === "ecs register-task-definition") return { taskDefinition: { taskDefinitionArn: "arn:aws:ecs:us-west-2:123456789012:task-definition/x:1" } };
+    if (key === "ecs run-task") return { tasks: [{ taskArn: "arn:aws:ecs:us-west-2:123456789012:task/c/t" }], failures: [] };
+    if (key === "logs filter-log-events") {
+      const role = argv.includes("/clockchain/mechanics-proof/run/responder") ? "responder" : "initiator";
+      return { events: [
+        { message: JSON.stringify({ schema: "clockchain.mechanics-proof-party-evidence/v1", runId: "11111111-2222-4333-8444-555555555555", protocolSessionId: "protocol-session-1", role, harness: role === "initiator" ? "codex" : "claude", runtimeId: `runtime-${role}`, workloadAttestationDigest: "1".repeat(64), peerRuntimeId: role === "initiator" ? "runtime-responder" : "runtime-initiator", bridgeEvidenceDigest: "2".repeat(64), harnessEvidenceDigest: "3".repeat(64), certificateProofDigest: "4".repeat(64), certificateDigest: "a".repeat(64), identity: {}, anchors: [], directDelivery: { acknowledged: true }, externalBusinessActionPerformed: false, terminalStatus: "completed", teardown: { completed: true } }) },
+      ] };
+    }
+    return {};
+  };
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    executor: async (file, argv) => {
+      calls.push([file, argv]);
+      return { stdout: JSON.stringify(responseFor(argv)), stderr: "", exitCode: 0 };
+    },
+  });
+  const stackName = "clockchain-11111111-2222-4333-8444-555555555555";
+  await control.getCallerIdentity();
+  await control.validateTemplate({ templateBody: "{}" });
+  await control.stackExists({ stackName });
+  await control.createStack({ stackName, templateBody: "{}", parameters: [], capabilities: ["CAPABILITY_NAMED_IAM"] });
+  await control.waitStackCreateComplete({ stackName });
+  await control.describeStackOutputs({ stackName });
+  await control.listStackResources({ stackName });
+  await control.registerTaskDefinition({ taskDefinition: { family: "x" } });
+  await control.runTask({ cluster: "cluster", taskDefinitionArn: "td", role: "initiator", networkConfiguration: { awsvpcConfiguration: { assignPublicIp: "DISABLED" } }, startedBy: "run" });
+  await control.waitTasksStopped({ cluster: "cluster", taskArns: ["task-a", "task-b"] });
+  await control.stopTask({ cluster: "cluster", taskArn: "task-a", role: "initiator" });
+  await control.deregisterTaskDefinition({ taskDefinitionArn: "td", role: "initiator" });
+  await control.deleteStack({ stackName });
+  await control.waitStackDeleteComplete({ stackName });
+  await control.pollPublicEvents({ logGroupNames: ["/clockchain/mechanics-proof/run/initiator", "/clockchain/mechanics-proof/run/responder"], deadlineMs: Date.now() + 1000 });
+
+  for (const [file, argv] of calls) {
+    assert.equal(file, "aws");
+    assert.equal(argv.includes("--region"), true);
+    assert.equal(argv.includes("--output"), true);
+    assert.equal(argv.at(-1), "json");
+    assert.doesNotMatch(JSON.stringify(argv), /secret|cookie|authorization|;|&&|\|/i);
+  }
+});
+
+test("AWS CLI control plane derives VPC inspection only from explicit subnet, route, and CIDR queries", async () => {
+  const calls = [];
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    executor: async (file, argv) => {
+      calls.push(argv);
+      const key = argv.slice(0, 2).join(" ");
+      const body = key === "ec2 describe-vpcs"
+        ? { Vpcs: [{ VpcId: "vpc-live", CidrBlockAssociationSet: [{ CidrBlock: "10.44.0.0/16" }] }] }
+        : key === "ec2 describe-subnets"
+          ? { Subnets: [
+            { SubnetId: "subnet-public", VpcId: "vpc-live", CidrBlock: "10.44.1.0/24", AvailabilityZone: "us-west-2a", MapPublicIpOnLaunch: true },
+            { SubnetId: "subnet-existing-private", VpcId: "vpc-live", CidrBlock: "10.44.32.0/24", AvailabilityZone: "us-west-2b", MapPublicIpOnLaunch: false },
+          ] }
+          : { RouteTables: [{ RouteTableId: "rtb-public", Routes: [{ DestinationCidrBlock: "0.0.0.0/0", GatewayId: "igw-live", State: "active" }], Associations: [{ SubnetId: "subnet-public" }] }] };
+      return { stdout: JSON.stringify(body), stderr: "", exitCode: 0 };
+    },
+  });
+  const inspection = await control.inspectNetwork({
+    vpcId: "vpc-live",
+    publicSubnetId: "subnet-public",
+    initiatorPrivateCidr: "10.44.16.0/24",
+    responderPrivateCidr: "10.44.17.0/24",
+  });
+  assert.equal(inspection.publicSubnet.mapPublicIpOnLaunch, true);
+  assert.equal(inspection.publicSubnet.routeTableId, "rtb-public");
+  assert.deepEqual(inspection.existingSubnets.map((subnet) => subnet.subnetId).sort(), ["subnet-existing-private", "subnet-public"]);
+  assert.equal(calls.length, 3);
+});
+
+test("AWS CLI control plane reconciles run-scoped task definitions and tasks, then polls exact role log groups", async () => {
+  const seen = [];
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    executor: async (file, argv) => {
+      seen.push(argv);
+      const key = argv.slice(0, argv[0] === "ecs" && argv[1] === "wait" ? 3 : 2).join(" ");
+      if (key === "cloudformation describe-stacks") return { stdout: JSON.stringify({ Stacks: [{ StackId: "stack-id", StackName: "clockchain-11111111-2222-4333-8444-555555555555", Outputs: [{ OutputKey: "ClusterArn", OutputValue: "cluster" }] }] }), stderr: "", exitCode: 0 };
+      if (key === "ecs list-task-definitions") return { stdout: JSON.stringify({ taskDefinitionArns: ["arn:aws:ecs:us-west-2:123456789012:task-definition/clockchain-11111111-2222-4333-8444-555555555555-initiator:1"] }), stderr: "", exitCode: 0 };
+      if (key === "ecs list-tasks") return { stdout: JSON.stringify({ taskArns: ["arn:aws:ecs:us-west-2:123456789012:task/cluster/task-i"] }), stderr: "", exitCode: 0 };
+      if (key === "ecs describe-tasks") return { stdout: JSON.stringify({ tasks: [{ taskArn: "arn:aws:ecs:us-west-2:123456789012:task/cluster/task-i", startedBy: "11111111-2222-4333-8444-555555555555", group: "family:clockchain-11111111-2222-4333-8444-555555555555-initiator" }] }), stderr: "", exitCode: 0 };
+      const role = argv.includes("/clockchain/mechanics-proof/run/responder") ? "responder" : "initiator";
+      return { stdout: JSON.stringify({ events: [
+        { message: JSON.stringify({ schema: "clockchain.fargate-runtime-attestation/v1", runId: "11111111-2222-4333-8444-555555555555" }) },
+        { message: JSON.stringify({ schema: "clockchain.mechanics-proof-party-evidence/v1", runId: "11111111-2222-4333-8444-555555555555", protocolSessionId: "protocol-session-1", role, harness: role === "initiator" ? "codex" : "claude", runtimeId: `runtime-${role}`, workloadAttestationDigest: "1".repeat(64), peerRuntimeId: role === "initiator" ? "runtime-responder" : "runtime-initiator", bridgeEvidenceDigest: "2".repeat(64), harnessEvidenceDigest: "3".repeat(64), certificateProofDigest: "4".repeat(64), certificateDigest: "a".repeat(64), identity: {}, anchors: [], directDelivery: { acknowledged: true }, externalBusinessActionPerformed: false, terminalStatus: "completed", teardown: { completed: true } }) },
+      ] }), stderr: "", exitCode: 0 };
+    },
+  });
+  const stackName = "clockchain-11111111-2222-4333-8444-555555555555";
+  assert.equal((await control.reconcileCreatedStack({ stackName })).clusterArn, "cluster");
+  assert.deepEqual(await control.reconcileTaskDefinitions({ stackName }), [{ role: "initiator", taskDefinitionArn: "arn:aws:ecs:us-west-2:123456789012:task-definition/clockchain-11111111-2222-4333-8444-555555555555-initiator:1" }]);
+  assert.deepEqual(await control.reconcileTasks({ stackName, cluster: "cluster" }), [{ role: "initiator", taskArn: "arn:aws:ecs:us-west-2:123456789012:task/cluster/task-i" }]);
+  const events = await control.pollPublicEvents({ logGroupNames: ["/clockchain/mechanics-proof/run/initiator", "/clockchain/mechanics-proof/run/responder"], runId: "11111111-2222-4333-8444-555555555555", deadlineMs: Date.now() + 1000 });
+  assert.equal(events.length, 2);
+  assert.equal(seen.some((argv) => argv.includes("--started-by") && argv.includes("11111111-2222-4333-8444-555555555555")), true);
+});
+
+test("AWS CLI control plane log polling rejects conflicting duplicate terminal roles deterministically", async () => {
+  let slept = 0;
+  const terminal = (digest) => ({ schema: "clockchain.mechanics-proof-party-evidence/v1", runId: "11111111-2222-4333-8444-555555555555", protocolSessionId: "protocol-session-1", role: "initiator", harness: "codex", runtimeId: "runtime-initiator", workloadAttestationDigest: "1".repeat(64), peerRuntimeId: "runtime-responder", bridgeEvidenceDigest: "2".repeat(64), harnessEvidenceDigest: "3".repeat(64), certificateProofDigest: "4".repeat(64), certificateDigest: digest, identity: {}, anchors: [], directDelivery: { acknowledged: true }, externalBusinessActionPerformed: false, terminalStatus: "completed", teardown: { completed: true } });
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    now: () => 1000 + slept,
+    sleep: async (ms) => { slept += ms; },
+    executor: async () => ({ stdout: JSON.stringify({ events: [
+      { message: JSON.stringify(terminal("a".repeat(64))) },
+      { message: JSON.stringify(terminal("b".repeat(64))) },
+    ] }), stderr: "", exitCode: 0 }),
+  });
+  await assert.rejects(() => control.pollPublicEvents({
+    logGroupNames: ["/clockchain/mechanics-proof/run/initiator", "/clockchain/mechanics-proof/run/responder"],
+    deadlineMs: 2000,
+  }), /AWS CLI control-plane validation failed safely/);
+});
