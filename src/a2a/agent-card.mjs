@@ -7,6 +7,7 @@ import {
   assertToken,
   assertUrl,
   assertWindow,
+  addressFromPublicKey,
   digest,
   exact,
   invalid,
@@ -88,17 +89,22 @@ export async function verifyA2AAgentCard({
   expectedPeerCardDigest = null,
   nowMs,
   seenJtis = null,
+  seenNonces = null,
 }) {
   const verified = signedCard(card);
   if (
     verified.sessionId !== expectedSessionId ||
     verified.role !== expectedRole ||
     (expectedPeerCardDigest !== null && verified.peerCardDigest !== expectedPeerCardDigest) ||
-    verified.signature.address !== verified.partySignerAddress
+    verified.signature.address !== verified.partySignerAddress ||
+    addressFromPublicKey(verified.partySignerPublicKey) !== verified.partySignerAddress ||
+    addressFromPublicKey(verified.a2aCardPublicKey) === verified.partySignerAddress
   ) invalid();
   assertWindow({ issuedAtMs: verified.issuedAtMs, expiresAtMs: verified.expiresAtMs, nowMs });
-  if (seenJtis?.has(verified.jti)) invalid();
+  if (seenJtis?.has(verified.jti) || seenNonces?.has(verified.nonce)) invalid();
   const payload = Object.fromEntries(CARD_KEYS.map((key) => [key, verified[key]]));
   if (await recoverSigner(payload, verified.signature.value) !== verified.partySignerAddress) invalid();
+  seenJtis?.add(verified.jti);
+  seenNonces?.add(verified.nonce);
   return verified;
 }

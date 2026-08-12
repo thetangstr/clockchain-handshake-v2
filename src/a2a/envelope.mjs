@@ -8,6 +8,7 @@ import {
   assertDigest,
   assertToken,
   assertWindow,
+  addressFromPublicKey,
   digest,
   exact,
   invalid,
@@ -89,7 +90,7 @@ export function a2aEnvelopeDigest(value) {
 export async function signA2AEnvelope({ envelope, fromCard, toCard, signMessage }) {
   const payload = unsignedEnvelope(envelope);
   if (payload.fromCardDigest !== a2aAgentCardDigest(fromCard) || payload.toCardDigest !== a2aAgentCardDigest(toCard)) invalid();
-  const signatureValue = await signPayload({ payload, signerAddress: fromCard.partySignerAddress, signMessage });
+  const signatureValue = await signPayload({ payload, signerAddress: addressFromPublicKey(fromCard.a2aCardPublicKey), signMessage });
   return signedEnvelope({ ...payload, signature: signatureValue });
 }
 
@@ -100,11 +101,11 @@ export async function verifyA2AEnvelope({ envelope, fromCard, toCard, nowMs }) {
     verified.sessionId !== toCard.sessionId ||
     verified.fromCardDigest !== a2aAgentCardDigest(fromCard) ||
     verified.toCardDigest !== a2aAgentCardDigest(toCard) ||
-    verified.signature.address !== fromCard.partySignerAddress
+    verified.signature.address !== addressFromPublicKey(fromCard.a2aCardPublicKey)
   ) invalid();
   assertWindow({ issuedAtMs: fromCard.issuedAtMs, expiresAtMs: verified.expiresAtMs, nowMs });
   const payload = Object.fromEntries(ENVELOPE_KEYS.map((key) => [key, verified[key]]));
-  if (await recoverSigner(payload, verified.signature.value) !== fromCard.partySignerAddress) invalid();
+  if (await recoverSigner(payload, verified.signature.value) !== addressFromPublicKey(fromCard.a2aCardPublicKey)) invalid();
   if (verified.body !== null) {
     await assertSignedArtifact({
       body: verified.body,

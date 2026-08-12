@@ -1,4 +1,5 @@
 import { recoverMessageAddress } from "viem";
+import { publicKeyToAddress } from "viem/accounts";
 import { createHash } from "node:crypto";
 import { types } from "node:util";
 
@@ -118,6 +119,15 @@ export function assertAddress(value) {
 export function assertPublicKey(value) {
   if (typeof value !== "string" || !PUBLIC_KEY.test(value)) invalid();
   return value;
+}
+
+export function addressFromPublicKey(value) {
+  assertPublicKey(value);
+  try {
+    return publicKeyToAddress(value).toLowerCase();
+  } catch {
+    invalid();
+  }
 }
 
 export function assertToken(value) {

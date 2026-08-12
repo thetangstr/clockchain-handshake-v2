@@ -11,6 +11,8 @@ import { createDirectTaskChannel } from "../src/a2a/direct-task-channel.mjs";
 const SESSION_ID = "11111111-2222-4333-8444-555555555555";
 const INITIATOR = privateKeyToAccount(`0x${"1".repeat(64)}`);
 const RESPONDER = privateKeyToAccount(`0x${"2".repeat(64)}`);
+const INITIATOR_CARD = privateKeyToAccount(`0x${"6".repeat(64)}`);
+const RESPONDER_CARD = privateKeyToAccount(`0x${"7".repeat(64)}`);
 
 function unsignedCard(account, role, peerCardDigest = null) {
   return {
@@ -19,8 +21,8 @@ function unsignedCard(account, role, peerCardDigest = null) {
     sessionId: SESSION_ID,
     role,
     partySignerAddress: account.address.toLowerCase(),
-    partySignerPublicKey: `0x${role === "initiator" ? "a" : "b"}`.padEnd(132, role === "initiator" ? "a" : "b"),
-    a2aCardPublicKey: `0x${role === "initiator" ? "c" : "d"}`.padEnd(132, role === "initiator" ? "c" : "d"),
+    partySignerPublicKey: account.publicKey,
+    a2aCardPublicKey: role === "initiator" ? INITIATOR_CARD.publicKey : RESPONDER_CARD.publicKey,
     workloadAttestationDigest: role === "initiator" ? "4".repeat(64) : "5".repeat(64),
     runtimeId: `runtime-${role}`,
     taskId: `task-${role}`,
@@ -34,13 +36,13 @@ function unsignedCard(account, role, peerCardDigest = null) {
   };
 }
 
-async function pair() {
+async function pair(overrides = {}) {
   const responder = await signA2AAgentCard({
-    card: unsignedCard(RESPONDER, "responder"),
+    card: { ...unsignedCard(RESPONDER, "responder"), ...overrides.responder },
     signMessage: (raw) => RESPONDER.signMessage({ message: { raw } }),
   });
   const initiator = await signA2AAgentCard({
-    card: unsignedCard(INITIATOR, "initiator", a2aAgentCardDigest(responder)),
+    card: { ...unsignedCard(INITIATOR, "initiator", a2aAgentCardDigest(responder)), ...overrides.initiator },
     signMessage: (raw) => INITIATOR.signMessage({ message: { raw } }),
   });
   return { initiator, responder };
@@ -77,7 +79,7 @@ async function message({ fromAccount, fromCard, toCard, sequence, previousMessag
     },
     fromCard,
     toCard,
-    signMessage: (raw) => fromAccount.signMessage({ message: { raw } }),
+    signMessage: (raw) => (fromAccount === INITIATOR ? INITIATOR_CARD : RESPONDER_CARD).signMessage({ message: { raw } }),
   });
 }
 
@@ -105,6 +107,61 @@ test("direct task channel delivers private bodies while evidence retains only pu
     "toRole",
   ]);
   assert.doesNotMatch(JSON.stringify(evidence), /transcript|private reasoning|body|ciphertext/);
+});
+
+test("direct task channel rejects reused card jti or nonce during bootstrap", async () => {
+  const reusedJti = await pair({ initiator: { jti: "shared-jti" }, responder: { jti: "shared-jti" } });
+  await assert.rejects(
+    () => createDirectTaskChannel({
+      sessionId: SESSION_ID,
+      initiatorCard: reusedJti.initiator,
+      responderCard: reusedJti.responder,
+      nowMs: 1500,
+    }),
+    /A2A verification failed safely/,
+    "reused jti",
+  );
+  const reusedNonce = await pair({ initiator: { nonce: "shared-nonce" }, responder: { nonce: "shared-nonce" } });
+  await assert.rejects(
+    () => createDirectTaskChannel({
+      sessionId: SESSION_ID,
+      initiatorCard: reusedNonce.initiator,
+      responderCard: reusedNonce.responder,
+      nowMs: 1500,
+    }),
+    /A2A verification failed safely/,
+    "reused nonce",
+  );
+});
+
+test("direct task channel rejects collapsed A2A card keys and nondeterministic peer bootstrap pins", async () => {
+  const sharedCardKey = await pair({
+    responder: { a2aCardPublicKey: INITIATOR_CARD.publicKey },
+  });
+  await assert.rejects(
+    () => createDirectTaskChannel({
+      sessionId: SESSION_ID,
+      initiatorCard: sharedCardKey.initiator,
+      responderCard: sharedCardKey.responder,
+      nowMs: 1500,
+    }),
+    /A2A verification failed safely/,
+    "shared delegated key",
+  );
+
+  const arbitraryResponderPin = await pair({
+    responder: { peerCardDigest: "9".repeat(64) },
+  });
+  await assert.rejects(
+    () => createDirectTaskChannel({
+      sessionId: SESSION_ID,
+      initiatorCard: arbitraryResponderPin.initiator,
+      responderCard: arbitraryResponderPin.responder,
+      nowMs: 1500,
+    }),
+    /A2A verification failed safely/,
+    "responder cannot pin arbitrary bootstrap peer",
+  );
 });
 
 test("direct task channel rejects replay, nonmonotonic sequence, and broken predecessor chains", async () => {

@@ -20,6 +20,8 @@ const SESSION_ID = "11111111-2222-4333-8444-555555555555";
 const INITIATOR = privateKeyToAccount(`0x${"1".repeat(64)}`);
 const RESPONDER = privateKeyToAccount(`0x${"2".repeat(64)}`);
 const DIRECTOR = privateKeyToAccount(`0x${"3".repeat(64)}`);
+const INITIATOR_CARD = privateKeyToAccount(`0x${"6".repeat(64)}`);
+const RESPONDER_CARD = privateKeyToAccount(`0x${"7".repeat(64)}`);
 
 function cardPayload(account, role) {
   return {
@@ -28,8 +30,8 @@ function cardPayload(account, role) {
     sessionId: SESSION_ID,
     role,
     partySignerAddress: account.address.toLowerCase(),
-    partySignerPublicKey: `0x${role === "initiator" ? "a" : "b"}`.padEnd(132, role === "initiator" ? "a" : "b"),
-    a2aCardPublicKey: `0x${role === "initiator" ? "c" : "d"}`.padEnd(132, role === "initiator" ? "c" : "d"),
+    partySignerPublicKey: account.publicKey,
+    a2aCardPublicKey: role === "initiator" ? INITIATOR_CARD.publicKey : RESPONDER_CARD.publicKey,
     workloadAttestationDigest: role === "initiator" ? "4".repeat(64) : "5".repeat(64),
     runtimeId: `runtime-${role}`,
     taskId: `task-${role}`,
@@ -87,7 +89,7 @@ test("A2A envelopes bind card digests, artifact signatures, sequence, and predec
     },
     fromCard: initiator,
     toCard: responder,
-    signMessage: (raw) => INITIATOR.signMessage({ message: { raw } }),
+    signMessage: (raw) => INITIATOR_CARD.signMessage({ message: { raw } }),
   });
 
   const verified = await verifyA2AEnvelope({ envelope, fromCard: initiator, toCard: responder, nowMs: 1500 });
@@ -116,12 +118,18 @@ test("A2A envelopes reject changed digest, director-authored artifacts, expiry, 
     },
     fromCard: initiator,
     toCard: responder,
-    signMessage: (raw) => INITIATOR.signMessage({ message: { raw } }),
+    signMessage: (raw) => INITIATOR_CARD.signMessage({ message: { raw } }),
   });
   const directorArtifact = await signedArtifact(DIRECTOR, { statement: "proposal", amount: "100" });
   const { signature: _signature, ...unsignedEnvelope } = envelope;
   const directorEnvelope = await signA2AEnvelope({
     envelope: { ...unsignedEnvelope, artifactDigest: a2aEnvelopeDigest({ artifact: directorArtifact }), body: directorArtifact },
+    fromCard: initiator,
+    toCard: responder,
+    signMessage: (raw) => INITIATOR_CARD.signMessage({ message: { raw } }),
+  });
+  const partySignedEnvelope = await signA2AEnvelope({
+    envelope: unsignedEnvelope,
     fromCard: initiator,
     toCard: responder,
     signMessage: (raw) => INITIATOR.signMessage({ message: { raw } }),
@@ -131,6 +139,7 @@ test("A2A envelopes reject changed digest, director-authored artifacts, expiry, 
     ["changed digest", { ...envelope, artifactDigest: "9".repeat(64) }],
     ["director artifact", directorEnvelope],
     ["wrong card", { ...envelope, fromCardDigest: "8".repeat(64) }],
+    ["party signer instead of delegated card key", partySignedEnvelope],
     ["extra key", { ...envelope, transcript: "raw private reasoning" }],
     ["expired", envelope, 2500],
   ]) {

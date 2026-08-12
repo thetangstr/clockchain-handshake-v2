@@ -1,4 +1,5 @@
-import { canonicalBytes } from "../../core/canonical.mjs";
+import { canonicalBytes, digestHex } from "../../core/canonical.mjs";
+import { verifyAgentHandshakeV2CommitmentCheckpointPath } from "./commitment-checkpoint.mjs";
 import { verifyAgentHandshakeV2DescriptorEnvelope, agentHandshakeV2DescriptorDigest } from "./descriptor.mjs";
 import { verifyAgentHandshakeV2Evidence } from "./evidence.mjs";
 import {
@@ -15,12 +16,14 @@ function invalid(){throw new AgentHandshakeV2VerdictError();}
 function receipt(value,kind,digest){if(value===null||typeof value!=="object"||Array.isArray(value)||Object.keys(value).length!==5||!["blockHeight","blockTimeRaw","digest","kind","ledgerId"].every((key)=>Object.hasOwn(value,key))||value.kind!==kind||value.digest!==digest||!DECIMAL.test(value.blockHeight)||typeof value.blockTimeRaw!=="string"||value.blockTimeRaw.length===0||!UUID.test(value.ledgerId))invalid();return Object.freeze({...value});}
 function receiptTime(value){if(!UTC_TIME.test(value))invalid();const time=Date.parse(value);if(!Number.isSafeInteger(time))invalid();return time;}
 export async function verifyAgentHandshakeV2Authorization({
+  commitmentCheckpoints=null,
   acceptanceEnvelope,descriptorEnvelope,evidence,expectedHostSessionKeyCertificateDigest,
   expectedPublicKey,expectedRepositorySha,expectedSessionId,expectedTerms,nowMs,
-  proposalEnvelope,receipts,resolveRegistration,transitions,
+  proposalEnvelope,receipts,requireCommitmentCheckpoints=false,resolveRegistration,transitions,
 }){
   let terms;try{terms=validateAgentHandshakeV2Terms(expectedTerms);}catch{invalid();}
   if(!Number.isSafeInteger(nowMs))invalid();
+  if(typeof requireCommitmentCheckpoints!=="boolean")invalid();
   let descriptor,chain;try{descriptor=verifyAgentHandshakeV2DescriptorEnvelope(descriptorEnvelope,{expectedHostSessionKeyCertificateDigest,expectedPublicKey}).descriptor;chain=validateAgentHandshakeV2TransitionChain(transitions);}catch{invalid();}
   const transitionDigests=chain.map(agentHandshakeV2TransitionDigest);
   if(!Array.isArray(receipts)||receipts.length!==3)invalid();
@@ -28,11 +31,23 @@ export async function verifyAgentHandshakeV2Authorization({
   if(BigInt(verifiedReceipts[0].blockHeight)>=BigInt(verifiedReceipts[1].blockHeight)||BigInt(verifiedReceipts[1].blockHeight)>=BigInt(verifiedReceipts[2].blockHeight))invalid();
   const receiptTimes=verifiedReceipts.map((entry)=>receiptTime(entry.blockTimeRaw));
   if(receiptTimes[0]>=receiptTimes[1]||receiptTimes[1]>=receiptTimes[2])invalid();
-  const proposal=await verifyAgentHandshakeV2Proposal({envelope:proposalEnvelope,expectedRepositorySha,expectedSessionId,expectedTerms:terms,nowMs:receiptTimes[1]});
-  const acceptance=await verifyAgentHandshakeV2Acceptance({envelope:acceptanceEnvelope,proposalEnvelope,expectedRepositorySha,expectedSessionId,expectedTerms:terms,nowMs:receiptTimes[1]});
+  let proposal,acceptance;try{
+    proposal=await verifyAgentHandshakeV2Proposal({envelope:proposalEnvelope,expectedRepositorySha,expectedSessionId,expectedTerms:terms,nowMs:receiptTimes[1]});
+    acceptance=await verifyAgentHandshakeV2Acceptance({envelope:acceptanceEnvelope,proposalEnvelope,expectedRepositorySha,expectedSessionId,expectedTerms:terms,nowMs:receiptTimes[1]});
+  }catch{invalid();}
   if(receiptTimes[0]<Number(proposal.payload.issuedAtMs)||receiptTimes[1]<Number(acceptance.payload.issuedAtMs))invalid();
   if(descriptor.sessionId!==expectedSessionId||descriptor.repositorySha!==expectedRepositorySha||descriptor.reference!==terms.reference||descriptor.statementDigest!==proposal.payload.statementDigest||descriptor.agreementExpiresAtMs!==proposal.payload.expiresAtMs||agentHandshakeV2DescriptorDigest(descriptor)!==chain[0].sessionDigest||!canonicalBytes(descriptor.initiator).equals(canonicalBytes(proposal.payload.initiator))||!canonicalBytes(descriptor.responder).equals(canonicalBytes(proposal.payload.responder))||acceptance.payload.proposalDigest===undefined)invalid();
   const parties={initiator:descriptor.initiator,responder:descriptor.responder};
+  if(commitmentCheckpoints!==null||requireCommitmentCheckpoints===true){
+    if(!Array.isArray(commitmentCheckpoints))invalid();
+    try{await verifyAgentHandshakeV2CommitmentCheckpointPath({
+      checkpoints:commitmentCheckpoints,
+      expectedSessionId,
+      partySigners:{initiator:parties.initiator.sessionKeyAddress,responder:parties.responder.sessionKeyAddress},
+      terminalArtifacts:{proposalDigest:digestHex(proposalEnvelope),acceptanceDigest:digestHex(acceptanceEnvelope)},
+      nowMs:receiptTimes[1],
+    });}catch{invalid();}
+  }
   if(parties.initiator.sessionKeyAddress===parties.responder.sessionKeyAddress||parties.initiator.policyDigest===parties.responder.policyDigest)invalid();
   if(terms.identityPolicy.erc8004!=="not_required"){
     if(parties.initiator.erc8004.agentId===parties.responder.erc8004.agentId||typeof resolveRegistration!=="function")invalid();

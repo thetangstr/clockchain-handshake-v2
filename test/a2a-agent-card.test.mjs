@@ -14,6 +14,8 @@ const SESSION_ID = "11111111-2222-4333-8444-555555555555";
 const INITIATOR = privateKeyToAccount(`0x${"1".repeat(64)}`);
 const RESPONDER = privateKeyToAccount(`0x${"2".repeat(64)}`);
 const DIRECTOR = privateKeyToAccount(`0x${"3".repeat(64)}`);
+const INITIATOR_CARD = privateKeyToAccount(`0x${"6".repeat(64)}`);
+const RESPONDER_CARD = privateKeyToAccount(`0x${"7".repeat(64)}`);
 
 function baseCard(account, role, overrides = {}) {
   return {
@@ -22,8 +24,8 @@ function baseCard(account, role, overrides = {}) {
     sessionId: SESSION_ID,
     role,
     partySignerAddress: account.address.toLowerCase(),
-    partySignerPublicKey: `0x${role === "initiator" ? "a" : "b"}`.padEnd(132, role === "initiator" ? "a" : "b"),
-    a2aCardPublicKey: `0x${role === "initiator" ? "c" : "d"}`.padEnd(132, role === "initiator" ? "c" : "d"),
+    partySignerPublicKey: account.publicKey,
+    a2aCardPublicKey: role === "initiator" ? INITIATOR_CARD.publicKey : RESPONDER_CARD.publicKey,
     workloadAttestationDigest: role === "initiator" ? "4".repeat(64) : "5".repeat(64),
     runtimeId: `runtime-${role}`,
     taskId: `task-${role}`,
@@ -99,10 +101,58 @@ test("A2A agent cards reject signature, peer, expiry, replay id, and schema drif
     "expired",
   );
 
-  const seenJtis = new Set([card.jti]);
+  const seenJtis = new Set();
+  const seenNonces = new Set();
+  await verifyA2AAgentCard({ card, expectedSessionId: SESSION_ID, expectedRole: "initiator", nowMs: 1500, seenJtis, seenNonces });
+  assert.equal(seenJtis.has(card.jti), true);
+  assert.equal(seenNonces.has(card.nonce), true);
   await assert.rejects(
-    () => verifyA2AAgentCard({ card, expectedSessionId: SESSION_ID, expectedRole: "initiator", nowMs: 1500, seenJtis }),
+    () => verifyA2AAgentCard({ card, expectedSessionId: SESSION_ID, expectedRole: "initiator", nowMs: 1500, seenJtis, seenNonces }),
     /A2A verification failed safely/,
     "replayed jti",
+  );
+});
+
+test("A2A agent cards reject party public keys that do not derive to the party signer address", async () => {
+  const responder = await signedCard(RESPONDER, "responder");
+  const mismatch = await signA2AAgentCard({
+    card: baseCard(INITIATOR, "initiator", {
+      partySignerPublicKey: RESPONDER.publicKey,
+      peerCardDigest: a2aAgentCardDigest(responder),
+    }),
+    signMessage: (raw) => INITIATOR.signMessage({ message: { raw } }),
+  });
+
+  await assert.rejects(
+    () => verifyA2AAgentCard({
+      card: mismatch,
+      expectedSessionId: SESSION_ID,
+      expectedRole: "initiator",
+      expectedPeerCardDigest: a2aAgentCardDigest(responder),
+      nowMs: 1500,
+    }),
+    /A2A verification failed safely/,
+  );
+});
+
+test("A2A agent cards require a delegated card key distinct from the party signer", async () => {
+  const responder = await signedCard(RESPONDER, "responder");
+  const collapsed = await signA2AAgentCard({
+    card: baseCard(INITIATOR, "initiator", {
+      a2aCardPublicKey: INITIATOR.publicKey,
+      peerCardDigest: a2aAgentCardDigest(responder),
+    }),
+    signMessage: (raw) => INITIATOR.signMessage({ message: { raw } }),
+  });
+
+  await assert.rejects(
+    () => verifyA2AAgentCard({
+      card: collapsed,
+      expectedSessionId: SESSION_ID,
+      expectedRole: "initiator",
+      expectedPeerCardDigest: a2aAgentCardDigest(responder),
+      nowMs: 1500,
+    }),
+    /A2A verification failed safely/,
   );
 });

@@ -4,6 +4,8 @@ import { invalid } from "./auth.mjs";
 
 export async function createDirectTaskChannel({ sessionId, initiatorCard, responderCard, nowMs }) {
   const responderDigest = a2aAgentCardDigest(responderCard);
+  const seenCardJtis = new Set();
+  const seenCardNonces = new Set();
   const cards = Object.freeze({
     initiator: await verifyA2AAgentCard({
       card: initiatorCard,
@@ -11,14 +13,19 @@ export async function createDirectTaskChannel({ sessionId, initiatorCard, respon
       expectedRole: "initiator",
       expectedPeerCardDigest: responderDigest,
       nowMs,
+      seenJtis: seenCardJtis,
+      seenNonces: seenCardNonces,
     }),
     responder: await verifyA2AAgentCard({
       card: responderCard,
       expectedSessionId: sessionId,
       expectedRole: "responder",
       nowMs,
+      seenJtis: seenCardJtis,
+      seenNonces: seenCardNonces,
     }),
   });
+  if (cards.responder.peerCardDigest !== null || cards.initiator.a2aCardPublicKey.toLowerCase() === cards.responder.a2aCardPublicKey.toLowerCase()) invalid();
   const queues = { initiator: [], responder: [] };
   const seenNonces = new Set();
   const lastByDirection = new Map();
