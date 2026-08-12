@@ -40,6 +40,7 @@ export const CLOCKCHAIN_HANDSHAKE_TOOLS = Object.freeze([
   "agent_handshake_submit",
   "agent_handshake_get_certificate",
 ]);
+const CLOCKCHAIN_HELPER_ACTION_TOOLS = Object.freeze(new Set(CLOCKCHAIN_HANDSHAKE_TOOLS));
 const CLAUDE_INVITE_TOOL = "mcp__clockchain-handshake__agent_handshake_invite";
 export const VERIFIED_HELPER_BOOTSTRAP = 'const fs=require("node:fs");const crypto=require("node:crypto");const Module=require("node:module");const argv=process.argv.slice(1);const expected=argv.shift();const manifestPath=argv.shift();const helperPath=argv.shift();const manifestBytes=fs.readFileSync(manifestPath);const manifestDigest=crypto.createHash("sha256").update(manifestBytes).digest("hex");if(manifestDigest!==expected)process.exit(86);const manifest=JSON.parse(manifestBytes);if(manifest.schema!=="clockchain.agent-handshake-release-manifest/v1"||manifest.version!=="2.1.2"||!/^24\\./.test(manifest.nodeRuntime)||!/^24\\./.test(process.versions.node)||!Array.isArray(manifest.assets)||manifest.assets.length!==1)process.exit(86);const asset=manifest.assets[0];if(asset.filename!=="clockchain-agent-handshake.cjs"||asset.url!=="https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/clockchain-agent-handshake.cjs"||typeof asset.sha256!=="string"||!/^[0-9a-f]{64}$/.test(asset.sha256))process.exit(86);const helperBytes=fs.readFileSync(helperPath);const helperDigest=crypto.createHash("sha256").update(helperBytes).digest("hex");if(helperDigest!==asset.sha256)process.exit(86);process.argv=[process.execPath].concat(helperPath).concat(argv);const loaded=new Module(helperPath);loaded.filename=helperPath;loaded.paths=[];const compile=loaded._compile.bind(loaded);compile(...[helperBytes.toString("utf8")].concat(helperPath));';
 
@@ -1225,15 +1226,15 @@ function expectedHelperCommand(value) {
   });
 }
 
-function collectExpectedHelperCommands(value, found = [], seen = new Set()) {
+function collectExpectedHelperCommandsFromPayload(value, found = [], seen = new Set()) {
   if (typeof value === "string") {
     const parsed = parseJsonString(value);
-    if (parsed !== null) collectExpectedHelperCommands(parsed, found, seen);
+    if (parsed !== null) collectExpectedHelperCommandsFromPayload(parsed, found, seen);
     return found;
   }
   if (value === null || typeof value !== "object") return found;
   if (Array.isArray(value)) {
-    for (const entry of value) collectExpectedHelperCommands(entry, found, seen);
+    for (const entry of value) collectExpectedHelperCommandsFromPayload(entry, found, seen);
     return found;
   }
   const localAction = value.localAction;
@@ -1260,12 +1261,60 @@ function collectExpectedHelperCommands(value, found = [], seen = new Set()) {
     }
   }
   for (const entry of Object.values(value)) {
-    collectExpectedHelperCommands(entry, found, seen);
+    collectExpectedHelperCommandsFromPayload(entry, found, seen);
   }
   return found;
 }
 
-function bindHelperExecution(command, expectedHelperCommands) {
+function collectExpectedHelperCommands(event, state) {
+  if (event?.type === "item.completed") {
+    if (
+      event.item?.type === "mcp_tool_call" &&
+      CLOCKCHAIN_HELPER_ACTION_TOOLS.has(event.item.tool) &&
+      event.item.status === "completed" &&
+      event.item.result !== null && typeof event.item.result === "object" && !Array.isArray(event.item.result)
+    ) {
+      return collectExpectedHelperCommandsFromPayload(event.item.result);
+    }
+    return [];
+  }
+  if (event?.type === "assistant" && Array.isArray(event?.message?.content)) {
+    for (const block of event.message.content) {
+      if (block?.type !== "tool_use") continue;
+      if (typeof block.id !== "string" || block.id.length === 0 || typeof block.name !== "string") fail();
+      const prefix = "mcp__clockchain-handshake__";
+      if (!block.name.startsWith(prefix)) continue;
+      const tool = block.name.slice(prefix.length);
+      if (!CLOCKCHAIN_HELPER_ACTION_TOOLS.has(tool)) continue;
+      if (state.claudeHelperToolUseIds.has(block.id) || state.claudeCompletedHelperToolUseIds.has(block.id)) {
+        fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
+      }
+      state.claudeHelperToolUseIds.add(block.id);
+      if (state.claudeHelperToolUseIds.size > 10_000) fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
+    }
+    return [];
+  }
+  if (event?.type === "user" && Array.isArray(event?.message?.content)) {
+    let found = [];
+    for (const block of event.message.content) {
+      if (block?.type !== "tool_result") continue;
+      if (typeof block.tool_use_id !== "string" || block.tool_use_id.length === 0) fail();
+      if (!state.claudeHelperToolUseIds.has(block.tool_use_id)) continue;
+      state.claudeHelperToolUseIds.delete(block.tool_use_id);
+      if (state.claudeCompletedHelperToolUseIds.has(block.tool_use_id)) {
+        fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
+      }
+      state.claudeCompletedHelperToolUseIds.add(block.tool_use_id);
+      if (state.claudeCompletedHelperToolUseIds.size > 10_000) fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
+      if (block.is_error === true || typeof block.content !== "string") continue;
+      found = collectExpectedHelperCommandsFromPayload(block.content, found);
+    }
+    return found;
+  }
+  return [];
+}
+
+function bindHelperExecution(command, expectedHelperCommands, helperExecutionState) {
   const expected = expectedHelperCommands[0];
   if (expected === undefined) {
     const actual = fingerprintHelperExecutionCommand(command);
@@ -1307,6 +1356,13 @@ function bindHelperExecution(command, expectedHelperCommands) {
       sessionId: actual.state?.sessionId ?? null,
     }),
   });
+  if (
+    helperExecutionState.consumedActionDigests.has(expected.commandSha256) &&
+    (approvalDigest === expected.commandSha256 || actual.commandSha256 === expected.commandSha256)
+  ) {
+    traceLifecycle({ phase: "helper-action-replayed", details });
+    fail("agent-exit", "validation", "HELPER_ACTION_REPLAYED", details);
+  }
   if (expected.approvalCommand !== null && !approvalMatches) {
     traceLifecycle({ phase: "helper-command-mismatch", details });
     fail("agent-exit", "validation", "HELPER_COMMAND_MISMATCH", details);
@@ -1365,19 +1421,21 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
     typeof event.item.command === "string"
   ) {
     const command = unwrapCodexCommandExecution(event.item.command);
-    const binding = bindHelperExecution(command, expectedHelperCommands);
+    const binding = bindHelperExecution(command, expectedHelperCommands, helperExecutionState);
     if (
       binding.bound &&
       (event.item.status === "failed" || (event.item.status === "completed" && event.item.exit_code !== 0))
     ) {
       helperExecutionState.failed = true;
       helperExecutionState.details = binding.details;
+      helperExecutionState.consumedActionDigests.add(binding.expected.commandSha256);
     }
     if (event.item.status !== "completed" || event.item.exit_code !== 0) return null;
     const output = parsedHelperOutput(event.item.aggregated_output, role);
     if (binding.bound && !output.matched) fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
     consumeHelperExecution(binding, expectedHelperCommands);
     const proof = output.proof;
+    if (proof !== null && !binding.bound) return null;
     if (proof === null) return null;
     const verifiedCommand = binding.bound ? binding.expected.shellCommand : command;
     HELPER_CERTIFICATE_BINDINGS.set(proof, validateVerifyCertificateCommand(verifiedCommand, proof, manifestDigest));
@@ -1394,10 +1452,11 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
       const command = helperShaped
         ? stripLiteralShellLineContinuations(rawCommand)
         : rawCommand;
-      const binding = bindHelperExecution(command, expectedHelperCommands);
+      const binding = bindHelperExecution(command, expectedHelperCommands, helperExecutionState);
       claudeBashCommands.set(block.id, Object.freeze({
         command: binding.bound ? binding.expected.shellCommand : command,
         details: binding.bound ? binding.details : null,
+        expectedDigest: binding.bound ? binding.expected.commandSha256 : null,
       }));
     }
     return null;
@@ -1411,6 +1470,9 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
       if (execution !== null && typeof execution === "object" && typeof execution.command === "string") {
         helperExecutionState.failed = true;
         helperExecutionState.details = execution.details;
+        if (typeof execution.expectedDigest === "string") {
+          helperExecutionState.consumedActionDigests.add(execution.expectedDigest);
+        }
         claudeBashCommands.set(block.tool_use_id, null);
       }
       continue;
@@ -1437,6 +1499,7 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
     }
     const parsed = output.proof;
     if (parsed === null) continue;
+    if (execution.details === null) continue;
     const command = execution.command;
     HELPER_CERTIFICATE_BINDINGS.set(parsed, validateVerifyCertificateCommand(command, parsed, manifestDigest));
     claudeBashCommands.set(block.tool_use_id, null);
@@ -1474,16 +1537,18 @@ function observeChild(child, role, all, canaries, { adapter, expectedInvitation,
       claudeToolUseIds: new Set(),
       claudeInviteToolUseIds: new Set(),
       claudeCompletedToolUseIds: new Set(),
+      claudeHelperToolUseIds: new Set(),
+      claudeCompletedHelperToolUseIds: new Set(),
     };
     const claudeBashCommands = new Map();
     const expectedHelperCommands = [];
-    const helperExecutionState = { failed: false, details: null };
+    const helperExecutionState = { consumedActionDigests: new Set(), failed: false, details: null };
     let settled = false;
     function processLine(line) {
       if (line.trim().length === 0) return;
       let event;
       try { event = JSON.parse(line); } catch { fail(); }
-      const discoveredHelperCommands = collectExpectedHelperCommands(event);
+      const discoveredHelperCommands = collectExpectedHelperCommands(event, invitationState);
       for (const command of discoveredHelperCommands) {
         if (command.approvalCommand !== null) adapter.record(command);
       }

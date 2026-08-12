@@ -194,11 +194,31 @@ function codexExpectedHelperEvent(command) {
   });
 }
 
-function claudeExpectedHelperEvent(command, options) {
-  return streamEvent({
+function claudeExpectedHelperEvent(command, options = {}) {
+  const {
+    id = "mcp-tool",
+    includeToolUse = true,
+    isError = false,
+    name = "mcp__clockchain-handshake__agent_handshake_next",
+    toolResultId = id,
+  } = options;
+  const result = JSON.stringify({ localAction: { helperStep: helperStep(command, options) } });
+  return (includeToolUse ? streamEvent({
+    type: "assistant",
+    message: { content: [{ type: "tool_use", id, name, input: {} }] },
+  }) : "") + streamEvent({
     type: "user",
-    message: { content: [{ type: "tool_result", tool_use_id: "mcp-tool", content: JSON.stringify({ localAction: { helperStep: helperStep(command, options) } }), is_error: false }] },
+    message: { content: [{ type: "tool_result", tool_use_id: toolResultId, content: result, is_error: isError }] },
   });
+}
+
+function codexRetainedHelperEvent(result, { command = verifyCertificateCommand(result.role) } = {}) {
+  return codexExpectedHelperEvent(command) + codexHelperProofEvent(result, { command: approvalCommand(command) });
+}
+
+function claudeRetainedHelperEvent(result, { command = verifyCertificateCommand(result.role), id = `tool-${result.role}` } = {}) {
+  return claudeExpectedHelperEvent(command, { id: `${id}-mcp` }) +
+    claudeHelperProofEvent(result, { command: approvalCommand(command), id });
 }
 
 function nonterminalHelperCommand(role, operation) {
@@ -413,8 +433,8 @@ function successfulFreshAgentSpawn(calls = [], { command = verifyCertificateComm
         }
         const initiatorProof = helper("initiator");
         const responderProof = helper("responder");
-        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(initiatorProof, { command: command("initiator") })));
-        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(responderProof, { command: command("responder") })));
+        children.initiator.stdout.emit("data", Buffer.from(codexRetainedHelperEvent(initiatorProof, { command: command("initiator") })));
+        children.responder.stdout.emit("data", Buffer.from(claudeRetainedHelperEvent(responderProof, { command: command("responder") })));
         children.initiator.emit("close", 0, null);
         children.responder.emit("close", 0, null);
       });
@@ -1413,8 +1433,8 @@ test("starts the Responder only after the Initiator emits its actual one-time in
     } else {
       assert.equal(args.join(" ").includes(INVITATION), false);
       queueMicrotask(() => {
-        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
-        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
+        children.initiator.stdout.emit("data", Buffer.from(codexRetainedHelperEvent(helperProof("initiator"))));
+        children.responder.stdout.emit("data", Buffer.from(claudeRetainedHelperEvent(helperProof("responder"))));
         children.initiator.emit("close", 0, null);
         children.responder.emit("close", 0, null);
       });
@@ -1605,6 +1625,107 @@ test("rejects model-authored certificate claims without completed helper executi
   assert.deepEqual(await readdir(parent), []);
 });
 
+test("does not retain helper actions from model-authored or unrelated event payloads", async (t) => {
+  const cases = [
+    ["codex-agent-message", (command) => streamEvent({
+      type: "item.completed",
+      item: { type: "agent_message", text: JSON.stringify({ localAction: { helperStep: helperStep(command) } }) },
+    })],
+    ["codex-unrelated-tool", (command) => streamEvent({
+      type: "item.completed",
+      item: {
+        type: "mcp_tool_call",
+        tool: "agent_handshake_unrelated",
+        status: "completed",
+        result: { content: [{ type: "text", text: JSON.stringify({ localAction: { helperStep: helperStep(command) } }) }] },
+      },
+    })],
+    ["claude-text", (command) => streamEvent({
+      type: "assistant",
+      message: { content: [{ type: "text", text: JSON.stringify({ localAction: { helperStep: helperStep(command) } }) }] },
+    })],
+    ["claude-bash-output", (command) => streamEvent({
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id: "bash-local-action", name: "Bash", input: { command: "printf localAction" } }] },
+    }) + streamEvent({
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: "bash-local-action", content: JSON.stringify({ localAction: { helperStep: helperStep(command) } }), is_error: false }] },
+    })],
+    ["claude-unrelated-tool", (command) => claudeExpectedHelperEvent(command, {
+      id: "other-tool",
+      name: "mcp__other-server__agent_handshake_next",
+    })],
+  ];
+
+  for (const [name, spoofEvent] of cases) {
+    await t.test(name, async (t) => {
+      const parent = await mkdtemp(join(tmpdir(), `fresh-agent-spoofed-helper-action-${name}-`));
+      t.after(() => rm(parent, { recursive: true, force: true }));
+      const children = {};
+      const retained = [];
+      const spoofedCommand = verifyCertificateCommand(name.startsWith("codex") ? "initiator" : "responder");
+      const prepareAdapter = async ({ room }) => {
+        const adapter = await prepareTestAdapter({ room });
+        return Object.freeze({
+          ...adapter,
+          record: (command) => { retained.push(command); },
+        });
+      };
+      const spawnProcess = () => {
+        const role = children.initiator === undefined ? "initiator" : "responder";
+        const child = new EventEmitter();
+        child.pid = null;
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.stdin = { end() {
+          queueMicrotask(() => {
+            if (role === "initiator") {
+              child.stdout.emit("data", Buffer.from(codexInviteEvent()));
+              return;
+            }
+            if (name.startsWith("codex")) {
+              children.initiator.stdout.emit("data", Buffer.from(spoofEvent(spoofedCommand)));
+              children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(
+                helperProof("initiator"),
+                { command: approvalCommand(spoofedCommand) },
+              )));
+              children.responder.stdout.emit("data", Buffer.from(claudeExpectedHelperEvent(verifyCertificateCommand("responder"))));
+              children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(
+                helperProof("responder"),
+                { command: approvalCommand(verifyCertificateCommand("responder")) },
+              )));
+            } else {
+              children.initiator.stdout.emit("data", Buffer.from(codexExpectedHelperEvent(verifyCertificateCommand("initiator"))));
+              children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(
+                helperProof("initiator"),
+                { command: approvalCommand(verifyCertificateCommand("initiator")) },
+              )));
+              children.responder.stdout.emit("data", Buffer.from(spoofEvent(spoofedCommand)));
+              children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(
+                helperProof("responder"),
+                { command: approvalCommand(spoofedCommand), id: "approval" },
+              )));
+            }
+            children.initiator.emit("close", 0, null);
+            children.responder.emit("close", 0, null);
+          });
+        } };
+        child.kill = () => {};
+        children[role] = child;
+        return child;
+      };
+
+      await assert.rejects(() => runFreshAgentHandshake(baseFreshAgentRunOptions(parent, {
+        prepareAdapter,
+        spawnProcess,
+      })), /failed safely/);
+
+      assert.equal(retained.some((entry) => entry.commandSha256 === fingerprintHelperExecutionCommand(spoofedCommand).commandSha256), false);
+      assert.deepEqual(await readdir(parent), []);
+    });
+  }
+});
+
 test("ignores nonterminal helper results before exact terminal certificate proofs", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "fresh-agent-nonterminal-helper-results-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
@@ -1631,8 +1752,8 @@ test("ignores nonterminal helper results before exact terminal certificate proof
             { command: nonterminalHelperCommand("responder", operation), id: `tool-responder-${operation}` },
           )));
         }
-        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
-        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
+        children.initiator.stdout.emit("data", Buffer.from(codexRetainedHelperEvent(helperProof("initiator"))));
+        children.responder.stdout.emit("data", Buffer.from(claudeRetainedHelperEvent(helperProof("responder"))));
         children.initiator.emit("close", 0, null);
         children.responder.emit("close", 0, null);
       });
@@ -1648,6 +1769,56 @@ test("ignores nonterminal helper results before exact terminal certificate proof
   assert.equal(result.roles.initiator.role, "initiator");
   assert.equal(result.roles.responder.role, "responder");
   assert.deepEqual(await readdir(parent), []);
+});
+
+test("rejects terminal verify-certificate proof without a retained MCP helper action", async (t) => {
+  for (const mode of ["codex", "claude"]) {
+    await t.test(mode, async (t) => {
+      const parent = await mkdtemp(join(tmpdir(), `fresh-agent-unretained-terminal-proof-${mode}-`));
+      t.after(() => rm(parent, { recursive: true, force: true }));
+      const children = {};
+      const spawnProcess = () => {
+        const role = children.initiator === undefined ? "initiator" : "responder";
+        const child = new EventEmitter();
+        child.pid = null;
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.stdin = { end() {
+          queueMicrotask(() => {
+            if (role === "initiator") {
+              child.stdout.emit("data", Buffer.from(codexInviteEvent()));
+              return;
+            }
+            if (mode === "codex") {
+              children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+              children.responder.stdout.emit("data", Buffer.from(claudeExpectedHelperEvent(verifyCertificateCommand("responder"))));
+              children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(
+                helperProof("responder"),
+                { command: approvalCommand(verifyCertificateCommand("responder")) },
+              )));
+            } else {
+              children.initiator.stdout.emit("data", Buffer.from(codexExpectedHelperEvent(verifyCertificateCommand("initiator"))));
+              children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(
+                helperProof("initiator"),
+                { command: approvalCommand(verifyCertificateCommand("initiator")) },
+              )));
+              children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
+            }
+            children.initiator.emit("close", 0, null);
+            children.responder.emit("close", 0, null);
+          });
+        } };
+        child.kill = () => {};
+        children[role] = child;
+        return child;
+      };
+
+      const error = await rejectsFreshAgentRun(parent, { spawnProcess });
+
+      assert.equal(error.diagnostic.code, "HELPER_PROOF_MISSING");
+      assert.deepEqual(await readdir(parent), []);
+    });
+  }
 });
 
 test("rejects helper-shaped output not produced by the exact pinned verification command", async (t) => {
@@ -1724,7 +1895,7 @@ test("rejects agent-mutated helper commands against the last MCP-returned comman
               children.initiator.stdout.emit("data", Buffer.from(codexExpectedHelperEvent(command)));
               children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"), { command: mutated })));
             } else {
-              children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+              children.initiator.stdout.emit("data", Buffer.from(codexRetainedHelperEvent(helperProof("initiator"))));
               children.responder.stdout.emit("data", Buffer.from(claudeExpectedHelperEvent(command)));
               children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"), { command: mutated })));
             }
@@ -1781,7 +1952,7 @@ test("accepts Claude line wrapping only when the exact helper command bytes are 
           child.stdout.emit("data", Buffer.from(codexInviteEvent()));
           return;
         }
-        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+        children.initiator.stdout.emit("data", Buffer.from(codexRetainedHelperEvent(helperProof("initiator"))));
         children.responder.stdout.emit("data", Buffer.from(claudeExpectedHelperEvent(command, { approval: false })));
         children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"), { command: wrapped })));
         children.initiator.emit("close", 0, null);
@@ -1817,7 +1988,7 @@ test("ignores ordinary approval-token inspection while a digest-bound helper app
           child.stdout.emit("data", Buffer.from(codexInviteEvent()));
           return;
         }
-        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+        children.initiator.stdout.emit("data", Buffer.from(codexRetainedHelperEvent(helperProof("initiator"))));
         children.responder.stdout.emit("data", Buffer.from(claudeExpectedHelperEvent(command)));
         children.responder.stdout.emit("data", Buffer.from(streamEvent({
           type: "assistant",
@@ -1866,7 +2037,7 @@ test("does not bind helper source inspection that merely mentions an operation",
           child.stdout.emit("data", Buffer.from(codexInviteEvent()));
           return;
         }
-        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+        children.initiator.stdout.emit("data", Buffer.from(codexRetainedHelperEvent(helperProof("initiator"))));
         children.responder.stdout.emit("data", Buffer.from(claudeExpectedHelperEvent(command)));
         children.responder.stdout.emit("data", Buffer.from(streamEvent({
           type: "assistant",
@@ -1913,7 +2084,7 @@ test("does not apply strict helper shell parsing to ordinary Claude inspection",
           child.stdout.emit("data", Buffer.from(codexInviteEvent()));
           return;
         }
-        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+        children.initiator.stdout.emit("data", Buffer.from(codexRetainedHelperEvent(helperProof("initiator"))));
         children.responder.stdout.emit("data", Buffer.from(claudeExpectedHelperEvent(command)));
         children.responder.stdout.emit("data", Buffer.from(streamEvent({
           type: "assistant",
@@ -1967,8 +2138,8 @@ test("streams more than one MiB of individually bounded agent events without abo
         for (let index = 0; index < 20; index += 1) {
           children.initiator.stdout.emit("data", Buffer.from(ordinaryEvent));
         }
-        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
-        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
+        children.initiator.stdout.emit("data", Buffer.from(codexRetainedHelperEvent(helperProof("initiator"))));
+        children.responder.stdout.emit("data", Buffer.from(claudeRetainedHelperEvent(helperProof("responder"))));
         children.initiator.emit("close", 0, null);
         children.responder.emit("close", 0, null);
       });
@@ -2003,8 +2174,8 @@ test("accepts deeply nested non-authoritative client metadata without treating i
           return;
         }
         children.initiator.stdout.emit("data", Buffer.from(streamEvent({ type: "system", metadata })));
-        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
-        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
+        children.initiator.stdout.emit("data", Buffer.from(codexRetainedHelperEvent(helperProof("initiator"))));
+        children.responder.stdout.emit("data", Buffer.from(claudeRetainedHelperEvent(helperProof("responder"))));
         children.initiator.emit("close", 0, null);
         children.responder.emit("close", 0, null);
       });
@@ -2046,7 +2217,7 @@ test("reports exact helper execution failures distinctly from missing terminal p
                 item: { type: "command_execution", status: "failed", exit_code: 1, command: codexCommandExecutionDisplay(approvalCommand(command)), aggregated_output: "helper rejected request" },
               })));
             } else {
-              children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+              children.initiator.stdout.emit("data", Buffer.from(codexRetainedHelperEvent(helperProof("initiator"))));
               children.responder.stdout.emit("data", Buffer.from(claudeExpectedHelperEvent(command)));
               children.responder.stdout.emit("data", Buffer.from(streamEvent({
                 type: "assistant",
@@ -2082,10 +2253,10 @@ test("reports exact helper execution failures distinctly from missing terminal p
   }
 });
 
-test("keeps a failed exact helper command pending so the agent may retry it before the next step", async (t) => {
+test("poisons a retained helper action after dispatch failure so the same approval cannot retry", async (t) => {
   for (const mode of ["codex", "claude"]) {
     await t.test(mode, async (t) => {
-      const parent = await mkdtemp(join(tmpdir(), `fresh-agent-helper-retry-${mode}-`));
+      const parent = await mkdtemp(join(tmpdir(), `fresh-agent-helper-failclosed-${mode}-`));
       t.after(() => rm(parent, { recursive: true, force: true }));
       const children = {};
       const role = mode === "codex" ? "initiator" : "responder";
@@ -2126,10 +2297,14 @@ test("keeps a failed exact helper command pending so the agent may retry it befo
                 nonterminalHelperResult(role, "policy"),
                 { command: approvalCommand(policyCommand) },
               )));
-              children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
-              children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
+              children.initiator.stdout.emit("data", Buffer.from(codexRetainedHelperEvent(helperProof("initiator"))));
+              children.responder.stdout.emit("data", Buffer.from(claudeRetainedHelperEvent(helperProof("responder"))));
             } else {
-              children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+              children.initiator.stdout.emit("data", Buffer.from(codexRetainedHelperEvent(helperProof("initiator"))));
+              children.responder.stdout.emit("data", Buffer.from(streamEvent({
+                type: "assistant",
+                message: { content: [{ type: "tool_use", id: "mcp-setup", name: "mcp__clockchain-handshake__agent_handshake_join", input: {} }] },
+              })));
               children.responder.stdout.emit("data", Buffer.from(streamEvent({
                 type: "user",
                 message: { content: [{ type: "tool_result", tool_use_id: "mcp-setup", content: JSON.stringify(expected), is_error: false }] },
@@ -2150,7 +2325,7 @@ test("keeps a failed exact helper command pending so the agent may retry it befo
                 nonterminalHelperResult(role, "policy"),
                 { command: approvalCommand(policyCommand), id: "policy" },
               )));
-              children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
+              children.responder.stdout.emit("data", Buffer.from(claudeRetainedHelperEvent(helperProof("responder"))));
             }
             children.initiator.emit("close", 0, null);
             children.responder.emit("close", 0, null);
@@ -2161,9 +2336,9 @@ test("keeps a failed exact helper command pending so the agent may retry it befo
         return child;
       };
 
-      const result = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, { spawnProcess }));
+      const error = await rejectsFreshAgentRun(parent, { spawnProcess });
 
-      assert.equal(result.certificateVerified, true);
+      assert.equal(error.diagnostic.code, "HELPER_ACTION_REPLAYED");
       assert.deepEqual(await readdir(parent), []);
     });
   }
@@ -2231,8 +2406,8 @@ test("binds setup and registration helper steps that derive role and session fro
           nonterminalHelperResult("initiator", "register"),
           { command: registerCommand },
         )));
-        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
-        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
+        children.initiator.stdout.emit("data", Buffer.from(codexRetainedHelperEvent(helperProof("initiator"))));
+        children.responder.stdout.emit("data", Buffer.from(claudeRetainedHelperEvent(helperProof("responder"))));
         children.initiator.emit("close", 0, null);
         children.responder.emit("close", 0, null);
       });
