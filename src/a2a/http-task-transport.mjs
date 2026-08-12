@@ -97,6 +97,7 @@ async function postJson(url, payload, tls, maxBytes) {
   return new Promise((resolve, reject) => {
     let peerFingerprint = null;
     const request = https.request({
+      agent: false,
       hostname: parsed.hostname,
       port: parsed.port,
       path: parsed.pathname,

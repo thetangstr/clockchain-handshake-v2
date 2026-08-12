@@ -598,6 +598,7 @@ async function postJson(url, payload, tlsConfig, { contentType = "application/js
   return new Promise((resolve, reject) => {
     let peerFingerprint = null;
     const request = https.request({
+      agent: false,
       hostname: parsed.hostname,
       port: parsed.port,
       path: parsed.pathname,
@@ -633,6 +634,7 @@ async function startDelayedPost(url, payload, tlsConfig) {
   });
   await new Promise((resolve, reject) => {
     request = https.request({
+      agent: false,
       hostname: parsed.hostname,
       port: parsed.port,
       path: parsed.pathname,
