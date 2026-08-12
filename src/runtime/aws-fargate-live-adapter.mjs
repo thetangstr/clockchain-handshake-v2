@@ -264,6 +264,10 @@ export async function runFargateLiveMechanicsProof(optionsInput) {
     const outputs = await controlPlane.describeStackOutputs({ stackName, stackId });
     clusterArn = outputs.ClusterArn;
     const resources = validateStackResources(await controlPlane.listStackResources({ stackName, stackId }), stackId, stackName);
+    await controlPlane.waitExecutionRolePropagation({
+      initiatorExecutionRoleArn: outputs.InitiatorExecutionRoleArn,
+      responderExecutionRoleArn: outputs.ResponderExecutionRoleArn,
+    });
     const definitions = buildFargateLiveTaskDefinitions({ stackPlan: plan, stackOutputs: outputs, stackResources: taskDefinitionResourceEnvelope(resources) });
     for (const role of ROLES) {
       reconcile.taskDefinitions = true;

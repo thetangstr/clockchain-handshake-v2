@@ -220,6 +220,15 @@ export function createAwsCliControlPlane(optionsInput = {}) {
       if (!/^[0-9]{12}$/.test(identity.Account) || typeof identity.Arn !== "string" || typeof identity.UserId !== "string") fail();
       return Object.freeze({ accountId: identity.Account, arn: identity.Arn, userId: identity.UserId });
     },
+    async waitExecutionRolePropagation({ initiatorExecutionRoleArn, responderExecutionRoleArn }) {
+      if (accountId === null) fail();
+      const expectedPrefix = `arn:aws:iam::${accountId}:role/cc-`;
+      for (const value of [initiatorExecutionRoleArn, responderExecutionRoleArn]) {
+        if (typeof value !== "string" || !value.startsWith(expectedPrefix) || !value.endsWith("-exec")) fail();
+      }
+      if (initiatorExecutionRoleArn === responderExecutionRoleArn) fail();
+      await sleepFn(30_000);
+    },
     describeTasks({ cluster, taskArns }) {
       string(cluster);
       if (!Array.isArray(taskArns) || taskArns.length < 1 || taskArns.length > 2) fail();

@@ -129,6 +129,21 @@ test("AWS CLI control plane gives bounded CloudFormation waiters enough time for
   assert.deepEqual(observedTimeouts, [300_000, 300_000, 300_000, 300_000]);
 });
 
+test("AWS CLI control plane waits for newly-created execution role policies before starting tasks", async () => {
+  const waits = [];
+  const control = createAwsCliControlPlane({
+    accountId: "123456789012",
+    region: "us-west-2",
+    sleep: async (ms) => { waits.push(ms); },
+    executor: async () => ({ stdout: "{}", stderr: "", exitCode: 0 }),
+  });
+  await control.waitExecutionRolePropagation({
+    initiatorExecutionRoleArn: "arn:aws:iam::123456789012:role/cc-11111111-2222-4333-8444-555555555555-i-exec",
+    responderExecutionRoleArn: "arn:aws:iam::123456789012:role/cc-11111111-2222-4333-8444-555555555555-r-exec",
+  });
+  assert.deepEqual(waits, [30_000]);
+});
+
 test("AWS CLI control plane has exact allowlisted argv shapes for Task 4 actions", async () => {
   const calls = [];
   const responseFor = (argv) => {

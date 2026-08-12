@@ -119,6 +119,11 @@ function fakeControlPlane(plan, { failAt = null, absent = true, existingStack = 
     async createStack(input) { maybe("create-stack"); assert.equal(input.capabilities.includes("CAPABILITY_NAMED_IAM"), true); return { StackId: STACK_ID }; },
     async waitStackCreateComplete({ stackId, stackName }) { maybe("wait-stack-create"); assert.equal(stackId, STACK_ID); assert.equal(stackName, STACK_NAME); return { StackId: STACK_ID }; },
     async describeStackOutputs({ stackId, stackName }) { maybe("describe-stack-outputs"); assert.equal(stackId, STACK_ID); assert.equal(stackName, STACK_NAME); return outputs; },
+    async waitExecutionRolePropagation({ initiatorExecutionRoleArn, responderExecutionRoleArn }) {
+      maybe("wait-execution-role-propagation");
+      assert.equal(initiatorExecutionRoleArn, outputs.InitiatorExecutionRoleArn);
+      assert.equal(responderExecutionRoleArn, outputs.ResponderExecutionRoleArn);
+    },
     async listStackResources({ stackId, stackName }) { maybe("list-stack-resources"); assert.equal(stackId, STACK_ID); assert.equal(stackName, STACK_NAME); return resources; },
     async registerTaskDefinition({ role }) { maybe(`register-${role}`); return { taskDefinition: { taskDefinitionArn: taskDefinitions[role] } }; },
     async runTask({ role, networkConfiguration, platformVersion }) {
@@ -190,7 +195,7 @@ test("live Fargate adapter runs exact lifecycle and starts both tasks before wai
   assert.equal(result.status, "SUCCEEDED");
   assert.deepEqual(controlPlane.calls, [
     "identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create",
-    "describe-stack-outputs", "list-stack-resources", "register-initiator", "register-responder",
+    "describe-stack-outputs", "list-stack-resources", "wait-execution-role-propagation", "register-initiator", "register-responder",
     "run-initiator", "run-responder", "wait-running-2", "poll-events", "stop-initiator", "stop-responder",
     "wait-stopped-2", "deregister-initiator", "deregister-responder", "delete-stack",
     "wait-stack-delete", "confirm-absence",
@@ -368,13 +373,13 @@ test("live Fargate adapter enters resource-scoped cleanup after every mutation b
   const plan = await livePlan();
   const expectations = new Map([
     ["create-stack", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "reconcile-stack", "delete-stack", "wait-stack-delete", "confirm-absence"]],
-    ["register-initiator", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create", "describe-stack-outputs", "list-stack-resources", "register-initiator", "reconcile-task-definitions", "delete-stack", "wait-stack-delete", "confirm-absence"]],
-    ["register-responder", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create", "describe-stack-outputs", "list-stack-resources", "register-initiator", "register-responder", "reconcile-task-definitions", "deregister-initiator", "delete-stack", "wait-stack-delete", "confirm-absence"]],
-    ["run-initiator", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create", "describe-stack-outputs", "list-stack-resources", "register-initiator", "register-responder", "run-initiator", "run-responder", "reconcile-tasks", "deregister-initiator", "deregister-responder", "delete-stack", "wait-stack-delete", "confirm-absence"]],
-    ["run-responder", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create", "describe-stack-outputs", "list-stack-resources", "register-initiator", "register-responder", "run-initiator", "run-responder", "reconcile-tasks", "deregister-initiator", "deregister-responder", "delete-stack", "wait-stack-delete", "confirm-absence"]],
-    ["stop-initiator", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create", "describe-stack-outputs", "list-stack-resources", "register-initiator", "register-responder", "run-initiator", "run-responder", "wait-running-2", "poll-events", "stop-initiator", "stop-responder", "wait-stopped-2", "deregister-initiator", "deregister-responder", "delete-stack", "wait-stack-delete", "confirm-absence"]],
-    ["deregister-initiator", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create", "describe-stack-outputs", "list-stack-resources", "register-initiator", "register-responder", "run-initiator", "run-responder", "wait-running-2", "poll-events", "stop-initiator", "stop-responder", "wait-stopped-2", "deregister-initiator", "deregister-responder", "delete-stack", "wait-stack-delete", "confirm-absence"]],
-    ["delete-stack", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create", "describe-stack-outputs", "list-stack-resources", "register-initiator", "register-responder", "run-initiator", "run-responder", "wait-running-2", "poll-events", "stop-initiator", "stop-responder", "wait-stopped-2", "deregister-initiator", "deregister-responder", "delete-stack", "wait-stack-delete", "confirm-absence"]],
+    ["register-initiator", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create", "describe-stack-outputs", "list-stack-resources", "wait-execution-role-propagation", "register-initiator", "reconcile-task-definitions", "delete-stack", "wait-stack-delete", "confirm-absence"]],
+    ["register-responder", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create", "describe-stack-outputs", "list-stack-resources", "wait-execution-role-propagation", "register-initiator", "register-responder", "reconcile-task-definitions", "deregister-initiator", "delete-stack", "wait-stack-delete", "confirm-absence"]],
+    ["run-initiator", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create", "describe-stack-outputs", "list-stack-resources", "wait-execution-role-propagation", "register-initiator", "register-responder", "run-initiator", "run-responder", "reconcile-tasks", "deregister-initiator", "deregister-responder", "delete-stack", "wait-stack-delete", "confirm-absence"]],
+    ["run-responder", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create", "describe-stack-outputs", "list-stack-resources", "wait-execution-role-propagation", "register-initiator", "register-responder", "run-initiator", "run-responder", "reconcile-tasks", "deregister-initiator", "deregister-responder", "delete-stack", "wait-stack-delete", "confirm-absence"]],
+    ["stop-initiator", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create", "describe-stack-outputs", "list-stack-resources", "wait-execution-role-propagation", "register-initiator", "register-responder", "run-initiator", "run-responder", "wait-running-2", "poll-events", "stop-initiator", "stop-responder", "wait-stopped-2", "deregister-initiator", "deregister-responder", "delete-stack", "wait-stack-delete", "confirm-absence"]],
+    ["deregister-initiator", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create", "describe-stack-outputs", "list-stack-resources", "wait-execution-role-propagation", "register-initiator", "register-responder", "run-initiator", "run-responder", "wait-running-2", "poll-events", "stop-initiator", "stop-responder", "wait-stopped-2", "deregister-initiator", "deregister-responder", "delete-stack", "wait-stack-delete", "confirm-absence"]],
+    ["delete-stack", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create", "describe-stack-outputs", "list-stack-resources", "wait-execution-role-propagation", "register-initiator", "register-responder", "run-initiator", "run-responder", "wait-running-2", "poll-events", "stop-initiator", "stop-responder", "wait-stopped-2", "deregister-initiator", "deregister-responder", "delete-stack", "wait-stack-delete", "confirm-absence"]],
   ]);
 
   for (const [failAt, expectedCalls] of expectations) {
