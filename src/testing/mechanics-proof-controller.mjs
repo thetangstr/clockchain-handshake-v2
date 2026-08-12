@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { types } from "node:util";
 
 import { validateLocalRuntimeEvidence, validateRuntimePairEvidence } from "../runtime/runtime-adapter-contract.mjs";
@@ -12,21 +11,12 @@ const ROLE_KEYS = Object.freeze(["harness", "secretsRef", "stateRef"]);
 const PUBLIC_RUNTIME_KEYS = Object.freeze(["harness", "role", "runtimeId"]);
 const HARNESS_CAPABILITY_KEYS = Object.freeze(["harness", "rawPayloadTransport", "retainedLocalActions", "schema"]);
 const LIVE_PREFLIGHT_KEYS = Object.freeze(["deploymentReady", "directA2A", "imageProvenanceVerified", "mcpUrl", "pair", "schema", "sourceCommit"]);
-const LIVE_ARTIFACT_KEYS = Object.freeze([
-  "certificateDigest", "certificateVerified", "cleanup", "clients", "directA2A", "roles", "runtimeBindings",
-  "schema", "sessionId", "sourceCommit",
-]);
-const LIVE_A2A_KEYS = Object.freeze(["agentCardDigests", "commitmentCheckpointDigests", "controllerRoutedRawContent", "envelopeDigests"]);
-const LIVE_ROLE_KEYS = Object.freeze(["address", "erc8004AgentId"]);
-const LIVE_RUNTIME_BINDING_KEYS = Object.freeze(["runtimeEvidenceDigest", "runtimeId", "taskArn"]);
 const RUNTIME_METHODS = Object.freeze([
   "attestRuntime", "collectRuntimeEvidence", "destroyRuntime", "provisionPartyRuntime",
   "streamRuntimeEvents", "terminateRuntime",
 ]);
 const HARNESS_METHODS = Object.freeze(["inspectCapabilities"]);
-const SHA256 = /^[0-9a-f]{64}$/;
 const SOURCE_COMMIT = /^[0-9a-f]{40}$/;
-const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
 function fail() {
   throw new Error("Mechanics-proof controller validation failed safely.");
@@ -152,28 +142,6 @@ function frozenRuntimes(runtimes) {
   });
 }
 
-function digest(value) {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
-}
-
-function assertDigest(value) {
-  if (typeof value !== "string" || !SHA256.test(value)) fail();
-}
-
-function assertDigestArray(value) {
-  if (value === null || typeof value !== "object" || types.isProxy(value) || !Array.isArray(value) || value.length < 1 || value.length > 32) fail();
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  const result = [];
-  for (let index = 0; index < value.length; index += 1) {
-    const descriptor = descriptors[String(index)];
-    if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) fail();
-    assertDigest(descriptor.value);
-    result.push(descriptor.value);
-  }
-  if (Reflect.ownKeys(descriptors).some((key) => key !== "length" && !/^(?:0|[1-9][0-9]*)$/.test(String(key)))) fail();
-  return Object.freeze(result);
-}
-
 function validateLivePreflight(value) {
   const item = exactObject(value, LIVE_PREFLIGHT_KEYS);
   if (
@@ -186,81 +154,6 @@ function validateLivePreflight(value) {
     item.imageProvenanceVerified !== false
   ) fail();
   return Object.freeze({ ...item });
-}
-
-function validateLiveRole(value) {
-  const item = exactObject(value, LIVE_ROLE_KEYS);
-  if (!EVM_ADDRESS.test(item.address) || typeof item.erc8004AgentId !== "string" || item.erc8004AgentId.length === 0) fail();
-  return Object.freeze({ address: item.address.toLowerCase(), erc8004AgentId: item.erc8004AgentId });
-}
-
-function validateLiveRuntimeBinding(value, runtime, role) {
-  const item = exactObject(value, LIVE_RUNTIME_BINDING_KEYS);
-  if (
-    item.runtimeId !== runtime.runtimeId ||
-    item.taskArn !== runtime.taskArn ||
-    item.runtimeEvidenceDigest !== digest(runtime)
-  ) fail();
-  return Object.freeze({ ...item });
-}
-
-function validateLiveHandshakeEvidence(value, { sessionId, sourceCommit, runtimeEvidence }) {
-  rejectAuthorityFields(value);
-  const item = exactObject(value, LIVE_ARTIFACT_KEYS);
-  const clients = exactObject(item.clients, ROLES);
-  const cleanup = exactObject(item.cleanup, ["completed", "stoppedAndSanitized"]);
-  const roles = exactObject(item.roles, ROLES);
-  const runtimeBindings = exactObject(item.runtimeBindings, ROLES);
-  const directA2A = exactObject(item.directA2A, LIVE_A2A_KEYS);
-  const cardDigests = exactObject(directA2A.agentCardDigests, ROLES);
-  for (const role of ROLES) assertDigest(cardDigests[role]);
-  const validatedRoles = {
-    initiator: validateLiveRole(roles.initiator),
-    responder: validateLiveRole(roles.responder),
-  };
-  if (
-    item.schema !== "clockchain.mechanics-proof-live-artifact/v1" ||
-    item.sessionId !== sessionId ||
-    item.sourceCommit !== sourceCommit ||
-    clients.initiator !== "codex" ||
-    clients.responder !== "claude" ||
-    item.certificateVerified !== true ||
-    !SHA256.test(item.certificateDigest) ||
-    cleanup.completed !== true ||
-    cleanup.stoppedAndSanitized !== true ||
-    directA2A.controllerRoutedRawContent !== false ||
-    validatedRoles.initiator.address === validatedRoles.responder.address ||
-    validatedRoles.initiator.erc8004AgentId === validatedRoles.responder.erc8004AgentId
-  ) fail();
-  const envelopeDigests = assertDigestArray(directA2A.envelopeDigests);
-  const checkpointDigests = assertDigestArray(directA2A.commitmentCheckpointDigests);
-  const bindings = {
-    initiator: validateLiveRuntimeBinding(runtimeBindings.initiator, runtimeEvidence.initiator, "initiator"),
-    responder: validateLiveRuntimeBinding(runtimeBindings.responder, runtimeEvidence.responder, "responder"),
-  };
-  return Object.freeze({
-    schema: item.schema,
-    sessionId,
-    sourceCommit,
-    clients: Object.freeze({ initiator: "codex", responder: "claude" }),
-    runtimeBindings: Object.freeze({
-      initiator: bindings.initiator,
-      responder: bindings.responder,
-    }),
-    directA2A: Object.freeze({
-      agentCardDigests: Object.freeze({ initiator: cardDigests.initiator, responder: cardDigests.responder }),
-      envelopeDigests,
-      commitmentCheckpointDigests: checkpointDigests,
-      controllerRoutedRawContent: false,
-    }),
-    roles: Object.freeze({
-      initiator: validatedRoles.initiator,
-      responder: validatedRoles.responder,
-    }),
-    certificateVerified: true,
-    certificateDigest: item.certificateDigest,
-    cleanup: Object.freeze({ completed: true, stoppedAndSanitized: true }),
-  });
 }
 
 function validatePairIsolation(runtimeEvidence, { requireLiveEvidence }) {
@@ -297,7 +190,7 @@ export async function runMechanicsProofController(config) {
   if (!Number.isSafeInteger(item.ttlMs) || item.ttlMs < 1) fail();
   const requireLiveEvidence = item.requireLiveEvidence ?? false;
   if (typeof requireLiveEvidence !== "boolean") fail();
-  const livePreflight = requireLiveEvidence ? validateLivePreflight(item.livePreflight) : null;
+  if (requireLiveEvidence) validateLivePreflight(item.livePreflight);
   if (item.networkPolicy === null || typeof item.networkPolicy !== "object" || Array.isArray(item.networkPolicy)) fail();
   if (item.costTags === null || typeof item.costTags !== "object" || Array.isArray(item.costTags)) fail();
   if (typeof item.executePair !== "function") fail();

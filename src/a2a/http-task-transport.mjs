@@ -56,6 +56,7 @@ function privateHost(hostname, { allowLoopbackForTests = false } = {}) {
 }
 
 function endpoint(value, { allowLoopbackForTests = false } = {}) {
+  if (typeof value !== "string") fail();
   let parsed;
   try {
     parsed = new URL(value);
@@ -69,6 +70,8 @@ function endpoint(value, { allowLoopbackForTests = false } = {}) {
     parsed.search !== "" ||
     parsed.hash !== "" ||
     (parsed.pathname !== "" && parsed.pathname !== "/") ||
+    (!allowLoopbackForTests && parsed.port !== "8443") ||
+    (allowLoopbackForTests && parsed.port === "") ||
     !privateHost(parsed.hostname, { allowLoopbackForTests })
   ) fail();
   return `${parsed.protocol}//${parsed.host}`;

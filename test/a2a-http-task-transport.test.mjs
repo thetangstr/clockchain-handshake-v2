@@ -249,8 +249,11 @@ test("HTTP task transport uses private HTTPS peer endpoints in live mode and loo
   assert.equal(transport.publicUrl, "https://10.0.12.34:8443");
   transport.setPeerUrl("https://10.0.56.78:8443");
   transport.setPeerUrl("https://responder.task.local:8443");
+  assert.throws(() => transport.setPeerUrl("https://10.0.56.78"));
+  assert.throws(() => transport.setPeerUrl("https://10.0.56.78:9443"));
   assert.throws(() => transport.setPeerUrl("https://10.999.56.78:8443"));
   assert.throws(() => transport.setPeerUrl("https://10.0.56.78:8443/a2a"));
+  assert.throws(() => transport.setPeerUrl(new URL("https://10.0.56.78:8443")));
   assert.throws(() => transport.setPeerUrl("http://10.0.56.78:8443"));
   assert.throws(() => transport.setPeerUrl("https://127.0.0.1:8443"));
   assert.throws(() => transport.setPeerUrl("https://example.com:8443"));
