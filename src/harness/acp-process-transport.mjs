@@ -17,7 +17,7 @@ const ACTION_KEYS = Object.freeze([
 ]);
 const OPTION_KEYS = Object.freeze([
   "actionRecorder", "env", "harness", "home", "nowMs", "pin", "retainedActions",
-  "spawn", "trustedAdapterPublicKeys", "workspace",
+  "partyBridge", "spawn", "trustedAdapterPublicKeys", "workspace",
 ]);
 const TOOL_SERVER = "clockchain-handshake";
 const TOOL_PREFIX = "agent_handshake_";
@@ -296,6 +296,13 @@ function cleanActionRecorder(value) {
   return Object.freeze({ record: item.record });
 }
 
+function cleanPartyBridge(value) {
+  if (value === undefined) return null;
+  const item = exactObject(value, ["observeToolResult"]);
+  if (typeof item.observeToolResult !== "function") fail();
+  return Object.freeze({ observeToolResult: item.observeToolResult });
+}
+
 function parseToolName(update) {
   const rawInput = update.rawInput;
   if (rawInput !== undefined) {
@@ -387,20 +394,25 @@ function appendHelperSteps(value, found) {
   if (content !== undefined) appendHelperSteps(content, found);
 }
 
-function retainedActionsFromToolOutput(update, actionRecorder) {
+function authoritativeToolResult(update) {
   const toolName = parseToolName(update);
-  if (toolName === null) return [];
-  if (update.status !== "completed") return [];
+  if (toolName === null || update.status !== "completed") return null;
   const rawOutput = update.rawOutput;
   if (rawOutput === undefined) fail();
-  const steps = [];
+  let result;
   if (Array.isArray(rawOutput)) {
-    appendHelperSteps(rawOutput, steps);
+    result = rawOutput;
   } else {
     const output = exactObject(rawOutput, ["error", "result"]);
     if (output.error !== null && output.error !== undefined) fail();
-    appendHelperSteps(output.result, steps);
+    result = output.result;
   }
+  return Object.freeze({ result, toolName });
+}
+
+function retainedActionsFromToolResult(result, actionRecorder) {
+  const steps = [];
+  appendHelperSteps(result, steps);
   if (steps.length === 0) return [];
   if (steps.length !== 1 || actionRecorder === null) fail();
   const actions = [];
@@ -476,6 +488,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
   const retainedActions = cleanRetainedActions(options.retainedActions);
   const trustedKeys = trustedKeySet(options.trustedAdapterPublicKeys);
   const actionRecorder = cleanActionRecorder(options.actionRecorder);
+  const partyBridge = cleanPartyBridge(options.partyBridge);
   for (const action of retainedActions) {
     if (!trustedKeys.has(action.adapterPublicKey)) fail();
   }
@@ -549,7 +562,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
       return Object.freeze({ outcome: Object.freeze({ outcome: "cancelled" }) });
     }
   }
-  function sessionUpdate(params) {
+  async function sessionUpdate(params) {
     try {
       if (session === null || params?.sessionId !== acpSessionId) fail();
       const updateType = params?.update?.sessionUpdate;
@@ -561,8 +574,14 @@ export function createAcpProcessTransport(optionsInput = {}) {
         }
       }
       if (updateType === "tool_call" || updateType === "tool_call_update") {
-        for (const retained of retainedActionsFromToolOutput(params.update, actionRecorder)) {
-          registerRetainedAction(retained);
+        const toolResult = authoritativeToolResult(params.update);
+        if (toolResult !== null) {
+          if (partyBridge !== null) {
+            await partyBridge.observeToolResult({ toolName: toolResult.toolName, result: toolResult.result });
+          }
+          for (const retained of retainedActionsFromToolResult(toolResult.result, actionRecorder)) {
+            registerRetainedAction(retained);
+          }
         }
       }
       event(`acp.${updateType}`, `observed ACP ${updateType}`, digestJson({

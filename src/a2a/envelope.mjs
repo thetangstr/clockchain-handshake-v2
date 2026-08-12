@@ -17,6 +17,10 @@ import {
   signature,
 } from "./auth.mjs";
 import { a2aAgentCardDigest } from "./agent-card.mjs";
+import {
+  AGENT_HANDSHAKE_V2_COMMITMENT_CHECKPOINT_SCHEMA,
+  verifyAgentHandshakeV2CommitmentCheckpoint,
+} from "../agent-handshake/v2/commitment-checkpoint.mjs";
 
 export const A2A_ENVELOPE_SCHEMA = "clockchain.a2a-envelope/v1";
 const ENVELOPE_KEYS = Object.freeze([
@@ -42,11 +46,37 @@ function artifactSignature(value) {
   return Object.freeze({ payload: item.payload, signature: proof });
 }
 
-async function assertSignedArtifact({ body, expectedAddress, expectedDigest }) {
+async function assertSignedArtifact({
+  artifactType,
+  body,
+  expectedAddress,
+  expectedDigest,
+  expectedRole,
+  expectedSessionId,
+  nowMs,
+}) {
   const artifact = artifactSignature(body);
   assertAddress(expectedAddress);
   if (artifact.signature.address !== expectedAddress) invalid();
   if (digest({ artifact }) !== expectedDigest) invalid();
+  if (artifact.payload?.schema === AGENT_HANDSHAKE_V2_COMMITMENT_CHECKPOINT_SCHEMA) {
+    try {
+      await verifyAgentHandshakeV2CommitmentCheckpoint({
+        checkpoint: { ...artifact.payload, signature: artifact.signature },
+        expectedSessionId,
+        expectedRole,
+        expectedSignerAddress: expectedAddress,
+        expectedArtifactType: artifactType,
+        expectedArtifactDigest: artifact.payload.artifactDigest,
+        expectedSequence: artifact.payload.sequence,
+        expectedPreviousCheckpointDigest: artifact.payload.previousCheckpointDigest,
+        nowMs,
+      });
+    } catch {
+      invalid();
+    }
+    return artifact;
+  }
   let recovered;
   try {
     recovered = (await recoverMessageAddress({
@@ -109,9 +139,13 @@ export async function verifyA2AEnvelope({ envelope, fromCard, toCard, nowMs }) {
   if (await recoverSigner(payload, verified.signature.value) !== addressFromPublicKey(fromCard.a2aCardPublicKey)) invalid();
   if (verified.body !== null) {
     await assertSignedArtifact({
+      artifactType: verified.artifactType,
       body: verified.body,
       expectedAddress: fromCard.partySignerAddress,
       expectedDigest: verified.artifactDigest,
+      expectedRole: fromCard.role,
+      expectedSessionId: verified.sessionId,
+      nowMs,
     });
   }
   return verified;

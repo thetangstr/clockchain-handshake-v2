@@ -60,6 +60,16 @@ function actionRecorderFor(actions, calls = []) {
   });
 }
 
+function partyBridgeFor(calls, { reject = false } = {}) {
+  return Object.freeze({
+    async observeToolResult(input) {
+      calls.push(["partyBridge", input]);
+      if (reject) throw new Error("party bridge rejected secret-canary /Users/alice/secret");
+      return { observed: true };
+    },
+  });
+}
+
 function acpFixtureSpawn({
   calls,
   closeState = null,
@@ -655,6 +665,129 @@ test("ACP process transport registers retained helper actions dynamically from M
   const events = await transport.streamEvents({ sessionId: SESSION });
   assert.ok(events.some((event) => event.type === "acp.retained_action.registered"));
   assert.doesNotMatch(JSON.stringify(events), /role-access-secret|invite-secret|helperStep|command|\/Users\/alice\/secret/);
+});
+
+test("ACP process transport forwards only authoritative completed Codex and Claude MCP results to the party bridge", async () => {
+  const action = retainedAction({ role: "initiator", requestDigest: "d".repeat(64), commandSha256: DIGEST });
+  const cases = [
+    {
+      harness: "codex",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "codex-mcp",
+        status: "completed",
+        rawInput: { server: "clockchain-handshake", tool: "agent_handshake_wait", arguments: {} },
+        rawOutput: { result: { structuredContent: { status: "waiting" } }, error: null },
+      },
+      expectedResult: { structuredContent: { status: "waiting" } },
+    },
+    {
+      harness: "claude",
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "claude-mcp",
+        status: "completed",
+        rawOutput: [{ type: "text", text: JSON.stringify({ status: "waiting" }) }],
+        _meta: { claudeCode: { toolName: "mcp__clockchain-handshake__agent_handshake_wait" } },
+      },
+      expectedResult: [{ type: "text", text: JSON.stringify({ status: "waiting" }) }],
+    },
+  ];
+  for (const item of cases) {
+    const calls = [];
+    const transport = createAcpProcessTransport({
+      harness: item.harness,
+      pin: ACP_VERSION_PINS[item.harness],
+      spawn: acpFixtureSpawn({ calls, sessionUpdates: [item.update] }),
+      workspace: `/workspace/${item.harness}`,
+      home: `/workspace/${item.harness}/home`,
+      nowMs: () => 1786337001000,
+      env: {},
+      partyBridge: partyBridgeFor(calls),
+      retainedActions: [action],
+      trustedAdapterPublicKeys: [action.adapterPublicKey],
+    });
+    await transport.launch({
+      acp: ACP_VERSION_PINS[item.harness],
+      runtime: { runtimeId: `runtime-${item.harness}`, sessionId: SESSION, role: "initiator", harness: item.harness },
+      mandate: VALID_MANDATE,
+      mcpEndpoint: MCP_ENDPOINT,
+      a2aConfig: a2aConfig("initiator"),
+    });
+    const bridgeCalls = calls.filter((entry) => Array.isArray(entry) && entry[0] === "partyBridge");
+    assert.deepEqual(bridgeCalls, [["partyBridge", {
+      toolName: "agent_handshake_wait",
+      result: item.expectedResult,
+    }]]);
+    const events = await transport.streamEvents({ sessionId: SESSION });
+    assert.doesNotMatch(JSON.stringify(events), /structuredContent|rawOutput|partyBridge|secret-canary/);
+  }
+});
+
+test("ACP process transport never forwards spoofed titles and fails closed when the party bridge rejects", async () => {
+  const action = retainedAction({ role: "initiator", requestDigest: "d".repeat(64), commandSha256: DIGEST });
+  const spoofCalls = [];
+  const spoofTransport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({
+      calls: spoofCalls,
+      sessionUpdates: [{
+        sessionUpdate: "tool_call_update",
+        toolCallId: "spoof",
+        title: "mcp.clockchain-handshake.agent_handshake_wait",
+        name: "Bash",
+        status: "completed",
+        rawInput: { command: "echo spoof" },
+        rawOutput: { result: { structuredContent: { status: "waiting" } }, error: null },
+      }],
+    }),
+    workspace: "/workspace/spoof",
+    home: "/workspace/spoof/home",
+    nowMs: () => 1786337001000,
+    env: {},
+    partyBridge: partyBridgeFor(spoofCalls),
+    retainedActions: [action],
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+  await spoofTransport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-spoof", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  });
+  assert.equal(spoofCalls.some((entry) => Array.isArray(entry) && entry[0] === "partyBridge"), false);
+
+  const rejectCalls = [];
+  const rejectTransport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({
+      calls: rejectCalls,
+      sessionUpdates: [{
+        sessionUpdate: "tool_call_update",
+        toolCallId: "real",
+        status: "completed",
+        rawInput: { server: "clockchain-handshake", tool: "agent_handshake_wait", arguments: {} },
+        rawOutput: { result: { structuredContent: { status: "waiting" } }, error: null },
+      }],
+    }),
+    workspace: "/workspace/reject",
+    home: "/workspace/reject/home",
+    nowMs: () => 1786337001000,
+    env: {},
+    partyBridge: partyBridgeFor(rejectCalls, { reject: true }),
+    retainedActions: [action],
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+  await assert.rejects(() => rejectTransport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-reject", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  }), /ACP process transport validation failed safely/);
 });
 
 test("ACP process transport registers retained actions from installed Codex ACP MCP result shape", async () => {

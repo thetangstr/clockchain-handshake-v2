@@ -4,6 +4,7 @@ import { gzipSync } from "node:zlib";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
 import { signA2AAgentCard, verifyA2AAgentCard, a2aAgentCardDigest } from "../a2a/agent-card.mjs";
+import { signA2AEnvelope } from "../a2a/envelope.mjs";
 import { addressFromPublicKey } from "../a2a/auth.mjs";
 import {
   commitmentCheckpointDigest,
@@ -31,6 +32,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const URL = /^https:\/\/[A-Za-z0-9._~:/?#[\]@!$&'()*+,;=%-]{1,240}$/;
+
+export const PARTY_A2A_ENVELOPE_CAPABILITY = Symbol("clockchain.party-a2a-envelope-capability");
 
 function fail() {
   throw new Error(ERROR_MESSAGE);
@@ -284,7 +287,7 @@ export async function createPartyA2AAuthority(optionsInput = {}) {
       });
     }
 
-    return Object.freeze({
+    const api = {
       publicBinding() {
         ensureActive();
         return publicBindingValue;
@@ -411,7 +414,46 @@ export async function createPartyA2AAuthority(optionsInput = {}) {
         destroyed = true;
         return Object.freeze({ destroyed: true });
       },
+    };
+    Object.defineProperty(api, PARTY_A2A_ENVELOPE_CAPABILITY, {
+      configurable: false,
+      enumerable: false,
+      value: Object.freeze({
+        async signEnvelope(input) {
+          try {
+            ensureActive();
+            const item = exact(input, ["envelope", "fromCard", "toCard"]);
+            const ownCard = await verifyA2AAgentCard({
+              card: item.fromCard,
+              expectedSessionId: sessionId,
+              expectedRole: localRole,
+              nowMs: options.nowMs(),
+            });
+            const peerCard = await verifyA2AAgentCard({
+              card: item.toCard,
+              expectedSessionId: sessionId,
+              expectedRole: localRole === "initiator" ? "responder" : "initiator",
+              nowMs: options.nowMs(),
+            });
+            if (
+              ownCard.partySignerAddress !== wallet.address.toLowerCase() ||
+              ownCard.a2aCardPublicKey !== a2aAccount.publicKey ||
+              peerCard.partySignerAddress === ownCard.partySignerAddress
+            ) fail();
+            return await signA2AEnvelope({
+              envelope: item.envelope,
+              fromCard: ownCard,
+              toCard: peerCard,
+              signMessage: (raw) => a2aAccount.signMessage({ message: { raw } }),
+            });
+          } catch (error) {
+            sanitize(error);
+          }
+        },
+      }),
+      writable: false,
     });
+    return Object.freeze(api);
   } catch (error) {
     sanitize(error);
   }
