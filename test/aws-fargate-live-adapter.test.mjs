@@ -189,13 +189,19 @@ test("live Fargate adapter runs exact lifecycle and starts both tasks before wai
     plan,
     controlPlane,
     mcpGate: async () => { controlPlane.calls.push("mcp-gate"); return { healthy: true, checkpointTool: true, endpoint: "https://mcp.clockchain.network/handshake/mcp" }; },
+    waitInvitationWindow: async ({ deadlineMs, minimumRemainingMs }) => {
+      controlPlane.calls.push("wait-invitation-window");
+      assert.equal(deadlineMs, Date.parse(plan.parameters.ExpiresAt) - 300_000);
+      assert.equal(minimumRemainingMs, 90_000);
+      return { ready: true };
+    },
     retainEvidence: async (evidence) => { retained.push(evidence); },
   });
 
   assert.equal(result.status, "SUCCEEDED");
   assert.deepEqual(controlPlane.calls, [
     "identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create",
-    "describe-stack-outputs", "list-stack-resources", "wait-execution-role-propagation", "register-initiator", "register-responder",
+    "describe-stack-outputs", "list-stack-resources", "wait-execution-role-propagation", "wait-invitation-window", "register-initiator", "register-responder",
     "run-initiator", "run-responder", "wait-running-2", "poll-events", "stop-initiator", "stop-responder",
     "wait-stopped-2", "deregister-initiator", "deregister-responder", "delete-stack",
     "wait-stack-delete", "confirm-absence",

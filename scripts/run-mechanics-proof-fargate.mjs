@@ -28,6 +28,7 @@ const REQUIRED_TOOLS = Object.freeze([
   "agent_handshake_submit_checkpoint",
 ].sort());
 const MCP_BODY_LIMIT_BYTES = 131_072;
+const PRODUCTION_DISCOVERY_URL = "http://44.249.47.220:8080/v1/discovery/current";
 
 function fail() {
   throw new Error("Fargate mechanics proof runner failed safely.");
@@ -183,6 +184,55 @@ export async function checkProductionMcpGate(options = {}) {
   if (new Set(names).size !== names.length) fail();
   if (JSON.stringify(names) !== JSON.stringify(REQUIRED_TOOLS)) fail();
   return Object.freeze({ healthy: true, checkpointTool: true, endpoint: url, toolNames: Object.freeze(names) });
+}
+
+export async function waitProductionInvitationWindow(options = {}) {
+  const fetchImpl = options.fetch ?? globalThis.fetch;
+  const now = options.now ?? (() => Date.now());
+  const sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const deadlineMs = options.deadlineMs;
+  const minimumRemainingMs = options.minimumRemainingMs;
+  if (
+    typeof fetchImpl !== "function" || typeof now !== "function" || typeof sleep !== "function" ||
+    !Number.isSafeInteger(deadlineMs) || !Number.isSafeInteger(minimumRemainingMs) || minimumRemainingMs !== 90_000
+  ) fail();
+  for (;;) {
+    const observedNow = now();
+    if (!Number.isSafeInteger(observedNow) || observedNow >= deadlineMs) fail();
+    let response;
+    try {
+      response = await fetchImpl(PRODUCTION_DISCOVERY_URL, {
+        method: "GET",
+        redirect: "error",
+        headers: Object.freeze({ accept: "application/json" }),
+        signal: AbortSignal.timeout(5000),
+      });
+    } catch { fail(); }
+    if (response?.ok !== true) fail();
+    let discovery;
+    try { discovery = JSON.parse(await readBoundedResponseBody(response)); } catch { fail(); }
+    const keys = [
+      "createdAtMs", "externalBusinessActionPerformed", "hostSessionKeyCertificate", "invitationExpiresAtMs",
+      "kitRepoUrl", "protocol", "relayUrl", "repositorySha", "schema", "sessionDeadlineMs", "sessionId", "sessionOpenedBlock",
+    ];
+    if (
+      discovery === null || typeof discovery !== "object" || Array.isArray(discovery) ||
+      JSON.stringify(Object.keys(discovery).sort()) !== JSON.stringify(keys.sort()) ||
+      discovery.schema !== "clockchain.agent-handshake-discovery/v2" ||
+      discovery.protocol !== "clockchain.agent-handshake/v2" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(discovery.sessionId) ||
+      !/^[0-9a-f]{40}$/.test(discovery.repositorySha) ||
+      !/^(?:0|[1-9][0-9]*)$/.test(discovery.invitationExpiresAtMs) ||
+      !/^(?:0|[1-9][0-9]*)$/.test(discovery.sessionDeadlineMs) ||
+      discovery.hostSessionKeyCertificate === null || typeof discovery.hostSessionKeyCertificate !== "object" ||
+      discovery.externalBusinessActionPerformed !== false
+    ) fail();
+    const invitationExpiresAtMs = Number(discovery.invitationExpiresAtMs);
+    if (Number.isSafeInteger(invitationExpiresAtMs) && invitationExpiresAtMs - observedNow >= minimumRemainingMs) {
+      return Object.freeze({ ready: true });
+    }
+    await sleep(2000);
+  }
 }
 
 async function retainEvidenceFile(path, evidence) {
@@ -644,6 +694,7 @@ async function main() {
       plan,
       controlPlane,
       mcpGate: checkProductionMcpGate,
+      waitInvitationWindow: waitProductionInvitationWindow,
       collectLiveRuntimeInfraInputs: (context) => collectFargateLiveInfraProofInputs({
         plan,
         runId: context.runId,

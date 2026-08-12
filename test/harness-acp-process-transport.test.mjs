@@ -696,6 +696,9 @@ test("ACP process transport performs real ACP lifecycle with unauthenticated ded
   assert.match(prompt, /"registryAddress":"0x8004a818bfb912233c491871b3d84c89a494bd9e"/);
   assert.doesNotMatch(prompt, /validForMinutes|45/);
   assert.match(prompt, /direct A2A endpoint/);
+  assert.match(prompt, /four mandate fields as the tool arguments themselves/);
+  assert.match(prompt, /do not nest them under mandate or terms/);
+  assert.match(prompt, /error field is not an invitation/);
   assert.doesNotMatch(prompt, /privateKey|secret|CLOCKCHAIN_MCP_BEARER|cc_secret|controller authority/i);
   assert.deepEqual(calls.find((entry) => entry[0] === "permission")[1], {
     outcome: { outcome: "selected", optionId: "allow_once" },
@@ -782,7 +785,13 @@ test("ACP process transport defers setup-time MCP tool results until newSession 
     spawn: acpFixtureSpawn({
       calls,
       newSessionResolvedMarker: true,
-      newSessionUpdates: [{
+      newSessionUpdates: [...Array.from({ length: 32 }, (_, index) => ({
+        sessionUpdate: index % 2 === 0 ? "tool_call" : "tool_call_update",
+        toolCallId: `tool-progress-${index}`,
+        kind: "other",
+        title: "MCP setup progress",
+        status: "pending",
+      })), {
         sessionUpdate: "tool_call_update",
         toolCallId: "tool-early-invite",
         kind: "other",
@@ -1053,6 +1062,65 @@ test("ACP process transport forwards only authoritative completed Codex and Clau
     }]]);
     const events = await transport.streamEvents({ sessionId: SESSION });
     assert.doesNotMatch(JSON.stringify(events), /structuredContent|rawOutput|partyBridge|secret-canary/);
+  }
+});
+
+test("ACP process transport does not forward terminal or retryable MCP error bodies to the party bridge", async () => {
+  const action = retainedAction({ role: "initiator", requestDigest: "d".repeat(64), commandSha256: DIGEST });
+  const cases = [
+    {
+      harness: "codex",
+      result: {
+        content: [{ type: "text", text: JSON.stringify({ error: "HANDSHAKE_UNAVAILABLE", retryable: false }) }],
+        isError: true,
+      },
+    },
+    {
+      harness: "codex",
+      result: {
+        content: [{ type: "text", text: JSON.stringify({ error: "HANDSHAKE_TEMPORARILY_UNAVAILABLE", retryable: true, retryAfterMs: 5000 }) }],
+        structuredContent: { error: "HANDSHAKE_TEMPORARILY_UNAVAILABLE", retryable: true, retryAfterMs: 5000 },
+      },
+    },
+    {
+      harness: "claude",
+      result: [{ type: "text", text: JSON.stringify({ error: "HANDSHAKE_UNAVAILABLE", retryable: false }) }],
+    },
+  ];
+  for (const item of cases) {
+    const calls = [];
+    const update = item.harness === "codex" ? {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "failed-invite",
+      status: "completed",
+      rawInput: { server: "clockchain-handshake", tool: "agent_handshake_invite", arguments: {} },
+      rawOutput: { result: item.result, error: null },
+    } : {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "failed-invite",
+      status: "completed",
+      rawOutput: item.result,
+      _meta: { claudeCode: { toolName: "mcp__clockchain-handshake__agent_handshake_invite" } },
+    };
+    const transport = createAcpProcessTransport({
+      harness: item.harness,
+      pin: ACP_VERSION_PINS[item.harness],
+      spawn: acpFixtureSpawn({ calls, sessionUpdates: [update], skipPermission: true }),
+      workspace: `/workspace/${item.harness}`,
+      home: `/workspace/${item.harness}/home`,
+      env: {},
+      partyBridge: partyBridgeFor(calls),
+      retainedActions: [action],
+      trustedAdapterPublicKeys: [action.adapterPublicKey],
+    });
+    await transport.launch({
+      acp: ACP_VERSION_PINS[item.harness],
+      runtime: { runtimeId: `runtime-${item.harness}`, sessionId: SESSION, role: "initiator", harness: item.harness },
+      mandate: VALID_MANDATE,
+      mcpEndpoint: MCP_ENDPOINT,
+      a2aConfig: a2aConfig("initiator"),
+    });
+    assert.equal(calls.some((entry) => Array.isArray(entry) && entry[0] === "partyBridge"), false);
   }
 });
 

@@ -229,11 +229,12 @@ export async function runFargateLiveMechanicsProof(optionsInput) {
   const controlPlane = options.controlPlane;
   if (controlPlane === null || typeof controlPlane !== "object") fail();
   const mcpGate = options.mcpGate;
+  const waitInvitationWindow = options.waitInvitationWindow ?? (async () => ({ ready: true }));
   const collectLiveRuntimeInfraInputs = options.collectLiveRuntimeInfraInputs ?? (async () => null);
   const collectRuntimeEvidenceInputs = options.collectRuntimeEvidenceInputs ?? (async () => null);
   const finalizeVerifiedEvidence = options.finalizeVerifiedEvidence ?? (async () => {});
   const retainEvidence = options.retainEvidence ?? (async () => {});
-  if (typeof mcpGate !== "function" || typeof collectLiveRuntimeInfraInputs !== "function" || typeof collectRuntimeEvidenceInputs !== "function" || typeof finalizeVerifiedEvidence !== "function" || typeof retainEvidence !== "function") fail();
+  if (typeof mcpGate !== "function" || typeof waitInvitationWindow !== "function" || typeof collectLiveRuntimeInfraInputs !== "function" || typeof collectRuntimeEvidenceInputs !== "function" || typeof finalizeVerifiedEvidence !== "function" || typeof retainEvidence !== "function") fail();
   const stackName = `clockchain-${plan.runId}`;
   const taskArns = {};
   const taskDefinitions = {};
@@ -268,6 +269,11 @@ export async function runFargateLiveMechanicsProof(optionsInput) {
       initiatorExecutionRoleArn: outputs.InitiatorExecutionRoleArn,
       responderExecutionRoleArn: outputs.ResponderExecutionRoleArn,
     });
+    const invitationWindow = await waitInvitationWindow({
+      deadlineMs: Date.parse(plan.parameters.ExpiresAt) - 300_000,
+      minimumRemainingMs: 90_000,
+    });
+    if (JSON.stringify(invitationWindow) !== JSON.stringify({ ready: true })) throw new Error("invitation window unavailable");
     const definitions = buildFargateLiveTaskDefinitions({ stackPlan: plan, stackOutputs: outputs, stackResources: taskDefinitionResourceEnvelope(resources) });
     for (const role of ROLES) {
       reconcile.taskDefinitions = true;

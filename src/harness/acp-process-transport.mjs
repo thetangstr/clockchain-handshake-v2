@@ -334,6 +334,10 @@ function promptText({ role, sessionId, mandate, a2aConfig }) {
       `Before your first MCP call, read exactly one UTF-8 invitation from ${a2aConfig.invitationPath}.`,
       "Pass that exact value unchanged to agent_handshake_accept_invitation; do not print, summarize, or copy it anywhere else.",
     ] : []),
+    ...(role === "initiator" ? [
+      "First call agent_handshake_invite with the four mandate fields as the tool arguments themselves; do not nest them under mandate or terms.",
+      "A result whose public body has an error field is not an invitation and must never be copied or used as role access.",
+    ] : []),
     "Use the dedicated clockchain-handshake MCP server and retained local-action approvals only.",
   ].join("\n");
 }
@@ -496,7 +500,53 @@ function authoritativeToolResult(update) {
     if (output.error !== null && output.error !== undefined) fail();
     result = output.result;
   }
+  if (mcpFailureResult(result)) return null;
   return Object.freeze({ result, toolName });
+}
+
+function mcpFailureBody(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value) || types.isProxy(value)) return false;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors);
+  if (keys.some((key) => typeof key !== "string")) return false;
+  const expected = descriptors.retryAfterMs === undefined
+    ? ["error", "retryable"]
+    : ["error", "retryAfterMs", "retryable"];
+  if (keys.length !== expected.length || keys.some((key) => !expected.includes(key))) return false;
+  for (const key of keys) if (!descriptors[key].enumerable || !Object.hasOwn(descriptors[key], "value")) return false;
+  const error = descriptors.error.value;
+  const retryable = descriptors.retryable.value;
+  if (error === "HANDSHAKE_UNAVAILABLE" && retryable === false && descriptors.retryAfterMs === undefined) return true;
+  return error === "HANDSHAKE_TEMPORARILY_UNAVAILABLE" && retryable === true &&
+    Number.isSafeInteger(descriptors.retryAfterMs?.value) && descriptors.retryAfterMs.value > 0;
+}
+
+function mcpFailureText(value) {
+  if (typeof value !== "string" || value.length > MAX_STRING) return false;
+  try { return mcpFailureBody(JSON.parse(value)); } catch { return false; }
+}
+
+function mcpFailureBlocks(value) {
+  if (!Array.isArray(value)) return false;
+  const blocks = snapshotArray(value, { min: 1 });
+  return blocks.length === 1 && (() => {
+    try {
+      const block = exactObject(blocks[0], ["text", "type"]);
+      return block.type === "text" && mcpFailureText(block.text);
+    } catch { return false; }
+  })();
+}
+
+function mcpFailureResult(value) {
+  if (Array.isArray(value)) return mcpFailureBlocks(value);
+  if (value === null || typeof value !== "object" || types.isProxy(value)) return false;
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (const descriptor of Object.values(descriptors)) {
+    if (!descriptor.enumerable || !Object.hasOwn(descriptor, "value")) return false;
+  }
+  if (descriptors.isError?.value === true) return true;
+  if (mcpFailureBody(descriptors.structuredContent?.value)) return true;
+  return mcpFailureBlocks(descriptors.content?.value);
 }
 
 function retainedActionsFromToolResult(result, actionRecorder) {
@@ -674,10 +724,13 @@ export function createAcpProcessTransport(optionsInput = {}) {
         if (provisionalAcpSessionId === null) provisionalAcpSessionId = params.sessionId;
         else if (params.sessionId !== provisionalAcpSessionId) fail();
         if (updateType === "tool_call" || updateType === "tool_call_update") {
-          failureStage = "envelope-early-tool";
-          if (provisionalToolUpdates.length >= MAX_PROVISIONAL_TOOL_UPDATES) fail();
-          provisionalToolUpdates.push(params);
-          return;
+          const provisionalResult = authoritativeToolResult(params.update);
+          if (provisionalResult !== null) {
+            failureStage = "envelope-early-tool";
+            if (provisionalToolUpdates.length >= MAX_PROVISIONAL_TOOL_UPDATES) fail();
+            provisionalToolUpdates.push(params);
+            return;
+          }
         }
       } else {
         failureStage = "envelope-active-session";

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { ReadableStream } from "node:stream/web";
 import test from "node:test";
 
-import { parseFargateRunnerArgs, checkProductionMcpGate, retainFargateSuccessEvidence } from "../scripts/run-mechanics-proof-fargate.mjs";
+import { parseFargateRunnerArgs, checkProductionMcpGate, retainFargateSuccessEvidence, waitProductionInvitationWindow } from "../scripts/run-mechanics-proof-fargate.mjs";
 
 function bodyResponse(body, { contentType = "application/json", contentLength = null } = {}) {
   const bytes = new TextEncoder().encode(body);
@@ -121,6 +121,39 @@ test("production MCP gate accepts bounded JSON or one SSE message with exact eig
   });
   assert.equal(sseGate.healthy, true);
   assert.equal(sseCalls, 3);
+});
+
+test("production invitation gate waits for a newly opened public discovery window before task launch", async () => {
+  let now = 1_000_000;
+  let calls = 0;
+  const discovery = (invitationExpiresAtMs) => ({
+    schema: "clockchain.agent-handshake-discovery/v2",
+    protocol: "clockchain.agent-handshake/v2",
+    sessionId: "11111111-2222-4333-8444-555555555555",
+    repositorySha: "a".repeat(40),
+    kitRepoUrl: "https://github.com/thetangstr/clockchain-handshake-v2",
+    relayUrl: "http://44.249.47.220:8080",
+    createdAtMs: "900000",
+    invitationExpiresAtMs: String(invitationExpiresAtMs),
+    sessionDeadlineMs: "1600000",
+    hostSessionKeyCertificate: {},
+    sessionOpenedBlock: "11476230",
+    externalBusinessActionPerformed: false,
+  });
+  const result = await waitProductionInvitationWindow({
+    deadlineMs: 1_300_000,
+    minimumRemainingMs: 90_000,
+    now: () => now,
+    sleep: async (ms) => { assert.equal(ms, 2000); now += ms; },
+    fetch: async (url, options) => {
+      calls += 1;
+      assert.equal(url, "http://44.249.47.220:8080/v1/discovery/current");
+      assert.equal(options.method, "GET");
+      return bodyResponse(JSON.stringify(discovery(calls === 1 ? 1_080_000 : 1_120_000)));
+    },
+  });
+  assert.deepEqual(result, { ready: true });
+  assert.equal(calls, 2);
 });
 
 test("production MCP gate rejects seven-tool deployment and unsafe response forms", async () => {
