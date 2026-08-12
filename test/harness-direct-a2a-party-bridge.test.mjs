@@ -413,6 +413,18 @@ test("bridges bind the protocol session once from authoritative invite and accep
   );
 });
 
+test("bridge digests a production-length MCP invitation result without treating it as an A2A envelope", async (t) => {
+  const { bridges, invitationCalls } = await setup(t, { initialSessionId: null });
+  const invitation = `opaque.${"x".repeat(8192)}`;
+  const observed = await bridges.initiator.observeToolResult({
+    toolName: "agent_handshake_invite",
+    result: { responderInvitation: invitation, roleAccess: ROLE_ACCESS.initiator, sessionId: SESSION_ID },
+  });
+  assert.equal(observed.observed, true);
+  assert.match(observed.toolResultDigest, /^[0-9a-f]{64}$/);
+  assert.equal(invitationCalls[0].invitation, invitation);
+});
+
 test("dynamic bridge rejects retained helper action before authoritative session binding", async (t) => {
   const { bridges } = await setup(t, { initialSessionId: null });
   const step = lifecycleStep("initiator");

@@ -89,6 +89,17 @@ function publicClone(value, depth = 0) {
   return result;
 }
 
+function publicResultDigest(value) {
+  function sorted(item) {
+    if (item === null || typeof item !== "object") return item;
+    if (Array.isArray(item)) return item.map(sorted);
+    const result = {};
+    for (const key of Object.keys(item).sort()) result[key] = sorted(item[key]);
+    return result;
+  }
+  return createHash("sha256").update(JSON.stringify(sorted(value))).digest("hex");
+}
+
 function projectMethods(value, keys) {
   try {
     if (value === null || typeof value !== "object" || Array.isArray(value) || types.isProxy(value)) fail();
@@ -623,7 +634,7 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
             retained.set(expected.commandSha256, { ...expected, state: prior?.state ?? "pending" });
           }
           failureStage = "digest";
-          return Object.freeze({ observed: true, protocolSessionId: boundSessionId, toolResultDigest: createHash("sha256").update(a2aCanonicalBytes(digestInput)).digest("hex") });
+          return Object.freeze({ observed: true, protocolSessionId: boundSessionId, toolResultDigest: publicResultDigest(digestInput) });
         } catch { throw stagedBridgeFailure(failureStage); }
       },
       publicEvidence() {
