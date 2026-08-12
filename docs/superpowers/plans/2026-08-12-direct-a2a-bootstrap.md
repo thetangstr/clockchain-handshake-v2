@@ -175,7 +175,7 @@ Add an internal wallet-bridge export that returns only the lowercase address and
 
 - [ ] **Step 4: Implement the bounded authority**
 
-Create the party authority with a private state path, immutable session/role/policy/runtime/workload/TLS bindings, and one separately generated delegated A2A account. Expose only `publicBinding()`, `signResponderCard()`, `signInitiatorCard({responderCard})`, `signProposalCheckpoint({proposalEnvelope,...})`, `signAcceptanceCheckpoint({proposalEnvelope,acceptanceEnvelope,...})`, and `destroy()`.
+Create the party authority with a private state path, immutable session/role/policy/runtime/workload/task/HTTPS-endpoint bindings, and one separately generated delegated A2A account. Its public binding's exact nested `runtime` and `peerRuntime` objects each include `tlsCertificateSha256`. The unchanged v1 Agent Card binds the endpoint but has no certificate field; certificate identity remains enforced by the signed bootstrap envelope and sender pin. Expose only `publicBinding()`, `signResponderCard()`, `signInitiatorCard({responderCard})`, `signProposalCheckpoint({proposalEnvelope,...})`, `signAcceptanceCheckpoint({proposalEnvelope,acceptanceEnvelope,...})`, and `destroy()`.
 
 Use existing `verifyAgentHandshakeV2Proposal`, `verifyAgentHandshakeV2Acceptance`, `signA2AAgentCard`, and `signAgentHandshakeV2CommitmentCheckpoint`. Every party-key signature must call `walletBridge.signExactBytes`; arbitrary bytes are never caller-controlled.
 

@@ -26,6 +26,7 @@ import { recoverMessageAddress } from "viem";
 import {
   initializeWallet,
   inspectWallet,
+  inspectWalletPublicKey,
   registerWalletIdentity,
   signExactBytes,
 } from "../src/core/wallet-bridge.mjs";
@@ -362,6 +363,22 @@ test("inspects only public address and registration state", async (t) => {
     registration: null,
   });
   assertNoSecret(inspected);
+});
+
+test("internal public-key inspection returns only address and public key without changing inspect output", async (t) => {
+  const { statePath } = await initializeDeterministicWallet(t);
+  const publicKey = await inspectWalletPublicKey({ statePath, platform: "darwin" });
+  const inspect = await inspectWallet({ statePath, platform: "darwin" });
+  const cliInspection = await runCli(["inspect", "--state", statePath]);
+
+  assert.equal(publicKey.address, ADDRESS.toLowerCase());
+  assert.match(publicKey.publicKey, /^0x[0-9a-f]{130}$/);
+  assert.deepEqual(Object.keys(publicKey).sort(), ["address", "publicKey"]);
+  assert.deepEqual(Object.keys(inspect).sort(), ["address", "registration"]);
+  assert.deepEqual(Object.keys(cliInspection.json).sort(), ["address", "registration"]);
+  assertNoSecret(publicKey);
+  assertNoSecret(inspect);
+  assertNoSecret(cliInspection.stdout);
 });
 
 test("fails closed without leaking when newest checkpoint contains private-key-shaped public fields", async (t) => {

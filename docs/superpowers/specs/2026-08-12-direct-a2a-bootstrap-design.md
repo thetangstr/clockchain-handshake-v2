@@ -80,7 +80,7 @@ The existing Clockchain helper remains the sole executor for MCP-returned `init`
 
 A new Clockchain-owned party authority module may use the same runtime-private wallet only for two derived A2A signatures:
 
-- sign the exact Agent Card binding the already-created party address, role, live session, runtime/workload facts, TLS endpoint, delegated A2A card public key, expiry, nonce, and jti;
+- sign the exact Agent Card binding the already-created party address, role, live session, runtime/workload/task facts, HTTPS endpoint, delegated A2A card public key, expiry, nonce, and jti. The unchanged v1 Agent Card has no TLS-certificate field: the certificate fingerprint remains bound by the bootstrap request signature, sender-side TLS pin, and bootstrap evidence rather than being duplicated into the card wire schema;
 - sign an additive commitment checkpoint only after independently verifying the exact existing v2 proposal or acceptance envelope signed by that same party.
 
 The module has no arbitrary-sign API. It never returns a private key. It rejects any role, session, signer, policy, artifact, endpoint, workload, expiry, or digest mismatch. Signing a checkpoint does not create a new business decision; it binds an already party-signed authoritative v2 artifact to the direct A2A evidence chain.

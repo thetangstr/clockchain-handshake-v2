@@ -370,6 +370,24 @@ export async function inspectWallet({
   fail();
 }
 
+export async function inspectWalletPublicKey({
+  platform = process.platform,
+  runIcacls,
+  statePath: inputStatePath,
+} = {}) {
+  try {
+    const statePath = assertPath(inputStatePath);
+    const { account } = await readWallet({ platform, runIcacls, statePath });
+    return {
+      address: account.address.toLowerCase(),
+      publicKey: account.publicKey,
+    };
+  } catch (error) {
+    sanitize(error);
+  }
+  fail();
+}
+
 export async function signExactBytes({
   bytesGzipBase64Url,
   bytesHex,
