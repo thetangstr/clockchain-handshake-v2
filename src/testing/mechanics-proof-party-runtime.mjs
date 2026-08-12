@@ -5,7 +5,10 @@ import { types } from "node:util";
 
 import { createA2ACardBootstrap } from "../a2a/card-bootstrap.mjs";
 import { createHttpTaskTransport } from "../a2a/http-task-transport.mjs";
-import { createInvitationBootstrapTransport } from "../a2a/invitation-bootstrap-transport.mjs";
+import {
+  createInvitationBootstrapTransport,
+  invitationBootstrapFailureStage,
+} from "../a2a/invitation-bootstrap-transport.mjs";
 import { createPartyA2AAuthority } from "../harness/party-a2a-authority.mjs";
 import { activatePartySignedChannel, defaultPartySignedChannelSleep } from "../harness/party-signed-channel-bootstrap.mjs";
 import { createAgentHandshakeCheckpointClient } from "../harness/agent-handshake-mcp-client.mjs";
@@ -50,6 +53,8 @@ const RUNTIME_FAILURE_STAGES = Object.freeze([
   "peer-validate", "listener-create", "listener-ready", "invitation-await", "recorder-create",
   "bridge-create", "provider-auth", "transport-create", "adapter-create", "agent-starting",
   "agent-launch", "evidence-validate", "certificate-event", "agent-terminate", "evidence-collect", "teardown",
+  "listener-listen-eacces", "listener-listen-eaddrinuse", "listener-listen-eaddrnotavail",
+  "listener-listen-eperm", "listener-listen-other",
 ]);
 const RUNTIME_FAILURES = new WeakMap();
 
@@ -589,7 +594,11 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
             terminalStatus: "completed",
             teardown: Object.freeze({ completed: false }),
           });
-        } catch { runFailed = true; runFailureStage = runStage; }
+        } catch (error) {
+          runFailed = true;
+          const listenerStage = runStage === "listener-create" ? invitationBootstrapFailureStage(error) : null;
+          runFailureStage = listenerStage === null ? runStage : `listener-${listenerStage}`;
+        }
         let teardownResult;
         try { teardownResult = await teardown(); } catch { runFailed = true; runFailureStage ??= "teardown"; }
         if (runFailed || terminalEvidence === null || teardownResult?.completed !== true) {

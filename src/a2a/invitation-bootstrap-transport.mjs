@@ -44,11 +44,24 @@ const ENVELOPE_KEYS = Object.freeze([
   "sessionId",
   "version",
 ]);
+const LISTEN_FAILURES = new WeakMap();
 
 export const INVITATION_BOOTSTRAP_CARD_CAPABILITY = Symbol("clockchain.invitation-bootstrap-card-capability");
 
 function fail() {
   throw new Error("Invitation bootstrap transport failed safely.");
+}
+
+function listenFailure(error) {
+  const code = typeof error?.code === "string" ? error.code.toLowerCase() : "other";
+  const suffix = ["eacces", "eaddrinuse", "eaddrnotavail", "eperm"].includes(code) ? code : "other";
+  const safe = new Error("Invitation bootstrap transport failed safely.");
+  LISTEN_FAILURES.set(safe, `listen-${suffix}`);
+  throw safe;
+}
+
+export function invitationBootstrapFailureStage(error) {
+  return LISTEN_FAILURES.get(error) ?? null;
 }
 
 function digestBytes(bytes) {
@@ -561,7 +574,7 @@ export async function createInvitationBootstrapTransport(optionsInput = {}) {
       server.off("error", reject);
       resolve();
     });
-  }).catch(() => fail());
+  }).catch(listenFailure);
   const address = server.address();
   const localUrl = `https://${address.address === "0.0.0.0" ? "127.0.0.1" : address.address}:${address.port}`;
   publicUrl = configuredPublicUrl ?? endpoint(localUrl, { allowLoopbackForTests });

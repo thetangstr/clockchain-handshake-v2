@@ -8,7 +8,10 @@ import { privateKeyToAccount } from "viem/accounts";
 import { A2A_AGENT_CARD_SCHEMA, a2aAgentCardDigest, signA2AAgentCard } from "../src/a2a/agent-card.mjs";
 import { a2aCanonicalBytes } from "../src/a2a/auth.mjs";
 import { createA2ACardBootstrap } from "../src/a2a/card-bootstrap.mjs";
-import { createInvitationBootstrapTransport } from "../src/a2a/invitation-bootstrap-transport.mjs";
+import {
+  createInvitationBootstrapTransport,
+  invitationBootstrapFailureStage,
+} from "../src/a2a/invitation-bootstrap-transport.mjs";
 
 const RUN_ID = "run-6c0-task1";
 const SESSION_ID = "11111111-2222-4333-8444-555555555555";
@@ -491,6 +494,36 @@ test("invitation bootstrap requires distinct Ed25519 bootstrap identities", asyn
     }
     assert.equal(rejected, true);
   }
+});
+
+test("invitation bootstrap exposes only a branded allowlisted listen failure", async (t) => {
+  const occupied = https.createServer({ key: TLS_KEY, cert: TLS_CERT });
+  await new Promise((resolve, reject) => {
+    occupied.once("error", reject);
+    occupied.listen(0, "127.0.0.1", resolve);
+  });
+  t.after(() => occupied.close());
+  const port = occupied.address().port;
+  await assert.rejects(() => createInvitationBootstrapTransport({
+    allowLoopbackForTests: true,
+    bootstrapSigner: signer(),
+    initialSessionId: null,
+    listenHost: "127.0.0.1",
+    localRuntime: runtime("initiator"),
+    peerBootstrapPublicKey: signer().publicKey,
+    peerRole: "responder",
+    peerRuntime: runtime("responder"),
+    port,
+    role: "initiator",
+    runId: RUN_ID,
+    tls: tls(),
+  }), (error) => {
+    assert.equal(error.message, "Invitation bootstrap transport failed safely.");
+    assert.equal(invitationBootstrapFailureStage(error), "listen-eaddrinuse");
+    assert.equal(invitationBootstrapFailureStage(new Error(error.message)), null);
+    assert.doesNotMatch(JSON.stringify(error), /127\.0\.0\.1|certificate|private/i);
+    return true;
+  });
 });
 
 test("invitation bootstrap stores no outbound evidence on ambiguous network failure", async (t) => {
