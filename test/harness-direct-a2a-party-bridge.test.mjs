@@ -374,7 +374,7 @@ test("destroy tears down party authority and returns a generic failure when tran
     },
     transformTaskTransport(transport, role) {
       if (role !== "initiator") return transport;
-      return Object.freeze({ ...transport, async close() { throw new Error("raw transport detail"); } });
+      return Object.freeze({ ...transport, close() { throw new Error("raw transport detail"); } });
     },
   });
   const step = lifecycleStep("initiator");

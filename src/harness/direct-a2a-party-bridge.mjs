@@ -450,9 +450,9 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
           }
           if (signedChannel !== null) {
             const results = await Promise.allSettled([
-              signedChannel.taskTransport.close(),
-              signedChannel.authority.destroy(),
-            ]);
+              () => signedChannel.taskTransport.close(),
+              () => signedChannel.authority.destroy(),
+            ].map((teardown) => Promise.resolve().then(teardown)));
             if (results.some((result) => result.status === "rejected")) fail();
           }
           return Object.freeze({ destroyed: true });
