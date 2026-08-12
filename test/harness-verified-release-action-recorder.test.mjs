@@ -10,7 +10,10 @@ import test from "node:test";
 
 import { validateRetainedLocalAction } from "../src/harness/harness-adapter-contract.mjs";
 import { createAcpProcessTransport } from "../src/harness/acp-process-transport.mjs";
-import { createVerifiedReleaseActionRecorder } from "../src/harness/verified-release-action-recorder.mjs";
+import {
+  createVerifiedReleaseActionRecorder,
+  verifiedReleaseActionRecorderFailureStage,
+} from "../src/harness/verified-release-action-recorder.mjs";
 import { ACP_VERSION_PINS } from "../src/harness/version-pins.mjs";
 import { createFreshAgentRun, VERIFIED_HELPER_BOOTSTRAP } from "../src/testing/fresh-agent-client.mjs";
 
@@ -180,6 +183,98 @@ test("verified release recorder rejects proxy and accessor authority without inv
     socketRoot: "/tmp/unused-recorder-root",
   }), /failed safely/);
   assert.equal(getterCalls, 0);
+});
+
+test("verified release recorder brands only safe construction failure stages", async () => {
+  const classify = verifiedReleaseActionRecorderFailureStage;
+  const fixture = releaseFixture({
+    schema: "clockchain.agent-handshake-cli-result/v1",
+    helperVersion: "2.1.2",
+    operation: "init",
+  });
+  const parent = await mkdtemp(join(tmpdir(), "verified-release-stage-"));
+  const workspace = join(parent, "workspace");
+  const tmp = join(workspace, "tmp");
+  await mkdir(workspace, { mode: 0o700 });
+  await mkdir(tmp, { mode: 0o700 });
+  try {
+    let manifestFailure;
+    try {
+      await createVerifiedReleaseActionRecorder({
+        fetchImpl: async () => ({ ok: false, arrayBuffer: async () => Buffer.alloc(0) }),
+        manifestDigest: fixture.manifestDigest,
+        room: { workspace, tmp },
+        socketRoot: join(parent, "manifest-socket"),
+      });
+    } catch (error) { manifestFailure = error; }
+    assert.equal(manifestFailure?.message, "Verified release action recorder failed safely.");
+    assert.equal(classify(manifestFailure), "release-manifest-fetch");
+    assert.equal(classify(new Error(manifestFailure.message)), null);
+
+    let helperFailure;
+    try {
+      await createVerifiedReleaseActionRecorder({
+        fetchImpl: async (url) => url.endsWith("/manifest.json")
+          ? { ok: true, arrayBuffer: async () => Buffer.from(fixture.manifest) }
+          : { ok: false, arrayBuffer: async () => Buffer.alloc(0) },
+        manifestDigest: fixture.manifestDigest,
+        room: { workspace, tmp },
+        socketRoot: join(parent, "helper-socket"),
+      });
+    } catch (error) { helperFailure = error; }
+    assert.equal(helperFailure?.message, "Verified release action recorder failed safely.");
+    assert.equal(classify(helperFailure), "release-helper-fetch");
+
+    const verifyWorkspace = join(parent, "verify-workspace");
+    const verifyTmp = join(verifyWorkspace, "tmp");
+    await mkdir(verifyWorkspace, { mode: 0o700 });
+    await mkdir(verifyTmp, { mode: 0o700 });
+    let releaseFailure;
+    try {
+      await createVerifiedReleaseActionRecorder({
+        fetchImpl: async () => ({ ok: true, arrayBuffer: async () => Buffer.from("wrong-release-bytes") }),
+        manifestDigest: fixture.manifestDigest,
+        room: { workspace: verifyWorkspace, tmp: verifyTmp },
+        socketRoot: join(parent, "verify-socket"),
+      });
+    } catch (error) { releaseFailure = error; }
+    assert.equal(classify(releaseFailure), "release-assets");
+
+    const layoutWorkspace = join(parent, "layout-workspace");
+    const layoutTmp = join(layoutWorkspace, "tmp");
+    await mkdir(layoutWorkspace, { mode: 0o700 });
+    await mkdir(layoutTmp, { mode: 0o700 });
+    await writeFile(join(layoutWorkspace, ".clockchain-adapter"), "collision", { mode: 0o600 });
+    let layoutFailure;
+    try {
+      await createVerifiedReleaseActionRecorder({
+        fetchImpl: fixture.fetchImpl,
+        manifestDigest: fixture.manifestDigest,
+        room: { workspace: layoutWorkspace, tmp: layoutTmp },
+        socketRoot: join(parent, "layout-socket"),
+      });
+    } catch (error) { layoutFailure = error; }
+    assert.equal(classify(layoutFailure), "adapter-layout");
+
+    const socketWorkspace = join(parent, "socket-workspace");
+    const socketTmp = join(socketWorkspace, "tmp");
+    const unsafeSocket = join(parent, "unsafe-socket");
+    await mkdir(socketWorkspace, { mode: 0o700 });
+    await mkdir(socketTmp, { mode: 0o700 });
+    await mkdir(unsafeSocket, { mode: 0o755 });
+    let socketFailure;
+    try {
+      await createVerifiedReleaseActionRecorder({
+        fetchImpl: fixture.fetchImpl,
+        manifestDigest: fixture.manifestDigest,
+        room: { workspace: socketWorkspace, tmp: socketTmp },
+        socketRoot: unsafeSocket,
+      });
+    } catch (error) { socketFailure = error; }
+    assert.equal(classify(socketFailure), "completion-socket");
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
 });
 
 test("verified release recorder withholds helper output when the private completion deadline expires", async (t) => {

@@ -10,6 +10,7 @@ import {
   createMechanicsProofPartyRuntime,
   mechanicsProofPartyRuntimeFailureStage,
 } from "../src/testing/mechanics-proof-party-runtime.mjs";
+import { createVerifiedReleaseActionRecorder } from "../src/harness/verified-release-action-recorder.mjs";
 
 const RUN_ID = "11111111-2222-4333-8444-555555555555";
 const PROTOCOL_SESSION_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
@@ -487,6 +488,26 @@ test("party runtime exposes only its branded allowlisted failure stage", async (
     assert.equal(mechanicsProofPartyRuntimeFailureStage(error), "listener-create");
     assert.equal(mechanicsProofPartyRuntimeFailureStage(new Error("Mechanics proof party runtime failed safely.")), null);
     assert.doesNotMatch(JSON.stringify(error), /secret|listener/i);
+    return true;
+  });
+});
+
+test("party runtime preserves a branded recorder retrieval substage", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-recorder-stage-"));
+  const root = join(parent, "responder");
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const runtime = await createMechanicsProofPartyRuntime(options(root), dependencies([], {
+    createActionRecorder(input) {
+      return createVerifiedReleaseActionRecorder({
+        ...input,
+        fetchImpl: async () => ({ ok: false, arrayBuffer: async () => Buffer.alloc(0) }),
+      });
+    },
+  }));
+  await assert.rejects(() => runtime.run({ peerDescriptor: peerDescriptor() }), (error) => {
+    assert.equal(error.message, "Mechanics proof party runtime failed safely.");
+    assert.equal(mechanicsProofPartyRuntimeFailureStage(error), "recorder-release-manifest-fetch");
+    assert.doesNotMatch(JSON.stringify(error), /github|manifest\.json|secret/i);
     return true;
   });
 });

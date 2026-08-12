@@ -16,7 +16,10 @@ import { createAcpClaudeHarnessAdapter } from "../harness/acp-claude-adapter.mjs
 import { createAcpCodexHarnessAdapter } from "../harness/acp-codex-adapter.mjs";
 import { createAcpProcessTransport } from "../harness/acp-process-transport.mjs";
 import { createDirectA2APartyBridge } from "../harness/direct-a2a-party-bridge.mjs";
-import { createVerifiedReleaseActionRecorder } from "../harness/verified-release-action-recorder.mjs";
+import {
+  createVerifiedReleaseActionRecorder,
+  verifiedReleaseActionRecorderFailureStage,
+} from "../harness/verified-release-action-recorder.mjs";
 import { ACP_VERSION_PINS } from "../harness/version-pins.mjs";
 import { digestHex } from "../core/canonical.mjs";
 import { installAppleClientAuthentication, loadAppleClientAuthentication } from "./apple-client-auth.mjs";
@@ -51,6 +54,8 @@ const AWS_CREDENTIAL_OVERRIDE_ENV = Object.freeze([
 ]);
 const RUNTIME_FAILURE_STAGES = Object.freeze([
   "peer-validate", "listener-create", "listener-ready", "invitation-await", "recorder-create",
+  "recorder-release-manifest-fetch", "recorder-release-helper-fetch", "recorder-release-assets",
+  "recorder-adapter-layout", "recorder-completion-socket",
   "bridge-create", "provider-auth", "transport-create", "adapter-create", "agent-starting",
   "agent-launch", "evidence-validate", "certificate-event", "agent-terminate", "evidence-collect", "teardown",
   "listener-listen-eacces", "listener-listen-eaddrinuse", "listener-listen-eaddrnotavail",
@@ -600,7 +605,10 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
         } catch (error) {
           runFailed = true;
           const listenerStage = runStage === "listener-create" ? invitationBootstrapFailureStage(error) : null;
-          runFailureStage = listenerStage === null ? runStage : `listener-${listenerStage}`;
+          const recorderStage = runStage === "recorder-create" ? verifiedReleaseActionRecorderFailureStage(error) : null;
+          runFailureStage = listenerStage !== null
+            ? `listener-${listenerStage}`
+            : recorderStage !== null ? `recorder-${recorderStage}` : runStage;
         }
         let teardownResult;
         try { teardownResult = await teardown(); } catch { runFailed = true; runFailureStage ??= "teardown"; }

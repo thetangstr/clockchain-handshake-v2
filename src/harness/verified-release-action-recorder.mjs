@@ -18,11 +18,31 @@ const MAX_RESULT_BYTES = 64 * 1024;
 const MAX_SOCKET_PATH_BYTES = 96;
 const COMPLETION_SOCKET_DEADLINE_MS = 5_000;
 const EMPTY_DIGEST = createHash("sha256").update("").digest("hex");
+const RECORDER_FAILURE_STAGES = Object.freeze([
+  "release-manifest-fetch", "release-helper-fetch", "release-assets", "adapter-layout", "completion-socket",
+]);
+const RECORDER_FAILURES = new WeakMap();
 
 export const VERIFIED_RELEASE_HELPER_BOOTSTRAP = 'const fs=require("node:fs");const crypto=require("node:crypto");const Module=require("node:module");const argv=process.argv.slice(1);const expected=argv.shift();const manifestPath=argv.shift();const helperPath=argv.shift();const manifestBytes=fs.readFileSync(manifestPath);const manifestDigest=crypto.createHash("sha256").update(manifestBytes).digest("hex");if(manifestDigest!==expected)process.exit(86);const manifest=JSON.parse(manifestBytes);if(manifest.schema!=="clockchain.agent-handshake-release-manifest/v1"||manifest.version!=="2.1.2"||!/^24\\./.test(manifest.nodeRuntime)||!/^24\\./.test(process.versions.node)||!Array.isArray(manifest.assets)||manifest.assets.length!==1)process.exit(86);const asset=manifest.assets[0];if(asset.filename!=="clockchain-agent-handshake.cjs"||asset.url!=="https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/clockchain-agent-handshake.cjs"||typeof asset.sha256!=="string"||!/^[0-9a-f]{64}$/.test(asset.sha256))process.exit(86);const helperBytes=fs.readFileSync(helperPath);const helperDigest=crypto.createHash("sha256").update(helperBytes).digest("hex");if(helperDigest!==asset.sha256)process.exit(86);process.argv=[process.execPath].concat(helperPath).concat(argv);const loaded=new Module(helperPath);loaded.filename=helperPath;loaded.paths=[];const compile=loaded._compile.bind(loaded);compile(...[helperBytes.toString("utf8")].concat(helperPath));';
 
 function fail() {
   throw new Error("Verified release action recorder failed safely.");
+}
+
+function stagedFailure(stage) {
+  if (!RECORDER_FAILURE_STAGES.includes(stage)) fail();
+  const error = new Error("Verified release action recorder failed safely.");
+  RECORDER_FAILURES.set(error, stage);
+  return error;
+}
+
+export function verifiedReleaseActionRecorderFailureStage(error) {
+  return RECORDER_FAILURES.get(error) ?? null;
+}
+
+function restage(error, stage) {
+  if (verifiedReleaseActionRecorderFailureStage(error) !== null) throw error;
+  throw stagedFailure(stage);
 }
 
 function snapshotObject(value, allowedKeys, requiredKeys = allowedKeys) {
@@ -203,19 +223,21 @@ function validateExpectedArgvBinding(argv, expected) {
   if (!argv[9].endsWith(stateSuffix)) fail();
 }
 
-async function fetchReleaseAsset(fetchImpl, url, maxBytes) {
-  let response;
-  try { response = await fetchImpl(url); } catch { fail(); }
-  if (response?.ok !== true || typeof response.arrayBuffer !== "function") fail();
-  let bytes;
-  try { bytes = Buffer.from(await response.arrayBuffer()); } catch { fail(); }
-  if (bytes.length < 1 || bytes.length > maxBytes) fail();
-  return bytes;
+async function fetchReleaseAsset(fetchImpl, url, maxBytes, stage) {
+  try {
+    const response = await fetchImpl(url);
+    if (response?.ok !== true || typeof response.arrayBuffer !== "function") fail();
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length < 1 || bytes.length > maxBytes) fail();
+    return bytes;
+  } catch {
+    throw stagedFailure(stage);
+  }
 }
 
 export async function preloadVerifiedReleaseAssets({ fetchImpl, manifestDigest, workspace }) {
   if (typeof fetchImpl !== "function" || !SHA256.test(manifestDigest)) fail();
-  const manifestBytes = await fetchReleaseAsset(fetchImpl, `${RELEASE_PREFIX}manifest.json`, 64 * 1024);
+  const manifestBytes = await fetchReleaseAsset(fetchImpl, `${RELEASE_PREFIX}manifest.json`, 64 * 1024, "release-manifest-fetch");
   if (createHash("sha256").update(manifestBytes).digest("hex") !== manifestDigest) fail();
   let manifest;
   try { manifest = JSON.parse(manifestBytes.toString("utf8")); } catch { fail(); }
@@ -227,7 +249,7 @@ export async function preloadVerifiedReleaseAssets({ fetchImpl, manifestDigest, 
   const asset = manifest.assets[0];
   const helperUrl = `${RELEASE_PREFIX}clockchain-agent-handshake.cjs`;
   if (asset?.filename !== "clockchain-agent-handshake.cjs" || asset?.url !== helperUrl || !SHA256.test(asset?.sha256)) fail();
-  const helperBytes = await fetchReleaseAsset(fetchImpl, helperUrl, 1024 * 1024);
+  const helperBytes = await fetchReleaseAsset(fetchImpl, helperUrl, 1024 * 1024, "release-helper-fetch");
   if (createHash("sha256").update(helperBytes).digest("hex") !== asset.sha256) fail();
   await writeFile(join(workspace, "manifest.json"), manifestBytes, { mode: 0o600 });
   await writeFile(join(workspace, "clockchain-agent-handshake.cjs"), helperBytes, { mode: 0o600 });
@@ -386,14 +408,19 @@ export async function createVerifiedReleaseActionRecorder(input = {}) {
   const tmp = descendant(workspace, room.tmp);
   const runtime = absolute(runtimeExecPath);
   if (!["darwin", "linux"].includes(platform)) fail();
-  await preloadVerifiedReleaseAssets({ fetchImpl, manifestDigest, workspace });
+  try { await preloadVerifiedReleaseAssets({ fetchImpl, manifestDigest, workspace }); }
+  catch (error) { restage(error, "release-assets"); }
   const root = join(workspace, ".clockchain-adapter");
   const bin = join(root, "bin");
   const pending = join(root, "pending");
   const running = join(root, "running");
   const consumed = join(root, "consumed");
-  for (const path of [root, bin, pending, running, consumed]) await privateDirectory(path);
-  const completion = await createCompletionSocket({ deadlineMs: completionDeadlineMs, platform, socketRoot });
+  try {
+    for (const path of [root, bin, pending, running, consumed]) await privateDirectory(path);
+  } catch (error) { restage(error, "adapter-layout"); }
+  let completion;
+  try { completion = await createCompletionSocket({ deadlineMs: completionDeadlineMs, platform, socketRoot }); }
+  catch (error) { restage(error, "completion-socket"); }
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const publicKeyDer = publicKey.export({ type: "spki", format: "der" }).toString("base64");
   const trustedAdapterPublicKey = rawEd25519PublicKey(publicKey);

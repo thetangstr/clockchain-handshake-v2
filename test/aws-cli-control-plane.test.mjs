@@ -280,7 +280,9 @@ test("AWS CLI control plane brands only exact allowlisted party failure stages",
       const role = argv.some((value) => value.includes("/responder")) ? "responder" : "initiator";
       return { stdout: JSON.stringify({ events: [{
         timestamp: 1786565101000,
-        message: `Mechanics proof party failed safely. stage=runtime-run.listener-listen-${role === "initiator" ? "eperm" : "eaddrinuse"}`,
+        message: role === "initiator"
+          ? "Mechanics proof party failed safely. stage=runtime-run.recorder-release-manifest-fetch"
+          : "Mechanics proof party failed safely. stage=runtime-run.recorder-completion-socket",
       }] }), stderr: "", exitCode: 0 };
     },
   });
@@ -289,8 +291,8 @@ test("AWS CLI control plane brands only exact allowlisted party failure stages",
     deadlineMs: Date.now() + 1000,
   }), (error) => {
     assert.deepEqual(publicPartyFailureStages(error), {
-      initiator: "runtime-run.listener-listen-eperm",
-      responder: "runtime-run.listener-listen-eaddrinuse",
+      initiator: "runtime-run.recorder-release-manifest-fetch",
+      responder: "runtime-run.recorder-completion-socket",
     });
     assert.equal(publicPartyFailureStages(new Error(error.message)), null);
     assert.doesNotMatch(JSON.stringify(error), /amazonaws|secret|certificate|private/i);
