@@ -10,15 +10,25 @@ import { validateHarnessEvent, validateRetainedLocalAction } from "./harness-ada
 import { ACP_VERSION_PINS } from "./version-pins.mjs";
 
 const MCP_ENDPOINT = "https://mcp.clockchain.network/handshake/mcp";
+const ACTION_KEYS = Object.freeze([
+  "actionId", "adapterPublicKey", "adapterRecordDigest", "adapterSignature", "commandLength",
+  "commandSha256", "expiresAtMs", "issuedAtMs", "operation", "policyDigest", "requestDigest",
+  "requestLength", "role", "schema", "sessionId",
+]);
 const OPTION_KEYS = Object.freeze([
-  "env", "harness", "home", "nowMs", "pin", "retainedActions", "sessionEvidence",
+  "actionRecorder", "env", "harness", "home", "nowMs", "pin", "retainedActions",
   "spawn", "trustedAdapterPublicKeys", "workspace",
 ]);
+const TOOL_SERVER = "clockchain-handshake";
+const TOOL_PREFIX = "agent_handshake_";
 const ROLES = Object.freeze(["initiator", "responder"]);
 const MAX_DEPTH = 12;
 const MAX_KEYS = 64;
 const MAX_ARRAY = 64;
 const MAX_STRING = 4096;
+const MAX_HELPER_COMMAND = 64 * 1024;
+const PROCESS_TERM_GRACE_MS = 50;
+const PROCESS_KILL_GRACE_MS = 50;
 
 function fail() {
   throw new Error("ACP process transport validation failed safely.");
@@ -140,7 +150,6 @@ function cleanOptions(value) {
     if (!OPTION_KEYS.includes(key) || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) fail();
     result[key] = descriptor.value;
   }
-  rejectAuthority(result.sessionEvidence);
   return result;
 }
 
@@ -168,8 +177,7 @@ function cleanRuntime(value, harness) {
 
 function cleanRetainedActions(value) {
   if (value === undefined) return Object.freeze([]);
-  if (!Array.isArray(value)) fail();
-  return Object.freeze(value.map(validateRetainedLocalAction));
+  return Object.freeze(snapshotArray(value).map((action) => validateRetainedLocalAction(exactObject(action, ACTION_KEYS))));
 }
 
 function cleanA2A(value) {
@@ -178,6 +186,30 @@ function cleanA2A(value) {
   if (typeof item.endpoint !== "string" || !item.endpoint.startsWith("https://")) fail();
   if (typeof peer.endpoint !== "string" || !peer.endpoint.startsWith("https://") || typeof peer.id !== "string" || peer.id.length === 0) fail();
   return Object.freeze({ endpoint: item.endpoint, peerCard: Object.freeze({ ...peer }) });
+}
+
+function nonemptyBoundedString(value, max = MAX_STRING) {
+  if (typeof value !== "string" || value.length === 0 || value.length > max) fail();
+  return value;
+}
+
+function cleanMandate(value) {
+  const item = exactObject(value, ["identityPolicy", "reference", "statement", "validForSeconds"]);
+  const policy = exactObject(item.identityPolicy, ["chainId", "erc8004", "registryAddress"]);
+  if (!["required_fresh", "required_existing_or_fresh", "not_required"].includes(policy.erc8004)) fail();
+  if (policy.erc8004 === "not_required") {
+    if (policy.chainId !== null || policy.registryAddress !== null) fail();
+  } else {
+    if (policy.chainId !== "eip155:11155111") fail();
+    if (policy.registryAddress !== "0x8004a818bfb912233c491871b3d84c89a494bd9e") fail();
+  }
+  if (!/^(?:[1-9]|[1-8][0-9]|90)$/.test(item.validForSeconds)) fail();
+  return Object.freeze({
+    reference: nonemptyBoundedString(item.reference, 256),
+    statement: nonemptyBoundedString(item.statement, 2048),
+    validForSeconds: item.validForSeconds,
+    identityPolicy: Object.freeze({ ...policy }),
+  });
 }
 
 function streamPair(child) {
@@ -233,14 +265,205 @@ function retainedCommand(value) {
 }
 
 function trustedKeySet(value) {
-  if (!Array.isArray(value) || value.length < 1) fail();
+  const list = snapshotArray(value, { min: 1 });
   const keys = new Set();
-  for (const key of value) {
+  for (const key of list) {
     if (typeof key !== "string" || key.length === 0) fail();
     keys.add(key);
   }
-  if (keys.size !== value.length) fail();
+  if (keys.size !== list.length) fail();
   return keys;
+}
+
+function snapshotArray(value, { min = 0, max = MAX_ARRAY } = {}) {
+  if (typeof value !== "object" || value === null || types.isProxy(value) || !Array.isArray(value)) fail();
+  if (value.length < min || value.length > max) fail();
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors);
+  if (!keys.includes("length")) fail();
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = descriptors[String(index)];
+    if (descriptor?.enumerable !== true || !Object.hasOwn(descriptor, "value")) fail();
+  }
+  if (keys.some((key) => key !== "length" && !/^(?:0|[1-9][0-9]*)$/.test(String(key)))) fail();
+  return Array.from({ length: value.length }, (_, index) => descriptors[String(index)].value);
+}
+
+function cleanActionRecorder(value) {
+  if (value === undefined) return null;
+  const item = exactObject(value, ["record"]);
+  if (typeof item.record !== "function") fail();
+  return Object.freeze({ record: item.record });
+}
+
+function parseToolName(update) {
+  const rawInput = update.rawInput;
+  if (rawInput !== undefined) {
+    try {
+      const input = optionalObject(rawInput, ["server", "tool"], ["arguments"]);
+      if (input.server === TOOL_SERVER && typeof input.tool === "string" && input.tool.startsWith(TOOL_PREFIX)) return input.tool;
+    } catch {
+      // Other ACP tools may have unrelated rawInput shapes.
+    }
+  }
+  const claudeName = update._meta?.claudeCode?.toolName;
+  if (typeof claudeName === "string" && claudeName.startsWith(`mcp__${TOOL_SERVER}__${TOOL_PREFIX}`)) {
+    return claudeName.slice(`mcp__${TOOL_SERVER}__`.length);
+  }
+  const title = update.title;
+  if (typeof title === "string") {
+    if (title.startsWith(`mcp.${TOOL_SERVER}.${TOOL_PREFIX}`)) return title.slice(`mcp.${TOOL_SERVER}.`.length);
+    if (title.startsWith(TOOL_PREFIX)) return title;
+  }
+  return null;
+}
+
+function cleanHelperStep(value) {
+  const item = optionalObject(value, [
+    "approvalCommand", "commandLength", "commandSha256", "operation", "role", "sessionId", "shellCommand",
+  ], ["policyDigest"]);
+  if (
+    typeof item.commandSha256 !== "string" || !/^[0-9a-f]{64}$/.test(item.commandSha256) ||
+    item.approvalCommand !== `clockchain-agent-authorize ${item.commandSha256}` ||
+    !Number.isSafeInteger(item.commandLength) || item.commandLength < 1 ||
+    typeof item.operation !== "string" || item.operation.length === 0 ||
+    !ROLES.includes(item.role) ||
+    typeof item.sessionId !== "string" || item.sessionId.length === 0 ||
+    typeof item.shellCommand !== "string" ||
+    Buffer.byteLength(item.shellCommand) < 1 ||
+    Buffer.byteLength(item.shellCommand) > MAX_HELPER_COMMAND ||
+    item.commandLength !== Buffer.byteLength(item.shellCommand) ||
+    (item.policyDigest !== undefined && (typeof item.policyDigest !== "string" || !/^[0-9a-f]{64}$/.test(item.policyDigest)))
+  ) fail();
+  return Object.freeze({
+    approvalCommand: item.approvalCommand,
+    commandLength: item.commandLength,
+    commandSha256: item.commandSha256,
+    operation: item.operation,
+    ...(item.policyDigest === undefined ? {} : { policyDigest: item.policyDigest }),
+    role: item.role,
+    sessionId: item.sessionId,
+    shellCommand: item.shellCommand,
+  });
+}
+
+function appendHelperSteps(value, found) {
+  if (value === null || value === undefined) return;
+  if (typeof value === "string") {
+    let parsed;
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      fail();
+    }
+    appendHelperSteps(parsed, found);
+    return;
+  }
+  if (Array.isArray(value)) {
+    const blocks = snapshotArray(value);
+    for (const blockValue of blocks) {
+      const block = exactObject(blockValue, ["text", "type"]);
+      if (block.type !== "text") fail();
+      appendHelperSteps(block.text, found);
+    }
+    return;
+  }
+  if (typeof value !== "object" || types.isProxy(value)) fail();
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors);
+  if (keys.some((key) => typeof key !== "string")) fail();
+  for (const key of keys) {
+    const descriptor = descriptors[key];
+    if (!descriptor.enumerable || !Object.hasOwn(descriptor, "value")) fail();
+  }
+  const helperStep = descriptors.helperStep?.value;
+  if (helperStep !== undefined) {
+    found.push(cleanHelperStep(helperStep));
+  }
+  const helperSteps = descriptors.helperSteps?.value;
+  if (helperSteps !== undefined) {
+    for (const step of snapshotArray(helperSteps)) found.push(cleanHelperStep(step));
+  }
+  const localAction = descriptors.localAction?.value;
+  if (localAction !== undefined) appendHelperSteps(localAction, found);
+  const structuredContent = descriptors.structuredContent?.value;
+  if (structuredContent !== undefined) appendHelperSteps(structuredContent, found);
+  const content = descriptors.content?.value;
+  if (content !== undefined) appendHelperSteps(content, found);
+}
+
+function retainedActionsFromToolOutput(update, actionRecorder) {
+  const toolName = parseToolName(update);
+  if (toolName === null) return [];
+  if (update.status !== "completed") return [];
+  const rawOutput = update.rawOutput;
+  if (rawOutput === undefined) fail();
+  const steps = [];
+  if (Array.isArray(rawOutput)) {
+    appendHelperSteps(rawOutput, steps);
+  } else {
+    const output = exactObject(rawOutput, ["error", "result"]);
+    if (output.error !== null && output.error !== undefined) fail();
+    appendHelperSteps(output.result, steps);
+  }
+  if (steps.length === 0) return [];
+  if (steps.length !== 1 || actionRecorder === null) fail();
+  const actions = [];
+  for (const step of steps) {
+    actions.push(validateRetainedLocalAction(actionRecorder.record(step)));
+  }
+  const unique = new Map(actions.map((action) => [action.commandSha256, action]));
+  if (unique.size !== actions.length) fail();
+  return actions;
+}
+
+function wait(ms) {
+  return new Promise((resolve) => { setTimeout(resolve, ms); });
+}
+
+function childExited(value, monitor = null) {
+  return monitor?.closed === true || (value?.exitCode !== null && value?.exitCode !== undefined);
+}
+
+function observeChildProcess(value) {
+  const monitor = { closed: false, errored: false, promise: null };
+  monitor.promise = new Promise((resolve) => {
+    let settled = false;
+    const remove = () => {
+      value?.off?.("close", finishClosed);
+      value?.off?.("exit", finishClosed);
+      value?.off?.("error", finishError);
+      value?.removeListener?.("close", finishClosed);
+      value?.removeListener?.("exit", finishClosed);
+      value?.removeListener?.("error", finishError);
+    };
+    const finishClosed = () => {
+      if (settled) return;
+      settled = true;
+      monitor.closed = true;
+      remove();
+      resolve(true);
+    };
+    const finishError = () => {
+      monitor.errored = true;
+    };
+    if (typeof value?.once === "function") {
+      value.once("close", finishClosed);
+      value.once("exit", finishClosed);
+      value.once("error", finishError);
+    }
+    if (value?.closed !== undefined) {
+      Promise.resolve(value.closed).then(finishClosed, finishError);
+    }
+  });
+  return monitor;
+}
+
+async function waitForChildExit(value, monitor, timeoutMs) {
+  if (childExited(value, monitor)) return true;
+  if (monitor?.promise === null || monitor?.promise === undefined) return false;
+  const token = Symbol("timeout");
+  return await Promise.race([monitor.promise.then(() => true), wait(timeoutMs).then(() => token)]) !== token;
 }
 
 export function createAcpProcessTransport(optionsInput = {}) {
@@ -257,6 +480,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
   const baseEnv = envObject(options.env ?? {});
   const retainedActions = cleanRetainedActions(options.retainedActions);
   const trustedKeys = trustedKeySet(options.trustedAdapterPublicKeys);
+  const actionRecorder = cleanActionRecorder(options.actionRecorder);
   for (const action of retainedActions) {
     if (!trustedKeys.has(action.adapterPublicKey)) fail();
   }
@@ -270,6 +494,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
   let session = null;
   let acpSessionId = null;
   let child = null;
+  let childMonitor = null;
   let connection = null;
   let completed = false;
   let terminated = false;
@@ -340,16 +565,17 @@ export function createAcpProcessTransport(optionsInput = {}) {
           usage = Object.freeze({ inputTokens: String(used), outputTokens: usage.outputTokens });
         }
       }
-      if (updateType === "tool_call_update" && params.update.status === "completed" && /^agent_handshake_/.test(params.update.name ?? "")) {
-        const output = exactObject(params.update.rawOutput, ["helperStep"]);
-        const helperStep = exactObject(output.helperStep, ["action", "invitation", "roleAccess"]);
-        registerRetainedAction(helperStep.action);
+      if (updateType === "tool_call" || updateType === "tool_call_update") {
+        for (const retained of retainedActionsFromToolOutput(params.update, actionRecorder)) {
+          registerRetainedAction(retained);
+        }
       }
       event(`acp.${updateType}`, `observed ACP ${updateType}`, digestJson({
         updateType,
         toolCallId: typeof params.update.toolCallId === "string" ? params.update.toolCallId : null,
         status: typeof params.update.status === "string" ? params.update.status : null,
         name: typeof params.update.name === "string" ? params.update.name : null,
+        title: typeof params.update.title === "string" ? params.update.title : null,
       }));
     } catch {
       protocolFailure = true;
@@ -360,7 +586,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
       const launchOptions = exactObject(input, ["a2aConfig", "acp", "mandate", "mcpEndpoint", "runtime"]);
       const { acp, runtime, mandate, mcpEndpoint, a2aConfig } = launchOptions;
       cleanPin(acp, harness);
-      const cleanMandate = cleanPublicData(mandate);
+      const cleanMandateValue = cleanMandate(mandate);
       if (mcpEndpoint !== MCP_ENDPOINT) fail();
       const clean = cleanRuntime(runtime, harness);
       const cleanPeer = cleanA2A(a2aConfig);
@@ -384,36 +610,52 @@ export function createAcpProcessTransport(optionsInput = {}) {
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
       });
-      connection = new ClientSideConnection(() => ({
-        requestPermission,
-        sessionUpdate,
-      }), streamPair(child));
-      event("acp.process.launch", `launched ${harness} ACP process`, `${pin.packageName}:${pin.version}:${cleanPeer.peerCard.id}`);
-      const initialized = await connection.initialize({
-        protocolVersion: PROTOCOL_VERSION,
-        clientCapabilities: Object.freeze({}),
-      });
-      if (initialized?.protocolVersion !== PROTOCOL_VERSION) fail();
-      event("acp.initialize", "negotiated ACP protocol", String(initialized.protocolVersion));
-      const created = await connection.newSession({
-        cwd: options.workspace,
-        mcpServers: [mcpServer()],
-      });
-      if (typeof created?.sessionId !== "string" || created.sessionId.length === 0) fail();
-      acpSessionId = created.sessionId;
-      event("acp.session.new", "created ACP session", digest(created.sessionId));
-      const prompted = await connection.prompt({
-        sessionId: acpSessionId,
-        prompt: [{
-          type: "text",
-          text: promptText({ role: clean.role, sessionId: clean.sessionId, mandate: cleanMandate, a2aConfig: cleanPeer }),
-        }],
-      });
-      if (protocolFailure || permissionDenied || prompted?.stopReason !== "end_turn") fail();
-      usage = safeUsage(prompted.usage);
-      completed = true;
-      event("acp.prompt.end_turn", "ACP prompt completed end_turn", digestJson(usage));
-      return Object.freeze({ sessionId: clean.sessionId, role: clean.role, harness });
+      childMonitor = observeChildProcess(child);
+      try {
+        connection = new ClientSideConnection(() => ({
+          requestPermission,
+          sessionUpdate,
+        }), streamPair(child));
+        event("acp.process.launch", `launched ${harness} ACP process`, `${pin.packageName}:${pin.version}:${cleanPeer.peerCard.id}`);
+        const initialized = await connection.initialize({
+          protocolVersion: PROTOCOL_VERSION,
+          clientCapabilities: Object.freeze({}),
+        });
+        if (initialized?.protocolVersion !== PROTOCOL_VERSION) fail();
+        event("acp.initialize", "negotiated ACP protocol", String(initialized.protocolVersion));
+        const created = await connection.newSession({
+          cwd: options.workspace,
+          mcpServers: [mcpServer()],
+        });
+        if (typeof created?.sessionId !== "string" || created.sessionId.length === 0) fail();
+        acpSessionId = created.sessionId;
+        event("acp.session.new", "created ACP session", digest(created.sessionId));
+        const prompted = await connection.prompt({
+          sessionId: acpSessionId,
+          prompt: [{
+            type: "text",
+            text: promptText({ role: clean.role, sessionId: clean.sessionId, mandate: cleanMandateValue, a2aConfig: cleanPeer }),
+          }],
+        });
+        if (protocolFailure || permissionDenied || prompted?.stopReason !== "end_turn") fail();
+        usage = safeUsage(prompted.usage);
+        completed = true;
+        event("acp.prompt.end_turn", "ACP prompt completed end_turn", digestJson(usage));
+        return Object.freeze({ sessionId: clean.sessionId, role: clean.role, harness });
+      } catch {
+        try {
+          if (!childExited(child, childMonitor) && typeof child?.kill === "function") {
+            child.kill("SIGTERM");
+            if (!await waitForChildExit(child, childMonitor, PROCESS_TERM_GRACE_MS)) {
+              child.kill("SIGKILL");
+              await waitForChildExit(child, childMonitor, PROCESS_KILL_GRACE_MS);
+            }
+          }
+        } catch {
+          // The public failure remains generic; teardown proof is handled by collectEvidence.
+        }
+        fail();
+      }
     },
     async executeRetainedAction(input) {
       const { sessionId, role, actionId } = exactObject(input, ["actionId", "role", "sessionId"]);
@@ -431,8 +673,15 @@ export function createAcpProcessTransport(optionsInput = {}) {
     async terminate(input) {
       const { sessionId, reason = "terminated" } = optionalObject(input, ["sessionId"], ["reason"]);
       if (session === null || session.sessionId !== sessionId || typeof reason !== "string") fail();
-      child?.kill?.("SIGTERM");
-      if (child?.closed !== undefined) await child.closed;
+      if (!childExited(child, childMonitor)) {
+        if (typeof child?.kill !== "function") fail();
+        child.kill("SIGTERM");
+        if (!await waitForChildExit(child, childMonitor, PROCESS_TERM_GRACE_MS)) {
+          child.kill("SIGKILL");
+          if (!await waitForChildExit(child, childMonitor, PROCESS_KILL_GRACE_MS)) fail();
+        }
+      }
+      if (childMonitor?.errored === true && childMonitor.closed !== true) fail();
       terminated = true;
       return Object.freeze({ terminated: true });
     },
