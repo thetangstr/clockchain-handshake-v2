@@ -106,6 +106,7 @@ test("AWS CLI control plane has exact allowlisted argv shapes for Task 4 actions
   await control.listStackResources({ stackName });
   await control.registerTaskDefinition({ taskDefinition: { family: "x" } });
   await control.runTask({ cluster: "cluster", taskDefinitionArn: "td", role: "initiator", networkConfiguration: { awsvpcConfiguration: { assignPublicIp: "DISABLED" } }, startedBy: "run" });
+  await control.waitTasksRunning({ cluster: "cluster", taskArns: ["task-a", "task-b"] });
   await control.waitTasksStopped({ cluster: "cluster", taskArns: ["task-a", "task-b"] });
   await control.stopTask({ cluster: "cluster", taskArn: "task-a", role: "initiator" });
   await control.deregisterTaskDefinition({ taskDefinitionArn: "td", role: "initiator" });

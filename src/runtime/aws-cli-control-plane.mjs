@@ -12,6 +12,7 @@ const ALLOWED = new Set([
   "cloudformation wait stack-delete-complete",
   "ecs register-task-definition",
   "ecs run-task",
+  "ecs wait tasks-running",
   "ecs wait tasks-stopped",
   "ecs stop-task",
   "ecs deregister-task-definition",
