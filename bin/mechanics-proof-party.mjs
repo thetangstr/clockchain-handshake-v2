@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import { isIP } from "node:net";
 
 const MCP_ENDPOINT = "https://mcp.clockchain.network/handshake/mcp";
 const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SECRET_REF = /^arn:aws:(?:secretsmanager|ssm):[a-z0-9-]+:[0-9]{12}:(?:secret|parameter)[:/].+/;
+const PRIVATE_DNS = /^(?:[a-z0-9-]+\.)*(?:task\.local|internal|local)$/i;
 
 function fail() {
   process.stderr.write("Mechanics proof party failed safely.\n");
@@ -34,14 +36,40 @@ function publicDigestAddress(account) {
   return account.address.toLowerCase();
 }
 
+function privateA2AEndpoint(raw) {
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error("bad");
+  }
+  const hostname = url.hostname;
+  const octets = isIP(hostname) === 4 ? hostname.split(".").map(Number) : [];
+  const privateIp =
+    octets[0] === 10 ||
+    (octets[0] === 192 && octets[1] === 168) ||
+    (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31);
+  if (
+    url.protocol !== "https:" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.search !== "" ||
+    url.hash !== "" ||
+    url.pathname !== "/" ||
+    url.port !== "8443" ||
+    (!privateIp && !PRIVATE_DNS.test(hostname))
+  ) throw new Error("bad");
+  return raw;
+}
+
 function capabilityPreflight() {
   rejectControllerAuthority();
   const sessionId = value("CLOCKCHAIN_SESSION_ID");
   const role = value("CLOCKCHAIN_ROLE");
   const client = value("CLOCKCHAIN_CLIENT");
   const mcpUrl = value("CLOCKCHAIN_MCP_URL");
-  const a2aPeerEndpoint = value("CLOCKCHAIN_A2A_PEER_ENDPOINT");
-  if (!SESSION.test(sessionId) || !["initiator", "responder"].includes(role) || mcpUrl !== MCP_ENDPOINT || !a2aPeerEndpoint.startsWith("https://")) throw new Error("bad");
+  const a2aPeerEndpoint = privateA2AEndpoint(value("CLOCKCHAIN_A2A_PEER_ENDPOINT"));
+  if (!SESSION.test(sessionId) || !["initiator", "responder"].includes(role) || mcpUrl !== MCP_ENDPOINT) throw new Error("bad");
   if (role === "initiator") {
     if (client !== "codex" || !SECRET_REF.test(value("CLOCKCHAIN_CODEX_AUTH_SECRET_REF"))) throw new Error("bad");
   } else if (client !== "claude" || optional("CLOCKCHAIN_CLAUDE_PROVIDER") !== "bedrock" || optional("CLOCKCHAIN_BEDROCK_MODEL_ID") !== "us.anthropic.claude-sonnet-4-6") {
@@ -66,7 +94,8 @@ function capabilityPreflight() {
     a2aCardKeyGeneratedInsideRuntime: true,
     controllerProvidedSignerMaterialAccepted: false,
     providerCredentialValueAccepted: false,
-    directHttpA2ARequired: true,
+    directA2ARequired: true,
+    a2aPeerEndpointScheme: "https-private",
     acpProcessTransportRequired: true,
     agentLoopImplemented: false,
     failClosedUntilLiveDriver: true,

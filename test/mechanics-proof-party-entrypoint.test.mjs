@@ -15,7 +15,7 @@ function env(overrides = {}) {
     CLOCKCHAIN_CLIENT: "codex",
     CLOCKCHAIN_MCP_URL: "https://mcp.clockchain.network/handshake/mcp",
     CLOCKCHAIN_A2A_PORT: "8443",
-    CLOCKCHAIN_A2A_PEER_ENDPOINT: "https://responder.task.local:8443/a2a",
+    CLOCKCHAIN_A2A_PEER_ENDPOINT: "https://10.0.12.34:8443",
     CLOCKCHAIN_WORKSPACE: "/workspace/initiator",
     CLOCKCHAIN_HOME: "/workspace/initiator/home",
     CLOCKCHAIN_STATE_DIR: "/workspace/initiator/state",
@@ -40,6 +40,9 @@ test("mechanics proof party entrypoint emits fail-closed public capability prefl
   assert.equal(output.controllerProvidedSignerMaterialAccepted, false);
   assert.equal(output.agentLoopImplemented, false);
   assert.equal(output.failClosedUntilLiveDriver, true);
+  assert.equal(output.a2aPeerEndpointScheme, "https-private");
+  assert.equal(output.directA2ARequired, true);
+  assert.equal("directHttpA2ARequired" in output, false);
   assert.match(output.partySignerAddress, /^0x[0-9a-f]{40}$/);
   assert.match(output.a2aCardAddress, /^0x[0-9a-f]{40}$/);
   assert.notEqual(output.partySignerAddress, output.a2aCardAddress);
@@ -52,7 +55,7 @@ test("mechanics proof party entrypoint selects Claude Bedrock identity without A
     env: env({
       CLOCKCHAIN_ROLE: "responder",
       CLOCKCHAIN_CLIENT: "claude",
-      CLOCKCHAIN_A2A_PEER_ENDPOINT: "https://initiator.task.local:8443/a2a",
+      CLOCKCHAIN_A2A_PEER_ENDPOINT: "https://initiator.task.local:8443",
       CLOCKCHAIN_CLAUDE_PROVIDER: "bedrock",
       CLOCKCHAIN_BEDROCK_MODEL_ID: "us.anthropic.claude-sonnet-4-6",
       ANTHROPIC_API_KEY: undefined,
@@ -73,6 +76,11 @@ test("mechanics proof party entrypoint rejects controller signer material and un
     env({ CLOCKCHAIN_SIGNER_PRIVATE_KEY: "0x1234" }),
     env({ CLOCKCHAIN_SIGNER_SEED: "seed" }),
     env({ CLOCKCHAIN_MCP_URL: "https://mcp.clockchain.network/mcp" }),
+    env({ CLOCKCHAIN_A2A_PEER_ENDPOINT: "http://10.0.12.34:8443" }),
+    env({ CLOCKCHAIN_A2A_PEER_ENDPOINT: "https://10.0.12.34:8443/a2a" }),
+    env({ CLOCKCHAIN_A2A_PEER_ENDPOINT: "https://10.999.12.34:8443" }),
+    env({ CLOCKCHAIN_A2A_PEER_ENDPOINT: "https://127.0.0.1:8443" }),
+    env({ CLOCKCHAIN_A2A_PEER_ENDPOINT: "https://example.com:8443" }),
     env({ CLOCKCHAIN_ROLE: "payer" }),
   ]) {
     await assert.rejects(

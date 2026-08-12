@@ -346,11 +346,7 @@ export async function runMechanicsProofController(config) {
   }
   const validatedRuntimeEvidence = validatePairIsolation(runtimeEvidence, { requireLiveEvidence });
   if (requireLiveEvidence) {
-    handshakeEvidence = validateLiveHandshakeEvidence(handshakeEvidence, {
-      sessionId: item.sessionId,
-      sourceCommit: livePreflight.sourceCommit,
-      runtimeEvidence: validatedRuntimeEvidence,
-    });
+    fail();
   }
   return Object.freeze({
     handshakeEvidence,

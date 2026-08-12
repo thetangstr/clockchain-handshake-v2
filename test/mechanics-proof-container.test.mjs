@@ -11,7 +11,8 @@ test("mechanics proof Fargate app Dockerfile is pinned, nonroot, and entrypoint-
   assert.match(dockerfile, /^FROM docker\.io\/library\/node:24\.11\.1-bookworm-slim@sha256:44b49d6e2d23f6754fb084ef9d34ff14590343ad1ee168f8acf8f7bc9fccde2f$/m);
   assert.match(dockerfile, /^ARG SOURCE_COMMIT$/m);
   assert.match(dockerfile, /^LABEL org\.opencontainers\.image\.revision=\$SOURCE_COMMIT$/m);
-  assert.match(dockerfile, /^RUN test -n "\$SOURCE_COMMIT" /m);
+  assert.match(dockerfile, /^RUN case "\$SOURCE_COMMIT" in \(\*\[!0-9a-f\]\*|""\) exit 1;; esac && test "\$\{#SOURCE_COMMIT\}" = "40"$/m);
+  assert.doesNotMatch(dockerfile, /^RUN test -n "\$SOURCE_COMMIT" && test "\$\{#SOURCE_COMMIT\}" = "40"$/m);
   assert.match(dockerfile, /^ENV NODE_ENV=production$/m);
   assert.match(dockerfile, /^RUN npm ci --omit=dev$/m);
   assert.match(dockerfile, /^USER node$/m);

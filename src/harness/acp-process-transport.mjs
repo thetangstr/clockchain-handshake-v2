@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn as nodeSpawn } from "node:child_process";
+import { types } from "node:util";
 
 import { ClientSideConnection, ndJsonStream } from "@agentclientprotocol/sdk";
 
@@ -22,9 +23,15 @@ function digest(value) {
 }
 
 function exactObject(value, keys) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) fail();
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  const actual = Object.keys(descriptors);
+  if (value === null || typeof value !== "object" || Array.isArray(value) || types.isProxy(value)) fail();
+  let descriptors;
+  try {
+    descriptors = Object.getOwnPropertyDescriptors(value);
+  } catch {
+    fail();
+  }
+  const actual = Reflect.ownKeys(descriptors);
+  if (actual.some((key) => typeof key !== "string")) fail();
   if (actual.length !== keys.length || actual.some((key) => !keys.includes(key))) fail();
   const result = {};
   for (const key of actual) {
@@ -35,8 +42,32 @@ function exactObject(value, keys) {
   return result;
 }
 
+function optionalObject(value, requiredKeys, optionalKeys) {
+  if (value === null || typeof value !== "object" || Array.isArray(value) || types.isProxy(value)) fail();
+  const allowed = [...requiredKeys, ...optionalKeys];
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const item = exactObject(value, allowed.filter((key) => {
+    return requiredKeys.includes(key) || Object.hasOwn(descriptors, key);
+  }));
+  return item;
+}
+
+function envObject(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value) || types.isProxy(value)) fail();
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const result = {};
+  for (const key of Reflect.ownKeys(descriptors)) {
+    if (typeof key !== "string") fail();
+    const descriptor = descriptors[key];
+    if (!descriptor.enumerable || !Object.hasOwn(descriptor, "value") || typeof descriptor.value !== "string") fail();
+    result[key] = descriptor.value;
+  }
+  return result;
+}
+
 function rejectAuthority(value) {
   if (value === null || value === undefined || typeof value !== "object") return;
+  if (types.isProxy(value)) fail();
   const descriptors = Object.getOwnPropertyDescriptors(value);
   for (const [key, descriptor] of Object.entries(descriptors)) {
     if (!descriptor.enumerable) continue;
@@ -47,10 +78,17 @@ function rejectAuthority(value) {
 }
 
 function cleanOptions(value) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) fail();
-  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (value === null || typeof value !== "object" || Array.isArray(value) || types.isProxy(value)) fail();
+  let descriptors;
+  try {
+    descriptors = Object.getOwnPropertyDescriptors(value);
+  } catch {
+    fail();
+  }
   const result = {};
-  for (const [key, descriptor] of Object.entries(descriptors)) {
+  for (const key of Reflect.ownKeys(descriptors)) {
+    if (typeof key !== "string") fail();
+    const descriptor = descriptors[key];
     if (!OPTION_KEYS.includes(key) || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) fail();
     result[key] = descriptor.value;
   }
@@ -89,18 +127,13 @@ function cleanA2A(value) {
 }
 
 function cleanEvidence(value, sessionId, harness, role) {
-  const evidence = value ?? {};
-  const terminalStatus = evidence.terminalStatus ?? "failed-closed";
-  const usage = evidence.usage ?? { inputTokens: "0", outputTokens: "0" };
-  if (!["completed", "failed-closed"].includes(terminalStatus)) fail();
-  if (!/^(?:0|[1-9][0-9]*)$/.test(usage.inputTokens) || !/^(?:0|[1-9][0-9]*)$/.test(usage.outputTokens)) fail();
   return Object.freeze({
     schema: "clockchain.harness-evidence/v1",
     sessionId,
     harness,
     role,
-    terminalStatus,
-    usage: Object.freeze({ inputTokens: usage.inputTokens, outputTokens: usage.outputTokens }),
+    terminalStatus: "failed-closed",
+    usage: Object.freeze({ inputTokens: "0", outputTokens: "0" }),
     teardown: Object.freeze({ completed: true }),
   });
 }
@@ -115,7 +148,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
   for (const key of ["workspace", "home", "mcpBearerEnvName"]) {
     if (typeof options[key] !== "string" || options[key].length === 0) fail();
   }
-  const baseEnv = exactObject(options.env ?? {}, Object.keys(options.env ?? {}));
+  const baseEnv = envObject(options.env ?? {});
   const bearer = baseEnv[options.mcpBearerEnvName];
   if (typeof bearer !== "string" || bearer.length === 0) fail();
   let session = null;
@@ -123,7 +156,9 @@ export function createAcpProcessTransport(optionsInput = {}) {
   let connection = null;
   const events = [];
   return Object.freeze({
-    async launch({ acp, runtime, mandate, mcpEndpoint, a2aConfig }) {
+    async launch(input) {
+      const launchOptions = exactObject(input, ["a2aConfig", "acp", "mandate", "mcpEndpoint", "runtime"]);
+      const { acp, runtime, mandate, mcpEndpoint, a2aConfig } = launchOptions;
       cleanPin(acp, harness);
       rejectAuthority(mandate);
       if (mcpEndpoint !== MCP_ENDPOINT) fail();
@@ -164,21 +199,25 @@ export function createAcpProcessTransport(optionsInput = {}) {
       }));
       return Object.freeze({ sessionId: clean.sessionId, role: clean.role, harness });
     },
-    async executeRetainedAction({ sessionId, role, actionId }) {
+    async executeRetainedAction(input) {
+      const { sessionId, role, actionId } = exactObject(input, ["actionId", "role", "sessionId"]);
       if (session === null || session.sessionId !== sessionId || session.role !== role || typeof actionId !== "string" || actionId.length === 0) fail();
       return Object.freeze({ executed: false, actionId, delegatedToAdapter: true });
     },
-    async streamEvents({ sessionId }) {
+    async streamEvents(input) {
+      const { sessionId } = exactObject(input, ["sessionId"]);
       if (session === null || session.sessionId !== sessionId) fail();
       return Object.freeze(events.map((event) => Object.freeze({ ...event })));
     },
-    async terminate({ sessionId, reason = "terminated" }) {
+    async terminate(input) {
+      const { sessionId, reason = "terminated" } = optionalObject(input, ["sessionId"], ["reason"]);
       if (session === null || session.sessionId !== sessionId || typeof reason !== "string") fail();
       child?.kill?.("SIGTERM");
       await connection?.close?.();
       return Object.freeze({ terminated: true });
     },
-    async collectEvidence({ sessionId }) {
+    async collectEvidence(input) {
+      const { sessionId } = exactObject(input, ["sessionId"]);
       if (session === null || session.sessionId !== sessionId) fail();
       const evidence = cleanEvidence(options.sessionEvidence, sessionId, harness, session.role);
       if (/cc_secret|CLOCKCHAIN_MCP_BEARER|transcript|reasoning|\/workspace/i.test(JSON.stringify(evidence))) fail();

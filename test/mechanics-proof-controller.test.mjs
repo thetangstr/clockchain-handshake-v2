@@ -284,7 +284,7 @@ test("mechanics-proof controller rejects private authority and authority-bearing
   }
 });
 
-test("mechanics-proof controller live gate requires fresh success evidence and AWS runtime cleanup", async () => {
+test("mechanics-proof controller live gate is unavailable until authoritative live verifier exists", async () => {
   const collected = {};
   const runtime = runtimeAdapter({
     async collectRuntimeEvidence({ runtimeId }) {
@@ -295,7 +295,7 @@ test("mechanics-proof controller live gate requires fresh success evidence and A
     },
   });
 
-  const result = await runMechanicsProofController(config({
+  await assert.rejects(() => runMechanicsProofController(config({
     runtimeAdapter: runtime,
     requireLiveEvidence: true,
     livePreflight: livePreflight(),
@@ -309,13 +309,8 @@ test("mechanics-proof controller live gate requires fresh success evidence and A
         },
       });
     },
-  }));
+  })));
 
-  assert.equal(result.handshakeEvidence.certificateVerified, true);
-  assert.equal(result.handshakeEvidence.clients.initiator, "codex");
-  assert.equal(result.handshakeEvidence.clients.responder, "claude");
-  assert.notEqual(result.handshakeEvidence.roles.initiator.erc8004AgentId, result.handshakeEvidence.roles.responder.erc8004AgentId);
-  assert.equal(result.runtimeEvidence.initiator.schema, RUNTIME_EVIDENCE_SCHEMA);
   assert.deepEqual(runtime.calls.map((entry) => entry[0]), [
     "provision", "attest", "provision", "attest", "terminate", "destroy", "terminate", "destroy", "collect", "collect",
   ]);

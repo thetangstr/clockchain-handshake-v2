@@ -59,10 +59,70 @@ test("ACP process transport launches exact pinned stdio executable with isolated
   assert.equal(events[0].schema, "clockchain.harness-event/v1");
   assert.doesNotMatch(JSON.stringify(events), /cc_secret|transcript|reasoning|\/workspace\/initiator/i);
   const evidence = await transport.collectEvidence({ sessionId: SESSION });
-  assert.equal(evidence.terminalStatus, "completed");
+  assert.equal(evidence.terminalStatus, "failed-closed");
   assert.equal(evidence.teardown.completed, true);
-  assert.equal(evidence.usage.inputTokens, "3");
+  assert.equal(evidence.usage.inputTokens, "0");
   assert.doesNotMatch(JSON.stringify(evidence), /cc_secret|CLOCKCHAIN_MCP_BEARER|\/workspace|transcript|reasoning/i);
+});
+
+test("ACP process transport rejects opaque proxy/accessor inputs and caller-completed evidence claims", async () => {
+  let traps = 0;
+  const proxy = new Proxy({}, {
+    get() {
+      traps += 1;
+      return "secret-canary /Users/alice/secret";
+    },
+    ownKeys() {
+      traps += 1;
+      return [];
+    },
+  });
+  assert.throws(
+    () => createAcpProcessTransport(proxy),
+    (error) => {
+      assert.match(error.message, /ACP process transport validation failed safely/);
+      assert.doesNotMatch(error.message, /secret-canary|\/Users\/alice\/secret/);
+      return true;
+    },
+  );
+  assert.equal(traps, 0);
+  assert.throws(
+    () => createAcpProcessTransport({ get harness() { throw new Error("secret-canary /Users/alice/secret"); } }),
+    (error) => {
+      assert.match(error.message, /ACP process transport validation failed safely/);
+      assert.doesNotMatch(error.message, /secret-canary|\/Users\/alice\/secret/);
+      return true;
+    },
+  );
+  const transport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: fakeSpawn([]),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    mcpBearerEnvName: "CLOCKCHAIN_MCP_BEARER",
+    env: { CLOCKCHAIN_MCP_BEARER: "token" },
+    sessionEvidence: { terminalStatus: "completed", usage: { inputTokens: "999", outputTokens: "999" } },
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: { reference: "NS-1847" },
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  });
+  const evidence = await transport.collectEvidence({ sessionId: SESSION });
+  assert.equal(evidence.terminalStatus, "failed-closed");
+  assert.equal(evidence.usage.inputTokens, "0");
+  await assert.rejects(
+    () => transport.launch(proxy),
+    (error) => {
+      assert.match(error.message, /ACP process transport validation failed safely/);
+      assert.doesNotMatch(error.message, /secret-canary|\/Users\/alice\/secret/);
+      return true;
+    },
+  );
+  assert.equal(traps, 0);
 });
 
 test("ACP process transport rejects authority, endpoint, pin, and secret leakage", async () => {
