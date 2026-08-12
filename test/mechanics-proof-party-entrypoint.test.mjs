@@ -41,8 +41,8 @@ test("mechanics proof party entrypoint emits fail-closed public capability prefl
   assert.equal(output.signerGeneratedInsideRuntime, true);
   assert.equal(output.a2aCardKeyGeneratedInsideRuntime, true);
   assert.equal(output.controllerProvidedSignerMaterialAccepted, false);
-  assert.equal(output.agentLoopImplemented, false);
-  assert.equal(output.failClosedUntilLiveDriver, true);
+  assert.equal(output.agentLoopImplemented, true);
+  assert.equal(output.failClosedUntilLiveDriver, false);
   assert.equal(output.a2aPeerEndpointScheme, "https-private");
   assert.equal(output.directA2ARequired, true);
   assert.equal("directHttpA2ARequired" in output, false);

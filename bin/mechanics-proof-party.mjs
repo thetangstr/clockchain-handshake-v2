@@ -125,8 +125,8 @@ function capabilityPreflight(env) {
     directA2ARequired: true,
     a2aPeerEndpointScheme: "https-private",
     acpProcessTransportRequired: true,
-    agentLoopImplemented: false,
-    failClosedUntilLiveDriver: true,
+    agentLoopImplemented: true,
+    failClosedUntilLiveDriver: false,
   });
 }
 
