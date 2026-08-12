@@ -73,6 +73,27 @@ test("AWS CLI control plane accepts empty wait/delete output but does not treat 
   await assert.rejects(() => control.stackExists({ stackName: "clockchain-11111111-2222-4333-8444-555555555555" }), /AWS CLI control-plane validation failed safely/);
 });
 
+test("AWS CLI control plane bounds post-delete absence retries across eventual consistency", async () => {
+  const calls = [];
+  const sleeps = [];
+  const stackName = "clockchain-11111111-2222-4333-8444-555555555555";
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    sleep: async (ms) => { sleeps.push(ms); },
+    executor: async (_file, argv) => {
+      calls.push(argv);
+      if (calls.length < 3) {
+        return { stdout: JSON.stringify({ Stacks: [{ StackName: stackName }] }), stderr: "", exitCode: 0 };
+      }
+      throw new Error(`Stack with id ${stackName} does not exist`);
+    },
+  });
+
+  assert.deepEqual(await control.confirmAbsence({ stackName }), { absent: true });
+  assert.equal(calls.length, 3);
+  assert.deepEqual(sleeps, [1000, 1000]);
+});
+
 test("AWS CLI control plane gives bounded CloudFormation waiters enough time for live stack creation", async () => {
   const observedTimeouts = [];
   const control = createAwsCliControlPlane({

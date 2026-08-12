@@ -358,8 +358,12 @@ export function createAwsCliControlPlane(optionsInput = {}) {
     },
     async confirmAbsence({ stackName: name }) {
       stackName(name);
-      const exists = await this.stackExists({ stackName: name });
-      return Object.freeze({ absent: !exists });
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const exists = await this.stackExists({ stackName: name });
+        if (!exists) return Object.freeze({ absent: true });
+        if (attempt < 4) await sleepFn(1000);
+      }
+      return Object.freeze({ absent: false });
     },
     async pollPublicEvents({ logGroupNames, deadlineMs }) {
       if (!Array.isArray(logGroupNames) || logGroupNames.length !== 2) fail();
