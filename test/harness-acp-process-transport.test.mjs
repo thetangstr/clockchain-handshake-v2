@@ -86,6 +86,7 @@ function acpFixtureSpawn({
   skipPermission = false,
   permissionCommand = `clockchain-agent-authorize ${DIGEST}`,
   permissionTitle = "display-only approval label",
+  promptUpdateSessionId = null,
 }) {
   return (command, args, options) => {
     calls.push({ command, args, options });
@@ -122,9 +123,10 @@ function acpFixtureSpawn({
       },
       async prompt(params) {
         calls.push(["prompt", params]);
+        const updateSessionId = promptUpdateSessionId ?? params.sessionId;
         if (sessionUpdates !== null) {
           for (const update of sessionUpdates) {
-            await connection.sessionUpdate({ sessionId: params.sessionId, update });
+            await connection.sessionUpdate({ sessionId: updateSessionId, update });
           }
         } else if (helperAction !== null) {
           await connection.sessionUpdate({
@@ -765,6 +767,36 @@ test("ACP process transport binds setup updates to the session id returned by ne
     a2aConfig: a2aConfig("initiator"),
   }), (error) => {
     assert.equal(acpProcessTransportFailureStage(error), "session");
+    return true;
+  });
+});
+
+test("ACP process transport reports an active-session update mismatch without retaining either id", async () => {
+  const action = retainedAction({ role: "initiator", requestDigest: "d".repeat(64), commandSha256: DIGEST });
+  const transport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({
+      calls: [],
+      promptUpdateSessionId: "acp-foreign-session",
+      sessionUpdates: [{ sessionUpdate: "available_commands_update", availableCommands: [] }],
+      skipPermission: true,
+    }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    env: {},
+    retainedActions: [],
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+  await assert.rejects(() => transport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  }), (error) => {
+    assert.equal(acpProcessTransportFailureStage(error), "completion-protocol-envelope-active-session");
+    assert.doesNotMatch(error.message, /acp-foreign-session/);
     return true;
   });
 });

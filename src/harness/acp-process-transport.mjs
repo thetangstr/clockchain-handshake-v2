@@ -35,7 +35,10 @@ const LAUNCH_FAILURE_STAGES = Object.freeze([
   "spawn", "stream", "initialize", "session", "model", "prompt", "completion",
   "completion-protocol", "completion-protocol-envelope", "completion-protocol-usage",
   "completion-protocol-tool-result", "completion-protocol-bridge", "completion-protocol-retained",
-  "completion-protocol-event", "completion-permission", "completion-stop",
+  "completion-protocol-event", "completion-protocol-envelope-runtime", "completion-protocol-envelope-session-id",
+  "completion-protocol-envelope-update-type", "completion-protocol-envelope-before-session",
+  "completion-protocol-envelope-early-tool", "completion-protocol-envelope-provisional-session",
+  "completion-protocol-envelope-active-session", "completion-permission", "completion-stop",
 ]);
 const LAUNCH_FAILURES = new WeakMap();
 
@@ -647,16 +650,26 @@ export function createAcpProcessTransport(optionsInput = {}) {
     }
   }
   async function sessionUpdate(params) {
-    let failureStage = "envelope";
+    let failureStage = "envelope-runtime";
     try {
-      if (session === null || typeof params?.sessionId !== "string" || params.sessionId.length === 0) fail();
+      if (session === null) fail();
+      failureStage = "envelope-session-id";
+      if (typeof params?.sessionId !== "string" || params.sessionId.length === 0) fail();
+      failureStage = "envelope-update-type";
       const updateType = params?.update?.sessionUpdate;
       if (typeof updateType !== "string") fail();
       if (acpSessionId === null) {
-        if (!sessionEstablishing || updateType === "tool_call" || updateType === "tool_call_update") fail();
+        failureStage = "envelope-before-session";
+        if (!sessionEstablishing) fail();
+        failureStage = "envelope-early-tool";
+        if (updateType === "tool_call" || updateType === "tool_call_update") fail();
+        failureStage = "envelope-provisional-session";
         if (provisionalAcpSessionId === null) provisionalAcpSessionId = params.sessionId;
         else if (params.sessionId !== provisionalAcpSessionId) fail();
-      } else if (params.sessionId !== acpSessionId) fail();
+      } else {
+        failureStage = "envelope-active-session";
+        if (params.sessionId !== acpSessionId) fail();
+      }
       if (updateType === "usage_update") {
         failureStage = "usage";
         const used = params.update.used;
