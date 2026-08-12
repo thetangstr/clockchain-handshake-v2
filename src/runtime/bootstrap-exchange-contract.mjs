@@ -11,9 +11,16 @@ const DIGEST = /^[0-9a-f]{64}$/;
 const TOKEN = /^[A-Za-z0-9._:-]{1,128}$/;
 const MAX_DESCRIPTOR_BYTES = 64 * 1024;
 const MAX_WAIT_MS = 60_000;
+const INTERNAL_ERRORS = new WeakSet();
 
-function fail() { throw new Error(ERROR); }
-function sanitize(error) { if (error?.message === ERROR) throw error; fail(); }
+function safeError() {
+  const error = new Error(ERROR);
+  INTERNAL_ERRORS.add(error);
+  return error;
+}
+
+function fail() { throw safeError(); }
+function sanitize(error) { if (INTERNAL_ERRORS.has(error)) throw error; throw safeError(); }
 
 function exact(value, keys) {
   try {
@@ -119,7 +126,7 @@ export function createBootstrapExchangeContract(optionsInput) {
           const timeout = new Promise((resolve, reject) => {
             timer = setTimeout(() => {
               controller.abort();
-              reject(new Error(ERROR));
+              reject(safeError());
             }, options.maxWaitMs);
           });
           const candidate = await Promise.race([

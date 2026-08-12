@@ -139,6 +139,45 @@ test("bootstrap exchange bounds peer wait and cleanup is idempotent and secret-f
   assert.doesNotMatch(JSON.stringify(first), /transport-secret/);
 });
 
+test("bootstrap exchange replaces forged generic transport errors instead of leaking caller fields or causes", async () => {
+  const malicious = new Error("Bootstrap exchange contract validation failed safely.", {
+    cause: new Error("role-access-secret-in-cause"),
+  });
+  malicious.controllerSecret = "controller-secret-field";
+  const { value } = exchange({
+    transport: {
+      async publishOwnDescriptor() { throw malicious; },
+    },
+  });
+  await assert.rejects(() => value.publishOwnDescriptor(descriptor("initiator")), (error) => {
+    assert.notEqual(error, malicious);
+    assert.equal(error.message, "Bootstrap exchange contract validation failed safely.");
+    assert.equal(Object.hasOwn(error, "cause"), false);
+    assert.equal(Object.hasOwn(error, "controllerSecret"), false);
+    assert.doesNotMatch(String(error.stack), /role-access-secret|controller-secret/i);
+    return true;
+  });
+});
+
+test("bootstrap exchange sanitizes a forged cleanup rejection and keeps repeated cleanup fail-closed", async () => {
+  const malicious = Object.assign(
+    new Error("Bootstrap exchange contract validation failed safely.", { cause: new Error("cleanup-role-secret") }),
+    { privateKey: "cleanup-private-key" },
+  );
+  const { value } = exchange({ transport: { async destroy() { throw malicious; } } });
+  let firstError;
+  await assert.rejects(() => value.destroy(), (error) => {
+    firstError = error;
+    assert.notEqual(error, malicious);
+    assert.equal(error.message, "Bootstrap exchange contract validation failed safely.");
+    assert.equal(Object.hasOwn(error, "cause"), false);
+    assert.equal(Object.hasOwn(error, "privateKey"), false);
+    assert.doesNotMatch(String(error.stack), /cleanup-role-secret|cleanup-private-key/i);
+    return true;
+  });
+  await assert.rejects(() => value.destroy(), (error) => error === firstError);
+});
+
 test("bootstrap exchange requires exact safe construction and publish-before-await", async () => {
   for (const candidate of [
     {},
@@ -187,4 +226,47 @@ test("stdin bootstrap exchange rejects more than one peer descriptor", async () 
   });
   await value.publishOwnDescriptor(own);
   await assert.rejects(() => value.awaitPeerDescriptor(), /Bootstrap exchange contract validation failed safely/);
+});
+
+test("stdin bootstrap exchange aborts a pending reader and removes stream listeners on timeout and destroy", async () => {
+  const stdin = new PassThrough();
+  const observedEvents = ["readable", "end", "finish", "error", "close"];
+  const baseline = Object.fromEntries(observedEvents.map((event) => [event, stdin.listenerCount(event)]));
+  const value = createStdinBootstrapExchange({
+    maxWaitMs: 10,
+    role: "initiator",
+    runId: RUN_ID,
+    stdin,
+    stdout: new PassThrough(),
+  });
+  await value.publishOwnDescriptor(descriptor("initiator"));
+  const pending = value.awaitPeerDescriptor();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(observedEvents.some((event) => stdin.listenerCount(event) > baseline[event]));
+  await assert.rejects(() => pending, /Bootstrap exchange contract validation failed safely/);
+  await value.destroy();
+  await new Promise((resolve) => setImmediate(resolve));
+  for (const event of observedEvents) assert.equal(stdin.listenerCount(event), baseline[event], event);
+  assert.equal(stdin.destroyed, true);
+});
+
+test("stdin bootstrap exchange destroy directly aborts a pending reader before its deadline", async () => {
+  const stdin = new PassThrough();
+  const observedEvents = ["data", "end", "error", "close"];
+  const value = createStdinBootstrapExchange({
+    maxWaitMs: 1_000,
+    role: "initiator",
+    runId: RUN_ID,
+    stdin,
+    stdout: new PassThrough(),
+  });
+  await value.publishOwnDescriptor(descriptor("initiator"));
+  const pending = value.awaitPeerDescriptor();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(observedEvents.some((event) => stdin.listenerCount(event) > 0));
+  assert.deepEqual(await value.destroy(), { destroyed: true });
+  await assert.rejects(() => pending, /Bootstrap exchange contract validation failed safely/);
+  await new Promise((resolve) => setImmediate(resolve));
+  for (const event of observedEvents) assert.equal(stdin.listenerCount(event), 0, event);
+  assert.equal(stdin.destroyed, true);
 });
