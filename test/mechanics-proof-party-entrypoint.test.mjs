@@ -195,6 +195,171 @@ test("run mode emits bootstrap first, consumes one peer descriptor, then emits t
   ]);
 });
 
+test("managed run mode selects SQS exchange without publishing queue URLs", async () => {
+  const output = new PassThrough();
+  let text = "";
+  output.on("data", (chunk) => { text += chunk.toString("utf8"); });
+  const calls = [];
+  const peer = { schema: "clockchain.mechanics-proof-party-bootstrap/v1", peer: true };
+  const trustedOptions = {
+    harness: "claude",
+    listenHost: "0.0.0.0",
+    manifestDigest: "a".repeat(64),
+    mandate: { statement: "trusted" },
+    mcpEndpoint: "https://mcp.clockchain.network/handshake/mcp",
+    opensslPath: "/usr/bin/openssl",
+    port: 8443,
+    publicEndpoint: "https://10.0.0.11:8443",
+    role: "responder",
+    root: "/workspace/responder",
+    runId: SESSION,
+    runtimeId: "ecs-runtime-responder",
+    taskId: "ecs-task-responder",
+    workloadAttestationDigest: "b".repeat(64),
+  };
+  const code = await runMain({
+    argv: ["node", "bin/mechanics-proof-party.mjs", "--run-managed"],
+    createManagedBootstrapExchange(options) {
+      calls.push(["exchange.create", options]);
+      return {
+        async publishOwnDescriptor() { calls.push("exchange.publish"); return { published: true }; },
+        async awaitPeerDescriptor() { calls.push("exchange.await"); return peer; },
+        async destroy() { calls.push("exchange.destroy"); return { destroyed: true }; },
+      };
+    },
+    createRuntime: async (options) => {
+      assert.equal(options, trustedOptions);
+      return ({
+        bootstrapDescriptor() { return { schema: "clockchain.mechanics-proof-party-bootstrap/v1", local: true }; },
+        async destroy() { calls.push("runtime.destroy"); },
+        async run({ peerDescriptor }) { assert.equal(peerDescriptor, peer); return { schema: "clockchain.mechanics-proof-party-evidence/v1", completed: true }; },
+      });
+    },
+    env: runEnv({
+      AWS_REGION: "us-west-2",
+      CLOCKCHAIN_BOOTSTRAP_OWN_QUEUE_URL: `https://sqs.us-west-2.amazonaws.com/123456789012/own-${SESSION}`,
+      CLOCKCHAIN_BOOTSTRAP_PEER_QUEUE_URL: `https://sqs.us-west-2.amazonaws.com/123456789012/peer-${SESSION}`,
+    }),
+    stderr: new PassThrough(),
+    stdin: Readable.from([]),
+    stdout: output,
+    async resolveManagedRunOptions({ env }) {
+      assert.equal(env.CLOCKCHAIN_RUNTIME_ID, "runtime-responder");
+      return trustedOptions;
+    },
+  });
+  assert.equal(code, 0);
+  assert.equal(calls[0][0], "exchange.create");
+  assert.deepEqual(calls[0][1], {
+    ownQueueUrl: `https://sqs.us-west-2.amazonaws.com/123456789012/own-${SESSION}`,
+    peerQueueUrl: `https://sqs.us-west-2.amazonaws.com/123456789012/peer-${SESSION}`,
+    region: "us-west-2",
+    role: "responder",
+    runId: SESSION,
+  });
+  assert.deepEqual(calls.slice(1), ["exchange.publish", "exchange.await", "exchange.destroy"]);
+  assert.doesNotMatch(text, /sqs|amazonaws|queue/i);
+});
+
+test("managed run mode fails closed until ECS metadata supplies runtime identity", async () => {
+  let runtimeCreated = false;
+  const stderr = new PassThrough();
+  let errorText = "";
+  stderr.on("data", (chunk) => { errorText += chunk.toString("utf8"); });
+  const code = await runMain({
+    argv: ["node", "bin/mechanics-proof-party.mjs", "--run-managed"],
+    createRuntime: async () => { runtimeCreated = true; },
+    env: runEnv({
+      AWS_REGION: "us-west-2",
+      CLOCKCHAIN_A2A_PUBLIC_ENDPOINT: "https://10.99.99.99:8443",
+      CLOCKCHAIN_BOOTSTRAP_OWN_QUEUE_URL: `https://sqs.us-west-2.amazonaws.com/123456789012/own-${SESSION}`,
+      CLOCKCHAIN_BOOTSTRAP_PEER_QUEUE_URL: `https://sqs.us-west-2.amazonaws.com/123456789012/peer-${SESSION}`,
+      CLOCKCHAIN_RUNTIME_ID: "controller-invented-runtime",
+      CLOCKCHAIN_TASK_ID: "controller-invented-task",
+      CLOCKCHAIN_WORKLOAD_ATTESTATION_DIGEST: "f".repeat(64),
+    }),
+    stderr,
+    stdin: Readable.from([]),
+    stdout: new PassThrough(),
+  });
+  assert.equal(code, 1);
+  assert.equal(runtimeCreated, false);
+  assert.equal(errorText, "Mechanics proof party failed safely.\n");
+  assert.doesNotMatch(errorText, /controller|runtime|task|10\.99|attestation/i);
+});
+
+test("managed run mode rejects controller-supplied AWS credential overrides", async () => {
+  for (const override of [
+    { AWS_ACCESS_KEY_ID: "static-access" },
+    { AWS_SECRET_ACCESS_KEY: "static-secret" },
+    { AWS_SESSION_TOKEN: "static-session" },
+    { AWS_WEB_IDENTITY_TOKEN_FILE: "/tmp/token" },
+    { AWS_ROLE_ARN: "arn:aws:iam::123456789012:role/override" },
+    { AWS_PROFILE: "controller-profile" },
+    { AWS_SHARED_CREDENTIALS_FILE: "/tmp/credentials" },
+    { AWS_CONTAINER_CREDENTIALS_FULL_URI: "http://controller.invalid/credentials" },
+    { AWS_CONTAINER_AUTHORIZATION_TOKEN: "controller-token" },
+    { AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: "/tmp/controller-token" },
+    { AWS_ENDPOINT_URL: "https://controller.invalid" },
+    { AWS_ENDPOINT_URL_SQS: "https://controller.invalid/sqs" },
+  ]) {
+    let created = false;
+    let runtimeCreated = false;
+    let resolved = false;
+    const stderr = new PassThrough();
+    let errorText = "";
+    stderr.on("data", (chunk) => { errorText += chunk.toString("utf8"); });
+    const code = await runMain({
+      argv: ["node", "bin/mechanics-proof-party.mjs", "--run-managed"],
+      createManagedBootstrapExchange() { created = true; },
+      createRuntime: async () => { runtimeCreated = true; throw new Error("must not create runtime"); },
+      env: runEnv({
+        AWS_REGION: "us-west-2",
+        CLOCKCHAIN_BOOTSTRAP_OWN_QUEUE_URL: `https://sqs.us-west-2.amazonaws.com/123456789012/own-${SESSION}`,
+        CLOCKCHAIN_BOOTSTRAP_PEER_QUEUE_URL: `https://sqs.us-west-2.amazonaws.com/123456789012/peer-${SESSION}`,
+        ...override,
+      }),
+      stderr,
+      stdin: Readable.from([]),
+      stdout: new PassThrough(),
+      resolveManagedRunOptions: async () => { resolved = true; throw new Error("must not resolve"); },
+    });
+    assert.equal(code, 1);
+    assert.equal(created, false);
+    assert.equal(runtimeCreated, false);
+    assert.equal(resolved, false);
+    assert.equal(errorText, "Mechanics proof party failed safely.\n");
+    assert.doesNotMatch(errorText, /static|token|credentials|override|arn:aws|controller/i);
+  }
+});
+
+test("local run mode remains independent of managed SQS configuration", async () => {
+  const calls = [];
+  const code = await runMain({
+    argv: ["node", "bin/mechanics-proof-party.mjs", "--run"],
+    createBootstrapExchange() {
+      calls.push("local.create");
+      return {
+        async publishOwnDescriptor() { calls.push("local.publish"); return { published: true }; },
+        async awaitPeerDescriptor() { calls.push("local.await"); return { peer: true }; },
+        async destroy() { calls.push("local.destroy"); return { destroyed: true }; },
+      };
+    },
+    createManagedBootstrapExchange() { calls.push("managed.create"); throw new Error("wrong exchange"); },
+    createRuntime: async () => ({
+      bootstrapDescriptor() { return { own: true }; },
+      async run() { calls.push("runtime.run"); return { completed: true }; },
+      async destroy() { calls.push("runtime.destroy"); },
+    }),
+    env: runEnv({ AWS_ACCESS_KEY_ID: "ignored-by-local-mode" }),
+    stderr: new PassThrough(),
+    stdin: Readable.from([]),
+    stdout: new PassThrough(),
+  });
+  assert.equal(code, 0);
+  assert.deepEqual(calls, ["local.create", "local.publish", "local.await", "local.destroy", "runtime.run"]);
+});
+
 test("run mode rejects a second peer descriptor and destroys the unstarted runtime", async () => {
   const calls = [];
   const peer = JSON.stringify({ schema: "clockchain.mechanics-proof-party-bootstrap/v1" });

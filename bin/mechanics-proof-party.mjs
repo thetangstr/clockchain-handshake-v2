@@ -5,6 +5,7 @@ import { isIP } from "node:net";
 import { pathToFileURL } from "node:url";
 
 import { createStdinBootstrapExchange } from "../src/runtime/stdin-bootstrap-exchange.mjs";
+import { createTaskRoleAwsSqsBootstrapExchange } from "../src/runtime/aws-sqs-bootstrap-exchange.mjs";
 import { createMechanicsProofPartyRuntime } from "../src/testing/mechanics-proof-party-runtime.mjs";
 
 const MCP_ENDPOINT = "https://mcp.clockchain.network/handshake/mcp";
@@ -159,14 +160,43 @@ function runOptions(env) {
   });
 }
 
+function managedExchangeEnvironment(env) {
+  for (const key of [
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_ROLE_ARN",
+    "AWS_PROFILE",
+    "AWS_SHARED_CREDENTIALS_FILE",
+    "AWS_CONFIG_FILE",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+    "AWS_ENDPOINT_URL",
+    "AWS_ENDPOINT_URL_SQS",
+  ]) if (optional(env, key) !== null) throw new Error("aws-auth-override");
+  return Object.freeze({
+    ownQueueUrl: value(env, "CLOCKCHAIN_BOOTSTRAP_OWN_QUEUE_URL"),
+    peerQueueUrl: value(env, "CLOCKCHAIN_BOOTSTRAP_PEER_QUEUE_URL"),
+    region: value(env, "AWS_REGION"),
+  });
+}
+
+async function resolveManagedRunOptionsUnavailable() {
+  throw new Error("managed-runtime-attestation-unavailable");
+}
+
 export async function runMain({
   argv = process.argv,
   createBootstrapExchange = createStdinBootstrapExchange,
+  createManagedBootstrapExchange = createTaskRoleAwsSqsBootstrapExchange,
   createRuntime = createMechanicsProofPartyRuntime,
   env = process.env,
   stderr = process.stderr,
   stdin = process.stdin,
   stdout = process.stdout,
+  resolveManagedRunOptions = resolveManagedRunOptionsUnavailable,
 } = {}) {
   let bootstrapExchange = null;
   let bootstrapExchangeDestroyed = false;
@@ -178,10 +208,13 @@ export async function runMain({
       stdout.write(`${JSON.stringify(capabilityPreflight(env))}\n`);
       return 0;
     }
-    if (argv[2] !== "--run") throw new Error("mode");
-    const options = runOptions(env);
+    if (!["--run", "--run-managed"].includes(argv[2])) throw new Error("mode");
+    const managedEnvironment = argv[2] === "--run-managed" ? managedExchangeEnvironment(env) : null;
+    const options = argv[2] === "--run-managed" ? await resolveManagedRunOptions({ env }) : runOptions(env);
     runtime = await createRuntime(options);
-    bootstrapExchange = createBootstrapExchange({ role: options.role, runId: options.runId, stdin, stdout });
+    bootstrapExchange = argv[2] === "--run-managed"
+      ? createManagedBootstrapExchange(Object.freeze({ ...managedEnvironment, role: options.role, runId: options.runId }))
+      : createBootstrapExchange({ role: options.role, runId: options.runId, stdin, stdout });
     await bootstrapExchange.publishOwnDescriptor(runtime.bootstrapDescriptor());
     const peerDescriptor = await bootstrapExchange.awaitPeerDescriptor();
     await bootstrapExchange.destroy();

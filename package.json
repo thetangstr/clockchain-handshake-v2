@@ -25,6 +25,7 @@
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.66.0",
     "@agentclientprotocol/codex-acp": "1.1.14",
+    "@aws-sdk/client-sqs": "3.1097.0",
     "viem": "2.55.8"
   },
   "devDependencies": {
