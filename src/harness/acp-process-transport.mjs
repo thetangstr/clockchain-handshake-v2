@@ -31,9 +31,22 @@ const PROCESS_TERM_GRACE_MS = 50;
 const PROCESS_KILL_GRACE_MS = 50;
 const CODEX_MODEL = "gpt-5.6-terra";
 const CLAUDE_BEDROCK_MODEL = "us.anthropic.claude-sonnet-4-6";
+const LAUNCH_FAILURE_STAGES = Object.freeze(["spawn", "stream", "initialize", "session", "model", "prompt", "completion"]);
+const LAUNCH_FAILURES = new WeakMap();
 
 function fail() {
   throw new Error("ACP process transport validation failed safely.");
+}
+
+function stagedLaunchFailure(stage) {
+  if (!LAUNCH_FAILURE_STAGES.includes(stage)) fail();
+  const error = new Error("ACP process transport validation failed safely.");
+  LAUNCH_FAILURES.set(error, stage);
+  return error;
+}
+
+export function acpProcessTransportFailureStage(error) {
+  return LAUNCH_FAILURES.get(error) ?? null;
 }
 
 function digest(value) {
@@ -704,25 +717,29 @@ export function createAcpProcessTransport(optionsInput = {}) {
         NODE_USE_ENV_PROXY: "1",
         ...(baseEnv.PATH ? { PATH: executablePath(baseEnv.PATH) } : {}),
       };
-      child = spawn(pin.executableName, [], {
-        cwd: options.workspace,
-        env,
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true,
-      });
-      childMonitor = observeChildProcess(child);
+      let launchStage = "spawn";
       try {
+        child = spawn(pin.executableName, [], {
+          cwd: options.workspace,
+          env,
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+        });
+        childMonitor = observeChildProcess(child);
+        launchStage = "stream";
         connection = new ClientSideConnection(() => ({
           requestPermission,
           sessionUpdate,
         }), streamPair(child));
         event("acp.process.launch", `launched ${harness} ACP process`, `${pin.packageName}:${pin.version}:${cleanPeer.peerCard.id}`);
+        launchStage = "initialize";
         const initialized = await connection.initialize({
           protocolVersion: PROTOCOL_VERSION,
           clientCapabilities: Object.freeze({}),
         });
         if (initialized?.protocolVersion !== PROTOCOL_VERSION) fail();
         event("acp.initialize", "negotiated ACP protocol", String(initialized.protocolVersion));
+        launchStage = "session";
         const created = await connection.newSession({
           cwd: options.workspace,
           mcpServers: [mcpServer()],
@@ -730,6 +747,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
         if (typeof created?.sessionId !== "string" || created.sessionId.length === 0) fail();
         acpSessionId = created.sessionId;
         if (harness === "codex") {
+          launchStage = "model";
           await connection.setSessionConfigOption({
             sessionId: acpSessionId,
             configId: "model",
@@ -738,6 +756,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
           event("acp.model.pinned", "pinned Codex ACP model", "model:gpt-5.6-terra");
         }
         event("acp.session.new", "created ACP session", digest(created.sessionId));
+        launchStage = "prompt";
         const prompted = await connection.prompt({
           sessionId: acpSessionId,
           prompt: [{
@@ -745,6 +764,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
             text: promptText({ role: clean.role, sessionId: clean.sessionId, mandate: cleanMandateValue, a2aConfig: cleanPeer }),
           }],
         });
+        launchStage = "completion";
         if (protocolFailure || permissionDenied || prompted?.stopReason !== "end_turn") fail();
         usage = safeUsage(prompted.usage);
         completed = true;
@@ -762,7 +782,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
         } catch {
           // The public failure remains generic; teardown proof is handled by collectEvidence.
         }
-        fail();
+        throw stagedLaunchFailure(launchStage);
       }
     },
     async executeRetainedAction(input) {

@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { AgentSideConnection, PROTOCOL_VERSION, ndJsonStream } from "@agentclientprotocol/sdk";
 
-import { createAcpProcessTransport } from "../src/harness/acp-process-transport.mjs";
+import { acpProcessTransportFailureStage, createAcpProcessTransport } from "../src/harness/acp-process-transport.mjs";
 import { ACP_VERSION_PINS } from "../src/harness/version-pins.mjs";
 import { DIGEST, MCP_ENDPOINT, OTHER_SESSION, SESSION, a2aConfig, retainedAction } from "./harness-acp-fixtures.mjs";
 
@@ -418,6 +418,7 @@ test("ACP process transport rejects opaque proxy/accessor inputs and caller-comp
     () => createAcpProcessTransport(proxy),
     (error) => {
       assert.match(error.message, /ACP process transport validation failed safely/);
+      assert.equal(acpProcessTransportFailureStage(error), null);
       assert.doesNotMatch(error.message, /secret-canary|\/Users\/alice\/secret/);
       return true;
     },
@@ -1412,6 +1413,7 @@ test("ACP process transport cleans up spawned child when ACP lifecycle fails", a
     }),
     (error) => {
       assert.match(error.message, /ACP process transport validation failed safely/);
+      assert.equal(acpProcessTransportFailureStage(error), "initialize");
       assert.doesNotMatch(error.message, /secret-canary|\/Users\/alice\/secret/);
       return true;
     },

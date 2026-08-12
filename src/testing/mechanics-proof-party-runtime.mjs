@@ -14,7 +14,7 @@ import { activatePartySignedChannel, defaultPartySignedChannelSleep } from "../h
 import { createAgentHandshakeCheckpointClient } from "../harness/agent-handshake-mcp-client.mjs";
 import { createAcpClaudeHarnessAdapter } from "../harness/acp-claude-adapter.mjs";
 import { createAcpCodexHarnessAdapter } from "../harness/acp-codex-adapter.mjs";
-import { createAcpProcessTransport } from "../harness/acp-process-transport.mjs";
+import { acpProcessTransportFailureStage, createAcpProcessTransport } from "../harness/acp-process-transport.mjs";
 import { createDirectA2APartyBridge } from "../harness/direct-a2a-party-bridge.mjs";
 import {
   createVerifiedReleaseActionRecorder,
@@ -61,7 +61,9 @@ const RUNTIME_FAILURE_STAGES = Object.freeze([
   "checkpoint-client-create",
   "bridge-create", "provider-auth", "provider-auth-input", "provider-auth-decode", "provider-auth-parse",
   "provider-auth-install", "provider-auth-export", "transport-create", "adapter-create", "agent-starting",
-  "agent-launch", "evidence-validate", "certificate-event", "agent-terminate", "evidence-collect", "teardown",
+  "agent-launch", "agent-launch-spawn", "agent-launch-stream", "agent-launch-initialize", "agent-launch-session",
+  "agent-launch-model", "agent-launch-prompt", "agent-launch-completion", "evidence-validate", "certificate-event",
+  "agent-terminate", "evidence-collect", "teardown",
   "listener-listen-eacces", "listener-listen-eaddrinuse", "listener-listen-eaddrnotavail",
   "listener-listen-eperm", "listener-listen-other",
 ]);
@@ -625,9 +627,11 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
           runFailed = true;
           const listenerStage = runStage === "listener-create" ? invitationBootstrapFailureStage(error) : null;
           const recorderStage = runStage === "recorder-create" ? verifiedReleaseActionRecorderFailureStage(error) : null;
+          const launchStage = runStage === "agent-launch" ? acpProcessTransportFailureStage(error) : null;
           runFailureStage = listenerStage !== null
             ? `listener-${listenerStage}`
-            : recorderStage !== null ? `recorder-${recorderStage}` : runStage;
+            : recorderStage !== null ? `recorder-${recorderStage}`
+              : launchStage !== null ? `agent-launch-${launchStage}` : runStage;
         }
         let teardownResult;
         try { teardownResult = await teardown(); } catch { runFailed = true; runFailureStage ??= "teardown"; }
