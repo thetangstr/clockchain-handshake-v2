@@ -447,6 +447,50 @@ test("party runtime rejects mixed and cross-role provider authentication", async
   }
 });
 
+test("party runtime reports only the exact safe Codex provider-auth boundary", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-auth-stage-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  for (const [name, encoded, expectedStage] of [
+    ["missing", undefined, "provider-auth-input"],
+    ["malformed", Buffer.from("not-json", "utf8").toString("base64"), "provider-auth-parse"],
+  ]) {
+    await usingTemporaryEnv({
+      CLOCKCHAIN_CODEX_AUTH_JSON_BASE64: encoded,
+      CLOCKCHAIN_CODEX_MODEL: "gpt-5.6-terra",
+      CODEX_API_KEY: undefined,
+      OPENAI_API_KEY: undefined,
+      CLAUDE_CODE_USE_BEDROCK: undefined,
+      ANTHROPIC_MODEL: undefined,
+      AWS_ACCESS_KEY_ID: undefined,
+      AWS_SECRET_ACCESS_KEY: undefined,
+      AWS_SESSION_TOKEN: undefined,
+    }, async () => {
+      const runtime = await createMechanicsProofPartyRuntime(options(join(parent, name), {
+        harness: "codex",
+        publicEndpoint: "https://initiator.task.local:8443",
+        role: "initiator",
+        runtimeId: `runtime-${name}`,
+        taskId: `task-${name}`,
+      }), dependencies([]));
+      await assert.rejects(() => runtime.run({ peerDescriptor: peerDescriptor({
+        harness: "claude",
+        role: "responder",
+        runtime: {
+          endpoint: "https://responder.task.local:8443",
+          runtimeId: "runtime-responder",
+          taskId: "task-responder",
+          tlsCertificateSha256: OTHER_DIGEST,
+          workloadAttestationDigest: OTHER_DIGEST,
+        },
+      }) }), (error) => {
+        assert.equal(mechanicsProofPartyRuntimeFailureStage(error), expectedStage);
+        assert.doesNotMatch(JSON.stringify(error), /not-json|auth/i);
+        return true;
+      });
+    });
+  }
+});
+
 test("party runtime rejects controller authority, stale state, peer drift, and shared identities", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-reject-"));
   t.after(() => rm(parent, { recursive: true, force: true }));

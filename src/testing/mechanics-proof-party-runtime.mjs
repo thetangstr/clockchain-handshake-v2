@@ -59,7 +59,8 @@ const RUNTIME_FAILURE_STAGES = Object.freeze([
   "recorder-release-manifest-fetch", "recorder-release-helper-fetch", "recorder-release-assets",
   "recorder-adapter-layout", "recorder-completion-socket",
   "checkpoint-client-create",
-  "bridge-create", "provider-auth", "transport-create", "adapter-create", "agent-starting",
+  "bridge-create", "provider-auth", "provider-auth-input", "provider-auth-decode", "provider-auth-parse",
+  "provider-auth-install", "provider-auth-export", "transport-create", "adapter-create", "agent-starting",
   "agent-launch", "evidence-validate", "certificate-event", "agent-terminate", "evidence-collect", "teardown",
   "listener-listen-eacces", "listener-listen-eaddrinuse", "listener-listen-eaddrnotavail",
   "listener-listen-eperm", "listener-listen-other",
@@ -259,17 +260,21 @@ function hasEnv(env, key) {
   return typeof env[key] === "string" && env[key].length > 0;
 }
 
-async function installCodexSerializedAuth(value, home) {
+async function installCodexSerializedAuth(value, home, setStage) {
+  setStage("decode");
   if (typeof value !== "string" || value.length < 4 || value.length > 96 * 1024 || !/^[A-Za-z0-9+/=]+$/.test(value)) fail();
   let serialized;
   try { serialized = Buffer.from(value, "base64").toString("utf8"); } catch { fail(); }
   if (Buffer.byteLength(serialized, "utf8") < 2 || Buffer.byteLength(serialized, "utf8") > 64 * 1024) fail();
+  setStage("parse");
   const authentication = await loadAppleClientAuthentication({ client: "codex", serialized }).catch(fail);
+  setStage("install");
   await installAppleClientAuthentication({ authentication, home }).catch(fail);
 }
 
-async function providerEnvFor(harness, home, env = process.env) {
+async function providerEnvFor(harness, home, env = process.env, setStage = () => {}) {
   const result = {};
+  setStage("input");
   if (harness === "codex") {
     if (
       ["CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_MODEL", "ANTHROPIC_API_KEY"].some((key) => hasEnv(env, key)) ||
@@ -279,7 +284,8 @@ async function providerEnvFor(harness, home, env = process.env) {
     const hasSerializedAuth = typeof authJson === "string" && authJson.length > 0;
     const apiKeys = ["CODEX_API_KEY", "OPENAI_API_KEY"].filter((key) => hasEnv(env, key));
     if (apiKeys.length > 1 || (hasSerializedAuth && apiKeys.length > 0) || (!hasSerializedAuth && apiKeys.length !== 1)) fail();
-    if (hasSerializedAuth) await installCodexSerializedAuth(authJson, home);
+    if (hasSerializedAuth) await installCodexSerializedAuth(authJson, home, setStage);
+    setStage("export");
     for (const key of CODEX_PROVIDER_ENV) {
       const value = env[key];
       if (typeof value === "string" && value.length > 0) result[key] = value;
@@ -290,6 +296,7 @@ async function providerEnvFor(harness, home, env = process.env) {
       hasEnv(env, "OPENAI_API_KEY") || hasEnv(env, "CLOCKCHAIN_CODEX_MODEL") ||
       hasEnv(env, "ANTHROPIC_API_KEY") || AWS_CREDENTIAL_OVERRIDE_ENV.some((key) => hasEnv(env, key))
     ) fail();
+    setStage("export");
     for (const key of CLAUDE_BEDROCK_PROVIDER_ENV) {
       const value = env[key];
       if (typeof value === "string" && value.length > 0) result[key] = value;
@@ -514,7 +521,9 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
             submitCheckpoint: checkpointClient.submitCheckpoint,
           });
           runStage = "provider-auth";
-          const providerEnv = await providerEnvFor(options.harness, paths.home);
+          const providerEnv = await providerEnvFor(options.harness, paths.home, process.env, (stage) => {
+            runStage = `provider-auth-${stage}`;
+          });
           runStage = "transport-create";
           const processTransport = deps.createProcessTransport({
             actionRecorder: actionRecorder.actionRecorder,
