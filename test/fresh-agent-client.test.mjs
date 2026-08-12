@@ -497,7 +497,7 @@ test("builds exact endpoint configuration for Codex and Claude Code", () => {
     },
   });
   assert.deepEqual(claude.launch.args, [
-    "--print", "--resume", SESSION, "--model", "sonnet", "--effort", "high", "--disable-slash-commands", "--no-chrome",
+    "--print", "--resume", SESSION, "--model", "sonnet", "--effort", "low", "--disable-slash-commands", "--no-chrome",
     "--strict-mcp-config", "--mcp-config",
     JSON.stringify({ mcpServers: { "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL } } }),
     "--permission-mode", "dontAsk", "--setting-sources", "",
@@ -958,28 +958,30 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
     assert.match(prompt, /Keep role access and private key material local/i);
     assert.match(prompt, /run only its short approvalCommand/i);
     assert.match(prompt, /approvalCommand is only an authorization marker/i);
-    assert.match(prompt, /inspect the authenticated signingSummary and structured operation/i);
+    assert.match(prompt, /inspect its authenticated signingSummary and structured operation/i);
     assert.match(prompt, /adapter.*executes the already-bound structured argument array/i);
     assert.match(prompt, /do not paste the long payload into a shell/i);
     assert.match(prompt, /decide on each action separately/i);
     assert.match(prompt, /authorization marker for that digest-bound action/i);
     assert.match(prompt, /(?:not|or) a standing precommitment/i);
-    assert.match(prompt, /manifest digest pins the manifest.*pins the helper.*separate host root verifies session and closing certificate signatures/i);
+    assert.match(prompt, /manifest digest pins the manifest and helper.*separate host root verifies session and certificate signatures/i);
     assert.doesNotMatch(prompt, /do not decode or inspect/i);
-    assert.match(prompt, /retry also fails/i);
+    assert.match(prompt, /Retry one failed current approval once/i);
     assert.match(prompt, /Every MCP response without a locally verified certificate is nonterminal/i);
-    assert.match(prompt, /wait or pending.*bounded retry interval/i);
+    assert.match(prompt, /wait or pending.*returned bounded interval/i);
     assert.match(prompt, /Never finish merely because the other role is pending/i);
     assert.doesNotMatch(prompt, /curl --location|retryAfterMs|localAction|mkdir -m|agent_handshake_next/);
   }
-  assert.match(fixture.initiator, /First, inspect the preloaded manifest and helper source/);
-  assert.ok(fixture.initiator.indexOf("inspect the preloaded manifest") < fixture.initiator.indexOf("create the one-time Responder invitation"));
+  assert.match(fixture.initiator, /First, create the one-time Responder invitation/);
+  assert.match(fixture.initiator, /may inspect the preloaded manifest and helper source/i);
   assert.match(fixture.initiator, /copy it from the MCP result/);
-  assert.match(fixture.responder, /First, inspect the preloaded manifest and helper source/);
-  assert.ok(fixture.responder.indexOf("inspect the preloaded manifest") < fixture.responder.indexOf("accept this invitation exactly once"));
+  assert.match(fixture.responder, /First, accept this invitation exactly once/);
+  assert.match(fixture.responder, /may inspect the preloaded manifest and helper source/i);
+  assert.match(fixture.responder, /opaque bearer capability/i);
+  assert.match(fixture.responder, /do not decode, copy, or write it to disk/i);
   assert.match(fixture.responder, /<PASTE THE INITIATOR INVITATION>/);
-  assert.match(fixture.responder, /do not submit acceptance\/signature/i);
-  assert.match(fixture.responder, /stop safely and report the mismatch/i);
+  assert.match(fixture.responder, /do not submit acceptance or a signature/i);
+  assert.match(fixture.responder, /stop safely and report it/i);
   assert.doesNotMatch(fixture.responder, /refuse the handshake/i);
   for (const prompt of [fixture.initiator, fixture.responder, fixture.actionDecision]) {
     assert.doesNotMatch(prompt, /before inspecting/i);
@@ -1085,14 +1087,14 @@ test("harness adapter rejects a release helper that does not match the pinned ma
 test("stakeholder prompts leave mechanics to MCP and use only preloaded verified assets", async () => {
   const fixture = JSON.parse(await readFile(new URL("./fixtures/fresh-agent/prompts.json", import.meta.url), "utf8"));
   for (const prompt of [fixture.initiator, fixture.responder]) {
-    assert.match(prompt, /inspect the preloaded manifest and helper source/i);
+    assert.match(prompt, /may inspect the preloaded manifest and helper source/i);
     assert.match(prompt, /run only its short approvalCommand/i);
     assert.match(prompt, /with no prefix or suffix/i);
     assert.doesNotMatch(prompt, /inspect the public manifest/i);
     assert.doesNotMatch(prompt, /download(?:ing|ed)? .*helper/i);
   }
   assert.match(fixture.initiator, /copy it from the MCP result/i);
-  assert.match(fixture.initiator, /do not stop or wait for another prompt/i);
+  assert.match(fixture.initiator, /continue the Initiator side without waiting for another prompt/i);
 });
 
 test("unwraps Codex's canonical shell display before binding the exact helper command", () => {

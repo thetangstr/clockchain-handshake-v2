@@ -687,7 +687,7 @@ export function buildClientCommands({
     launch: Object.freeze({
       args: Object.freeze([
         "--print", existingLoginIsolated ? "--session-id" : "--resume", claudeSessionId,
-        "--model", "sonnet", "--effort", "high",
+        "--model", "sonnet", "--effort", "low",
         ...(existingLoginIsolated ? ["--no-session-persistence"] : []),
         "--disable-slash-commands", "--no-chrome",
         "--strict-mcp-config", "--mcp-config", JSON.stringify({
