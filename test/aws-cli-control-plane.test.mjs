@@ -134,7 +134,7 @@ test("AWS CLI control plane has exact allowlisted argv shapes for Task 4 actions
 
 test("AWS CLI control plane validates real create-stack StackId and binds later calls to that identifier", async () => {
   const stackName = "clockchain-11111111-2222-4333-8444-555555555555";
-  const stackId = "arn:aws:cloudformation:us-west-2:123456789012:stack/clockchain-11111111-2222-4333-8444-555555555555/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const stackId = "arn:aws:cloudformation:us-west-2:123456789012:stack/clockchain-11111111-2222-4333-8444-555555555555/97dae5b0-9663-91f1-9cbe-0a4a1f6a7123";
   const seen = [];
   const control = createAwsCliControlPlane({
     region: "us-west-2",

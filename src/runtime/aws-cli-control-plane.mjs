@@ -66,7 +66,7 @@ function stackName(value) {
 
 function stackIdArn(value, { stackName: expectedName, region, accountId = null }) {
   if (typeof value !== "string") fail();
-  const match = value.match(/^arn:aws(?:-us-gov)?:cloudformation:([a-z]{2}(?:-gov)?-[a-z]+-[0-9]):([0-9]{12}):stack\/(clockchain-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/);
+  const match = value.match(/^arn:aws(?:-us-gov)?:cloudformation:([a-z]{2}(?:-gov)?-[a-z]+-[0-9]):([0-9]{12}):stack\/(clockchain-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/);
   if (!match || match[1] !== region || match[3] !== expectedName || (accountId !== null && match[2] !== accountId)) fail();
   return value;
 }
