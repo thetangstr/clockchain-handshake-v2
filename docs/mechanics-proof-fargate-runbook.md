@@ -40,3 +40,39 @@ Evidence requirements:
 - Runtime evidence must be collected from injected AWS control-plane responses: ECS DescribeTasks, ECS task definition, ENI/subnet/security-group data, CloudTrail events, CloudWatch public log descriptors, in-task STS identity, runtime attestation, and STOPPED cleanup proof.
 - The collector hashes raw public evidence internally. Precomputed digest-only inputs are rejected.
 - Output retains only public identifiers and digests. Raw secrets, private paths, transcripts, raw logs, and secret canaries must not appear.
+
+## Phase 6C1 Task 5 Local Two-Container Proof
+
+Task 5 is a local Docker proof against the exact MCP candidate endpoint only. It does not deploy production and it is not Fargate evidence. The current checkpoint-binding MCP candidate commit is `27ba04a` on the deployed `73954c4` lineage.
+
+Dry-run validates the immutable image reference, endpoint, private env-file references, explicit evidence directory, TTL, and max concurrency without creating Docker resources:
+
+```bash
+PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/run-mechanics-proof-containers.mjs \
+  --dry-run \
+  --app-image 123456789012.dkr.ecr.us-west-2.amazonaws.com/clockchain-mechanics-proof@sha256:<64 hex> \
+  --mcp-endpoint https://mcp.clockchain.network/handshake/mcp \
+  --initiator-env-file /private/tmp/clockchain-mechanics-proof-initiator.env \
+  --responder-env-file /private/tmp/clockchain-mechanics-proof-responder.env \
+  --evidence-dir /private/tmp/mechanics-proof-two-container-evidence \
+  --ttl-seconds 600 \
+  --max-concurrency 2
+```
+
+Run mode creates one user-defined bridge network with outbound egress, two containers from the same immutable app image, read-only root filesystems, no shared mounts or volumes, and distinct `/workspace` plus `/tmp` tmpfs mounts. The controller passes only public bootstrap descriptors over stdin, waits for responder `a2a.listener.ready`, then hands the responder descriptor to the initiator.
+
+```bash
+PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/run-mechanics-proof-containers.mjs \
+  --run \
+  --app-image 123456789012.dkr.ecr.us-west-2.amazonaws.com/clockchain-mechanics-proof@sha256:<64 hex> \
+  --mcp-endpoint https://mcp.clockchain.network/handshake/mcp \
+  --initiator-env-file /private/tmp/clockchain-mechanics-proof-initiator.env \
+  --responder-env-file /private/tmp/clockchain-mechanics-proof-responder.env \
+  --evidence-dir /private/tmp/mechanics-proof-two-container-evidence \
+  --ttl-seconds 600 \
+  --max-concurrency 2
+```
+
+Credential files are role-specific and private. The controller treats their paths as references only; credential values must not appear in argv, labels, compose YAML, logs, or retained evidence. For the local matrix, the initiator env file may provide Codex auth plus `CLOCKCHAIN_CODEX_MODEL=gpt-5.6-terra`; the responder env file uses Claude Bedrock with `CLAUDE_CODE_USE_BEDROCK=1`, `ANTHROPIC_MODEL=us.anthropic.claude-sonnet-4-6`, region, and exactly one AWS credential mechanism. `ANTHROPIC_API_KEY` is rejected.
+
+The retained proof is `two-container-summary.json` only after protocol validation and exact teardown both succeed. It contains the matching verified certificate digest, distinct party/runtime/workload identities, fresh public ERC-8004 registration facts, each role's direct delivery and checkpoint acknowledgment, exactly three matching Clockchain receipt summaries, `externalBusinessActionPerformed:false`, zero exits, and `teardownObserved:true`. Cleanup failure makes the command fail and prevents verified evidence retention.

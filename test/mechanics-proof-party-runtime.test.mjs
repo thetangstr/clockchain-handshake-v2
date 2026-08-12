@@ -75,7 +75,28 @@ function dependencies(calls, overrides = {}) {
     cardDigests: { initiator: DIGEST, responder: OTHER_DIGEST },
     invitations: [{ acknowledged: true, invitationDigest: DIGEST }],
     deliveries: [{ acknowledged: true, artifactDigest: DIGEST, artifactType: "acceptance", checkpointDigest: OTHER_DIGEST, messageDigests: [DIGEST, OTHER_DIGEST] }],
-    certificate: { verified: true, proofDigest: DIGEST },
+    certificate: {
+      verified: true,
+      proofDigest: DIGEST,
+      certificateDigest: OTHER_DIGEST,
+      identity: {
+        sessionKeyAddress: "0x1111111111111111111111111111111111111111",
+        policyDigest: DIGEST,
+        erc8004: {
+          agentId: "9453",
+          chainId: "eip155:11155111",
+          registryAddress: "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+          reference: "eip155:11155111:0x8004a818bfb912233c491871b3d84c89a494bd9e:9453",
+          registrationTx: "0x" + "1".repeat(64),
+          registrationBlock: "7001",
+        },
+      },
+      anchors: [
+        { blockHeight: "7010", digest: DIGEST, kind: "proposal", ledgerId: "33333333-4444-4555-8666-777777777770" },
+        { blockHeight: "7011", digest: OTHER_DIGEST, kind: "acceptance", ledgerId: "33333333-4444-4555-8666-777777777771" },
+        { blockHeight: "7012", digest: "c".repeat(64), kind: "acknowledgment", ledgerId: "33333333-4444-4555-8666-777777777772" },
+      ],
+    },
   };
   return {
     async createTlsIdentity() {
@@ -143,15 +164,30 @@ test("one responder runtime listens before launch and returns only digest-bound 
   assert.equal(descriptor.runtime.tlsCertificateSha256, DIGEST);
   assert.equal(descriptor.role, "responder");
   assert.doesNotMatch(JSON.stringify(descriptor), /private-runtime-only|roleAccess|invitation/i);
-  const evidence = await runtime.run({ peerDescriptor: peerDescriptor() });
+  const events = [];
+  const evidence = await runtime.run({ peerDescriptor: peerDescriptor(), onPublicEvent: (event) => events.push(event) });
   assert.equal(evidence.schema, "clockchain.mechanics-proof-party-evidence/v1");
   assert.equal(evidence.protocolSessionId, PROTOCOL_SESSION_ID);
   assert.equal(evidence.certificateProofDigest, DIGEST);
+  assert.equal(evidence.certificateDigest, OTHER_DIGEST);
+  assert.equal(evidence.identity.erc8004.agentId, "9453");
+  assert.deepEqual(evidence.anchors.map((anchor) => anchor.kind), ["proposal", "acceptance", "acknowledgment"]);
+  assert.deepEqual(evidence.directDelivery, {
+    acknowledged: true,
+    artifactDigest: DIGEST,
+    artifactType: "acceptance",
+    checkpointDigest: OTHER_DIGEST,
+    messageDigests: [DIGEST, OTHER_DIGEST],
+  });
   assert.equal(evidence.externalBusinessActionPerformed, false);
   assert.equal(evidence.teardown.completed, true);
   assert.doesNotMatch(JSON.stringify(evidence), /private-invitation|roleAccess|signature|transcript|reasoning|BEGIN/i);
   assert.ok(calls.indexOf("invitation.listen") < calls.indexOf("agent.launch"));
   assert.ok(calls.indexOf("invitation.take") < calls.indexOf("agent.launch"));
+  assert.equal(events[0].schema, "clockchain.mechanics-proof-party-event/v1");
+  assert.equal(events[0].type, "a2a.listener.ready");
+  assert.match(events[0].evidenceDigest, /^[0-9a-f]{64}$/);
+  assert.doesNotMatch(JSON.stringify(events), /private-invitation|BEGIN|bootstrapPublicKey/i);
   for (const expected of ["agent.terminate", "bridge.destroy", "recorder.close", "invitation.close", "bootstrap.destroy", "tls.destroy"]) {
     assert.ok(calls.includes(expected), expected);
   }

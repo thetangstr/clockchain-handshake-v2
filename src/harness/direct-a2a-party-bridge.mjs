@@ -5,6 +5,7 @@ import { a2aAgentCardDigest } from "../a2a/agent-card.mjs";
 import { A2A_ENVELOPE_SCHEMA, a2aEnvelopeDigest } from "../a2a/envelope.mjs";
 import { a2aCanonicalBytes } from "../a2a/auth.mjs";
 import { commitmentCheckpointDigest } from "../agent-handshake/v2/commitment-checkpoint.mjs";
+import { validateAgentHandshakeV2Party } from "../agent-handshake/v2/party.mjs";
 import { validateAgentHandshakeV2Terms } from "../agent-handshake/v2/terms.mjs";
 import { decodeSigningBytes } from "../core/wallet-bridge.mjs";
 import { digestHex } from "../core/canonical.mjs";
@@ -213,6 +214,41 @@ function certificateResult(value, expectedRole, expectedSessionId) {
   });
 }
 
+function certificateSummary(value, expectedRole, expectedSessionId) {
+  const envelopes = findValues(value, "certificate").filter((entry) => (
+    entry !== null && typeof entry === "object" && !Array.isArray(entry) &&
+    entry.result !== undefined && entry.signer !== undefined && entry.hostSessionKeyCertificate !== undefined
+  ));
+  const unique = [...new Set(envelopes.map((entry) => JSON.stringify(entry)))];
+  if (unique.length !== 1) fail();
+  const envelope = snapshot(publicClone(envelopes[0]), ["hostSessionKeyCertificate", "result", "signer"]);
+  const result = snapshot(envelope.result, [
+    "anchors", "externalBusinessActionPerformed", "hostSessionKeyCertificateDigest", "identityPolicy", "issuedAtMs",
+    "outcome", "parties", "policyDigests", "reference", "schema", "sessionDigest", "sessionId", "statementDigest", "subjectRun",
+  ]);
+  if (
+    result.schema !== "clockchain.agent-handshake-result/v2" || result.sessionId !== expectedSessionId ||
+    result.outcome !== "VERIFIED" || result.subjectRun !== "stakeholder" || result.externalBusinessActionPerformed !== false ||
+    !Array.isArray(result.anchors) || result.anchors.length !== 3
+  ) fail();
+  const parties = snapshot(result.parties, ["initiator", "responder"]);
+  const identity = validateAgentHandshakeV2Party(parties[expectedRole], { identityPolicy: result.identityPolicy });
+  const expectedKinds = ["proposal", "acceptance", "acknowledgment"];
+  const anchors = result.anchors.map((entry, index) => {
+    const anchor = snapshot(entry, ["blockHeight", "blockTimeRaw", "digest", "kind", "ledgerId"]);
+    if (
+      anchor.kind !== expectedKinds[index] || typeof anchor.blockHeight !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(anchor.blockHeight) ||
+      typeof anchor.ledgerId !== "string" || !UUID.test(anchor.ledgerId) || !DIGEST.test(anchor.digest)
+    ) fail();
+    return Object.freeze({ blockHeight: anchor.blockHeight, digest: anchor.digest, kind: anchor.kind, ledgerId: anchor.ledgerId });
+  });
+  return Object.freeze({
+    anchors: Object.freeze(anchors),
+    certificateDigest: digestHex(envelope),
+    identity: publicClone(identity),
+  });
+}
+
 function signedArtifact(request, result) {
   let raw;
   let payload;
@@ -294,6 +330,7 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
     let boundSessionId = options.sessionId;
     let activationContext = null;
     let certificate = null;
+    let pendingCertificate = null;
     let destroyed = false;
 
     function active() { if (destroyed) fail(); }
@@ -386,8 +423,12 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
         expected.state = "active";
         if (expected.direct !== true) {
           if (completion.operation === "verify-certificate") {
-            if (certificate !== null) fail();
-            certificate = certificateResult(completion.result, options.role, boundSessionId);
+            if (certificate !== null || pendingCertificate === null) fail();
+            certificate = Object.freeze({
+              ...pendingCertificate,
+              ...certificateResult(completion.result, options.role, boundSessionId),
+            });
+            pendingCertificate = null;
           }
           expected.state = "consumed";
           return Object.freeze({ accepted: true });
@@ -493,6 +534,15 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
             if (activationContext !== null) fail();
             activationContext = Object.freeze({ policyDigest, repositorySha, role: joinedRole, sessionId, terms });
             await activate();
+          }
+          if (item.toolName === "agent_handshake_get_certificate") {
+            const certificateValues = findValues(result, "certificate").filter((entry) => (
+              entry !== null && typeof entry === "object" && !Array.isArray(entry) && entry.result !== undefined
+            ));
+            if (certificateValues.length > 0) {
+              if (pendingCertificate !== null || certificate !== null) fail();
+              pendingCertificate = certificateSummary(result, options.role, boundSessionId);
+            }
           }
           const steps = findValues(result, "helperStep").filter((value) => value !== null && typeof value === "object");
           if (steps.length > 1) fail();

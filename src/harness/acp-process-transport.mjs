@@ -29,6 +29,8 @@ const MAX_STRING = 4096;
 const MAX_HELPER_COMMAND = 64 * 1024;
 const PROCESS_TERM_GRACE_MS = 50;
 const PROCESS_KILL_GRACE_MS = 50;
+const CODEX_MODEL = "gpt-5.6-terra";
+const CLAUDE_BEDROCK_MODEL = "us.anthropic.claude-sonnet-4-6";
 
 function fail() {
   throw new Error("ACP process transport validation failed safely.");
@@ -83,6 +85,48 @@ function envObject(value) {
     result[key] = descriptor.value;
   }
   return result;
+}
+
+function cleanProviderEnv(baseEnv, harness) {
+  const env = {};
+  if (harness === "codex") {
+    if (
+      (baseEnv.CODEX_API_KEY !== undefined || baseEnv.OPENAI_API_KEY !== undefined) &&
+      baseEnv.CLOCKCHAIN_CODEX_MODEL !== CODEX_MODEL
+    ) fail();
+    if (baseEnv.CLOCKCHAIN_CODEX_MODEL !== undefined && baseEnv.CLOCKCHAIN_CODEX_MODEL !== CODEX_MODEL) fail();
+    if (baseEnv.CODEX_API_KEY !== undefined && baseEnv.OPENAI_API_KEY !== undefined) fail();
+    if (baseEnv.CODEX_API_KEY !== undefined) env.CODEX_API_KEY = nonemptyBoundedString(baseEnv.CODEX_API_KEY, 16 * 1024);
+    if (baseEnv.OPENAI_API_KEY !== undefined) env.OPENAI_API_KEY = nonemptyBoundedString(baseEnv.OPENAI_API_KEY, 16 * 1024);
+    return Object.freeze({ env: Object.freeze(env), model: CODEX_MODEL });
+  }
+  if (baseEnv.ANTHROPIC_API_KEY !== undefined || baseEnv.CODEX_API_KEY !== undefined || baseEnv.OPENAI_API_KEY !== undefined) fail();
+  const hasBedrockInput = [
+    "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_MODEL", "AWS_REGION", "AWS_DEFAULT_REGION",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN", "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+    "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+  ].some((key) => baseEnv[key] !== undefined);
+  if (!hasBedrockInput) return Object.freeze({ env: Object.freeze(env), model: CLAUDE_BEDROCK_MODEL });
+  if (baseEnv.CLAUDE_CODE_USE_BEDROCK !== "1" || baseEnv.ANTHROPIC_MODEL !== CLAUDE_BEDROCK_MODEL) fail();
+  env.CLAUDE_CODE_USE_BEDROCK = "1";
+  env.ANTHROPIC_MODEL = CLAUDE_BEDROCK_MODEL;
+  for (const key of [
+    "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN",
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+  ]) {
+    if (baseEnv[key] !== undefined) env[key] = nonemptyBoundedString(baseEnv[key], 4096);
+  }
+  if (env.AWS_REGION === undefined && env.AWS_DEFAULT_REGION === undefined) fail();
+  const hasContainerCredentials = env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI !== undefined || env.AWS_CONTAINER_CREDENTIALS_FULL_URI !== undefined;
+  const hasWebIdentity = env.AWS_WEB_IDENTITY_TOKEN_FILE !== undefined || env.AWS_ROLE_ARN !== undefined;
+  const hasStaticCredentials = env.AWS_ACCESS_KEY_ID !== undefined || env.AWS_SECRET_ACCESS_KEY !== undefined || env.AWS_SESSION_TOKEN !== undefined;
+  if ([hasContainerCredentials, hasWebIdentity, hasStaticCredentials].filter(Boolean).length !== 1) fail();
+  if (hasWebIdentity && !(env.AWS_WEB_IDENTITY_TOKEN_FILE !== undefined && env.AWS_ROLE_ARN !== undefined)) fail();
+  if (hasStaticCredentials && !(env.AWS_ACCESS_KEY_ID !== undefined && env.AWS_SECRET_ACCESS_KEY !== undefined)) fail();
+  return Object.freeze({ env: Object.freeze(env), model: CLAUDE_BEDROCK_MODEL });
 }
 
 function executablePath(value) {
@@ -501,6 +545,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
   }
   if (!isAbsolute(options.workspace) || !isAbsolute(options.home)) fail();
   const baseEnv = envObject(options.env ?? {});
+  const provider = cleanProviderEnv(baseEnv, harness);
   const retainedActions = cleanRetainedActions(options.retainedActions);
   const trustedKeys = trustedKeySet(options.trustedAdapterPublicKeys);
   const actionRecorder = cleanActionRecorder(options.actionRecorder);
@@ -653,6 +698,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
         HOME: options.home,
         XDG_CACHE_HOME: `${options.home}/.cache`,
         CLOCKCHAIN_MCP_URL: MCP_ENDPOINT,
+        ...provider.env,
         ...(baseEnv.HTTP_PROXY ? { HTTP_PROXY: baseEnv.HTTP_PROXY } : {}),
         ...(baseEnv.HTTPS_PROXY ? { HTTPS_PROXY: baseEnv.HTTPS_PROXY } : {}),
         NODE_USE_ENV_PROXY: "1",
@@ -683,6 +729,14 @@ export function createAcpProcessTransport(optionsInput = {}) {
         });
         if (typeof created?.sessionId !== "string" || created.sessionId.length === 0) fail();
         acpSessionId = created.sessionId;
+        if (harness === "codex") {
+          await connection.setSessionConfigOption({
+            sessionId: acpSessionId,
+            configId: "model",
+            value: provider.model,
+          });
+          event("acp.model.pinned", "pinned Codex ACP model", "model:gpt-5.6-terra");
+        }
         event("acp.session.new", "created ACP session", digest(created.sessionId));
         const prompted = await connection.prompt({
           sessionId: acpSessionId,

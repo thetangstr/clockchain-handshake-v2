@@ -9,6 +9,7 @@ import test from "node:test";
 import { createDirectTaskChannel } from "../src/a2a/direct-task-channel.mjs";
 import { commitmentCheckpointDigest } from "../src/agent-handshake/v2/commitment-checkpoint.mjs";
 import { initializeWallet } from "../src/core/wallet-bridge.mjs";
+import { digestHex } from "../src/core/canonical.mjs";
 import { createDirectA2APartyBridge } from "../src/harness/direct-a2a-party-bridge.mjs";
 import {
   createPartyA2AAuthority,
@@ -527,12 +528,17 @@ test("destroy tears down party authority and returns a generic failure when tran
   assert.equal(authorityDestroyed, 1);
 });
 
-test("bridge records only a digest after exact terminal certificate verification", async (t) => {
-  const { bridges, completionHandlers } = await setup(t);
+test("bridge records public certificate summary only after exact terminal certificate verification", async (t) => {
+  const { bridges, completionHandlers, fixture } = await setup(t);
   const step = lifecycleStep("initiator", "verify-certificate");
+  const certificateDigest = digestHex(fixture.resultEnvelope);
   await bridges.initiator.observeToolResult({
     toolName: "agent_handshake_get_certificate",
-    result: { localAction: { helperStep: step }, roleAccess: ROLE_ACCESS.initiator },
+    result: {
+      certificate: fixture.resultEnvelope,
+      localAction: { helperStep: step },
+      roleAccess: ROLE_ACCESS.initiator,
+    },
   });
   assert.deepEqual(await completionHandlers.initiator(lifecycleCompletion("initiator", step, {
     certificateVerified: true,
@@ -547,5 +553,9 @@ test("bridge records only a digest after exact terminal certificate verification
   const evidence = bridges.initiator.publicEvidence();
   assert.equal(evidence.certificate.verified, true);
   assert.match(evidence.certificate.proofDigest, /^[0-9a-f]{64}$/);
-  assert.doesNotMatch(JSON.stringify(evidence), /sessionKeyAddress|statementDigest|outcome|identity/i);
+  assert.equal(evidence.certificate.certificateDigest, certificateDigest);
+  assert.equal(evidence.certificate.identity.sessionKeyAddress, fixture.parties.initiator.sessionKeyAddress);
+  assert.deepEqual(evidence.certificate.anchors.map((anchor) => anchor.kind), ["proposal", "acceptance", "acknowledgment"]);
+  assert.deepEqual(evidence.certificate.anchors.map((anchor) => anchor.digest), fixture.receipts.map((receipt) => receipt.digest));
+  assert.doesNotMatch(JSON.stringify(evidence), /roleAccess|signatureHex|rootSignature|hostSessionKeyCertificate|transcript|reasoning/i);
 });

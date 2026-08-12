@@ -34,6 +34,13 @@ const DEPENDENCY_KEYS = Object.freeze([
   "createHarnessAdapter", "createInvitationTransport", "createProcessTransport", "createTlsIdentity",
   "waitForInvitation",
 ]);
+const CODEX_PROVIDER_ENV = Object.freeze(["CODEX_API_KEY", "OPENAI_API_KEY", "CLOCKCHAIN_CODEX_MODEL"]);
+const CLAUDE_PROVIDER_ENV = Object.freeze([
+  "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_MODEL", "AWS_REGION", "AWS_DEFAULT_REGION",
+  "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+  "AWS_CONTAINER_AUTHORIZATION_TOKEN", "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+  "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+]);
 
 function fail() { throw new Error(ERROR); }
 function sanitize(error) { if (error?.message === ERROR) throw error; fail(); }
@@ -51,6 +58,27 @@ function exact(value, keys) {
     for (const key of keys) {
       const descriptor = descriptors[key];
       if (descriptor?.enumerable !== true || !Object.hasOwn(descriptor, "value")) fail();
+      result[key] = descriptor.value;
+    }
+    return result;
+  } catch (error) { sanitize(error); }
+}
+
+function optionalExact(value, required, optional = []) {
+  try {
+    if (
+      value === null || typeof value !== "object" || Array.isArray(value) || types.isProxy(value) ||
+      ![Object.prototype, null].includes(Object.getPrototypeOf(value))
+    ) fail();
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(descriptors);
+    const allowed = [...required, ...optional];
+    if (keys.some((key) => typeof key !== "string" || !allowed.includes(key))) fail();
+    for (const key of required) if (!Object.hasOwn(descriptors, key)) fail();
+    const result = {};
+    for (const key of keys) {
+      const descriptor = descriptors[key];
+      if (!descriptor.enumerable || !Object.hasOwn(descriptor, "value")) fail();
       result[key] = descriptor.value;
     }
     return result;
@@ -192,6 +220,16 @@ function bindingForCard(authorityBinding) {
   });
 }
 
+function providerEnvFor(harness, env = process.env) {
+  const allowed = harness === "codex" ? CODEX_PROVIDER_ENV : CLAUDE_PROVIDER_ENV;
+  const result = {};
+  for (const key of allowed) {
+    const value = env[key];
+    if (typeof value === "string" && value.length > 0) result[key] = value;
+  }
+  return Object.freeze(result);
+}
+
 function peerBindingForCard(peerRuntime) {
   return Object.freeze({
     endpoint: peerRuntime.endpoint,
@@ -285,7 +323,23 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
         let terminalEvidence = null;
         let runFailed = false;
         try {
-          const peer = descriptor(exact(input, ["peerDescriptor"]).peerDescriptor);
+          const runInput = optionalExact(input, ["peerDescriptor"], ["onPublicEvent"]);
+          const onPublicEvent = runInput.onPublicEvent ?? (() => undefined);
+          if (typeof onPublicEvent !== "function") fail();
+          let eventSequence = 0;
+          async function emit(type, evidence) {
+            eventSequence += 1;
+            const event = Object.freeze({
+              schema: "clockchain.mechanics-proof-party-event/v1",
+              runId: options.runId,
+              role: options.role,
+              sequence: String(eventSequence),
+              type,
+              evidenceDigest: digestHex(publicData(evidence)),
+            });
+            await onPublicEvent(event);
+          }
+          const peer = descriptor(runInput.peerDescriptor);
           if (
             peer.runId !== options.runId || peer.role !== opposite(options.role) ||
             peer.runtime.runtimeId === localRuntime.runtimeId || peer.runtime.taskId === localRuntime.taskId ||
@@ -313,8 +367,12 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
               peerCertificateSha256: peer.runtime.tlsCertificateSha256,
             },
           });
+          await emit("a2a.listener.ready", invitationTransport.publicEvidence());
           let privateInvitation = null;
-          if (options.role === "responder") privateInvitation = await deps.waitForInvitation(invitationTransport);
+          if (options.role === "responder") {
+            privateInvitation = await deps.waitForInvitation(invitationTransport);
+            await emit("a2a.invitation.received", invitationTransport.publicEvidence());
+          }
           actionRecorder = await deps.createActionRecorder({
             manifestDigest: options.manifestDigest,
             room: { cache: paths.home, home: paths.home, root: options.root, state: paths.state, tmp: paths.tmp, workspace: paths.workspace },
@@ -374,7 +432,10 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
           });
           const processTransport = deps.createProcessTransport({
             actionRecorder: actionRecorder.actionRecorder,
-            env: { PATH: `${join(process.cwd(), "node_modules", ".bin")}:${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin` },
+            env: {
+              PATH: `${join(process.cwd(), "node_modules", ".bin")}:${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`,
+              ...providerEnvFor(options.harness),
+            },
             harness: options.harness,
             home: paths.home,
             pin: ACP_VERSION_PINS[options.harness],
@@ -396,6 +457,7 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
             await chmod(invitationPath, 0o600);
             privateInvitation = null;
           }
+          await emit("agent.starting", { harness: options.harness, runtimeId: options.runtimeId });
           await adapter.launchSession({
             runtime: { harness: options.harness, role: options.role, runtimeId: options.runtimeId, sessionId: options.runId },
             mandate: options.mandate,
@@ -410,8 +472,19 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
           const bridgeEvidence = publicData(bridge.publicEvidence());
           if (
             bridgeEvidence.sessionId === null || !UUID.test(bridgeEvidence.sessionId) ||
-            bridgeEvidence.certificate?.verified !== true || !DIGEST.test(bridgeEvidence.certificate?.proofDigest)
+            bridgeEvidence.certificate?.verified !== true || !DIGEST.test(bridgeEvidence.certificate?.proofDigest) ||
+            !DIGEST.test(bridgeEvidence.certificate?.certificateDigest) ||
+            !Array.isArray(bridgeEvidence.certificate?.anchors) || bridgeEvidence.certificate.anchors.length !== 3 ||
+            !Array.isArray(bridgeEvidence.deliveries) || bridgeEvidence.deliveries.length !== 1
           ) fail();
+          const directDelivery = publicData(bridgeEvidence.deliveries[0]);
+          if (
+            directDelivery.acknowledged !== true || !["proposal", "acceptance"].includes(directDelivery.artifactType) ||
+            !DIGEST.test(directDelivery.artifactDigest) || !DIGEST.test(directDelivery.checkpointDigest) ||
+            !Array.isArray(directDelivery.messageDigests) || directDelivery.messageDigests.length !== 2 ||
+            directDelivery.messageDigests.some((digest) => !DIGEST.test(digest))
+          ) fail();
+          await emit("certificate.verified", bridgeEvidence.certificate);
           await adapter.terminateSession({ sessionId: options.runId, reason: "mechanics-proof-complete" });
           launched = false;
           const harnessEvidence = publicData(await adapter.collectEvidence({ sessionId: options.runId }));
@@ -427,6 +500,10 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
             bridgeEvidenceDigest: digestHex(bridgeEvidence),
             harnessEvidenceDigest: digestHex(harnessEvidence),
             certificateProofDigest: bridgeEvidence.certificate.proofDigest,
+            certificateDigest: bridgeEvidence.certificate.certificateDigest,
+            identity: publicData(bridgeEvidence.certificate.identity),
+            anchors: publicData(bridgeEvidence.certificate.anchors),
+            directDelivery,
             externalBusinessActionPerformed: false,
             terminalStatus: "completed",
             teardown: Object.freeze({ completed: false }),

@@ -156,7 +156,10 @@ export async function runMain({
     stdout.write(`${JSON.stringify(runtime.bootstrapDescriptor())}\n`);
     const peerDescriptor = await oneJsonLine(stdin);
     runInvoked = true;
-    const evidence = await runtime.run({ peerDescriptor });
+    const evidence = await runtime.run({
+      peerDescriptor,
+      onPublicEvent(event) { stdout.write(`${JSON.stringify(event)}\n`); },
+    });
     stdout.write(`${JSON.stringify(evidence)}\n`);
     return 0;
   } catch {

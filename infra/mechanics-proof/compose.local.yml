@@ -1,0 +1,72 @@
+services:
+  initiator:
+    image: ${CLOCKCHAIN_MECHANICS_PROOF_IMAGE:?must be repository@sha256 digest}
+    command: ["--run"]
+    read_only: true
+    env_file:
+      - ${CLOCKCHAIN_INITIATOR_ENV_FILE:?private initiator env file}
+    tmpfs:
+      - /workspace:rw,nosuid,nodev,exec,mode=700,uid=1000,gid=1000
+      - /tmp:rw,nosuid,nodev,noexec,mode=700,uid=1000,gid=1000
+    networks:
+      mechanics-proof:
+        aliases:
+          - initiator.task.local
+    environment:
+      CLOCKCHAIN_ROLE: initiator
+      CLOCKCHAIN_CLIENT: codex
+      CLOCKCHAIN_MCP_URL: https://mcp.clockchain.network/handshake/mcp
+      CLOCKCHAIN_A2A_LISTEN_HOST: 0.0.0.0
+      CLOCKCHAIN_A2A_PORT: "8443"
+      CLOCKCHAIN_A2A_PUBLIC_ENDPOINT: https://initiator.task.local:8443
+      CLOCKCHAIN_A2A_PEER_ENDPOINT: https://responder.task.local:8443
+      CLOCKCHAIN_PARTY_ROOT: /workspace/initiator
+      CLOCKCHAIN_OPENSSL_PATH: /usr/bin/openssl
+      CLOCKCHAIN_CODEX_MODEL: gpt-5.6-terra
+      CLOCKCHAIN_HELPER_MANIFEST_DIGEST: ${CLOCKCHAIN_HELPER_MANIFEST_DIGEST:?public helper digest}
+      CLOCKCHAIN_MANDATE_JSON: ${CLOCKCHAIN_MANDATE_JSON:?public mandate json}
+      CLOCKCHAIN_RUN_ID: ${CLOCKCHAIN_RUN_ID:?run uuid}
+      CLOCKCHAIN_RUNTIME_ID: runtime-initiator
+      CLOCKCHAIN_TASK_ID: task-initiator
+      CLOCKCHAIN_WORKLOAD_ATTESTATION_DIGEST: ${CLOCKCHAIN_INITIATOR_WORKLOAD_DIGEST:?public workload digest}
+    security_opt:
+      - no-new-privileges:true
+
+  responder:
+    image: ${CLOCKCHAIN_MECHANICS_PROOF_IMAGE:?must be repository@sha256 digest}
+    command: ["--run"]
+    read_only: true
+    env_file:
+      - ${CLOCKCHAIN_RESPONDER_ENV_FILE:?private responder env file}
+    tmpfs:
+      - /workspace:rw,nosuid,nodev,exec,mode=700,uid=1000,gid=1000
+      - /tmp:rw,nosuid,nodev,noexec,mode=700,uid=1000,gid=1000
+    networks:
+      mechanics-proof:
+        aliases:
+          - responder.task.local
+    environment:
+      CLOCKCHAIN_ROLE: responder
+      CLOCKCHAIN_CLIENT: claude
+      CLOCKCHAIN_MCP_URL: https://mcp.clockchain.network/handshake/mcp
+      CLOCKCHAIN_A2A_LISTEN_HOST: 0.0.0.0
+      CLOCKCHAIN_A2A_PORT: "8443"
+      CLOCKCHAIN_A2A_PUBLIC_ENDPOINT: https://responder.task.local:8443
+      CLOCKCHAIN_A2A_PEER_ENDPOINT: https://initiator.task.local:8443
+      CLOCKCHAIN_PARTY_ROOT: /workspace/responder
+      CLOCKCHAIN_OPENSSL_PATH: /usr/bin/openssl
+      CLAUDE_CODE_USE_BEDROCK: "1"
+      ANTHROPIC_MODEL: us.anthropic.claude-sonnet-4-6
+      CLOCKCHAIN_HELPER_MANIFEST_DIGEST: ${CLOCKCHAIN_HELPER_MANIFEST_DIGEST:?public helper digest}
+      CLOCKCHAIN_MANDATE_JSON: ${CLOCKCHAIN_MANDATE_JSON:?public mandate json}
+      CLOCKCHAIN_RUN_ID: ${CLOCKCHAIN_RUN_ID:?run uuid}
+      CLOCKCHAIN_RUNTIME_ID: runtime-responder
+      CLOCKCHAIN_TASK_ID: task-responder
+      CLOCKCHAIN_WORKLOAD_ATTESTATION_DIGEST: ${CLOCKCHAIN_RESPONDER_WORKLOAD_DIGEST:?public workload digest}
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  mechanics-proof:
+    driver: bridge
+    internal: false

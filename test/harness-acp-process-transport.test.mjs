@@ -101,6 +101,10 @@ function acpFixtureSpawn({
         calls.push(["newSession", params]);
         return { sessionId: `acp-${SESSION}` };
       },
+      async setSessionConfigOption(params) {
+        calls.push(["setSessionConfigOption", params]);
+        return { configOptions: [] };
+      },
       async loadSession() {
         throw new Error("unexpected loadSession");
       },
@@ -254,6 +258,148 @@ test("ACP process transport launches exact pinned stdio executable with isolated
   assert.equal(calls[0].options.env.PATH, "/app/node_modules/.bin:/usr/local/bin:/usr/bin:/bin");
   assert.equal(calls[0].options.env.CLOCKCHAIN_MCP_BEARER, undefined);
   assert.equal(calls[0].options.stdio.length, 3);
+});
+
+test("ACP process transport forwards only role-specific provider auth and pins the model deterministically", async () => {
+  const codexCalls = [];
+  const codexAction = retainedAction({ role: "initiator", commandSha256: DIGEST });
+  const codexTransport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({ calls: codexCalls, helperAction: codexAction }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    env: {
+      PATH: "/app/node_modules/.bin:/usr/local/bin:/usr/bin:/bin",
+      CODEX_API_KEY: "codex-secret-value",
+      CLOCKCHAIN_CODEX_MODEL: "gpt-5.6-terra",
+      ANTHROPIC_API_KEY: "wrong-role-secret",
+      AWS_SECRET_ACCESS_KEY: "wrong-role-aws-secret",
+    },
+    actionRecorder: actionRecorderFor([codexAction], codexCalls),
+    nowMs: () => 1786337001000,
+    trustedAdapterPublicKeys: [codexAction.adapterPublicKey],
+  });
+  await codexTransport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  });
+  assert.equal(codexCalls[0].options.env.CODEX_API_KEY, "codex-secret-value");
+  assert.equal(codexCalls[0].options.env.OPENAI_API_KEY, undefined);
+  assert.equal(codexCalls[0].options.env.ANTHROPIC_API_KEY, undefined);
+  assert.equal(codexCalls[0].options.env.AWS_SECRET_ACCESS_KEY, undefined);
+  assert.deepEqual(codexCalls.find((call) => Array.isArray(call) && call[0] === "setSessionConfigOption")?.[1], {
+    sessionId: `acp-${SESSION}`,
+    configId: "model",
+    value: "gpt-5.6-terra",
+  });
+  await codexTransport.terminate({ sessionId: SESSION });
+  const codexEvidence = await codexTransport.collectEvidence({ sessionId: SESSION });
+  assert.doesNotMatch(JSON.stringify(codexEvidence), /codex-secret-value|wrong-role-secret|gpt-5\.6-terra/);
+
+  const claudeCalls = [];
+  const claudeAction = retainedAction({ role: "responder", commandSha256: "e".repeat(64) });
+  const claudeTransport = createAcpProcessTransport({
+    harness: "claude",
+    pin: ACP_VERSION_PINS.claude,
+    spawn: acpFixtureSpawn({
+      calls: claudeCalls,
+      helperAction: claudeAction,
+      permissionCommand: `clockchain-agent-authorize ${claudeAction.commandSha256}`,
+    }),
+    workspace: "/workspace/responder",
+    home: "/workspace/responder/home",
+    env: {
+      PATH: "/app/node_modules/.bin:/usr/local/bin:/usr/bin:/bin",
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      ANTHROPIC_MODEL: "us.anthropic.claude-sonnet-4-6",
+      AWS_REGION: "us-west-2",
+      AWS_ACCESS_KEY_ID: "ASIAEXAMPLE",
+      AWS_SECRET_ACCESS_KEY: "aws-secret-value",
+      AWS_SESSION_TOKEN: "aws-session-token",
+    },
+    actionRecorder: actionRecorderFor([claudeAction], claudeCalls),
+    nowMs: () => 1786337001000,
+    trustedAdapterPublicKeys: [claudeAction.adapterPublicKey],
+  });
+  await claudeTransport.launch({
+    acp: ACP_VERSION_PINS.claude,
+    runtime: { runtimeId: "runtime-responder", sessionId: SESSION, role: "responder", harness: "claude" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("responder"),
+  });
+  assert.equal(claudeCalls[0].options.env.CLAUDE_CODE_USE_BEDROCK, "1");
+  assert.equal(claudeCalls[0].options.env.ANTHROPIC_MODEL, "us.anthropic.claude-sonnet-4-6");
+  assert.equal(claudeCalls[0].options.env.AWS_REGION, "us-west-2");
+  assert.equal(claudeCalls[0].options.env.AWS_ACCESS_KEY_ID, "ASIAEXAMPLE");
+  assert.equal(claudeCalls[0].options.env.AWS_SECRET_ACCESS_KEY, "aws-secret-value");
+  assert.equal(claudeCalls[0].options.env.AWS_SESSION_TOKEN, "aws-session-token");
+  assert.equal(claudeCalls[0].options.env.ANTHROPIC_API_KEY, undefined);
+  assert.equal(claudeCalls[0].options.env.CODEX_API_KEY, undefined);
+  assert.equal(claudeCalls.find((call) => Array.isArray(call) && call[0] === "setSessionConfigOption"), undefined);
+  await claudeTransport.terminate({ sessionId: SESSION });
+  const claudeEvidence = await claudeTransport.collectEvidence({ sessionId: SESSION });
+  assert.doesNotMatch(JSON.stringify(claudeEvidence), /wrong-role|forbidden|us\.anthropic/);
+});
+
+test("Codex ACP launch fails closed when the required model pin is absent", async () => {
+  const calls = [];
+  const action = retainedAction({ role: "initiator", commandSha256: DIGEST });
+  assert.throws(
+    () => createAcpProcessTransport({
+      harness: "codex",
+      pin: ACP_VERSION_PINS.codex,
+      spawn: acpFixtureSpawn({ calls, helperAction: action }),
+      workspace: "/workspace/initiator",
+      home: "/workspace/initiator/home",
+      env: { PATH: "/app/node_modules/.bin:/usr/local/bin:/usr/bin:/bin", CODEX_API_KEY: "codex-secret-value" },
+      actionRecorder: actionRecorderFor([action], calls),
+      trustedAdapterPublicKeys: [action.adapterPublicKey],
+    }),
+    /ACP process transport validation failed safely/,
+  );
+  assert.equal(calls.length, 0);
+});
+
+test("Claude Bedrock auth rejects mixed mechanisms and cross-role provider variables", () => {
+  const base = {
+    harness: "claude",
+    pin: ACP_VERSION_PINS.claude,
+    spawn: fakeSpawn([]),
+    workspace: "/workspace/responder",
+    home: "/workspace/responder/home",
+    trustedAdapterPublicKeys: [retainedAction({ role: "responder" }).adapterPublicKey],
+  };
+  for (const env of [
+    {
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      ANTHROPIC_MODEL: "us.anthropic.claude-sonnet-4-6",
+      AWS_REGION: "us-west-2",
+      AWS_ACCESS_KEY_ID: "ASIAEXAMPLE",
+      AWS_SECRET_ACCESS_KEY: "secret",
+      AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: "/v2/credentials/responder",
+    },
+    {
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      ANTHROPIC_MODEL: "us.anthropic.claude-sonnet-4-6",
+      AWS_REGION: "us-west-2",
+      AWS_ACCESS_KEY_ID: "ASIAEXAMPLE",
+      AWS_SECRET_ACCESS_KEY: "secret",
+      CODEX_API_KEY: "wrong-role",
+    },
+    {
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      ANTHROPIC_MODEL: "us.anthropic.claude-sonnet-4-6",
+      AWS_REGION: "us-west-2",
+      AWS_ACCESS_KEY_ID: "ASIAEXAMPLE",
+    },
+  ]) {
+    assert.throws(() => createAcpProcessTransport({ ...base, env }), /ACP process transport validation failed safely/);
+  }
 });
 
 test("ACP process transport rejects opaque proxy/accessor inputs and caller-completed evidence claims", async () => {
@@ -508,7 +654,7 @@ test("ACP process transport performs real ACP lifecycle with unauthenticated ded
   });
 
   assert.equal(launched.sessionId, SESSION);
-  assert.deepEqual(calls.filter(Array.isArray).map((entry) => entry[0]), ["initialize", "newSession", "prompt", "record", "permission"]);
+  assert.deepEqual(calls.filter(Array.isArray).map((entry) => entry[0]), ["initialize", "newSession", "setSessionConfigOption", "prompt", "record", "permission"]);
   assert.equal(calls[0].options.env.CLOCKCHAIN_MCP_BEARER, undefined);
   assert.equal(calls[0].options.env.CLOCKCHAIN_MCP_AUTH_HEADER, undefined);
   const initialize = calls.find((entry) => entry[0] === "initialize")[1];
