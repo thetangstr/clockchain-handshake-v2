@@ -300,9 +300,8 @@ export async function runMechanicsProofContainers({ argv = process.argv, docker,
     async function orchestrate() {
       for (const role of ROLES) {
         containers[role] = await docker.createContainer(containerConfig({ config, networkId: network.id, role, runId }));
-        attached[role] = await docker.attach(containers[role]);
       }
-      for (const role of ROLES) await docker.start(containers[role]);
+      for (const role of ROLES) attached[role] = await docker.startAttached(containers[role]);
       const bootstraps = {};
       for (const role of ROLES) bootstraps[role] = cleanBootstrap(await attached[role].readJsonLine(), role, runId);
       await attached.responder.writeJsonLine(bootstraps.initiator);
@@ -350,7 +349,7 @@ export async function runMechanicsProofContainers({ argv = process.argv, docker,
 }
 
 export function createDockerCliDriver({ spawnImpl = spawn } = {}) {
-  function run(args, { expectFailure = false } = {}) {
+  function run(args) {
     const child = spawnImpl("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
     return new Promise((resolve, reject) => {
       let stdout = "";
@@ -359,8 +358,31 @@ export function createDockerCliDriver({ spawnImpl = spawn } = {}) {
       child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8").slice(0, 4096); });
       child.on("error", reject);
       child.on("close", (code) => {
-        if (expectFailure ? code !== 0 : code === 0) resolve(stdout.trim());
+        if (code === 0) resolve(stdout.trim());
         else reject(new Error(stderr || "docker failed"));
+      });
+    });
+  }
+  function assertAbsent(args, missingMessages) {
+    const child = spawnImpl("docker", args, { stdio: ["ignore", "pipe", "pipe"] });
+    return new Promise((resolve, reject) => {
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => { stdout = `${stdout}${chunk.toString("utf8")}`.slice(0, 8192); });
+      child.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk.toString("utf8")}`.slice(0, 8192); });
+      child.on("error", reject);
+      child.on("close", (code) => {
+        const cleanStdout = stdout.trim();
+        const cleanStderr = stderr.trim();
+        if (code === 0) {
+          reject(new Error("Docker resource is still present."));
+          return;
+        }
+        if ((cleanStdout === "" || cleanStdout === "[]") && missingMessages.includes(cleanStderr)) {
+          resolve();
+          return;
+        }
+        reject(new Error(cleanStderr || "Docker absence check failed."));
       });
     });
   }
@@ -384,11 +406,16 @@ export function createDockerCliDriver({ spawnImpl = spawn } = {}) {
       const id = await run(args);
       return Object.freeze({ id: id || input.name, role: input.role, name: input.name });
     },
-    async attach(container) {
-      const child = spawnImpl("docker", ["attach", "--no-stdin", container.name], { stdio: ["ignore", "pipe", "pipe"] });
-      const input = spawnImpl("docker", ["attach", container.name], { stdio: ["pipe", "ignore", "pipe"] });
+    async startAttached(container) {
+      const child = spawnImpl("docker", ["start", "--attach", "--interactive", container.name], { stdio: ["pipe", "pipe", "pipe"] });
       const lines = createInterface({ input: child.stdout });
       const iterator = lines[Symbol.asyncIterator]();
+      let stderr = "";
+      child.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk.toString("utf8")}`.slice(0, 4096); });
+      const exit = new Promise((resolve) => {
+        child.on("error", () => resolve({ error: true }));
+        child.on("close", (code) => resolve({ code }));
+      });
       return Object.freeze({
         async readJsonLine() {
           const next = await iterator.next();
@@ -396,20 +423,29 @@ export function createDockerCliDriver({ spawnImpl = spawn } = {}) {
           return JSON.parse(next.value);
         },
         async writeJsonLine(value) {
-          input.stdin.end(`${JSON.stringify(value)}\n`);
+          child.stdin.end(`${JSON.stringify(value)}\n`);
         },
         async waitExit() {
-          const codeText = await run(["wait", container.name]);
-          return Object.freeze({ code: Number(codeText) });
+          const result = await exit;
+          if (result.error === true || !Number.isInteger(result.code)) throw new Error(stderr || "Docker attached process failed.");
+          return Object.freeze({ code: result.code });
         },
         child,
       });
     },
-    async start(container) { await run(["start", container.name]); },
     async removeContainer(container) { await run(["rm", "-f", container.name]); },
     async removeNetwork(network) { await run(["network", "rm", network.name ?? network.id]); },
-    async assertContainerAbsent(container) { await run(["container", "inspect", container.name], { expectFailure: true }); },
-    async assertNetworkAbsent(network) { await run(["network", "inspect", network.name ?? network.id], { expectFailure: true }); },
+    async assertContainerAbsent(container) {
+      const name = container.name;
+      await assertAbsent(["container", "inspect", name], [`Error: No such container: ${name}`]);
+    },
+    async assertNetworkAbsent(network) {
+      const name = network.name ?? network.id;
+      await assertAbsent(["network", "inspect", name], [
+        `Error: No such network: ${name}`,
+        `Error response from daemon: network ${name} not found`,
+      ]);
+    },
   });
 }
 

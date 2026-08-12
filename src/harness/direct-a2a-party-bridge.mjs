@@ -135,6 +135,16 @@ function oneValue(value, key, predicate) {
   return values[0];
 }
 
+function payloadFromStep(item) {
+  const match = item.shellCommand.match(/--payload-base64url\s+([A-Za-z0-9_-]+)(?:\s|$)/);
+  if (match === null) fail();
+  const raw = Buffer.from(match[1], "base64url");
+  if (raw.length < 1 || raw.toString("base64url") !== match[1]) fail();
+  let value;
+  try { value = JSON.parse(raw.toString("utf8")); } catch { fail(); }
+  return Object.freeze({ raw, value });
+}
+
 function signingRequestFromStep(step) {
   const item = snapshot(step, [
     "approvalCommand", "commandLength", "commandSha256", "operation", "role", "sessionId", "shellCommand",
@@ -145,6 +155,28 @@ function signingRequestFromStep(step) {
     typeof item.shellCommand !== "string" || item.commandLength !== Buffer.byteLength(item.shellCommand) ||
     createHash("sha256").update(item.shellCommand).digest("hex") !== item.commandSha256
   ) fail();
+  if (item.operation === "verify-certificate") {
+    const decoded = payloadFromStep(item);
+    const payload = snapshot(decoded.value, [
+      "certificate", "externalBusinessActionPerformed", "helperVersion", "repositorySha", "role", "schema",
+      "sessionDeadlineMs", "sessionId",
+    ]);
+    if (
+      payload.schema !== "clockchain.agent-handshake-certificate-verification/v1" || payload.helperVersion !== "2.1.2" ||
+      payload.role !== item.role || payload.sessionId !== item.sessionId || payload.externalBusinessActionPerformed !== false ||
+      typeof payload.repositorySha !== "string" || !SHA.test(payload.repositorySha) ||
+      typeof payload.sessionDeadlineMs !== "string" || !/^[1-9][0-9]*$/.test(payload.sessionDeadlineMs)
+    ) fail();
+    const summary = certificateSummary({ certificate: payload.certificate }, item.role, item.sessionId);
+    return Object.freeze({
+      certificateSummary: summary,
+      commandSha256: item.commandSha256,
+      direct: false,
+      operation: item.operation,
+      requestDigest: createHash("sha256").update(decoded.raw).digest("hex"),
+      sessionId: item.sessionId,
+    });
+  }
   if (item.operation !== "sign") {
     return Object.freeze({
       commandSha256: item.commandSha256,
@@ -154,13 +186,9 @@ function signingRequestFromStep(step) {
       sessionId: item.sessionId,
     });
   }
-  const match = item.shellCommand.match(/--payload-base64url\s+([A-Za-z0-9_-]+)(?:\s|$)/);
-  if (match === null) fail();
-  const raw = Buffer.from(match[1], "base64url");
-  if (raw.length < 1 || raw.toString("base64url") !== match[1]) fail();
-  let request;
-  try { request = JSON.parse(raw.toString("utf8")); } catch { fail(); }
-  request = publicClone(request);
+  const decoded = payloadFromStep(item);
+  const raw = decoded.raw;
+  const request = publicClone(decoded.value);
   if (
     request.schema !== REQUEST_SCHEMA || typeof request.operation !== "string" || request.operation.length === 0 ||
     request.role !== item.role || request.sessionId !== item.sessionId ||
@@ -491,6 +519,7 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
           const item = snapshot(input, ["result", "toolName"]);
           if (typeof item.toolName !== "string" || !item.toolName.startsWith("agent_handshake_")) fail();
           const result = publicClone(item.result);
+          let digestInput = result;
           const roleAccessValues = findValues(result, "roleAccess").filter((value) => typeof value === "string");
           if (roleAccessValues.length > 0) {
             const unique = [...new Set(roleAccessValues)];
@@ -535,21 +564,23 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
             activationContext = Object.freeze({ policyDigest, repositorySha, role: joinedRole, sessionId, terms });
             await activate();
           }
-          if (item.toolName === "agent_handshake_get_certificate") {
-            const certificateValues = findValues(result, "certificate").filter((entry) => (
-              entry !== null && typeof entry === "object" && !Array.isArray(entry) && entry.result !== undefined
-            ));
-            if (certificateValues.length > 0) {
-              if (pendingCertificate !== null || certificate !== null) fail();
-              pendingCertificate = certificateSummary(result, options.role, boundSessionId);
-            }
-          }
           const steps = findValues(result, "helperStep").filter((value) => value !== null && typeof value === "object");
           if (steps.length > 1) fail();
           if (steps.length === 1) {
             const expected = signingRequestFromStep(steps[0]);
             if (boundSessionId === null || expected.sessionId !== boundSessionId) fail();
             if (expected.direct === true && (expected.request.sessionId !== boundSessionId || expected.request.role !== options.role)) fail();
+            if (expected.operation === "verify-certificate") {
+              if (item.toolName !== "agent_handshake_get_certificate" || pendingCertificate !== null || certificate !== null) fail();
+              pendingCertificate = expected.certificateSummary;
+              digestInput = Object.freeze({
+                certificateDigest: expected.certificateSummary.certificateDigest,
+                commandSha256: expected.commandSha256,
+                role: options.role,
+                schema: "clockchain.observed-certificate-action/v1",
+                sessionId: boundSessionId,
+              });
+            }
             const prior = retained.get(expected.commandSha256);
             if (
               prior !== undefined &&
@@ -557,7 +588,7 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
             ) fail();
             retained.set(expected.commandSha256, { ...expected, state: prior?.state ?? "pending" });
           }
-          return Object.freeze({ observed: true, protocolSessionId: boundSessionId, toolResultDigest: createHash("sha256").update(a2aCanonicalBytes(result)).digest("hex") });
+          return Object.freeze({ observed: true, protocolSessionId: boundSessionId, toolResultDigest: createHash("sha256").update(a2aCanonicalBytes(digestInput)).digest("hex") });
         } catch (error) { sanitize(error); }
       },
       publicEvidence() {

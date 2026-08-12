@@ -153,12 +153,40 @@ function lifecycleStep(role, operation = "init") {
   });
 }
 
+function certificateStep(role, certificate) {
+  const payload = Buffer.from(JSON.stringify({
+    schema: "clockchain.agent-handshake-certificate-verification/v1",
+    helperVersion: "2.1.2",
+    role,
+    sessionId: SESSION_ID,
+    repositorySha: REPOSITORY_SHA,
+    sessionDeadlineMs: String(NOW_MS + 30_000),
+    certificate,
+    externalBusinessActionPerformed: false,
+  })).toString("base64url");
+  const shellCommand = `node helper verify-certificate --state-dir "$TMPDIR/.clockchain/handshakes/${SESSION_ID}/${role}" --payload-base64url ${payload}`;
+  const commandSha256 = createHash("sha256").update(shellCommand).digest("hex");
+  return Object.freeze({
+    approvalCommand: `clockchain-agent-authorize ${commandSha256}`,
+    commandLength: Buffer.byteLength(shellCommand),
+    commandSha256,
+    operation: "verify-certificate",
+    role,
+    sessionId: SESSION_ID,
+    shellCommand,
+  });
+}
+
 function lifecycleCompletion(role, step, result = {}) {
+  const payloadMatch = step.shellCommand.match(/--payload-base64url\s+([A-Za-z0-9_-]+)(?:\s|$)/);
+  const requestDigest = payloadMatch === null
+    ? (role === "initiator" ? "a".repeat(64) : "b".repeat(64))
+    : createHash("sha256").update(Buffer.from(payloadMatch[1], "base64url")).digest("hex");
   return Object.freeze({
     actionId: `${step.operation}-${role}`,
     commandSha256: step.commandSha256,
     operation: step.operation,
-    requestDigest: role === "initiator" ? "a".repeat(64) : "b".repeat(64),
+    requestDigest,
     result: Object.freeze({
       ...(step.operation === "verify-certificate" ? {} : {
         address: role === "initiator" ? "0x1111111111111111111111111111111111111111" : "0x2222222222222222222222222222222222222222",
@@ -530,7 +558,7 @@ test("destroy tears down party authority and returns a generic failure when tran
 
 test("bridge records public certificate summary only after exact terminal certificate verification", async (t) => {
   const { bridges, completionHandlers, fixture } = await setup(t);
-  const step = lifecycleStep("initiator", "verify-certificate");
+  const step = certificateStep("initiator", fixture.resultEnvelope);
   const certificateDigest = digestHex(fixture.resultEnvelope);
   await bridges.initiator.observeToolResult({
     toolName: "agent_handshake_get_certificate",
@@ -558,4 +586,38 @@ test("bridge records public certificate summary only after exact terminal certif
   assert.deepEqual(evidence.certificate.anchors.map((anchor) => anchor.kind), ["proposal", "acceptance", "acknowledgment"]);
   assert.deepEqual(evidence.certificate.anchors.map((anchor) => anchor.digest), fixture.receipts.map((receipt) => receipt.digest));
   assert.doesNotMatch(JSON.stringify(evidence), /roleAccess|signatureHex|rootSignature|hostSessionKeyCertificate|transcript|reasoning/i);
+});
+
+test("bridge verifies the compact production certificate response without a duplicate top-level certificate", async (t) => {
+  const { bridges, completionHandlers, fixture } = await setup(t);
+  const step = certificateStep("initiator", fixture.resultEnvelope);
+  await bridges.initiator.observeToolResult({
+    toolName: "agent_handshake_get_certificate",
+    result: {
+      certificateSummary: {
+        schema: "clockchain.agent-handshake-certificate-summary/v1",
+        outcome: "VERIFIED",
+        resultDigest: digestHex(fixture.resultEnvelope.result),
+        role: "initiator",
+        sessionId: SESSION_ID,
+      },
+      localAction: { helperStep: step },
+    },
+  });
+
+  assert.deepEqual(await completionHandlers.initiator(lifecycleCompletion("initiator", step, {
+    certificateVerified: true,
+    externalBusinessActionPerformed: false,
+    identity: { sessionKeyAddress: "0x1111111111111111111111111111111111111111" },
+    outcome: "VERIFIED",
+    policyDigest: "a".repeat(64),
+    role: "initiator",
+    sessionId: SESSION_ID,
+    statementDigest: "b".repeat(64),
+  })), { accepted: true });
+
+  const evidence = bridges.initiator.publicEvidence();
+  assert.equal(evidence.certificate.certificateDigest, digestHex(fixture.resultEnvelope));
+  assert.equal(evidence.certificate.identity.agentId, fixture.parties.initiator.agentId);
+  assert.deepEqual(evidence.certificate.anchors.map((anchor) => anchor.kind), ["proposal", "acceptance", "acknowledgment"]);
 });

@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { chmod, link, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import {
@@ -108,8 +109,8 @@ function fakeDocker(calls) {
       calls.push(["container.create", input]);
       return { id: `container-${input.role}`, role: input.role };
     },
-    async attach(container) {
-      calls.push(["container.attach", container]);
+    async startAttached(container) {
+      calls.push(["container.start-attached", container.role]);
       const lines = [
         bootstrap(container.role),
         ...(container.role === "responder" ? [event("responder", "a2a.listener.ready")] : []),
@@ -132,9 +133,6 @@ function fakeDocker(calls) {
           return { code: 0 };
         },
       };
-    },
-    async start(container) {
-      calls.push(["container.start", container.role]);
     },
     async removeContainer(container) {
       calls.push(["container.remove", container.role]);
@@ -221,7 +219,7 @@ test("two-container controller enforces isolated roots, descriptor swap order, p
     assert.equal(config.labels["clockchain.mechanics-proof.run-id"], RUN_ID);
     assert.equal(Object.values(config.env).some((value) => /secret|token|key/i.test(String(value))), false);
   }
-  assert.equal(calls.findIndex((call) => call[0] === "container.start" && call[1] === "responder") <
+  assert.equal(calls.findIndex((call) => call[0] === "container.start-attached" && call[1] === "responder") <
     calls.findIndex((call) => call[0] === "stdin.write" && call[1] === "initiator"), true);
   assert.deepEqual(calls.filter((call) => call[0] === "container.remove").map((call) => call[1]).sort(), ["initiator", "responder"]);
   assert.deepEqual(calls.filter((call) => call[0] === "container.absent").map((call) => call[1]).sort(), ["initiator", "responder"]);
@@ -358,8 +356,8 @@ test("real Docker driver argv includes per-role network aliases and not credenti
   function fakeSpawn(command, args) {
     calls.push([command, args]);
     const child = new EventEmitter();
-    child.stdout = new EventEmitter();
-    child.stderr = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
     queueMicrotask(() => {
       child.stdout.emit("data", Buffer.from("created-id\n"));
       child.emit("close", 0);
@@ -386,6 +384,54 @@ test("real Docker driver argv includes per-role network aliases and not credenti
   assert.equal(args.includes("--env-file"), true);
   assert.equal(args.includes("/private/tmp/private.env"), true);
   assert.doesNotMatch(args.join(" "), /secret|token|credential/i);
+});
+
+test("real Docker driver starts and attaches atomically with interactive stdin", async () => {
+  const calls = [];
+  function fakeSpawn(command, args) {
+    calls.push([command, args]);
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.stdin = { end() {} };
+    return child;
+  }
+  const driver = createDockerCliDriver({ spawnImpl: fakeSpawn });
+  await driver.startAttached({ name: "container-name" });
+  assert.deepEqual(calls, [["docker", ["start", "--attach", "--interactive", "container-name"]]]);
+});
+
+test("real Docker driver accepts only an exact not-found inspect as teardown proof", async () => {
+  function spawnWith({ code, stderr = "", stdout = "" }) {
+    return () => {
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      queueMicrotask(() => {
+        if (stdout) child.stdout.emit("data", Buffer.from(stdout));
+        if (stderr) child.stderr.emit("data", Buffer.from(stderr));
+        child.emit("close", code);
+      });
+      return child;
+    };
+  }
+  await createDockerCliDriver({
+    spawnImpl: spawnWith({ code: 1, stderr: "Error: No such container: gone\n", stdout: "[]\n" }),
+  }).assertContainerAbsent({ name: "gone" });
+  await createDockerCliDriver({
+    spawnImpl: spawnWith({ code: 1, stderr: "Error response from daemon: network gone not found\n", stdout: "[]\n" }),
+  }).assertNetworkAbsent({ name: "gone" });
+  await assert.rejects(
+    () => createDockerCliDriver({
+      spawnImpl: spawnWith({ code: 1, stderr: "permission denied while trying to connect to Docker daemon\n" }),
+    }).assertContainerAbsent({ name: "gone" }),
+    /permission denied/,
+  );
+  await assert.rejects(
+    () => createDockerCliDriver({ spawnImpl: spawnWith({ code: 0, stdout: "still-present\n" }) })
+      .assertNetworkAbsent({ name: "gone" }),
+    /still present/,
+  );
 });
 
 test("two-container proof rejects fake success missing required public proof", () => {
