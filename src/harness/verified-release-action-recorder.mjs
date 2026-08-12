@@ -19,6 +19,7 @@ const MAX_SOCKET_PATH_BYTES = 96;
 const COMPLETION_SOCKET_DEADLINE_MS = 5_000;
 const EMPTY_DIGEST = createHash("sha256").update("").digest("hex");
 const RECORDER_FAILURE_STAGES = Object.freeze([
+  "construction-options", "construction-room", "construction-paths", "construction-platform",
   "release-manifest-fetch", "release-helper-fetch", "release-assets", "adapter-layout", "completion-socket",
 ]);
 const RECORDER_FAILURES = new WeakMap();
@@ -387,27 +388,38 @@ async function createCompletionSocket({ deadlineMs, platform, socketRoot }) {
 }
 
 export async function createVerifiedReleaseActionRecorder(input = {}) {
-  const options = snapshotObject(input, [
-    "actionTtlMs", "completionDeadlineMs", "fetchImpl", "manifestDigest", "platform",
-    "room", "runtimeExecPath", "socketRoot",
-  ], ["manifestDigest", "room", "socketRoot"]);
+  let options;
+  try {
+    options = snapshotObject(input, [
+      "actionTtlMs", "completionDeadlineMs", "fetchImpl", "manifestDigest", "platform",
+      "room", "runtimeExecPath", "socketRoot",
+    ], ["manifestDigest", "room", "socketRoot"]);
+  } catch (error) { restage(error, "construction-options"); }
   const actionTtlMs = options.actionTtlMs ?? 5 * 60_000;
   const completionDeadlineMs = options.completionDeadlineMs ?? COMPLETION_SOCKET_DEADLINE_MS;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const manifestDigest = options.manifestDigest;
   const platform = options.platform ?? process.platform;
-  const room = snapshotObject(options.room, ["cache", "home", "root", "state", "tmp", "workspace"], ["tmp", "workspace"]);
+  let room;
+  try {
+    room = snapshotObject(options.room, ["cache", "home", "root", "state", "tmp", "workspace"], ["tmp", "workspace"]);
+  } catch (error) { restage(error, "construction-room"); }
   const runtimeExecPath = options.runtimeExecPath ?? process.execPath;
   const socketRoot = options.socketRoot;
   if (
     !SHA256.test(manifestDigest) || room === null || typeof room !== "object" || Array.isArray(room) ||
     !Number.isSafeInteger(actionTtlMs) || actionTtlMs < 1 || actionTtlMs > 10 * 60_000 ||
     !Number.isSafeInteger(completionDeadlineMs) || completionDeadlineMs < 1 || completionDeadlineMs > 60_000
-  ) fail();
-  const workspace = absolute(room.workspace);
-  const tmp = descendant(workspace, room.tmp);
-  const runtime = absolute(runtimeExecPath);
-  if (!["darwin", "linux"].includes(platform)) fail();
+  ) throw stagedFailure("construction-options");
+  let workspace;
+  let tmp;
+  let runtime;
+  try {
+    workspace = absolute(room.workspace);
+    tmp = descendant(workspace, room.tmp);
+    runtime = absolute(runtimeExecPath);
+  } catch (error) { restage(error, "construction-paths"); }
+  if (!["darwin", "linux"].includes(platform)) throw stagedFailure("construction-platform");
   try { await preloadVerifiedReleaseAssets({ fetchImpl, manifestDigest, workspace }); }
   catch (error) { restage(error, "release-assets"); }
   const root = join(workspace, ".clockchain-adapter");

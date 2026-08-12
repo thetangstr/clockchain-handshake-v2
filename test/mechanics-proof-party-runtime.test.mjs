@@ -512,6 +512,21 @@ test("party runtime preserves a branded recorder retrieval substage", async (t) 
   });
 });
 
+test("party runtime preserves a branded recorder construction substage", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-recorder-options-"));
+  const root = join(parent, "responder");
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const runtime = await createMechanicsProofPartyRuntime(options(root), dependencies([], {
+    createActionRecorder(input) {
+      return createVerifiedReleaseActionRecorder({ ...input, manifestDigest: "not-a-digest" });
+    },
+  }));
+  await assert.rejects(() => runtime.run({ peerDescriptor: peerDescriptor() }), (error) => {
+    assert.equal(mechanicsProofPartyRuntimeFailureStage(error), "recorder-construction-options");
+    return true;
+  });
+});
+
 test("party runtime rejects terminal evidence with missing result digest or mismatched card signer", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-terminal-"));
   t.after(() => rm(parent, { recursive: true, force: true }));

@@ -198,6 +198,47 @@ test("verified release recorder brands only safe construction failure stages", a
   await mkdir(workspace, { mode: 0o700 });
   await mkdir(tmp, { mode: 0o700 });
   try {
+    let optionsFailure;
+    try {
+      await createVerifiedReleaseActionRecorder({
+        manifestDigest: "not-a-digest",
+        room: { workspace, tmp },
+        socketRoot: join(parent, "options-socket"),
+      });
+    } catch (error) { optionsFailure = error; }
+    assert.equal(classify(optionsFailure), "construction-options");
+
+    let roomFailure;
+    try {
+      await createVerifiedReleaseActionRecorder({
+        manifestDigest: fixture.manifestDigest,
+        room: { workspace },
+        socketRoot: join(parent, "room-socket"),
+      });
+    } catch (error) { roomFailure = error; }
+    assert.equal(classify(roomFailure), "construction-room");
+
+    let pathFailure;
+    try {
+      await createVerifiedReleaseActionRecorder({
+        manifestDigest: fixture.manifestDigest,
+        room: { workspace, tmp: join(parent, "outside") },
+        socketRoot: join(parent, "path-socket"),
+      });
+    } catch (error) { pathFailure = error; }
+    assert.equal(classify(pathFailure), "construction-paths");
+
+    let platformFailure;
+    try {
+      await createVerifiedReleaseActionRecorder({
+        manifestDigest: fixture.manifestDigest,
+        platform: "unsupported",
+        room: { workspace, tmp },
+        socketRoot: join(parent, "platform-socket"),
+      });
+    } catch (error) { platformFailure = error; }
+    assert.equal(classify(platformFailure), "construction-platform");
+
     let manifestFailure;
     try {
       await createVerifiedReleaseActionRecorder({

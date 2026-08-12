@@ -54,6 +54,8 @@ const AWS_CREDENTIAL_OVERRIDE_ENV = Object.freeze([
 ]);
 const RUNTIME_FAILURE_STAGES = Object.freeze([
   "peer-validate", "listener-create", "listener-ready", "invitation-await", "recorder-create",
+  "recorder-construction-options", "recorder-construction-room", "recorder-construction-paths",
+  "recorder-construction-platform",
   "recorder-release-manifest-fetch", "recorder-release-helper-fetch", "recorder-release-assets",
   "recorder-adapter-layout", "recorder-completion-socket",
   "bridge-create", "provider-auth", "transport-create", "adapter-create", "agent-starting",
