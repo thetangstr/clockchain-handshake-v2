@@ -68,7 +68,7 @@ function smuggledKey(key) {
 
 function localPathString(value) {
   const withoutUrls = value.replace(/\bhttps?:\/\/[^\s"'`,;)\]}]+/gi, "");
-  return /(?:^|[\s"'=:,(])(?:\/(?=\S)|~\/|[A-Za-z]:[\\/])/.test(withoutUrls);
+  return /(?:^|[^A-Za-z0-9])\/(?=\S)|~\/|[A-Za-z]:[\\/]/.test(withoutUrls);
 }
 
 function rejectAuthorityFields(value) {
