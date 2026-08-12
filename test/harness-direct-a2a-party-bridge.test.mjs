@@ -10,7 +10,10 @@ import { createDirectTaskChannel } from "../src/a2a/direct-task-channel.mjs";
 import { commitmentCheckpointDigest } from "../src/agent-handshake/v2/commitment-checkpoint.mjs";
 import { initializeWallet } from "../src/core/wallet-bridge.mjs";
 import { digestHex } from "../src/core/canonical.mjs";
-import { createDirectA2APartyBridge } from "../src/harness/direct-a2a-party-bridge.mjs";
+import {
+  createDirectA2APartyBridge,
+  directA2APartyBridgeFailureStage,
+} from "../src/harness/direct-a2a-party-bridge.mjs";
 import {
   createPartyA2AAuthority,
   PARTY_A2A_ENVELOPE_CAPABILITY,
@@ -364,7 +367,11 @@ test("bridge rejects spoofed provenance, arbitrary completion, and replay withou
   });
   await assert.rejects(
     bridges.initiator.observeToolResult({ toolName: "Bash", result: { helperStep: proposal.step } }),
-    /Direct A2A party bridge failed safely/,
+    (error) => {
+      assert.equal(error.message, "Direct A2A party bridge failed safely.");
+      assert.equal(directA2APartyBridgeFailureStage(error), "tool-name");
+      return true;
+    },
   );
   await assert.rejects(
     completionHandlers.initiator(completion({ envelope: fixture.proposalEnvelope, request: proposal.request, role: "initiator", step: proposal.step })),

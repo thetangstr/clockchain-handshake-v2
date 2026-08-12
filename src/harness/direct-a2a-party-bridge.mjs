@@ -25,9 +25,25 @@ const MAX_DEPTH = 12;
 const MAX_KEYS = 96;
 const MAX_ARRAY = 96;
 const MAX_STRING = 128 * 1024;
+const BRIDGE_FAILURE_STAGES = Object.freeze([
+  "input", "tool-name", "clone", "role-access", "session", "invite-shape", "invite-send",
+  "accept", "join", "helper", "digest",
+]);
+const BRIDGE_FAILURES = new WeakMap();
 
 function fail() { throw new Error(ERROR); }
 function sanitize(error) { if (error?.message === ERROR) throw error; fail(); }
+
+function stagedBridgeFailure(stage) {
+  if (!BRIDGE_FAILURE_STAGES.includes(stage)) fail();
+  const error = new Error(ERROR);
+  BRIDGE_FAILURES.set(error, stage);
+  return error;
+}
+
+export function directA2APartyBridgeFailureStage(error) {
+  return BRIDGE_FAILURES.get(error) ?? null;
+}
 
 function snapshot(value, required, optional = []) {
   try {
@@ -515,12 +531,16 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
 
     const bridge = Object.freeze({
       async observeToolResult(input) {
+        let failureStage = "input";
         try {
           active();
           const item = snapshot(input, ["result", "toolName"]);
+          failureStage = "tool-name";
           if (typeof item.toolName !== "string" || !item.toolName.startsWith("agent_handshake_")) fail();
+          failureStage = "clone";
           const result = publicClone(item.result);
           let digestInput = result;
+          failureStage = "role-access";
           const roleAccessValues = findValues(result, "roleAccess").filter((value) => typeof value === "string");
           if (roleAccessValues.length > 0) {
             const unique = [...new Set(roleAccessValues)];
@@ -528,12 +548,15 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
             if (roleAccess !== null && roleAccess !== unique[0]) fail();
             roleAccess = unique[0];
           }
+          failureStage = "session";
           const observedSessionIds = [...new Set(findValues(result, "sessionId").filter((value) => typeof value === "string" && UUID.test(value)))];
           if (boundSessionId !== null && observedSessionIds.some((value) => value !== boundSessionId)) fail();
           if (item.toolName === "agent_handshake_invite") {
+            failureStage = "invite-shape";
             if (options.role !== "initiator") fail();
             const invitation = oneValue(result, "responderInvitation", (value) => typeof value === "string" && value.length > 0);
             const sessionId = bindSession(oneValue(result, "sessionId", (value) => typeof value === "string" && UUID.test(value)));
+            failureStage = "invite-send";
             const sent = await invitationTransport.sendInvitation({
               invitation,
               sessionId,
@@ -543,6 +566,7 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
             invitations.push(Object.freeze({ acknowledged: true, invitationDigest: sent.invitationDigest }));
           }
           if (item.toolName === "agent_handshake_accept_invitation") {
+            failureStage = "accept";
             if (options.role !== "responder") fail();
             const transportEvidence = snapshot(invitationTransport.publicEvidence(), ["sessionId"], [
               "schema", "runId", "role", "peerRole", "localRuntimeId", "peerRuntimeId",
@@ -555,6 +579,7 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
             bindSession(acceptedSessionId);
           }
           if (item.toolName === "agent_handshake_join") {
+            failureStage = "join";
             const joinedRole = oneValue(result, "role", (value) => value === options.role);
             const sessionId = bindSession(oneValue(result, "sessionId", (value) => typeof value === "string" && UUID.test(value)));
             const repositorySha = oneValue(result, "repositorySha", (value) => typeof value === "string" && SHA.test(value));
@@ -565,6 +590,7 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
             activationContext = Object.freeze({ policyDigest, repositorySha, role: joinedRole, sessionId, terms });
             await activate();
           }
+          failureStage = "helper";
           const steps = findValues(result, "helperStep").filter((value) => value !== null && typeof value === "object");
           if (steps.length > 1) fail();
           if (steps.length === 1) {
@@ -589,8 +615,9 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
             ) fail();
             retained.set(expected.commandSha256, { ...expected, state: prior?.state ?? "pending" });
           }
+          failureStage = "digest";
           return Object.freeze({ observed: true, protocolSessionId: boundSessionId, toolResultDigest: createHash("sha256").update(a2aCanonicalBytes(digestInput)).digest("hex") });
-        } catch (error) { sanitize(error); }
+        } catch { throw stagedBridgeFailure(failureStage); }
       },
       publicEvidence() {
         active();

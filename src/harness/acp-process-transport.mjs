@@ -7,6 +7,7 @@ import { types } from "node:util";
 import { ClientSideConnection, PROTOCOL_VERSION, ndJsonStream } from "@agentclientprotocol/sdk";
 
 import { validateHarnessEvent, validateRetainedLocalAction } from "./harness-adapter-contract.mjs";
+import { directA2APartyBridgeFailureStage } from "./direct-a2a-party-bridge.mjs";
 import { ACP_VERSION_PINS } from "./version-pins.mjs";
 
 const MCP_ENDPOINT = "https://mcp.clockchain.network/handshake/mcp";
@@ -38,7 +39,13 @@ const LAUNCH_FAILURE_STAGES = Object.freeze([
   "completion-protocol-event", "completion-protocol-envelope-runtime", "completion-protocol-envelope-session-id",
   "completion-protocol-envelope-update-type", "completion-protocol-envelope-before-session",
   "completion-protocol-envelope-early-tool", "completion-protocol-envelope-provisional-session",
-  "completion-protocol-envelope-active-session", "completion-permission", "completion-stop",
+  "completion-protocol-envelope-active-session", "completion-protocol-bridge-input",
+  "completion-protocol-bridge-tool-name", "completion-protocol-bridge-clone",
+  "completion-protocol-bridge-role-access", "completion-protocol-bridge-session",
+  "completion-protocol-bridge-invite-shape", "completion-protocol-bridge-invite-send",
+  "completion-protocol-bridge-accept", "completion-protocol-bridge-join",
+  "completion-protocol-bridge-helper", "completion-protocol-bridge-digest",
+  "completion-permission", "completion-stop",
 ]);
 const LAUNCH_FAILURES = new WeakMap();
 
@@ -683,10 +690,15 @@ export function createAcpProcessTransport(optionsInput = {}) {
         if (toolResult !== null) {
           if (partyBridge !== null) {
             failureStage = "bridge";
-            const observed = exactObject(
-              await partyBridge.observeToolResult({ toolName: toolResult.toolName, result: toolResult.result }),
-              ["observed", "protocolSessionId", "toolResultDigest"],
-            );
+            let bridgeResult;
+            try {
+              bridgeResult = await partyBridge.observeToolResult({ toolName: toolResult.toolName, result: toolResult.result });
+            } catch (error) {
+              const bridgeStage = directA2APartyBridgeFailureStage(error);
+              if (bridgeStage !== null) failureStage = `bridge-${bridgeStage}`;
+              throw error;
+            }
+            const observed = exactObject(bridgeResult, ["observed", "protocolSessionId", "toolResultDigest"]);
             if (observed.observed !== true || typeof observed.toolResultDigest !== "string" || !/^[0-9a-f]{64}$/.test(observed.toolResultDigest)) fail();
             if (!(observed.protocolSessionId === null || typeof observed.protocolSessionId === "string" && observed.protocolSessionId.length > 0)) fail();
             if (observed.protocolSessionId !== null) {
