@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
+import { execFile as nodeExecFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import { types } from "node:util";
 
 import { assertSecretFree } from "../core/redact.mjs";
 
 export const FARGATE_DRY_RUN_PLAN_SCHEMA = "clockchain.fargate-dry-run-plan/v1";
+export const FARGATE_LIVE_PREFLIGHT_SCHEMA = "clockchain.fargate-live-preflight/v1";
 
 const ROLES = Object.freeze(["initiator", "responder"]);
 const IMAGE = /^.+@sha256:[0-9a-f]{64}$/;
@@ -18,6 +20,10 @@ const REQUIRED_ENV = Object.freeze({
   CLOCKCHAIN_MCP_URL: "https://mcp.clockchain.network/handshake/mcp",
   NODE_ENV: "production",
 });
+const NODE24_BASE_IMAGE_DIGEST = "sha256:44b49d6e2d23f6754fb084ef9d34ff14590343ad1ee168f8acf8f7bc9fccde2f";
+const PRODUCTION_MCP_URL = "https://mcp.clockchain.network/handshake/mcp";
+const SOURCE_COMMIT = /^[0-9a-f]{40}$/;
+const SAFE_RUN_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
 const REQUIRED_SECRET_NAMES = Object.freeze([
   "CLOCKCHAIN_PROVIDER_REF",
   "CLOCKCHAIN_MCP_CREDENTIAL_REF",
@@ -68,6 +74,10 @@ const RELATIVE_FILES = Object.freeze({
 
 function fail() {
   throw new Error("Fargate dry-run validation failed safely.");
+}
+
+function liveFail() {
+  throw new Error("Fargate live preflight validation failed safely.");
 }
 
 function strictData(value, failFn, seen = new WeakSet(), depth = 0) {
@@ -138,6 +148,86 @@ export function stableJson(value) {
 
 export function sha256Hex(value) {
   return createHash("sha256").update(typeof value === "string" ? sanitizeFargateData(value) : stableJson(value)).digest("hex");
+}
+
+function exactLiveOptions(optionsInput, expectedKeys) {
+  try {
+    if (optionsInput === null || typeof optionsInput !== "object" || Array.isArray(optionsInput) || types.isProxy(optionsInput)) liveFail();
+    const descriptors = Object.getOwnPropertyDescriptors(optionsInput);
+    const keys = Reflect.ownKeys(descriptors);
+    if (keys.some((key) => typeof key !== "string") || keys.some((key) => !expectedKeys.includes(key))) liveFail();
+    const normalized = {};
+    for (const key of keys) {
+      const descriptor = descriptors[key];
+      if (!descriptor.enumerable || !Object.hasOwn(descriptor, "value")) liveFail();
+      normalized[key] = key === "executor" ? descriptor.value : strictData(descriptor.value, liveFail);
+    }
+    return normalized;
+  } catch (error) {
+    if (error?.message === "Fargate live preflight validation failed safely.") throw error;
+    liveFail();
+  }
+}
+
+function absoluteDescendant(root, value) {
+  if (typeof value !== "string" || !isAbsolute(value) || resolve(value) !== value || value.includes("\0")) liveFail();
+  const cleanRoot = resolve(root);
+  const offset = relative(cleanRoot, value);
+  if (offset === "" || offset.startsWith("..") || isAbsolute(offset)) liveFail();
+  return value;
+}
+
+async function defaultExecutor(command) {
+  if (
+    command === null ||
+    typeof command !== "object" ||
+    Array.isArray(command) ||
+    command.cmd !== "git" ||
+    !Array.isArray(command.args) ||
+    JSON.stringify(command.args) !== JSON.stringify(["rev-parse", "HEAD"]) ||
+    command.timeoutMs !== 5000
+  ) liveFail();
+  try {
+    const result = await new Promise((resolveResult, reject) => {
+      nodeExecFile(command.cmd, command.args, {
+        timeout: command.timeoutMs,
+        maxBuffer: 4096,
+        windowsHide: true,
+      }, (error, stdout, stderr) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolveResult({ stdout, stderr, exitCode: 0 });
+      });
+    });
+    return result;
+  } catch {
+    liveFail();
+  }
+}
+
+async function resolveSourceCommit(executor) {
+  const command = Object.freeze({ cmd: "git", args: Object.freeze(["rev-parse", "HEAD"]), timeoutMs: 5000 });
+  const result = await executor(command);
+  const clean = exactLiveOptions(result, ["stdout", "stderr", "exitCode"]);
+  if (clean.stderr !== "" || clean.exitCode !== 0) liveFail();
+  const commit = typeof clean.stdout === "string" ? clean.stdout.trim() : "";
+  if (!SOURCE_COMMIT.test(commit)) liveFail();
+  return commit;
+}
+
+function liveImage(value) {
+  if (!IMAGE.test(string(value))) liveFail();
+  const digest = value.slice(value.indexOf("@") + 1);
+  if (digest === NODE24_BASE_IMAGE_DIGEST) liveFail();
+  return { image: value, digest };
+}
+
+function replaceTaskImageDigest(taskDefinition, image) {
+  const normalized = sanitizeFargateData(taskDefinition);
+  normalized.containerDefinitions[0].image = image;
+  return normalized;
 }
 
 function parseJsonFile(bytes) {
@@ -660,6 +750,87 @@ export function buildFargateDryRunSummary(plan) {
   return Object.freeze(summary);
 }
 
+export async function buildFargateLivePreflightPlan(optionsInput = {}) {
+  const options = exactLiveOptions(optionsInput, [
+    "appImage", "directA2A", "evidenceDir", "executor", "mcpUrl", "pair", "plan", "runId",
+  ]);
+  if (options.plan === undefined) liveFail();
+  const verified = validateFargateRuntimePlan(options.plan);
+  if (
+    options.pair !== "codex:claude" ||
+    options.directA2A !== true ||
+    options.mcpUrl !== PRODUCTION_MCP_URL ||
+    verified.network.assignPublicIp !== "DISABLED"
+  ) liveFail();
+  const { image, digest } = liveImage(options.appImage);
+  const evidenceDir = absoluteDescendant(process.cwd(), options.evidenceDir);
+  const executor = options.executor === undefined ? defaultExecutor : options.executor;
+  if (typeof executor !== "function") liveFail();
+  const sourceCommit = await resolveSourceCommit(executor);
+  const runId = options.runId ?? `phase6-${sourceCommit.slice(0, 12)}`;
+  if (typeof runId !== "string" || !SAFE_RUN_ID.test(runId)) liveFail();
+  const liveTaskDefinitionDigests = Object.fromEntries(ROLES.map((role) => [
+    role,
+    sha256Hex(replaceTaskImageDigest(verified.parties[role].taskDefinition, image)),
+  ]));
+  const summary = {
+    schema: FARGATE_LIVE_PREFLIGHT_SCHEMA,
+    liveResourcesCreated: false,
+    readyForMutation: false,
+    deploymentReady: true,
+    pair: "codex:claude",
+    clients: Object.freeze({ initiator: "codex", responder: "claude" }),
+    directA2A: true,
+    mcpUrl: PRODUCTION_MCP_URL,
+    runId,
+    sourceCommit,
+    evidenceDirDigest: sha256Hex(evidenceDir),
+    imagePurpose: "deployment-ready-app-image",
+    appImageDigest: digest,
+    images: Object.freeze(Object.fromEntries(ROLES.map((role) => [role, digest]))),
+    roles: ROLES,
+    ttlSeconds: verified.controls.ttlSeconds,
+    maxConcurrency: verified.controls.maxConcurrency,
+    perRunBudgetUsd: verified.controls.perRunBudgetUsd,
+    requiredCostTags: Object.freeze([...verified.controls.requiredCostTags]),
+    taskDefinitionDigests: Object.freeze(liveTaskDefinitionDigests),
+    roleArnDigests: Object.freeze(Object.fromEntries(ROLES.map((role) => [role, sha256Hex(verified.parties[role].taskRoleArn)]))),
+    executionRoleArnDigests: Object.freeze(Object.fromEntries(ROLES.map((role) => [role, sha256Hex(verified.parties[role].executionRoleArn)]))),
+    logGroupDigests: Object.freeze(Object.fromEntries(ROLES.map((role) => [
+      role,
+      sha256Hex(verified.parties[role].logConfiguration.options["awslogs-group"]),
+    ]))),
+    secretRefDigests: Object.freeze(Object.fromEntries(ROLES.map((role) => [role, Object.freeze(digestRefs(verified.parties[role].secrets))]))),
+    runtimePrerequisites: Object.freeze({
+      assignPublicIp: "DISABLED",
+      privateSubnetNatOrEgressProxyRequired: true,
+      awsVpcEndpointsOnlyInsufficientForPublicDockerHubAndMcp: true,
+      directA2AHttpTransportRequired: true,
+      controllerRoutesRawContent: false,
+      codexAuthSecretProvisionedOutOfBand: true,
+      responderUsesBedrockWorkloadIdentity: true,
+      noControllerHeldPartySignerMaterial: true,
+      stoppedCleanupEvidenceRequired: true,
+    }),
+    directA2AEvidenceRequired: Object.freeze({
+      agentCards: true,
+      envelopes: true,
+      commitmentCheckpoints: true,
+    }),
+    runtimeEvidenceRequired: Object.freeze({
+      distinctTaskRoles: true,
+      distinctExecutionRoles: true,
+      distinctSecretRefs: true,
+      distinctStateWorkspaceSignerDigests: true,
+      distinctA2AKeys: true,
+      distinctLogStreams: true,
+      stoppedAndSanitized: true,
+    }),
+  };
+  if (/secret-canary|arn:aws:secretsmanager|arn:aws:ssm|privateKey|signerSeed|cc_[A-Za-z0-9_-]{20,}/i.test(JSON.stringify(summary))) liveFail();
+  return Object.freeze(summary);
+}
+
 export function createAwsFargateRuntimeAdapter(optionsInput = {}) {
   const options = object(sanitizeFargateData(optionsInput));
   if (Object.keys(options).some((key) => key !== "plan")) fail();
@@ -668,6 +839,10 @@ export function createAwsFargateRuntimeAdapter(optionsInput = {}) {
     async inspectRuntimePlan() {
       const current = configuredPlan === null ? await loadFargateDryRunPlan() : configuredPlan;
       return buildFargateDryRunSummary(current);
+    },
+    async inspectLivePreflight(options = {}) {
+      const current = configuredPlan === null ? await loadFargateDryRunPlan() : configuredPlan;
+      return buildFargateLivePreflightPlan({ plan: current, ...options });
     },
     async provisionPartyRuntime() {
       fail();

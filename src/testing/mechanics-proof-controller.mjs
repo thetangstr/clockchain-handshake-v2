@@ -1,10 +1,12 @@
-import { validateLocalRuntimeEvidence } from "../runtime/runtime-adapter-contract.mjs";
+import { validateLocalRuntimeEvidence, validateRuntimePairEvidence } from "../runtime/runtime-adapter-contract.mjs";
+import { validateFreshAgentAttemptArtifact } from "./fresh-agent-client.mjs";
 
 const ROLES = Object.freeze(["initiator", "responder"]);
 const CONTROLLER_KEYS = Object.freeze([
   "costTags", "executePair", "harnessAdapters", "networkPolicy", "roles", "runtimeAdapter",
-  "sessionId", "ttlMs",
+  "requireLiveEvidence", "sessionId", "ttlMs",
 ]);
+const CONTROLLER_KEYS_WITHOUT_LIVE_FLAG = Object.freeze(CONTROLLER_KEYS.filter((key) => key !== "requireLiveEvidence"));
 const ROLE_KEYS = Object.freeze(["harness", "secretsRef", "stateRef"]);
 const PUBLIC_RUNTIME_KEYS = Object.freeze(["harness", "role", "runtimeId"]);
 const HARNESS_CAPABILITY_KEYS = Object.freeze(["harness", "rawPayloadTransport", "retainedLocalActions", "schema"]);
@@ -105,7 +107,24 @@ function frozenRuntimes(runtimes) {
   });
 }
 
-function validatePairIsolation(runtimeEvidence) {
+function validateLiveHandshakeEvidence(value) {
+  const artifact = validateFreshAgentAttemptArtifact(value);
+  const result = artifact.result;
+  if (
+    result.clients.initiator !== "codex" ||
+    result.clients.responder !== "claude" ||
+    result.certificateVerified !== true ||
+    result.cleanup.completed !== true ||
+    result.roles.initiator.erc8004.agentId === result.roles.responder.erc8004.agentId ||
+    result.roles.initiator.address === result.roles.responder.address
+  ) fail();
+  return artifact;
+}
+
+function validatePairIsolation(runtimeEvidence, { requireLiveEvidence }) {
+  if (requireLiveEvidence) {
+    return validateRuntimePairEvidence(runtimeEvidence);
+  }
   const initiator = validateLocalRuntimeEvidence(runtimeEvidence.initiator);
   const responder = validateLocalRuntimeEvidence(runtimeEvidence.responder);
   if (initiator.role !== "initiator" || responder.role !== "responder") fail();
@@ -129,11 +148,16 @@ async function cleanup(runtimeAdapter, runtimes) {
 
 export async function runMechanicsProofController(config) {
   rejectAuthorityFields(config);
-  const item = exactObject(config, CONTROLLER_KEYS);
+  const configKeys = Object.keys(config ?? {}).sort();
+  const item = JSON.stringify(configKeys) === JSON.stringify([...CONTROLLER_KEYS].sort())
+    ? exactObject(config, CONTROLLER_KEYS)
+    : exactObject(config, CONTROLLER_KEYS_WITHOUT_LIVE_FLAG);
   const roles = exactRoleObject(item.roles);
   if (roles.initiator.secretsRef === roles.responder.secretsRef || roles.initiator.stateRef === roles.responder.stateRef) fail();
   if (typeof item.sessionId !== "string" || item.sessionId.length === 0) fail();
   if (!Number.isSafeInteger(item.ttlMs) || item.ttlMs < 1) fail();
+  const requireLiveEvidence = item.requireLiveEvidence ?? false;
+  if (typeof requireLiveEvidence !== "boolean") fail();
   if (item.networkPolicy === null || typeof item.networkPolicy !== "object" || Array.isArray(item.networkPolicy)) fail();
   if (item.costTags === null || typeof item.costTags !== "object" || Array.isArray(item.costTags)) fail();
   if (typeof item.executePair !== "function") fail();
@@ -172,6 +196,9 @@ export async function runMechanicsProofController(config) {
       }),
       runtimes: frozenRuntimes(runtimes),
     }));
+    if (requireLiveEvidence) {
+      handshakeEvidence = validateLiveHandshakeEvidence(handshakeEvidence);
+    }
   } finally {
     await cleanup(runtimeAdapter, runtimes);
   }
@@ -182,6 +209,6 @@ export async function runMechanicsProofController(config) {
   }
   return Object.freeze({
     handshakeEvidence,
-    runtimeEvidence: validatePairIsolation(runtimeEvidence),
+    runtimeEvidence: validatePairIsolation(runtimeEvidence, { requireLiveEvidence }),
   });
 }

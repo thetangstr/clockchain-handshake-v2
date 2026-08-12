@@ -4,8 +4,10 @@ import { promisify } from "node:util";
 import test from "node:test";
 
 import {
+  buildFargateLivePreflightPlan,
   buildFargateDryRunSummary,
   createAwsFargateRuntimeAdapter,
+  FARGATE_LIVE_PREFLIGHT_SCHEMA,
   loadFargateDryRunPlan,
   sha256Hex,
   stableJson,
@@ -24,6 +26,8 @@ const execFileAsync = promisify(execFile);
 const HEX_A = "a".repeat(64);
 const HEX_B = "b".repeat(64);
 const SESSION_ID = "11111111-2222-4333-8444-555555555555";
+const APP_IMAGE = `123456789012.dkr.ecr.us-west-2.amazonaws.com/clockchain-mechanics-proof@sha256:${"6".repeat(64)}`;
+const SOURCE_COMMIT = "1234567890abcdef1234567890abcdef12345678";
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -41,6 +45,13 @@ function mutate(plan, change) {
 
 function rolePlan(plan, role) {
   return plan.parties[role];
+}
+
+function gitExecutor(stdout = `${SOURCE_COMMIT}\n`, calls = []) {
+  return async (command) => {
+    calls.push(command);
+    return { stdout, stderr: "", exitCode: 0 };
+  };
 }
 
 function fakeAwsResponses(plan, role) {
@@ -435,6 +446,74 @@ test("Fargate runtime adapter exposes dry-run inspection while rejecting live mu
   await assert.rejects(() => adapter.terminateRuntime({ runtimeId: "task" }));
 });
 
+test("Fargate live preflight assembles a deployment-ready public plan without mutations", async () => {
+  const plan = validateFargateRuntimePlan(await checkedPlan());
+  const calls = [];
+  const summary = await buildFargateLivePreflightPlan({
+    plan,
+    pair: "codex:claude",
+    directA2A: true,
+    mcpUrl: "https://mcp.clockchain.network/handshake/mcp",
+    appImage: APP_IMAGE,
+    evidenceDir: `${process.cwd()}/.tmp/phase6-evidence`,
+    runId: "phase6-test-run",
+    executor: gitExecutor(undefined, calls),
+  });
+
+  assert.equal(summary.schema, FARGATE_LIVE_PREFLIGHT_SCHEMA);
+  assert.equal(summary.liveResourcesCreated, false);
+  assert.equal(summary.readyForMutation, false);
+  assert.equal(summary.deploymentReady, true);
+  assert.equal(summary.pair, "codex:claude");
+  assert.equal(summary.directA2A, true);
+  assert.equal(summary.mcpUrl, "https://mcp.clockchain.network/handshake/mcp");
+  assert.equal(summary.sourceCommit, SOURCE_COMMIT);
+  assert.equal(summary.imagePurpose, "deployment-ready-app-image");
+  assert.equal(summary.appImageDigest, `sha256:${"6".repeat(64)}`);
+  assert.equal(summary.images.initiator, `sha256:${"6".repeat(64)}`);
+  assert.equal(summary.images.responder, `sha256:${"6".repeat(64)}`);
+  assert.equal(summary.runtimePrerequisites.assignPublicIp, "DISABLED");
+  assert.equal(summary.runtimePrerequisites.privateSubnetNatOrEgressProxyRequired, true);
+  assert.equal(summary.runtimePrerequisites.directA2AHttpTransportRequired, true);
+  assert.equal(summary.runtimePrerequisites.controllerRoutesRawContent, false);
+  assert.equal(summary.runtimePrerequisites.codexAuthSecretProvisionedOutOfBand, true);
+  assert.equal(summary.runtimePrerequisites.responderUsesBedrockWorkloadIdentity, true);
+  assert.deepEqual(summary.directA2AEvidenceRequired, {
+    agentCards: true,
+    envelopes: true,
+    commitmentCheckpoints: true,
+  });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], { cmd: "git", args: ["rev-parse", "HEAD"], timeoutMs: 5000 });
+
+  const printed = JSON.stringify(summary);
+  assert.doesNotMatch(printed, /arn:aws:secretsmanager|arn:aws:ssm|secret-canary|privateKey|signerSeed|\/Users|\/private\/tmp|cc_[A-Za-z0-9_-]{20,}/i);
+});
+
+test("Fargate live preflight rejects non-production gates and controller-held signer material", async () => {
+  const plan = await checkedPlan();
+  const cases = [
+    ["wrong pair", { pair: "claude:codex", directA2A: true, mcpUrl: "https://mcp.clockchain.network/handshake/mcp", appImage: APP_IMAGE, evidenceDir: `${process.cwd()}/.tmp/evidence`, executor: gitExecutor() }],
+    ["missing direct a2a", { pair: "codex:claude", directA2A: false, mcpUrl: "https://mcp.clockchain.network/handshake/mcp", appImage: APP_IMAGE, evidenceDir: `${process.cwd()}/.tmp/evidence`, executor: gitExecutor() }],
+    ["generic mcp", { pair: "codex:claude", directA2A: true, mcpUrl: "https://mcp.clockchain.network/mcp", appImage: APP_IMAGE, evidenceDir: `${process.cwd()}/.tmp/evidence`, executor: gitExecutor() }],
+    ["tagged image", { pair: "codex:claude", directA2A: true, mcpUrl: "https://mcp.clockchain.network/handshake/mcp", appImage: "example.test/clockchain:latest", evidenceDir: `${process.cwd()}/.tmp/evidence`, executor: gitExecutor() }],
+    ["node base fixture image", { pair: "codex:claude", directA2A: true, mcpUrl: "https://mcp.clockchain.network/handshake/mcp", appImage: "docker.io/library/node:24.11.1-bookworm-slim@sha256:44b49d6e2d23f6754fb084ef9d34ff14590343ad1ee168f8acf8f7bc9fccde2f", evidenceDir: `${process.cwd()}/.tmp/evidence`, executor: gitExecutor() }],
+    ["relative evidence dir", { pair: "codex:claude", directA2A: true, mcpUrl: "https://mcp.clockchain.network/handshake/mcp", appImage: APP_IMAGE, evidenceDir: "relative", executor: gitExecutor() }],
+    ["caller source commit claim", { pair: "codex:claude", directA2A: true, mcpUrl: "https://mcp.clockchain.network/handshake/mcp", appImage: APP_IMAGE, evidenceDir: `${process.cwd()}/.tmp/evidence`, sourceCommit: SOURCE_COMMIT, executor: gitExecutor() }],
+    ["bad git stdout", { pair: "codex:claude", directA2A: true, mcpUrl: "https://mcp.clockchain.network/handshake/mcp", appImage: APP_IMAGE, evidenceDir: `${process.cwd()}/.tmp/evidence`, executor: gitExecutor("not-a-sha\n") }],
+    ["controller signer material", { pair: "codex:claude", directA2A: true, mcpUrl: "https://mcp.clockchain.network/handshake/mcp", appImage: APP_IMAGE, evidenceDir: `${process.cwd()}/.tmp/evidence`, signerPrivateKey: "0x1234", executor: gitExecutor() }],
+    ["provider secret value", { pair: "codex:claude", directA2A: true, mcpUrl: "https://mcp.clockchain.network/handshake/mcp", appImage: APP_IMAGE, evidenceDir: `${process.cwd()}/.tmp/evidence`, providerSecret: "secret-canary", executor: gitExecutor() }],
+  ];
+
+  for (const [name, options] of cases) {
+    await assert.rejects(
+      () => buildFargateLivePreflightPlan({ plan, ...options }),
+      /Fargate live preflight validation failed safely/,
+      name,
+    );
+  }
+});
+
 test("Fargate runner is dry-run only and emits deterministic public JSON", async () => {
   const { stdout } = await execFileAsync(process.execPath, ["scripts/run-mechanics-proof-fargate.mjs", "--dry-run"], {
     cwd: process.cwd(),
@@ -450,4 +529,36 @@ test("Fargate runner is dry-run only and emits deterministic public JSON", async
     () => execFileAsync(process.execPath, ["scripts/run-mechanics-proof-fargate.mjs", "--run"], { cwd: process.cwd() }),
     /Command failed/,
   );
+});
+
+test("Fargate runner requires explicit live preflight flags and emits no live mutation", async () => {
+  const evidenceDir = `${process.cwd()}/.tmp/phase6-cli-evidence`;
+  const { stdout } = await execFileAsync(process.execPath, [
+    "scripts/run-mechanics-proof-fargate.mjs",
+    "--preflight",
+    "--pair",
+    "codex:claude",
+    "--direct-a2a",
+    "--evidence-dir",
+    evidenceDir,
+    "--app-image",
+    APP_IMAGE,
+  ], { cwd: process.cwd() });
+  const output = JSON.parse(stdout);
+  assert.equal(output.schema, FARGATE_LIVE_PREFLIGHT_SCHEMA);
+  assert.equal(output.liveResourcesCreated, false);
+  assert.equal(output.readyForMutation, false);
+  assert.equal(output.sourceCommit.length, 40);
+  assert.doesNotMatch(stdout, /RunTask|RegisterTaskDefinition|CreateStack|arn:aws:secretsmanager|arn:aws:ssm|secret-canary|privateKey/i);
+
+  for (const args of [
+    ["--preflight", "--pair", "claude:codex", "--direct-a2a", "--evidence-dir", evidenceDir, "--app-image", APP_IMAGE],
+    ["--preflight", "--pair", "codex:claude", "--evidence-dir", evidenceDir, "--app-image", APP_IMAGE],
+    ["--preflight", "--pair", "codex:claude", "--direct-a2a", "--evidence-dir", "relative", "--app-image", APP_IMAGE],
+  ]) {
+    await assert.rejects(
+      () => execFileAsync(process.execPath, ["scripts/run-mechanics-proof-fargate.mjs", ...args], { cwd: process.cwd() }),
+      /Command failed/,
+    );
+  }
 });

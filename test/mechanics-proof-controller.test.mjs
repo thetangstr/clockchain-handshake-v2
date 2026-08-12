@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { LOCAL_RUNTIME_EVIDENCE_SCHEMA } from "../src/runtime/runtime-adapter-contract.mjs";
+import {
+  LOCAL_RUNTIME_EVIDENCE_SCHEMA,
+  RUNTIME_EVIDENCE_SCHEMA,
+} from "../src/runtime/runtime-adapter-contract.mjs";
 import { runMechanicsProofController } from "../src/testing/mechanics-proof-controller.mjs";
 import { createFreshAgentRunnerExecutePair } from "../scripts/run-fresh-agent-handshake.mjs";
 
 const SESSION = "11111111-2222-4333-8444-555555555555";
 const HANDSHAKE_EVIDENCE = Object.freeze({ schema: "clockchain.fresh-agent-canary-attempt/v1", ok: true });
+const CERTIFICATE_DIGEST = "1".repeat(64);
+const HOST_ROOT = "2".repeat(64);
+const HOST_CERT = "3".repeat(64);
 
 function localEvidence(role, runtimeId, overrides = {}) {
   return {
@@ -27,6 +33,111 @@ function localEvidence(role, runtimeId, overrides = {}) {
     sessionSanitizationDigest: role === "initiator" ? "4".repeat(64) : "5".repeat(64),
     ...overrides,
   };
+}
+
+function awsEvidence(role, runtimeId, overrides = {}) {
+  const isInitiator = role === "initiator";
+  return {
+    schema: RUNTIME_EVIDENCE_SCHEMA,
+    runtimeId,
+    role,
+    taskArn: `arn:aws:ecs:us-west-2:123456789012:task/clockchain/${role}`,
+    taskStatus: "STOPPED",
+    createdAtMs: 1786337000000,
+    stoppedAtMs: 1786337001000,
+    taskRoleArn: `arn:aws:iam::123456789012:role/clockchain-${role}-task`,
+    executionRoleArn: `arn:aws:iam::123456789012:role/clockchain-${role}-execution`,
+    inTaskStsCallerIdentity: {
+      account: "123456789012",
+      arn: `arn:aws:sts::123456789012:assumed-role/clockchain-${role}-task/session`,
+      userId: `ARO${role.toUpperCase()}:session`,
+    },
+    imageDigest: `sha256:${isInitiator ? "4" : "5"}`.padEnd(71, isInitiator ? "4" : "5"),
+    taskDefinitionArn: `arn:aws:ecs:us-west-2:123456789012:task-definition/${role}:1`,
+    taskDefinitionRevision: "1",
+    taskDefinitionDigest: isInitiator ? "6".repeat(64) : "7".repeat(64),
+    eniId: `eni-${role}`,
+    subnetId: `subnet-${role}`,
+    securityGroupIds: [`sg-${role}`],
+    writableVolumeSummary: { ephemeral: true, sharedWritable: false },
+    sharedEfsMounts: [],
+    secretArnDigests: [isInitiator ? "8".repeat(64) : "9".repeat(64)],
+    credentialRefDigest: isInitiator ? "a".repeat(64) : "b".repeat(64),
+    workspaceRootDigest: isInitiator ? "c".repeat(64) : "d".repeat(64),
+    stateRootDigest: isInitiator ? "e".repeat(64) : "f".repeat(64),
+    signerRootDigest: isInitiator ? "0".repeat(64) : "1".repeat(64),
+    logStreamDigests: [isInitiator ? "2".repeat(64) : "3".repeat(64)],
+    cloudTrailEventDigests: [isInitiator ? "4".repeat(64) : "5".repeat(64)],
+    ecsDescribeTasksDigest: isInitiator ? "6".repeat(64) : "7".repeat(64),
+    cleanupEvidenceDigest: isInitiator ? "8".repeat(64) : "9".repeat(64),
+    sessionSanitizationDigest: isInitiator ? "a".repeat(64) : "b".repeat(64),
+    ...overrides,
+  };
+}
+
+function liveAttemptArtifact(overrides = {}) {
+  const receiptIds = [
+    "11111111-2222-4333-8444-555555555551",
+    "11111111-2222-4333-8444-555555555552",
+    "11111111-2222-4333-8444-555555555553",
+  ];
+  const registration = (agentId) => ({
+    agentId,
+    chainId: "eip155:11155111",
+    reference: `eip155:11155111:0x${"9".repeat(40)}:${agentId}`,
+    registrationBlock: "12345",
+    registrationTx: `0x${agentId === "101" ? "a" : "b"}`.padEnd(66, agentId === "101" ? "a" : "b"),
+    registryAddress: `0x${"9".repeat(40)}`,
+  });
+  const roleEvidence = (role) => ({
+    address: role === "initiator" ? `0x${"1".repeat(40)}` : `0x${"2".repeat(40)}`,
+    certificateDigest: CERTIFICATE_DIGEST,
+    certificateVerified: true,
+    erc8004: registration(role === "initiator" ? "101" : "202"),
+    externalBusinessActionPerformed: false,
+    policyDigest: role === "initiator" ? "4".repeat(64) : "5".repeat(64),
+    receiptIds,
+    role,
+    sessionId: SESSION,
+  });
+  const artifact = {
+    schema: "clockchain.fresh-agent-canary-attempt/v1",
+    attemptId: "phase6-live-attempt",
+    outcome: "success",
+    result: {
+      schema: "clockchain.fresh-agent-canary-evidence/v1",
+      runId: "phase6-live-run",
+      release: { manifestDigest: "6".repeat(64), hostRoots: [HOST_ROOT] },
+      clients: { initiator: "codex", responder: "claude" },
+      roles: { initiator: roleEvidence("initiator"), responder: roleEvidence("responder") },
+      certificateVerified: true,
+      binding: {
+        certificateDigest: CERTIFICATE_DIGEST,
+        hostRootFingerprint: HOST_ROOT,
+        hostSessionKeyCertificateDigest: HOST_CERT,
+        repositorySha: "1234567890abcdef1234567890abcdef12345678",
+        sessionDeadlineMs: 1786337600000,
+      },
+      monitor: {
+        certificate: { digest: CERTIFICATE_DIGEST, issuedAtMs: 1786337100000, outcome: "VERIFIED" },
+        checker: { stage: "VERIFIED", lastSeenMs: 1786337100001 },
+        hostTrust: {
+          rootKid: "root",
+          rootFingerprint: HOST_ROOT,
+          sessionPublicKey: Buffer.alloc(32, 7).toString("base64"),
+          sessionKeyCertificateDigest: HOST_CERT,
+        },
+        receipts: {
+          proposal: { blockHeight: "1", blockTimeRaw: "2026-08-11T12:00:00.000Z", digest: "7".repeat(64), explorerUrl: `https://clockchain.network/ledger/${receiptIds[0]}`, kind: "proposal", ledgerId: receiptIds[0] },
+          acceptance: { blockHeight: "2", blockTimeRaw: "2026-08-11T12:01:00.000Z", digest: "8".repeat(64), explorerUrl: `https://clockchain.network/ledger/${receiptIds[1]}`, kind: "acceptance", ledgerId: receiptIds[1] },
+          acknowledgment: { blockHeight: "3", blockTimeRaw: "2026-08-11T12:02:00.000Z", digest: "9".repeat(64), explorerUrl: `https://clockchain.network/ledger/${receiptIds[2]}`, kind: "acknowledgment", ledgerId: receiptIds[2] },
+        },
+        sessionId: SESSION,
+      },
+      cleanup: { completed: true },
+    },
+  };
+  return { ...artifact, ...overrides };
 }
 
 function runtimeAdapter(overrides = {}) {
@@ -99,6 +210,7 @@ function config(overrides = {}) {
       responder: { harness: "claude", secretsRef: "secret-responder", stateRef: "state-responder" },
     },
     networkPolicy: { mode: "local-only" },
+    requireLiveEvidence: false,
     ttlMs: 60_000,
     costTags: { phase: "test" },
     ...overrides,
@@ -114,6 +226,55 @@ test("mechanics-proof controller rejects private authority and authority-bearing
   ]) {
     await assert.rejects(() => runMechanicsProofController(candidate));
   }
+});
+
+test("mechanics-proof controller live gate requires fresh success evidence and AWS runtime cleanup", async () => {
+  const runtime = runtimeAdapter({
+    async collectRuntimeEvidence({ runtimeId }) {
+      runtime.calls.push(["collect", runtimeId]);
+      const role = runtimeId.endsWith("initiator") ? "initiator" : "responder";
+      return awsEvidence(role, runtimeId);
+    },
+  });
+
+  const result = await runMechanicsProofController(config({
+    runtimeAdapter: runtime,
+    requireLiveEvidence: true,
+    executePair: async (payload) => {
+      assert.equal("runtimeAdapter" in payload, false);
+      assert.equal("harnessAdapters" in payload, false);
+      return liveAttemptArtifact();
+    },
+  }));
+
+  assert.equal(result.handshakeEvidence.result.certificateVerified, true);
+  assert.equal(result.handshakeEvidence.result.clients.initiator, "codex");
+  assert.equal(result.handshakeEvidence.result.clients.responder, "claude");
+  assert.notEqual(result.handshakeEvidence.result.roles.initiator.erc8004.agentId, result.handshakeEvidence.result.roles.responder.erc8004.agentId);
+  assert.equal(result.runtimeEvidence.initiator.schema, RUNTIME_EVIDENCE_SCHEMA);
+  assert.deepEqual(runtime.calls.map((entry) => entry[0]), [
+    "provision", "attest", "provision", "attest", "terminate", "destroy", "terminate", "destroy", "collect", "collect",
+  ]);
+});
+
+test("mechanics-proof controller live gate rejects local evidence and malformed live artifacts", async () => {
+  await assert.rejects(() => runMechanicsProofController(config({
+    requireLiveEvidence: true,
+    executePair: async () => HANDSHAKE_EVIDENCE,
+  })));
+
+  await assert.rejects(() => runMechanicsProofController(config({
+    requireLiveEvidence: true,
+    runtimeAdapter: runtimeAdapter({
+      async collectRuntimeEvidence({ runtimeId }) {
+        const role = runtimeId.endsWith("initiator") ? "initiator" : "responder";
+        return awsEvidence(role, runtimeId);
+      },
+    }),
+    executePair: async () => liveAttemptArtifact({
+      result: { ...liveAttemptArtifact().result, clients: { initiator: "claude", responder: "codex" } },
+    }),
+  })));
 });
 
 test("mechanics-proof controller rejects shared opaque credential or state refs", async () => {

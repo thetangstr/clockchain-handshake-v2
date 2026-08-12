@@ -10,6 +10,19 @@ node scripts/run-mechanics-proof-fargate.mjs --dry-run
 
 The command validates the local template and task definition fixtures and prints only public digests plus dry-run controls. `liveResourcesCreated` and `deploymentReady` must remain `false`.
 
+Phase6 local preflight is still non-mutating. It assembles the deployment-ready public gate record from the checked plan plus an application image digest and local git `HEAD`; it does not register task definitions, run ECS tasks, contact production MCP, or read local authentication files.
+
+```bash
+node scripts/run-mechanics-proof-fargate.mjs \
+  --preflight \
+  --pair codex:claude \
+  --direct-a2a \
+  --evidence-dir /absolute/path/inside/repo/.tmp/phase6-evidence \
+  --app-image 123456789012.dkr.ecr.us-west-2.amazonaws.com/clockchain-mechanics-proof@sha256:<64 hex>
+```
+
+The app image must be a Clockchain mechanics-proof application image pinned by immutable digest. The pinned Docker Hub Node base fixture is rejected for live preflight.
+
 Runtime requirements for a future live phase:
 
 - Two one-shot Fargate tasks, one initiator and one responder, with distinct task roles, execution roles, log groups, secret references, state roots, signer roots, and workspaces.
@@ -19,6 +32,8 @@ Runtime requirements for a future live phase:
 - A2A traffic is only TCP 8443 between the two party security groups, with matching peer ingress and peer egress.
 - CloudWatch awslogs mode is blocking, with distinct run-scoped log groups and retention.
 - Every run needs TTL `3600`, max concurrency `2`, a per-run budget, required cost tags, and a cleanup sweeper plan that preserves STOPPED evidence before deletion.
+- Phase6 live prerequisites currently remain external: account/region access, private subnets with NAT or an egress proxy, out-of-band AWS secret ARNs for bootstrap credentials, and role policies that distinguish Codex secret retrieval from Claude Bedrock workload identity. The controller must not receive or pre-provision party signer private material; signer and A2A keys are generated inside each task runtime and retained only as public addresses/digests in evidence.
+- Direct A2A requires a real authenticated HTTP transport between task endpoints on port 8443 using Agent Card and envelope verification. In-process direct-channel tests are not live proof, and controller-routed raw content is not permitted.
 
 Evidence requirements:
 
