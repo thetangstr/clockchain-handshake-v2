@@ -118,8 +118,19 @@ function fakeAwsResponses(plan, role) {
     networkInterface: {
       NetworkInterfaceId: `eni-${role}`,
       SubnetId: `subnet-private-${role}`,
+      VpcId: "vpc-mechanics-proof",
       Groups: [{ GroupId: party.securityGroupId }],
       Association: null,
+      PublicIp: null,
+    },
+    describeSubnet: {
+      Subnet: {
+        SubnetId: `subnet-private-${role}`,
+        VpcId: "vpc-mechanics-proof",
+        MapPublicIpOnLaunch: false,
+        State: "available",
+        AvailableIpAddressCount: 64,
+      },
     },
     securityGroups: {
       [party.securityGroupId]: {
@@ -174,7 +185,10 @@ test("checked-in Fargate dry-run plan is immutable, isolated, and safe to print"
   assert.equal(plan.parties.initiator.runtimePlatform.cpuArchitecture, "X86_64");
   assert.notDeepEqual(summary.secretRefDigests.initiator, summary.secretRefDigests.responder);
   assert.ok(summary.cleanupSweeperPlan.requiresStoppedEvidence);
-  assert.ok(summary.privateSubnetEgressRequirement.includes("NAT"));
+  assert.match(summary.privateSubnetEgressRequirement, /NAT or egress proxy for public Docker Hub, Clockchain MCP, and model provider HTTPS/i);
+  assert.match(summary.privateSubnetEgressRequirement, /AWS VPC endpoints may cover CloudWatch Logs, Secrets Manager or SSM, and STS/i);
+  assert.match(summary.privateSubnetEgressRequirement, /Phase6.*ECR api\/dkr and S3/i);
+  assert.doesNotMatch(summary.privateSubnetEgressRequirement, /NAT or VPC endpoints for ECR.*Clockchain MCP/i);
   assert.equal(summary.network.egress, "peer-a2a-and-private-https-only");
   const resources = plan.template.Resources;
   for (const name of ["InitiatorSecurityGroup", "ResponderSecurityGroup"]) {
@@ -207,6 +221,7 @@ test("Fargate dry-run validation rejects unsafe task and network mutations", asy
     ["missing peer rule", (copy) => { copy.network.securityGroups.responder.ingress = []; }],
     ["missing peer egress", (copy) => { copy.network.securityGroups.initiator.egress = copy.network.securityGroups.initiator.egress.filter((rule) => rule.fromPort !== 8443); }],
     ["missing subnet egress docs", (copy) => { copy.network.privateSubnetEgressRequirement = ""; }],
+    ["ambiguous subnet egress docs", (copy) => { copy.network.privateSubnetEgressRequirement = "Private subnets require NAT or VPC endpoints for ECR, CloudWatch Logs, Secrets Manager or SSM, STS, CloudTrail, and HTTPS access to the dedicated Clockchain MCP endpoint."; }],
     ["nonblocking logs", (copy) => { copy.parties.initiator.logConfiguration.options.mode = "non-blocking"; }],
     ["same log group", (copy) => { copy.parties.responder.logConfiguration.options["awslogs-group"] = copy.parties.initiator.logConfiguration.options["awslogs-group"]; }],
     ["missing ttl", (copy) => { delete copy.controls.ttlSeconds; }],
@@ -258,6 +273,14 @@ test("Fargate runtime evidence rejects self-claims and missing required control-
     ["missing describe tasks", mutate(complete, (copy) => { delete copy.describeTasks; })],
     ["missing task definition", mutate(complete, (copy) => { delete copy.taskDefinition; })],
     ["missing eni", mutate(complete, (copy) => { delete copy.networkInterface; })],
+    ["missing subnet", mutate(complete, (copy) => { delete copy.describeSubnet; })],
+    ["subnet id mismatch", mutate(complete, (copy) => { copy.describeSubnet.Subnet.SubnetId = "subnet-other"; })],
+    ["subnet vpc mismatch", mutate(complete, (copy) => { copy.describeSubnet.Subnet.VpcId = "vpc-other"; })],
+    ["subnet public ip mapping", mutate(complete, (copy) => { copy.describeSubnet.Subnet.MapPublicIpOnLaunch = true; })],
+    ["subnet unavailable", mutate(complete, (copy) => { copy.describeSubnet.Subnet.State = "pending"; })],
+    ["eni vpc mismatch", mutate(complete, (copy) => { copy.networkInterface.VpcId = "vpc-other"; })],
+    ["eni public association", mutate(complete, (copy) => { copy.networkInterface.Association = { PublicIp: "203.0.113.10" }; })],
+    ["eni public ip", mutate(complete, (copy) => { copy.networkInterface.PublicIp = "203.0.113.10"; })],
     ["missing security group", mutate(complete, (copy) => { delete copy.securityGroups; })],
     ["missing cloudtrail", mutate(complete, (copy) => { copy.cloudTrailEvents = []; })],
     ["missing exact runtask", mutate(complete, (copy) => { copy.cloudTrailEvents = copy.cloudTrailEvents.filter((event) => event.eventName !== "RunTask"); })],

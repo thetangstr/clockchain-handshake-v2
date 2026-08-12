@@ -5,7 +5,7 @@
     "VpcId": { "Type": "AWS::EC2::VPC::Id" },
     "PrivateSubnetIds": {
       "Type": "List<AWS::EC2::Subnet::Id>",
-      "Description": "Private subnets only; HTTPS egress must use NAT or VPC endpoints for ECR, Logs, Secrets Manager or SSM, STS, CloudWatch, and CloudTrail."
+      "Description": "Private subnets only. The Docker Hub base image, Clockchain MCP, and model provider HTTPS require NAT or an egress proxy. AWS VPC endpoints may cover CloudWatch Logs, Secrets Manager or SSM, and STS; Phase6 private ECR application images require ECR api/dkr and S3 endpoints or NAT."
     },
     "Node24ImageDigest": {
       "Type": "String",
@@ -110,7 +110,7 @@
             "FromPort": 443,
             "ToPort": 443,
             "CidrIp": "0.0.0.0/0",
-            "Description": "HTTPS egress only through private subnet NAT or required VPC endpoints."
+            "Description": "HTTPS egress only through private subnet NAT or egress proxy for Docker Hub, Clockchain MCP, and model provider; AWS VPC endpoints cover AWS APIs where configured."
           }
         ]
       }
@@ -126,7 +126,7 @@
             "FromPort": 443,
             "ToPort": 443,
             "CidrIp": "0.0.0.0/0",
-            "Description": "HTTPS egress only through private subnet NAT or required VPC endpoints."
+            "Description": "HTTPS egress only through private subnet NAT or egress proxy for Docker Hub, Clockchain MCP, and model provider; AWS VPC endpoints cover AWS APIs where configured."
           }
         ]
       }
@@ -189,7 +189,7 @@
         "requiresStoppedEvidence": true,
         "sweeper": "Expire run-scoped tasks and log streams by TTL tag after STOPPED evidence is collected."
       },
-      "privateSubnetEgressRequirement": "Private subnets require NAT or VPC endpoints for ECR, CloudWatch Logs, Secrets Manager or SSM, STS, CloudTrail, and HTTPS access to the dedicated Clockchain MCP endpoint."
+      "privateSubnetEgressRequirement": "Private subnets with assignPublicIp disabled require NAT or egress proxy for public Docker Hub, Clockchain MCP, and model provider HTTPS. AWS VPC endpoints may cover CloudWatch Logs, Secrets Manager or SSM, and STS. Phase6 private ECR application images require ECR api/dkr and S3 endpoints or NAT."
     }
   }
 }

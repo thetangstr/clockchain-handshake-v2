@@ -120,12 +120,14 @@ function normalizeEgress(rules, peerRule, expectedGroupRef, expectedPeerRef) {
     Object.hasOwn(peerRule, "CidrIp")
   ) fail();
   const https = rules.find((rule) => object(rule).CidrIp === "0.0.0.0/0");
+  if (!https || https.IpProtocol !== "tcp" || https.FromPort !== 443 || https.ToPort !== 443) fail();
+  const description = String(https.Description ?? "");
   if (
-    !https ||
-    https.IpProtocol !== "tcp" ||
-    https.FromPort !== 443 ||
-    https.ToPort !== 443 ||
-    !/private subnet NAT|VPC endpoints/i.test(String(https.Description ?? ""))
+    !/NAT or egress proxy/i.test(description) ||
+    !/Docker Hub/i.test(description) ||
+    !/Clockchain MCP/i.test(description) ||
+    !/model provider/i.test(description) ||
+    !/AWS VPC endpoints/i.test(description)
   ) fail();
   return [
     { protocol: "tcp", fromPort: 8443, toPort: 8443, peerSecurityGroupRef: expectedPeerRef },
@@ -247,8 +249,13 @@ function validateNetwork(network) {
   if (
     typeof network.privateSubnetEgressRequirement !== "string" ||
     !/private subnets/i.test(network.privateSubnetEgressRequirement) ||
-    !/NAT/i.test(network.privateSubnetEgressRequirement) ||
-    !/VPC endpoints/i.test(network.privateSubnetEgressRequirement)
+    !/NAT or (?:an? )?egress proxy/i.test(network.privateSubnetEgressRequirement) ||
+    !/Docker Hub/i.test(network.privateSubnetEgressRequirement) ||
+    !/Clockchain MCP/i.test(network.privateSubnetEgressRequirement) ||
+    !/model provider HTTPS/i.test(network.privateSubnetEgressRequirement) ||
+    !/AWS VPC endpoints may cover CloudWatch Logs, Secrets Manager or SSM, and STS/i.test(network.privateSubnetEgressRequirement) ||
+    !/Phase6.*ECR api\/dkr and S3/i.test(network.privateSubnetEgressRequirement) ||
+    /NAT or VPC endpoints for ECR.*Clockchain MCP/i.test(network.privateSubnetEgressRequirement)
   ) fail();
   const groups = object(network.securityGroups);
   for (const role of ROLES) {

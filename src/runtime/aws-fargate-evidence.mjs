@@ -214,7 +214,26 @@ export function collectFargateRuntimeEvidence({ plan, sessionId, role, aws }) {
   const eniId = attachmentDetail(task, "networkInterfaceId");
   const subnetId = attachmentDetail(task, "subnetId");
   const eni = object(input.networkInterface);
-  if (eni.NetworkInterfaceId !== eniId || eni.SubnetId !== subnetId || eni.Association !== null) fail();
+  if (
+    eni.NetworkInterfaceId !== eniId ||
+    eni.SubnetId !== subnetId ||
+    typeof eni.VpcId !== "string" ||
+    eni.VpcId.length === 0 ||
+    eni.Association !== null ||
+    eni.PublicIp !== null
+  ) fail();
+  const subnetEnvelope = object(input.describeSubnet);
+  const subnet = object(subnetEnvelope.Subnet);
+  if (
+    subnet.SubnetId !== subnetId ||
+    subnet.VpcId !== eni.VpcId ||
+    subnet.MapPublicIpOnLaunch !== false ||
+    subnet.State !== "available" ||
+    (
+      subnet.AvailableIpAddressCount !== undefined &&
+      (!Number.isSafeInteger(subnet.AvailableIpAddressCount) || subnet.AvailableIpAddressCount < 0)
+    )
+  ) fail();
   const eniGroups = eni.Groups;
   if (!Array.isArray(eniGroups) || eniGroups.length !== 1 || eniGroups[0].GroupId !== party.securityGroupId) fail();
   const group = object(object(input.securityGroups)[party.securityGroupId]);
@@ -282,7 +301,11 @@ export function collectFargateRuntimeEvidence({ plan, sessionId, role, aws }) {
     signerRootDigest: attestedDigest(runtimeAttestation.signerRootDigest),
     logStreamDigests: publicLogDigests(input.cloudWatchLogs),
     cloudTrailEventDigests: digestListFromRaw(input.cloudTrailEvents),
-    ecsDescribeTasksDigest: sha256Hex(describeTasks),
+    ecsDescribeTasksDigest: sha256Hex({
+      describeTasks,
+      networkInterface: eni,
+      describeSubnet: subnetEnvelope,
+    }),
     cleanupEvidenceDigest: sha256Hex({
       taskArn: task.taskArn,
       taskStatus: task.lastStatus,
