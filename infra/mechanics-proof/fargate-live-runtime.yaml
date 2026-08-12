@@ -122,7 +122,8 @@
     "InitiatorTaskRole": {
       "Type": "AWS::IAM::Role",
       "Properties": {
-        "AssumeRolePolicyDocument": { "Version": "2012-10-17", "Statement": [{ "Effect": "Allow", "Principal": { "Service": "ecs-tasks.amazonaws.com" }, "Action": "sts:AssumeRole" }] },
+        "RoleName": { "Fn::Sub": "cc-${RunId}-i-task" },
+        "AssumeRolePolicyDocument": { "Version": "2012-10-17", "Statement": [{ "Effect": "Allow", "Principal": { "Service": "ecs-tasks.amazonaws.com" }, "Action": "sts:AssumeRole", "Condition": { "ArnLike": { "aws:SourceArn": { "Fn::Sub": "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:*" } }, "StringEquals": { "aws:SourceAccount": { "Ref": "AWS::AccountId" } } } }] },
         "Policies": [{ "PolicyName": "bootstrap-exchange", "PolicyDocument": { "Version": "2012-10-17", "Statement": [
           { "Effect": "Allow", "Action": ["sqs:SendMessage"], "Resource": { "Fn::GetAtt": ["InitiatorQueue", "Arn"] } },
           { "Effect": "Allow", "Action": ["sqs:ReceiveMessage", "sqs:DeleteMessage"], "Resource": { "Fn::GetAtt": ["ResponderQueue", "Arn"] } }
@@ -133,7 +134,8 @@
     "ResponderTaskRole": {
       "Type": "AWS::IAM::Role",
       "Properties": {
-        "AssumeRolePolicyDocument": { "Version": "2012-10-17", "Statement": [{ "Effect": "Allow", "Principal": { "Service": "ecs-tasks.amazonaws.com" }, "Action": "sts:AssumeRole" }] },
+        "RoleName": { "Fn::Sub": "cc-${RunId}-r-task" },
+        "AssumeRolePolicyDocument": { "Version": "2012-10-17", "Statement": [{ "Effect": "Allow", "Principal": { "Service": "ecs-tasks.amazonaws.com" }, "Action": "sts:AssumeRole", "Condition": { "ArnLike": { "aws:SourceArn": { "Fn::Sub": "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:*" } }, "StringEquals": { "aws:SourceAccount": { "Ref": "AWS::AccountId" } } } }] },
         "Policies": [
           { "PolicyName": "bootstrap-exchange", "PolicyDocument": { "Version": "2012-10-17", "Statement": [
             { "Effect": "Allow", "Action": ["sqs:SendMessage"], "Resource": { "Fn::GetAtt": ["ResponderQueue", "Arn"] } },
@@ -152,7 +154,8 @@
     "InitiatorExecutionRole": {
       "Type": "AWS::IAM::Role",
       "Properties": {
-        "AssumeRolePolicyDocument": { "Version": "2012-10-17", "Statement": [{ "Effect": "Allow", "Principal": { "Service": "ecs-tasks.amazonaws.com" }, "Action": "sts:AssumeRole" }] },
+        "RoleName": { "Fn::Sub": "cc-${RunId}-i-exec" },
+        "AssumeRolePolicyDocument": { "Version": "2012-10-17", "Statement": [{ "Effect": "Allow", "Principal": { "Service": "ecs-tasks.amazonaws.com" }, "Action": "sts:AssumeRole", "Condition": { "ArnLike": { "aws:SourceArn": { "Fn::Sub": "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:*" } }, "StringEquals": { "aws:SourceAccount": { "Ref": "AWS::AccountId" } } } }] },
         "Policies": [{ "PolicyName": "task-startup", "PolicyDocument": { "Version": "2012-10-17", "Statement": [
           { "Effect": "Allow", "Action": ["ecr:GetAuthorizationToken"], "Resource": "*" },
           { "Effect": "Allow", "Action": ["ecr:BatchCheckLayerAvailability", "ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage"], "Resource": { "Fn::Sub": "arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/clockchain-mechanics-proof" } },
@@ -165,7 +168,8 @@
     "ResponderExecutionRole": {
       "Type": "AWS::IAM::Role",
       "Properties": {
-        "AssumeRolePolicyDocument": { "Version": "2012-10-17", "Statement": [{ "Effect": "Allow", "Principal": { "Service": "ecs-tasks.amazonaws.com" }, "Action": "sts:AssumeRole" }] },
+        "RoleName": { "Fn::Sub": "cc-${RunId}-r-exec" },
+        "AssumeRolePolicyDocument": { "Version": "2012-10-17", "Statement": [{ "Effect": "Allow", "Principal": { "Service": "ecs-tasks.amazonaws.com" }, "Action": "sts:AssumeRole", "Condition": { "ArnLike": { "aws:SourceArn": { "Fn::Sub": "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:*" } }, "StringEquals": { "aws:SourceAccount": { "Ref": "AWS::AccountId" } } } }] },
         "Policies": [{ "PolicyName": "task-startup", "PolicyDocument": { "Version": "2012-10-17", "Statement": [
           { "Effect": "Allow", "Action": ["ecr:GetAuthorizationToken"], "Resource": "*" },
           { "Effect": "Allow", "Action": ["ecr:BatchCheckLayerAvailability", "ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage"], "Resource": { "Fn::Sub": "arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/clockchain-mechanics-proof" } },

@@ -12,6 +12,7 @@ import {
   createAwsFargateRuntimeAdapter,
   FARGATE_LIVE_PREFLIGHT_SCHEMA,
   loadFargateDryRunPlan,
+  normalizeFargateTaskDefinitionForProof,
   sha256Hex,
   stableJson,
   validateFargateRuntimePlan,
@@ -38,6 +39,86 @@ test("runtime adapter exposes the live stack planning boundary without enabling 
   assert.equal(typeof adapter.inspectLiveStackPlan, "function");
   assert.equal(typeof buildFargateLiveStackPlan, "function");
   assert.equal(typeof adapter.provisionPartyRuntime, "function");
+});
+
+test("task-definition proof normalization accepts only the one reviewed workspace initializer", async () => {
+  const plan = await buildFargateLiveStackPlan({
+    accountId: "123456789012",
+    appImage: APP_IMAGE,
+    bedrockModelArn: "arn:aws:bedrock:us-west-2:123456789012:inference-profile/us.anthropic.claude-sonnet-4-6",
+    budgetUsd: 25,
+    codexSecretArn: "arn:aws:secretsmanager:us-west-2:123456789012:secret:clockchain/codex-AbCdEf",
+    expiresAt: "2026-08-12T21:00:00.000Z",
+    initiatorPrivateSubnet: { availabilityZone: "us-west-2a", cidr: "10.44.16.0/24" },
+    maxConcurrency: 2,
+    mcpUrl: "https://mcp.clockchain.network/handshake/mcp",
+    networkInspection: {
+      existingSubnets: [{ cidr: "10.44.1.0/24", subnetId: "subnet-public", vpcId: "vpc-live" }],
+      publicRouteTable: { routeTableId: "rtb-public", routes: [{ destinationCidrBlock: "0.0.0.0/0", gatewayId: "igw-live", state: "active" }] },
+      publicSubnet: { availabilityZone: "us-west-2a", cidr: "10.44.1.0/24", mapPublicIpOnLaunch: true, routeTableId: "rtb-public", subnetId: "subnet-public", vpcId: "vpc-live" },
+      vpc: { cidrs: ["10.44.0.0/16"], vpcId: "vpc-live" },
+    },
+    publicSubnetId: "subnet-public",
+    region: "us-west-2",
+    responderPrivateSubnet: { availabilityZone: "us-west-2b", cidr: "10.44.17.0/24" },
+    runId: SESSION_ID,
+    startedAt: "2026-08-12T20:00:00.000Z",
+    ttlSeconds: 3600,
+    vpcId: "vpc-live",
+  });
+  const stackOutputs = {
+    ClusterArn: `arn:aws:ecs:us-west-2:123456789012:cluster/clockchain-${SESSION_ID}`,
+    InitiatorExecutionRoleArn: `arn:aws:iam::123456789012:role/cc-${SESSION_ID}-i-exec`,
+    InitiatorLogGroupName: `/clockchain/mechanics-proof/${SESSION_ID}/initiator`,
+    InitiatorPrivateSubnetId: "subnet-i",
+    InitiatorQueueUrl: `https://sqs.us-west-2.amazonaws.com/123456789012/clockchain-${SESSION_ID}-initiator`,
+    InitiatorSecurityGroupId: "sg-i",
+    InitiatorTaskRoleArn: `arn:aws:iam::123456789012:role/cc-${SESSION_ID}-i-task`,
+    ResponderExecutionRoleArn: `arn:aws:iam::123456789012:role/cc-${SESSION_ID}-r-exec`,
+    ResponderLogGroupName: `/clockchain/mechanics-proof/${SESSION_ID}/responder`,
+    ResponderPrivateSubnetId: "subnet-r",
+    ResponderQueueUrl: `https://sqs.us-west-2.amazonaws.com/123456789012/clockchain-${SESSION_ID}-responder`,
+    ResponderSecurityGroupId: "sg-r",
+    ResponderTaskRoleArn: `arn:aws:iam::123456789012:role/cc-${SESSION_ID}-r-task`,
+  };
+  const boundLogical = [
+    ["Cluster", stackOutputs.ClusterArn, "AWS::ECS::Cluster"],
+    ["InitiatorPrivateSubnet", "subnet-i", "AWS::EC2::Subnet"], ["ResponderPrivateSubnet", "subnet-r", "AWS::EC2::Subnet"],
+    ["InitiatorSecurityGroup", "sg-i", "AWS::EC2::SecurityGroup"], ["ResponderSecurityGroup", "sg-r", "AWS::EC2::SecurityGroup"],
+    ["InitiatorQueue", stackOutputs.InitiatorQueueUrl, "AWS::SQS::Queue"], ["ResponderQueue", stackOutputs.ResponderQueueUrl, "AWS::SQS::Queue"],
+    ["InitiatorTaskRole", `cc-${SESSION_ID}-i-task`, "AWS::IAM::Role"], ["ResponderTaskRole", `cc-${SESSION_ID}-r-task`, "AWS::IAM::Role"],
+    ["InitiatorExecutionRole", `cc-${SESSION_ID}-i-exec`, "AWS::IAM::Role"], ["ResponderExecutionRole", `cc-${SESSION_ID}-r-exec`, "AWS::IAM::Role"],
+    ["InitiatorLogGroup", stackOutputs.InitiatorLogGroupName, "AWS::Logs::LogGroup"], ["ResponderLogGroup", stackOutputs.ResponderLogGroupName, "AWS::Logs::LogGroup"],
+  ];
+  const bound = new Map(boundLogical.map(([logicalResourceId, physicalResourceId]) => [logicalResourceId, physicalResourceId]));
+  const { buildFargateLiveTaskDefinitions } = await import("../src/runtime/aws-fargate-live-plan.mjs");
+  const definitions = buildFargateLiveTaskDefinitions({
+    stackOutputs,
+    stackPlan: plan,
+    stackResources: {
+      stackId: `arn:aws:cloudformation:us-west-2:123456789012:stack/clockchain-${SESSION_ID}/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee`,
+      stackName: `clockchain-${SESSION_ID}`,
+      resources: Object.entries(plan.template.Resources).map(([logicalResourceId, resource]) => ({
+        logicalResourceId,
+        physicalResourceId: bound.get(logicalResourceId) ?? `physical-${logicalResourceId.toLowerCase()}`,
+        resourceType: resource.Type,
+      })),
+    },
+  });
+  assert.equal(normalizeFargateTaskDefinitionForProof(definitions.initiator, "initiator").containerDefinitions.length, 2);
+
+  for (const mutate of [
+    (value) => { value.containerDefinitions.push({ ...value.containerDefinitions[1], name: "other-init" }); },
+    (value) => { value.containerDefinitions[1].essential = true; },
+    (value) => { value.containerDefinitions[1].secrets = [{ name: "SECRET", valueFrom: "arn:aws:secretsmanager:us-west-2:123456789012:secret:x" }]; },
+    (value) => { value.containerDefinitions[0].dependsOn[0].condition = "START"; },
+    (value) => { value.volumes[0].efsVolumeConfiguration = { fileSystemId: "fs-shared" }; },
+    (value) => { value.volumes[0].host = { sourcePath: "/tmp/shared" }; },
+  ]) {
+    const changed = clone(definitions.initiator);
+    mutate(changed);
+    assert.throws(() => normalizeFargateTaskDefinitionForProof(changed, "initiator"), /Fargate dry-run validation failed safely/);
+  }
 });
 
 function clone(value) {

@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -14,6 +17,33 @@ const RUN_ID = "11111111-2222-4333-8444-555555555555";
 const IMAGE = `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/clockchain-mechanics-proof@sha256:${"a".repeat(64)}`;
 const CODEX_SECRET = `arn:aws:secretsmanager:${REGION}:${ACCOUNT}:secret:clockchain/codex-demo-AbCdEf`;
 const BEDROCK_MODEL = `arn:aws:bedrock:${REGION}:${ACCOUNT}:inference-profile/us.anthropic.claude-sonnet-4-6`;
+const RESOURCE_TYPES = Object.freeze({
+  Cluster: "AWS::ECS::Cluster",
+  NatEip: "AWS::EC2::EIP",
+  NatGateway: "AWS::EC2::NatGateway",
+  InitiatorPrivateSubnet: "AWS::EC2::Subnet",
+  ResponderPrivateSubnet: "AWS::EC2::Subnet",
+  InitiatorRouteTable: "AWS::EC2::RouteTable",
+  ResponderRouteTable: "AWS::EC2::RouteTable",
+  InitiatorDefaultRoute: "AWS::EC2::Route",
+  ResponderDefaultRoute: "AWS::EC2::Route",
+  InitiatorRouteAssociation: "AWS::EC2::SubnetRouteTableAssociation",
+  ResponderRouteAssociation: "AWS::EC2::SubnetRouteTableAssociation",
+  InitiatorQueue: "AWS::SQS::Queue",
+  ResponderQueue: "AWS::SQS::Queue",
+  InitiatorLogGroup: "AWS::Logs::LogGroup",
+  ResponderLogGroup: "AWS::Logs::LogGroup",
+  InitiatorSecurityGroup: "AWS::EC2::SecurityGroup",
+  ResponderSecurityGroup: "AWS::EC2::SecurityGroup",
+  InitiatorPeerIngress: "AWS::EC2::SecurityGroupIngress",
+  ResponderPeerIngress: "AWS::EC2::SecurityGroupIngress",
+  InitiatorPeerEgress: "AWS::EC2::SecurityGroupEgress",
+  ResponderPeerEgress: "AWS::EC2::SecurityGroupEgress",
+  InitiatorTaskRole: "AWS::IAM::Role",
+  ResponderTaskRole: "AWS::IAM::Role",
+  InitiatorExecutionRole: "AWS::IAM::Role",
+  ResponderExecutionRole: "AWS::IAM::Role",
+});
 
 function inputs() {
   return {
@@ -58,18 +88,46 @@ function inputs() {
 function outputs() {
   return {
     ClusterArn: `arn:aws:ecs:${REGION}:${ACCOUNT}:cluster/clockchain-${RUN_ID}`,
-    InitiatorExecutionRoleArn: `arn:aws:iam::${ACCOUNT}:role/clockchain-${RUN_ID}-initiator-execution`,
+    InitiatorExecutionRoleArn: `arn:aws:iam::${ACCOUNT}:role/cc-${RUN_ID}-i-exec`,
     InitiatorLogGroupName: `/clockchain/mechanics-proof/${RUN_ID}/initiator`,
     InitiatorPrivateSubnetId: "subnet-new-initiator",
     InitiatorQueueUrl: `https://sqs.${REGION}.amazonaws.com/${ACCOUNT}/clockchain-${RUN_ID}-initiator`,
     InitiatorSecurityGroupId: "sg-initiator",
-    InitiatorTaskRoleArn: `arn:aws:iam::${ACCOUNT}:role/clockchain-${RUN_ID}-initiator-task`,
-    ResponderExecutionRoleArn: `arn:aws:iam::${ACCOUNT}:role/clockchain-${RUN_ID}-responder-execution`,
+    InitiatorTaskRoleArn: `arn:aws:iam::${ACCOUNT}:role/cc-${RUN_ID}-i-task`,
+    ResponderExecutionRoleArn: `arn:aws:iam::${ACCOUNT}:role/cc-${RUN_ID}-r-exec`,
     ResponderLogGroupName: `/clockchain/mechanics-proof/${RUN_ID}/responder`,
     ResponderPrivateSubnetId: "subnet-new-responder",
     ResponderQueueUrl: `https://sqs.${REGION}.amazonaws.com/${ACCOUNT}/clockchain-${RUN_ID}-responder`,
     ResponderSecurityGroupId: "sg-responder",
-    ResponderTaskRoleArn: `arn:aws:iam::${ACCOUNT}:role/clockchain-${RUN_ID}-responder-task`,
+    ResponderTaskRoleArn: `arn:aws:iam::${ACCOUNT}:role/cc-${RUN_ID}-r-task`,
+  };
+}
+
+function stackResources() {
+  const value = outputs();
+  const bound = new Map([
+    ["Cluster", value.ClusterArn],
+    ["InitiatorPrivateSubnet", value.InitiatorPrivateSubnetId],
+    ["ResponderPrivateSubnet", value.ResponderPrivateSubnetId],
+    ["InitiatorSecurityGroup", value.InitiatorSecurityGroupId],
+    ["ResponderSecurityGroup", value.ResponderSecurityGroupId],
+    ["InitiatorQueue", value.InitiatorQueueUrl],
+    ["ResponderQueue", value.ResponderQueueUrl],
+    ["InitiatorTaskRole", value.InitiatorTaskRoleArn.split("/").at(-1)],
+    ["ResponderTaskRole", value.ResponderTaskRoleArn.split("/").at(-1)],
+    ["InitiatorExecutionRole", value.InitiatorExecutionRoleArn.split("/").at(-1)],
+    ["ResponderExecutionRole", value.ResponderExecutionRoleArn.split("/").at(-1)],
+    ["InitiatorLogGroup", value.InitiatorLogGroupName],
+    ["ResponderLogGroup", value.ResponderLogGroupName],
+  ]);
+  return {
+    stackId: `arn:aws:cloudformation:${REGION}:${ACCOUNT}:stack/clockchain-${RUN_ID}/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee`,
+    stackName: `clockchain-${RUN_ID}`,
+    resources: Object.entries(RESOURCE_TYPES).map(([logicalResourceId, resourceType]) => ({
+      logicalResourceId,
+      physicalResourceId: bound.get(logicalResourceId) ?? `physical-${logicalResourceId.toLowerCase()}`,
+      resourceType,
+    })),
   };
 }
 
@@ -96,6 +154,15 @@ test("live Fargate template defines disposable private networking, exact role bo
   assert.ok(resources.Cluster);
   assert.ok(resources.InitiatorLogGroup);
   assert.ok(resources.ResponderLogGroup);
+  const trustCondition = {
+    ArnLike: { "aws:SourceArn": { "Fn::Sub": "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:*" } },
+    StringEquals: { "aws:SourceAccount": { Ref: "AWS::AccountId" } },
+  };
+  for (const name of ["InitiatorTaskRole", "ResponderTaskRole", "InitiatorExecutionRole", "ResponderExecutionRole"]) {
+    assert.deepEqual(resources[name].Properties.AssumeRolePolicyDocument.Statement[0].Condition, trustCondition);
+  }
+  assert.deepEqual(resources.InitiatorTaskRole.Properties.RoleName, { "Fn::Sub": "cc-${RunId}-i-task" });
+  assert.deepEqual(resources.ResponderTaskRole.Properties.RoleName, { "Fn::Sub": "cc-${RunId}-r-task" });
 
   const serialized = JSON.stringify(template);
   assert.doesNotMatch(serialized, /EFS|FileSystem|SIGNER|STATE_REF|MCP_CREDENTIAL/i);
@@ -150,7 +217,7 @@ test("live stack plan binds explicit validated network inputs without hard-coded
 
 test("live task definitions use stack outputs and keep party authority inside isolated roles", async () => {
   const plan = await buildFargateLiveStackPlan(inputs());
-  const definitions = buildFargateLiveTaskDefinitions({ stackOutputs: outputs(), stackPlan: plan });
+  const definitions = buildFargateLiveTaskDefinitions({ stackOutputs: outputs(), stackPlan: plan, stackResources: stackResources() });
   const initiator = definitions.initiator;
   const responder = definitions.responder;
 
@@ -230,6 +297,8 @@ test("live plan rejects unsafe or inferred networking and authority inputs", asy
     ["budget overflow", (value) => { value.budgetUsd = 25.01; }],
     ["mutable image", (value) => { value.appImage = `${ACCOUNT}.dkr.ecr.${REGION}.amazonaws.com/app:latest`; }],
     ["cross-account codex secret", (value) => { value.codexSecretArn = value.codexSecretArn.replace(ACCOUNT, "210987654321"); }],
+    ["suffixed bedrock profile", (value) => { value.bedrockModelArn += ":copy"; }],
+    ["alternate deployment root", (value) => { value.root = "/private/tmp/alternate"; }],
   ];
   for (const [name, mutate] of cases) {
     const value = clone(inputs());
@@ -243,12 +312,58 @@ test("task definition builder rejects ambiguous outputs and shared role identity
   const shared = outputs();
   shared.ResponderTaskRoleArn = shared.InitiatorTaskRoleArn;
   assert.throws(
-    () => buildFargateLiveTaskDefinitions({ stackOutputs: shared, stackPlan: plan }),
+    () => buildFargateLiveTaskDefinitions({ stackOutputs: shared, stackPlan: plan, stackResources: stackResources() }),
     /Fargate live plan validation failed safely/,
   );
   const extra = { ...outputs(), SecretValue: "must-not-be-accepted" };
   assert.throws(
-    () => buildFargateLiveTaskDefinitions({ stackOutputs: extra, stackPlan: plan }),
+    () => buildFargateLiveTaskDefinitions({ stackOutputs: extra, stackPlan: plan, stackResources: stackResources() }),
+    /Fargate live plan validation failed safely/,
+  );
+});
+
+test("task definitions require every generated output to match one exact stack-resource envelope", async () => {
+  const plan = await buildFargateLiveStackPlan(inputs());
+  const arbitraryRole = outputs();
+  arbitraryRole.InitiatorTaskRoleArn = `arn:aws:iam::${ACCOUNT}:role/arbitrary-same-account-role`;
+  assert.throws(
+    () => buildFargateLiveTaskDefinitions({ stackOutputs: arbitraryRole, stackPlan: plan, stackResources: stackResources() }),
+    /Fargate live plan validation failed safely/,
+  );
+  for (const mutate of [
+    (value) => { value.stackName = "clockchain-other"; },
+    (value) => { value.stackId = value.stackId.replace(`clockchain-${RUN_ID}`, "clockchain-other"); },
+    (value) => { value.resources.find((entry) => entry.logicalResourceId === "InitiatorPrivateSubnet").physicalResourceId = "subnet-foreign"; },
+    (value) => { value.resources.find((entry) => entry.logicalResourceId === "NatGateway").resourceType = "AWS::IAM::Role"; },
+    (value) => { value.resources.find((entry) => entry.logicalResourceId === "NatGateway").physicalResourceId = ""; },
+    (value) => { value.resources = value.resources.filter((entry) => entry.logicalResourceId !== "NatGateway"); },
+    (value) => { value.resources.push({ logicalResourceId: "AdminRole", physicalResourceId: "admin", resourceType: "AWS::IAM::Role" }); },
+  ]) {
+    const resources = clone(stackResources());
+    mutate(resources);
+    assert.throws(
+      () => buildFargateLiveTaskDefinitions({ stackOutputs: outputs(), stackPlan: plan, stackResources: resources }),
+      /Fargate live plan validation failed safely/,
+    );
+  }
+});
+
+test("canonical live template loader rejects alternate templates with added administrator authority", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "clockchain-live-template-"));
+  t.after(() => rm(root, { force: true, recursive: true }));
+  const target = join(root, "infra", "mechanics-proof");
+  await mkdir(target, { recursive: true });
+  const template = JSON.parse(await readFile("infra/mechanics-proof/fargate-live-runtime.yaml", "utf8"));
+  template.Resources.AdminRole = {
+    Type: "AWS::IAM::Role",
+    Properties: {
+      AssumeRolePolicyDocument: { Version: "2012-10-17", Statement: [] },
+      Policies: [{ PolicyName: "admin", PolicyDocument: { Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "*", Resource: "*" }] } }],
+    },
+  };
+  await writeFile(join(target, "fargate-live-runtime.yaml"), JSON.stringify(template));
+  await assert.rejects(
+    () => loadFargateLiveRuntimeTemplate({ root }),
     /Fargate live plan validation failed safely/,
   );
 });

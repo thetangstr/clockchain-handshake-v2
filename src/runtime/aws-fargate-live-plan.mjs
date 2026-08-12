@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { types } from "node:util";
@@ -27,6 +28,7 @@ const SG_ID = /^sg-[a-z0-9-]+$/;
 const IMAGE = /^([0-9]{12})\.dkr\.ecr\.([a-z]{2}(?:-gov)?-[a-z]+-[0-9])\.amazonaws\.com\/clockchain-mechanics-proof@sha256:[0-9a-f]{64}$/;
 const TEMPLATE_PATH = "infra/mechanics-proof/fargate-live-runtime.yaml";
 const TEMPLATE_SCHEMA = "clockchain.fargate-live-runtime-template/v1";
+const TEMPLATE_SHA256 = "cd54763b6b21f4392cac8976128d2f46cbabac1337f1663fbef7cf5abcab17b0";
 const EXPECTED_OUTPUTS = Object.freeze([
   "ClusterArn",
   "InitiatorExecutionRoleArn",
@@ -42,6 +44,21 @@ const EXPECTED_OUTPUTS = Object.freeze([
   "ResponderSecurityGroupId",
   "ResponderTaskRoleArn",
 ]);
+const STACK_RESOURCE_BINDINGS = Object.freeze({
+  Cluster: Object.freeze({ output: "ClusterArn", type: "AWS::ECS::Cluster" }),
+  InitiatorExecutionRole: Object.freeze({ output: "InitiatorExecutionRoleArn", type: "AWS::IAM::Role", arnName: true }),
+  InitiatorLogGroup: Object.freeze({ output: "InitiatorLogGroupName", type: "AWS::Logs::LogGroup" }),
+  InitiatorPrivateSubnet: Object.freeze({ output: "InitiatorPrivateSubnetId", type: "AWS::EC2::Subnet" }),
+  InitiatorQueue: Object.freeze({ output: "InitiatorQueueUrl", type: "AWS::SQS::Queue" }),
+  InitiatorSecurityGroup: Object.freeze({ output: "InitiatorSecurityGroupId", type: "AWS::EC2::SecurityGroup" }),
+  InitiatorTaskRole: Object.freeze({ output: "InitiatorTaskRoleArn", type: "AWS::IAM::Role", arnName: true }),
+  ResponderExecutionRole: Object.freeze({ output: "ResponderExecutionRoleArn", type: "AWS::IAM::Role", arnName: true }),
+  ResponderLogGroup: Object.freeze({ output: "ResponderLogGroupName", type: "AWS::Logs::LogGroup" }),
+  ResponderPrivateSubnet: Object.freeze({ output: "ResponderPrivateSubnetId", type: "AWS::EC2::Subnet" }),
+  ResponderQueue: Object.freeze({ output: "ResponderQueueUrl", type: "AWS::SQS::Queue" }),
+  ResponderSecurityGroup: Object.freeze({ output: "ResponderSecurityGroupId", type: "AWS::EC2::SecurityGroup" }),
+  ResponderTaskRole: Object.freeze({ output: "ResponderTaskRoleArn", type: "AWS::IAM::Role", arnName: true }),
+});
 const STACK_INPUT_KEYS = Object.freeze([
   "accountId",
   "appImage",
@@ -56,7 +73,6 @@ const STACK_INPUT_KEYS = Object.freeze([
   "publicSubnetId",
   "region",
   "responderPrivateSubnet",
-  "root",
   "runId",
   "startedAt",
   "ttlSeconds",
@@ -158,7 +174,9 @@ export async function loadFargateLiveRuntimeTemplate(optionsInput = {}) {
   const root = options.root ?? process.cwd();
   if (typeof root !== "string" || root.length === 0) fail();
   try {
-    return validateTemplate(JSON.parse(await readFile(resolve(root, TEMPLATE_PATH), "utf8")));
+    const bytes = await readFile(resolve(root, TEMPLATE_PATH), "utf8");
+    if (createHash("sha256").update(bytes).digest("hex") !== TEMPLATE_SHA256) fail();
+    return validateTemplate(JSON.parse(bytes));
   } catch (error) {
     if (error?.message === "Fargate live plan validation failed safely.") throw error;
     fail();
@@ -225,7 +243,7 @@ export async function buildFargateLiveStackPlan(optionsInput) {
   if (!imageMatch || imageMatch[1] !== accountId || imageMatch[2] !== region) fail();
   arnParts(options.codexSecretArn, "secretsmanager", region, accountId);
   const bedrock = arnParts(options.bedrockModelArn, "bedrock", region, accountId);
-  if (!bedrock[4].startsWith("inference-profile/us.anthropic.claude-sonnet-4-6")) fail();
+  if (bedrock[4] !== "inference-profile/us.anthropic.claude-sonnet-4-6") fail();
   if (options.mcpUrl !== PRODUCTION_MCP_URL) fail();
   if (!Number.isInteger(options.ttlSeconds) || options.ttlSeconds < 1 || options.ttlSeconds > 3600) fail();
   if (options.maxConcurrency !== 2) fail();
@@ -234,7 +252,7 @@ export async function buildFargateLiveStackPlan(optionsInput) {
   const expiresAt = Date.parse(string(options.expiresAt));
   if (!Number.isFinite(startedAt) || !Number.isFinite(expiresAt) || expiresAt - startedAt !== options.ttlSeconds * 1000) fail();
   const network = validateNetwork({ ...options, vpcId, publicSubnetId });
-  const template = await loadFargateLiveRuntimeTemplate({ ...(options.root === undefined ? {} : { root: options.root }) });
+  const template = await loadFargateLiveRuntimeTemplate();
   return Object.freeze({
     schema: FARGATE_LIVE_PLAN_SCHEMA,
     accountId,
@@ -275,9 +293,15 @@ function validateOutputs(input, plan) {
   const outputs = exact(input, EXPECTED_OUTPUTS);
   const account = plan.accountId;
   const region = plan.region;
-  if (!new RegExp(`^arn:aws:ecs:${region}:${account}:cluster\/.+$`).test(string(outputs.ClusterArn))) fail();
-  for (const key of ["InitiatorTaskRoleArn", "ResponderTaskRoleArn", "InitiatorExecutionRoleArn", "ResponderExecutionRoleArn"]) {
-    if (!new RegExp(`^arn:aws:iam::${account}:role\/.+$`).test(string(outputs[key]))) fail();
+  if (outputs.ClusterArn !== `arn:aws:ecs:${region}:${account}:cluster/clockchain-${plan.runId}`) fail();
+  const roleNames = Object.freeze({
+    InitiatorTaskRoleArn: `cc-${plan.runId}-i-task`,
+    ResponderTaskRoleArn: `cc-${plan.runId}-r-task`,
+    InitiatorExecutionRoleArn: `cc-${plan.runId}-i-exec`,
+    ResponderExecutionRoleArn: `cc-${plan.runId}-r-exec`,
+  });
+  for (const [key, roleName] of Object.entries(roleNames)) {
+    if (outputs[key] !== `arn:aws:iam::${account}:role/${roleName}`) fail();
   }
   if (
     outputs.InitiatorTaskRoleArn === outputs.ResponderTaskRoleArn ||
@@ -292,11 +316,40 @@ function validateOutputs(input, plan) {
     if (!new RegExp(`^https://sqs\\.${region}\\.amazonaws\\.com/${account}/[A-Za-z0-9_-]+$`).test(string(outputs[key]))) fail();
   }
   if (outputs.InitiatorQueueUrl === outputs.ResponderQueueUrl) fail();
+  if (outputs.InitiatorQueueUrl !== `https://sqs.${region}.amazonaws.com/${account}/clockchain-${plan.runId}-initiator`) fail();
+  if (outputs.ResponderQueueUrl !== `https://sqs.${region}.amazonaws.com/${account}/clockchain-${plan.runId}-responder`) fail();
   for (const key of ["InitiatorLogGroupName", "ResponderLogGroupName"]) {
     if (!string(outputs[key]).startsWith(`/clockchain/mechanics-proof/${plan.runId}/`)) fail();
   }
   if (outputs.InitiatorLogGroupName === outputs.ResponderLogGroupName) fail();
   return outputs;
+}
+
+function validateStackResources(input, plan, outputs) {
+  const envelope = exact(input, ["resources", "stackId", "stackName"]);
+  const stackName = `clockchain-${plan.runId}`;
+  if (envelope.stackName !== stackName) fail();
+  const escapedName = stackName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (!new RegExp(`^arn:aws:cloudformation:${plan.region}:${plan.accountId}:stack/${escapedName}/[A-Za-z0-9-]+$`).test(string(envelope.stackId))) fail();
+  const templateResources = plain(plan.template.Resources);
+  if (!Array.isArray(envelope.resources) || envelope.resources.length !== Object.keys(templateResources).length) fail();
+  const seen = new Set();
+  for (const resourceInput of envelope.resources) {
+    const resource = exact(resourceInput, ["logicalResourceId", "physicalResourceId", "resourceType"]);
+    const templateResource = templateResources[resource.logicalResourceId];
+    if (!templateResource || seen.has(resource.logicalResourceId) || resource.resourceType !== plain(templateResource).Type) fail();
+    string(resource.physicalResourceId);
+    const binding = STACK_RESOURCE_BINDINGS[resource.logicalResourceId];
+    seen.add(resource.logicalResourceId);
+    if (binding) {
+      if (resource.resourceType !== binding.type) fail();
+      const output = outputs[binding.output];
+      const expectedPhysical = binding.arnName ? output.slice(output.lastIndexOf("/") + 1) : output;
+      if (resource.physicalResourceId !== expectedPhysical) fail();
+    }
+  }
+  if (seen.size !== Object.keys(templateResources).length) fail();
+  return envelope;
 }
 
 function env(object) {
@@ -382,10 +435,11 @@ function taskDefinition(plan, outputs, role) {
 }
 
 export function buildFargateLiveTaskDefinitions(optionsInput) {
-  const options = exact(optionsInput, ["stackOutputs", "stackPlan"]);
+  const options = exact(optionsInput, ["stackOutputs", "stackPlan", "stackResources"]);
   const plan = plain(options.stackPlan);
   if (plan.schema !== FARGATE_LIVE_PLAN_SCHEMA) fail();
   const outputs = validateOutputs(options.stackOutputs, plan);
+  validateStackResources(options.stackResources, plan, outputs);
   const definitions = Object.freeze({
     initiator: taskDefinition(plan, outputs, "initiator"),
     responder: taskDefinition(plan, outputs, "responder"),

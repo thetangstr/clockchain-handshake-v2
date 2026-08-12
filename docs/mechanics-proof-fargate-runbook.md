@@ -52,6 +52,8 @@ aws cloudformation validate-template \
 
 Successful template validation is not a mechanics proof and does not authorize stack creation. Before deployment, the live controller must repeat the VPC, public-route, and CIDR non-overlap checks against current AWS control-plane data.
 
+The deterministic run-scoped IAM role names require the explicit CloudFormation capability `CAPABILITY_NAMED_IAM`; `CAPABILITY_IAM` is insufficient. After stack creation, the controller must consume one complete `ListStackResources` envelope for the exact stack ID/name, validate all 25 canonical logical IDs and resource types with nonempty physical IDs, and bind the 13 task-definition inputs to those exact same-stack physical resources. A partial or prefiltered resource list cannot establish stack provenance.
+
 Runtime requirements preserved from the historical dry fixture:
 
 - Two one-shot Fargate tasks, one initiator and one responder, with distinct task roles, execution roles, log groups, secret references, state roots, signer roots, and workspaces.

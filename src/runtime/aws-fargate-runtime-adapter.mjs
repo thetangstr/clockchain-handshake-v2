@@ -62,6 +62,25 @@ const CONTAINER_DEFINITION_KEYS = Object.freeze([
   "secrets",
   "user",
 ]);
+const LIVE_APP_CONTAINER_DEFINITION_KEYS = Object.freeze([
+  ...CONTAINER_DEFINITION_KEYS,
+  "command",
+  "dependsOn",
+]);
+const WORKSPACE_INIT_CONTAINER_DEFINITION_KEYS = Object.freeze([
+  "command",
+  "entryPoint",
+  "environment",
+  "essential",
+  "image",
+  "mountPoints",
+  "name",
+  "portMappings",
+  "privileged",
+  "readonlyRootFilesystem",
+  "secrets",
+  "user",
+]);
 const RUNTIME_PLATFORM_KEYS = Object.freeze(["cpuArchitecture", "operatingSystemFamily"]);
 const MAX_CANONICAL_DEPTH = 24;
 const MAX_CANONICAL_KEYS = 256;
@@ -398,10 +417,43 @@ export function normalizeFargateTaskDefinitionForProof(taskDefinition, role, { s
   exactKeys(task, server ? TASK_DEFINITION_SERVER_KEYS : TASK_DEFINITION_KEYS);
   const containers = task.containerDefinitions;
   const volumes = task.volumes;
-  if (!Array.isArray(containers) || containers.length !== 1) fail();
+  if (!Array.isArray(containers) || ![1, 2].includes(containers.length)) fail();
   if (!Array.isArray(volumes) || volumes.length !== 1) fail();
-  const container = object(containers[0]);
-  exactKeys(container, CONTAINER_DEFINITION_KEYS);
+  const volume = object(volumes[0]);
+  exactKeys(volume, ["name"]);
+  if (volume.name !== "workspace" && containers.length === 2) fail();
+  let container;
+  let workspaceInit = null;
+  if (containers.length === 1) {
+    container = object(containers[0]);
+    exactKeys(container, CONTAINER_DEFINITION_KEYS);
+  } else {
+    container = object(containers.find((entry) => object(entry).name === role));
+    workspaceInit = object(containers.find((entry) => object(entry).name === "workspace-init"));
+    if (container === workspaceInit) fail();
+    exactKeys(container, LIVE_APP_CONTAINER_DEFINITION_KEYS);
+    exactKeys(workspaceInit, WORKSPACE_INIT_CONTAINER_DEFINITION_KEYS);
+    if (
+      JSON.stringify(container.command) !== JSON.stringify(["--run-managed"]) ||
+      JSON.stringify(container.dependsOn) !== JSON.stringify([{ condition: "SUCCESS", containerName: "workspace-init" }]) ||
+      container.essential !== true ||
+      container.privileged !== false ||
+      container.readonlyRootFilesystem !== true ||
+      container.user !== "1000:1000" ||
+      JSON.stringify(container.mountPoints) !== JSON.stringify([{ containerPath: "/workspace", readOnly: false, sourceVolume: "workspace" }]) ||
+      workspaceInit.essential !== false ||
+      workspaceInit.privileged !== false ||
+      workspaceInit.readonlyRootFilesystem !== true ||
+      workspaceInit.user !== "0:0" ||
+      workspaceInit.image !== container.image ||
+      JSON.stringify(workspaceInit.entryPoint) !== JSON.stringify(["/bin/sh", "-c"]) ||
+      JSON.stringify(workspaceInit.command) !== JSON.stringify(["chown 1000:1000 /workspace"]) ||
+      JSON.stringify(workspaceInit.environment) !== "[]" ||
+      JSON.stringify(workspaceInit.secrets) !== "[]" ||
+      JSON.stringify(workspaceInit.portMappings) !== "[]" ||
+      JSON.stringify(workspaceInit.mountPoints) !== JSON.stringify([{ containerPath: "/workspace", readOnly: false, sourceVolume: "workspace" }])
+    ) fail();
+  }
   exactKeys(task.runtimePlatform, RUNTIME_PLATFORM_KEYS);
   if (server) {
     awsArn(task.taskDefinitionArn);
@@ -419,6 +471,10 @@ export function normalizeFargateTaskDefinitionForProof(taskDefinition, role, { s
     executionRoleArn: task.executionRoleArn,
     containerDefinitions: [{
       name: string(container.name),
+      ...(containers.length === 2 ? {
+        command: container.command,
+        dependsOn: container.dependsOn,
+      } : {}),
       essential: container.essential,
       image: container.image,
       readonlyRootFilesystem: container.readonlyRootFilesystem,
@@ -429,7 +485,20 @@ export function normalizeFargateTaskDefinitionForProof(taskDefinition, role, { s
       secrets: container.secrets,
       mountPoints: container.mountPoints,
       logConfiguration: container.logConfiguration,
-    }],
+    }, ...(workspaceInit === null ? [] : [{
+      name: workspaceInit.name,
+      essential: workspaceInit.essential,
+      image: workspaceInit.image,
+      readonlyRootFilesystem: workspaceInit.readonlyRootFilesystem,
+      privileged: workspaceInit.privileged,
+      user: workspaceInit.user,
+      entryPoint: workspaceInit.entryPoint,
+      command: workspaceInit.command,
+      environment: workspaceInit.environment,
+      secrets: workspaceInit.secrets,
+      portMappings: workspaceInit.portMappings,
+      mountPoints: workspaceInit.mountPoints,
+    }])],
     volumes,
   };
   if (server) {
