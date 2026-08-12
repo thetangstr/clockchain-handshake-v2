@@ -6,7 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { createMechanicsProofPartyRuntime } from "../src/testing/mechanics-proof-party-runtime.mjs";
+import {
+  createMechanicsProofPartyRuntime,
+  mechanicsProofPartyRuntimeFailureStage,
+} from "../src/testing/mechanics-proof-party-runtime.mjs";
 
 const RUN_ID = "11111111-2222-4333-8444-555555555555";
 const PROTOCOL_SESSION_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
@@ -465,6 +468,22 @@ test("party runtime rejects controller authority, stale state, peer drift, and s
     const runtime = await createMechanicsProofPartyRuntime(options(join(parent, name)), dependencies(calls));
     await assert.rejects(() => runtime.run({ peerDescriptor: peerDescriptor(mutation) }), /Mechanics proof party runtime failed safely/);
   }
+});
+
+test("party runtime exposes only its branded allowlisted failure stage", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-stage-"));
+  const root = join(parent, "responder");
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const runtime = await createMechanicsProofPartyRuntime(options(root), dependencies([], {
+    async createInvitationTransport() { throw new Error("secret listener detail"); },
+  }));
+  await assert.rejects(() => runtime.run({ peerDescriptor: peerDescriptor() }), (error) => {
+    assert.equal(error.message, "Mechanics proof party runtime failed safely.");
+    assert.equal(mechanicsProofPartyRuntimeFailureStage(error), "listener-create");
+    assert.equal(mechanicsProofPartyRuntimeFailureStage(new Error("Mechanics proof party runtime failed safely.")), null);
+    assert.doesNotMatch(JSON.stringify(error), /secret|listener/i);
+    return true;
+  });
 });
 
 test("party runtime rejects terminal evidence with missing result digest or mismatched card signer", async (t) => {

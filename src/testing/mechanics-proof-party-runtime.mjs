@@ -46,9 +46,26 @@ const AWS_CREDENTIAL_OVERRIDE_ENV = Object.freeze([
   "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
   "AWS_PROFILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_SQS",
 ]);
+const RUNTIME_FAILURE_STAGES = Object.freeze([
+  "peer-validate", "listener-create", "listener-ready", "invitation-await", "recorder-create",
+  "bridge-create", "provider-auth", "transport-create", "adapter-create", "agent-starting",
+  "agent-launch", "evidence-validate", "certificate-event", "agent-terminate", "evidence-collect", "teardown",
+]);
+const RUNTIME_FAILURES = new WeakMap();
 
 function fail() { throw new Error(ERROR); }
 function sanitize(error) { if (error?.message === ERROR) throw error; fail(); }
+
+function stagedFailure(stage) {
+  if (!RUNTIME_FAILURE_STAGES.includes(stage)) fail();
+  const error = new Error(ERROR);
+  RUNTIME_FAILURES.set(error, stage);
+  return error;
+}
+
+export function mechanicsProofPartyRuntimeFailureStage(error) {
+  return RUNTIME_FAILURES.get(error) ?? null;
+}
 
 function exact(value, keys) {
   try {
@@ -360,6 +377,8 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
         if (destroyed || invitationTransport !== null) fail();
         let terminalEvidence = null;
         let runFailed = false;
+        let runFailureStage = null;
+        let runStage = "peer-validate";
         try {
           const runInput = optionalExact(input, ["peerDescriptor"], ["onPublicEvent"]);
           const onPublicEvent = runInput.onPublicEvent ?? (() => undefined);
@@ -385,6 +404,7 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
             peer.runtime.tlsCertificateSha256 === localRuntime.tlsCertificateSha256 ||
             peer.bootstrapPublicKey === bootstrapSigner.publicKey
           ) fail();
+          runStage = "listener-create";
           invitationTransport = await deps.createInvitationTransport({
             bootstrapSigner,
             initialSessionId: null,
@@ -405,18 +425,22 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
               peerCertificateSha256: peer.runtime.tlsCertificateSha256,
             },
           });
+          runStage = "listener-ready";
           await emit("a2a.listener.ready", invitationTransport.publicEvidence());
           let privateInvitation = null;
           if (options.role === "responder") {
+            runStage = "invitation-await";
             privateInvitation = await deps.waitForInvitation(invitationTransport);
             await emit("a2a.invitation.received", invitationTransport.publicEvidence());
           }
+          runStage = "recorder-create";
           actionRecorder = await deps.createActionRecorder({
             manifestDigest: options.manifestDigest,
             room: { cache: paths.home, home: paths.home, root: options.root, state: paths.state, tmp: paths.tmp, workspace: paths.workspace },
             socketRoot: paths.socket,
           });
           const checkpointClient = deps.createCheckpointClient({ endpoint: options.mcpEndpoint });
+          runStage = "bridge-create";
           bridge = deps.createBridge({
             activateSignedChannel: async (context) => activatePartySignedChannel({
               createAuthority: () => createPartyA2AAuthority({
@@ -468,11 +492,14 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
             sessionId: null,
             submitCheckpoint: checkpointClient.submitCheckpoint,
           });
+          runStage = "provider-auth";
+          const providerEnv = await providerEnvFor(options.harness, paths.home);
+          runStage = "transport-create";
           const processTransport = deps.createProcessTransport({
             actionRecorder: actionRecorder.actionRecorder,
             env: {
               PATH: `${join(process.cwd(), "node_modules", ".bin")}:${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`,
-              ...await providerEnvFor(options.harness, paths.home),
+              ...providerEnv,
             },
             harness: options.harness,
             home: paths.home,
@@ -481,6 +508,7 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
             trustedAdapterPublicKeys: [actionRecorder.trustedAdapterPublicKey],
             workspace: paths.workspace,
           });
+          runStage = "adapter-create";
           adapter = deps.createHarnessAdapter({
             decisionCallback: () => Object.freeze({ decision: "authorize" }),
             harness: options.harness,
@@ -495,7 +523,9 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
             await chmod(invitationPath, 0o600);
             privateInvitation = null;
           }
+          runStage = "agent-starting";
           await emit("agent.starting", { harness: options.harness, runtimeId: options.runtimeId });
+          runStage = "agent-launch";
           await adapter.launchSession({
             runtime: { harness: options.harness, role: options.role, runtimeId: options.runtimeId, sessionId: options.runId },
             mandate: options.mandate,
@@ -507,6 +537,7 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
             },
           });
           launched = true;
+          runStage = "evidence-validate";
           const bridgeEvidence = publicData(bridge.publicEvidence());
           const cardSignerAddresses = publicData(bridgeEvidence.cardSignerAddresses);
           const ownCardSigner = cardSignerAddresses?.[options.role];
@@ -528,9 +559,12 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
             !Array.isArray(directDelivery.messageDigests) || directDelivery.messageDigests.length !== 2 ||
             directDelivery.messageDigests.some((digest) => !DIGEST.test(digest))
           ) fail();
+          runStage = "certificate-event";
           await emit("certificate.verified", bridgeEvidence.certificate);
+          runStage = "agent-terminate";
           await adapter.terminateSession({ sessionId: options.runId, reason: "mechanics-proof-complete" });
           launched = false;
+          runStage = "evidence-collect";
           const harnessEvidence = publicData(await adapter.collectEvidence({ sessionId: options.runId }));
           terminalEvidence = Object.freeze({
             schema: "clockchain.mechanics-proof-party-evidence/v1",
@@ -555,10 +589,12 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
             terminalStatus: "completed",
             teardown: Object.freeze({ completed: false }),
           });
-        } catch { runFailed = true; }
+        } catch { runFailed = true; runFailureStage = runStage; }
         let teardownResult;
-        try { teardownResult = await teardown(); } catch { runFailed = true; }
-        if (runFailed || terminalEvidence === null || teardownResult?.completed !== true) fail();
+        try { teardownResult = await teardown(); } catch { runFailed = true; runFailureStage ??= "teardown"; }
+        if (runFailed || terminalEvidence === null || teardownResult?.completed !== true) {
+          throw stagedFailure(runFailureStage ?? "evidence-validate");
+        }
         return Object.freeze({ ...terminalEvidence, teardown: Object.freeze({ completed: true }) });
       },
       destroy: teardown,

@@ -7,7 +7,10 @@ import { pathToFileURL } from "node:url";
 import { createStdinBootstrapExchange } from "../src/runtime/stdin-bootstrap-exchange.mjs";
 import { createTaskRoleAwsSqsBootstrapExchange } from "../src/runtime/aws-sqs-bootstrap-exchange.mjs";
 import { resolveAwsEcsTaskBootstrap } from "../src/runtime/aws-ecs-task-bootstrap.mjs";
-import { createMechanicsProofPartyRuntime } from "../src/testing/mechanics-proof-party-runtime.mjs";
+import {
+  createMechanicsProofPartyRuntime,
+  mechanicsProofPartyRuntimeFailureStage,
+} from "../src/testing/mechanics-proof-party-runtime.mjs";
 
 const MCP_ENDPOINT = "https://mcp.clockchain.network/handshake/mcp";
 const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -258,14 +261,16 @@ export async function runMain({
       await holdManagedRun();
     }
     return 0;
-  } catch {
+  } catch (error) {
+    const runtimeSubstage = failureStage === "runtime-run" ? mechanicsProofPartyRuntimeFailureStage(error) : null;
     if (bootstrapExchange !== null && !bootstrapExchangeDestroyed) {
       try { await bootstrapExchange.destroy(); } catch {}
     }
     if (runtime !== null && !runInvoked) {
       try { await runtime.destroy(); } catch {}
     }
-    stderr.write(`Mechanics proof party failed safely.${failureStage === null ? "" : ` stage=${failureStage}`}\n`);
+    const reportedStage = runtimeSubstage === null ? failureStage : `${failureStage}.${runtimeSubstage}`;
+    stderr.write(`Mechanics proof party failed safely.${reportedStage === null ? "" : ` stage=${reportedStage}`}\n`);
     return 1;
   }
 }
