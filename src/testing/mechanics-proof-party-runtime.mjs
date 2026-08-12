@@ -1,0 +1,459 @@
+import { createPublicKey, generateKeyPairSync, sign } from "node:crypto";
+import { chmod, lstat, mkdir, rm, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { types } from "node:util";
+
+import { createA2ACardBootstrap } from "../a2a/card-bootstrap.mjs";
+import { createHttpTaskTransport } from "../a2a/http-task-transport.mjs";
+import { createInvitationBootstrapTransport } from "../a2a/invitation-bootstrap-transport.mjs";
+import { createPartyA2AAuthority } from "../harness/party-a2a-authority.mjs";
+import { activatePartySignedChannel, defaultPartySignedChannelSleep } from "../harness/party-signed-channel-bootstrap.mjs";
+import { createAgentHandshakeCheckpointClient } from "../harness/agent-handshake-mcp-client.mjs";
+import { createAcpClaudeHarnessAdapter } from "../harness/acp-claude-adapter.mjs";
+import { createAcpCodexHarnessAdapter } from "../harness/acp-codex-adapter.mjs";
+import { createAcpProcessTransport } from "../harness/acp-process-transport.mjs";
+import { createDirectA2APartyBridge } from "../harness/direct-a2a-party-bridge.mjs";
+import { createVerifiedReleaseActionRecorder } from "../harness/verified-release-action-recorder.mjs";
+import { ACP_VERSION_PINS } from "../harness/version-pins.mjs";
+import { digestHex } from "../core/canonical.mjs";
+import { createEphemeralTlsIdentity } from "./ephemeral-tls-identity.mjs";
+
+const ERROR = "Mechanics proof party runtime failed safely.";
+const MCP_ENDPOINT = "https://mcp.clockchain.network/handshake/mcp";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const DIGEST = /^[0-9a-f]{64}$/;
+const TOKEN = /^[A-Za-z0-9._:-]{1,128}$/;
+const ROLES = Object.freeze(["initiator", "responder"]);
+const HARNESSES = Object.freeze(["codex", "claude"]);
+const OPTION_KEYS = Object.freeze([
+  "harness", "listenHost", "manifestDigest", "mandate", "mcpEndpoint", "opensslPath", "port",
+  "publicEndpoint", "role", "root", "runId", "runtimeId", "taskId", "workloadAttestationDigest",
+]);
+const DEPENDENCY_KEYS = Object.freeze([
+  "createActionRecorder", "createBootstrapSigner", "createBridge", "createCheckpointClient",
+  "createHarnessAdapter", "createInvitationTransport", "createProcessTransport", "createTlsIdentity",
+  "waitForInvitation",
+]);
+
+function fail() { throw new Error(ERROR); }
+function sanitize(error) { if (error?.message === ERROR) throw error; fail(); }
+
+function exact(value, keys) {
+  try {
+    if (
+      value === null || typeof value !== "object" || Array.isArray(value) || types.isProxy(value) ||
+      ![Object.prototype, null].includes(Object.getPrototypeOf(value))
+    ) fail();
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const actual = Reflect.ownKeys(descriptors);
+    if (actual.length !== keys.length || actual.some((key) => typeof key !== "string" || !keys.includes(key))) fail();
+    const result = {};
+    for (const key of keys) {
+      const descriptor = descriptors[key];
+      if (descriptor?.enumerable !== true || !Object.hasOwn(descriptor, "value")) fail();
+      result[key] = descriptor.value;
+    }
+    return result;
+  } catch (error) { sanitize(error); }
+}
+
+function cleanPath(value) {
+  if (typeof value !== "string" || !isAbsolute(value)) fail();
+  const path = resolve(value);
+  if (path === "/" || path.length < 8) fail();
+  return path;
+}
+
+function publicData(value, depth = 0) {
+  if (depth > 10) fail();
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "string") { if (value.length > 64 * 1024) fail(); return value; }
+  if (typeof value === "number") { if (!Number.isFinite(value)) fail(); return value; }
+  if (typeof value !== "object" || types.isProxy(value)) fail();
+  if (Array.isArray(value)) return Object.freeze(value.map((entry) => publicData(entry, depth + 1)));
+  if (![Object.prototype, null].includes(Object.getPrototypeOf(value))) fail();
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Reflect.ownKeys(descriptors).length > 96) fail();
+  const result = {};
+  for (const [key, descriptor] of Object.entries(descriptors)) {
+    if (!descriptor.enumerable || !Object.hasOwn(descriptor, "value")) fail();
+    if (/(?:private.?key|role.?access|transcript|reasoning|controller)/i.test(key)) fail();
+    result[key] = publicData(descriptor.value, depth + 1);
+  }
+  return Object.freeze(result);
+}
+
+function endpoint(value) {
+  let url;
+  try { url = new URL(value); } catch { fail(); }
+  if (
+    url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.search !== "" ||
+    url.hash !== "" || (url.pathname !== "" && url.pathname !== "/") || url.port !== "8443"
+  ) fail();
+  return `${url.protocol}//${url.host}`;
+}
+
+function runtimeBinding(value) {
+  const item = exact(value, ["endpoint", "runtimeId", "taskId", "tlsCertificateSha256", "workloadAttestationDigest"]);
+  if (
+    !TOKEN.test(item.runtimeId) || !TOKEN.test(item.taskId) || !DIGEST.test(item.tlsCertificateSha256) ||
+    !DIGEST.test(item.workloadAttestationDigest)
+  ) fail();
+  return Object.freeze({ ...item, endpoint: endpoint(item.endpoint) });
+}
+
+function descriptor(value) {
+  const item = exact(value, ["bootstrapPublicKey", "harness", "role", "runId", "runtime", "schema", "tlsCertificate"]);
+  if (
+    item.schema !== "clockchain.mechanics-proof-party-bootstrap/v1" || !HARNESSES.includes(item.harness) ||
+    !ROLES.includes(item.role) || !UUID.test(item.runId) || typeof item.tlsCertificate !== "string" ||
+    !item.tlsCertificate.includes("-----BEGIN CERTIFICATE-----") || typeof item.bootstrapPublicKey !== "string"
+  ) fail();
+  try { if (createPublicKey(item.bootstrapPublicKey).asymmetricKeyType !== "ed25519") fail(); } catch { fail(); }
+  return Object.freeze({ ...item, runtime: runtimeBinding(item.runtime) });
+}
+
+function cleanOptions(value) {
+  const item = exact(value, OPTION_KEYS);
+  if (
+    !HARNESSES.includes(item.harness) || !ROLES.includes(item.role) || !UUID.test(item.runId) ||
+    !DIGEST.test(item.manifestDigest) || !DIGEST.test(item.workloadAttestationDigest) ||
+    !TOKEN.test(item.runtimeId) || !TOKEN.test(item.taskId) || item.mcpEndpoint !== MCP_ENDPOINT ||
+    !Number.isInteger(item.port) || item.port !== 8443 || typeof item.listenHost !== "string" || item.listenHost.length === 0
+  ) fail();
+  return Object.freeze({
+    ...item,
+    root: cleanPath(item.root),
+    opensslPath: cleanPath(item.opensslPath),
+    publicEndpoint: endpoint(item.publicEndpoint),
+    mandate: publicData(item.mandate),
+  });
+}
+
+function opposite(role) { return role === "initiator" ? "responder" : "initiator"; }
+
+function createBootstrapSigner() {
+  let pair = generateKeyPairSync("ed25519");
+  let active = true;
+  const publicKey = pair.publicKey.export({ type: "spki", format: "pem" });
+  return Object.freeze({
+    publicKey,
+    signCanonicalBytes(bytes) {
+      if (!active || !Buffer.isBuffer(bytes)) fail();
+      return sign(null, bytes, pair.privateKey).toString("base64");
+    },
+    destroy() { if (!active) fail(); active = false; pair = null; return Object.freeze({ destroyed: true }); },
+  });
+}
+
+async function waitForInvitation(transport) {
+  for (let count = 0; count < 6_000; count += 1) {
+    const evidence = transport.publicEvidence();
+    if (Array.isArray(evidence?.invitations) && evidence.invitations.some((entry) => entry?.direction === "inbound")) {
+      return transport.takeInvitation();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  fail();
+}
+
+const DEFAULTS = Object.freeze({
+  createActionRecorder: createVerifiedReleaseActionRecorder,
+  createBootstrapSigner,
+  createBridge: createDirectA2APartyBridge,
+  createCheckpointClient: createAgentHandshakeCheckpointClient,
+  createHarnessAdapter({ harness, ...options }) {
+    return harness === "codex" ? createAcpCodexHarnessAdapter(options) : createAcpClaudeHarnessAdapter(options);
+  },
+  createInvitationTransport: createInvitationBootstrapTransport,
+  createProcessTransport: createAcpProcessTransport,
+  createTlsIdentity: createEphemeralTlsIdentity,
+  waitForInvitation,
+});
+
+function dependencies(input = {}) {
+  if (input === null || typeof input !== "object" || Array.isArray(input) || types.isProxy(input)) fail();
+  const descriptors = Object.getOwnPropertyDescriptors(input);
+  const result = { ...DEFAULTS };
+  for (const [key, descriptor] of Object.entries(descriptors)) {
+    if (!DEPENDENCY_KEYS.includes(key) || !descriptor.enumerable || !Object.hasOwn(descriptor, "value") || typeof descriptor.value !== "function") fail();
+    result[key] = descriptor.value;
+  }
+  return Object.freeze(result);
+}
+
+function bindingForCard(authorityBinding) {
+  return Object.freeze({
+    endpoint: authorityBinding.runtime.endpoint,
+    partySignerAddress: authorityBinding.partySignerAddress,
+    runtimeId: authorityBinding.runtime.runtimeId,
+    taskId: authorityBinding.runtime.taskId,
+    workloadAttestationDigest: authorityBinding.runtime.workloadAttestationDigest,
+  });
+}
+
+function peerBindingForCard(peerRuntime) {
+  return Object.freeze({
+    endpoint: peerRuntime.endpoint,
+    runtimeId: peerRuntime.runtimeId,
+    taskId: peerRuntime.taskId,
+    workloadAttestationDigest: peerRuntime.workloadAttestationDigest,
+  });
+}
+
+export async function createMechanicsProofPartyRuntime(optionsInput = {}, dependenciesInput = {}) {
+  let options;
+  let deps;
+  let rootIdentity = null;
+  let initialTls = null;
+  let initialBootstrapSigner = null;
+  let constructed = false;
+  try {
+    options = cleanOptions(optionsInput);
+    deps = dependencies(dependenciesInput);
+    await mkdir(options.root, { mode: 0o700, recursive: false });
+    await chmod(options.root, 0o700);
+    const rootStat = await lstat(options.root);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || (rootStat.mode & 0o777) !== 0o700) fail();
+    rootIdentity = Object.freeze({ dev: rootStat.dev, ino: rootStat.ino, path: options.root });
+    const paths = Object.freeze({
+      home: join(options.root, "home"),
+      socket: join(options.root, "socket"),
+      state: join(options.root, "state"),
+      tmp: join(options.root, "workspace", "tmp"),
+      workspace: join(options.root, "workspace"),
+    });
+    for (const path of [paths.home, paths.state, paths.workspace]) await mkdir(path, { mode: 0o700, recursive: false });
+    await mkdir(paths.tmp, { mode: 0o700, recursive: false });
+    const tls = await deps.createTlsIdentity({ hostname: new URL(options.publicEndpoint).hostname, opensslPath: options.opensslPath, root: join(options.root, "tls") });
+    initialTls = tls;
+    const bootstrapSigner = deps.createBootstrapSigner();
+    initialBootstrapSigner = bootstrapSigner;
+    if (
+      typeof tls?.certificate !== "string" || typeof tls?.privateKey !== "string" || !DIGEST.test(tls?.certificateSha256) ||
+      typeof tls?.destroy !== "function" || typeof bootstrapSigner?.publicKey !== "string" ||
+      typeof bootstrapSigner?.signCanonicalBytes !== "function" || typeof bootstrapSigner?.destroy !== "function"
+    ) fail();
+    const localRuntime = Object.freeze({
+      endpoint: options.publicEndpoint,
+      runtimeId: options.runtimeId,
+      taskId: options.taskId,
+      tlsCertificateSha256: tls.certificateSha256,
+      workloadAttestationDigest: options.workloadAttestationDigest,
+    });
+    const bootstrap = Object.freeze({
+      schema: "clockchain.mechanics-proof-party-bootstrap/v1",
+      bootstrapPublicKey: bootstrapSigner.publicKey,
+      harness: options.harness,
+      role: options.role,
+      runId: options.runId,
+      runtime: localRuntime,
+      tlsCertificate: tls.certificate,
+    });
+    let invitationTransport = null;
+    let actionRecorder = null;
+    let bridge = null;
+    let adapter = null;
+    let launched = false;
+    let destroyed = false;
+
+    async function teardown() {
+      if (destroyed) fail();
+      destroyed = true;
+      const tasks = [];
+      if (launched && adapter !== null) tasks.push(() => adapter.terminateSession({ sessionId: options.runId, reason: "mechanics-proof-complete" }));
+      if (bridge !== null) tasks.push(() => bridge.destroy());
+      if (actionRecorder !== null) tasks.push(() => actionRecorder.close());
+      if (invitationTransport !== null) tasks.push(() => invitationTransport.close());
+      tasks.push(() => bootstrapSigner.destroy());
+      tasks.push(() => tls.destroy());
+      const results = await Promise.allSettled(tasks.map((task) => Promise.resolve().then(task)));
+      try {
+        const current = await lstat(options.root);
+        if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== rootStat.dev || current.ino !== rootStat.ino) fail();
+        await rm(options.root, { recursive: true, force: false });
+      } catch { results.push({ status: "rejected", reason: new Error("cleanup") }); }
+      if (results.some((result) => result.status === "rejected")) fail();
+      return Object.freeze({ completed: true });
+    }
+
+    constructed = true;
+    return Object.freeze({
+      bootstrapDescriptor() { if (destroyed) fail(); return bootstrap; },
+      async run(input) {
+        if (destroyed || invitationTransport !== null) fail();
+        let terminalEvidence = null;
+        let runFailed = false;
+        try {
+          const peer = descriptor(exact(input, ["peerDescriptor"]).peerDescriptor);
+          if (
+            peer.runId !== options.runId || peer.role !== opposite(options.role) ||
+            peer.runtime.runtimeId === localRuntime.runtimeId || peer.runtime.taskId === localRuntime.taskId ||
+            peer.runtime.workloadAttestationDigest === localRuntime.workloadAttestationDigest ||
+            peer.runtime.tlsCertificateSha256 === localRuntime.tlsCertificateSha256 ||
+            peer.bootstrapPublicKey === bootstrapSigner.publicKey
+          ) fail();
+          invitationTransport = await deps.createInvitationTransport({
+            bootstrapSigner,
+            initialSessionId: null,
+            listenHost: options.listenHost,
+            localRuntime: { runtimeId: localRuntime.runtimeId, workloadAttestationDigest: localRuntime.workloadAttestationDigest },
+            peerBootstrapPublicKey: peer.bootstrapPublicKey,
+            peerRole: peer.role,
+            peerRuntime: { runtimeId: peer.runtime.runtimeId, workloadAttestationDigest: peer.runtime.workloadAttestationDigest },
+            peerUrl: peer.runtime.endpoint,
+            port: options.port,
+            publicEndpoint: localRuntime.endpoint,
+            role: options.role,
+            runId: options.runId,
+            tls: {
+              certificate: tls.certificate,
+              privateKey: tls.privateKey,
+              ownCertificateSha256: localRuntime.tlsCertificateSha256,
+              peerCertificateSha256: peer.runtime.tlsCertificateSha256,
+            },
+          });
+          let privateInvitation = null;
+          if (options.role === "responder") privateInvitation = await deps.waitForInvitation(invitationTransport);
+          actionRecorder = await deps.createActionRecorder({
+            manifestDigest: options.manifestDigest,
+            room: { cache: paths.home, home: paths.home, root: options.root, state: paths.state, tmp: paths.tmp, workspace: paths.workspace },
+            socketRoot: paths.socket,
+          });
+          const checkpointClient = deps.createCheckpointClient({ endpoint: options.mcpEndpoint });
+          bridge = deps.createBridge({
+            activateSignedChannel: async (context) => activatePartySignedChannel({
+              createAuthority: () => createPartyA2AAuthority({
+                nowMs: () => Date.now(),
+                peerRuntime: peer.runtime,
+                platform: process.platform,
+                policyDigest: context.policyDigest,
+                repositorySha: context.repositorySha,
+                role: options.role,
+                runtime: localRuntime,
+                sessionId: context.sessionId,
+                statePath: join(paths.tmp, ".clockchain", "handshakes", context.sessionId, options.role, "wallet.json"),
+                terms: context.terms,
+              }),
+              createCardBootstrap: ({ authorityBinding }) => createA2ACardBootstrap({
+                nowMs: () => Date.now(),
+                ownBinding: bindingForCard(authorityBinding),
+                peerBinding: null,
+                peerRuntime: peerBindingForCard(peer.runtime),
+                role: options.role,
+                sessionId: context.sessionId,
+                transport: invitationTransport,
+              }),
+              createTaskTransport: async ({ cards, role }) => {
+                await invitationTransport.close({ graceful: true });
+                return createHttpTaskTransport({
+                  allowLoopbackForTests: false,
+                  listenHost: options.listenHost,
+                  nowMs: () => Date.now(),
+                  ownCard: cards[role],
+                  peerCard: cards[opposite(role)],
+                  peerUrl: peer.runtime.endpoint,
+                  port: options.port,
+                  publicEndpoint: localRuntime.endpoint,
+                  role,
+                  sessionId: context.sessionId,
+                  tls: { cert: tls.certificate, key: tls.privateKey, peerCa: peer.tlsCertificate, peerCertificateSha256: peer.runtime.tlsCertificateSha256 },
+                });
+              },
+              nowMs: () => Date.now(),
+              role: options.role,
+              sessionId: context.sessionId,
+              sleep: defaultPartySignedChannelSleep,
+            }),
+            completionRecorder: actionRecorder,
+            invitationTransport,
+            nowMs: () => Date.now(),
+            role: options.role,
+            sessionId: null,
+            submitCheckpoint: checkpointClient.submitCheckpoint,
+          });
+          const processTransport = deps.createProcessTransport({
+            actionRecorder: actionRecorder.actionRecorder,
+            env: { PATH: `${join(process.cwd(), "node_modules", ".bin")}:${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin` },
+            harness: options.harness,
+            home: paths.home,
+            pin: ACP_VERSION_PINS[options.harness],
+            partyBridge: bridge,
+            trustedAdapterPublicKeys: [actionRecorder.trustedAdapterPublicKey],
+            workspace: paths.workspace,
+          });
+          adapter = deps.createHarnessAdapter({
+            decisionCallback: () => Object.freeze({ decision: "authorize" }),
+            harness: options.harness,
+            transport: processTransport,
+            trustedAdapterPublicKeys: [actionRecorder.trustedAdapterPublicKey],
+          });
+          let invitationPath;
+          if (privateInvitation !== null) {
+            if (privateInvitation.sessionId === undefined || typeof privateInvitation.invitation !== "string") fail();
+            invitationPath = join(paths.workspace, "responder-invitation.txt");
+            await writeFile(invitationPath, `${privateInvitation.invitation}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
+            await chmod(invitationPath, 0o600);
+            privateInvitation = null;
+          }
+          await adapter.launchSession({
+            runtime: { harness: options.harness, role: options.role, runtimeId: options.runtimeId, sessionId: options.runId },
+            mandate: options.mandate,
+            mcpEndpoint: options.mcpEndpoint,
+            a2aConfig: {
+              endpoint: localRuntime.endpoint,
+              peerCard: { endpoint: peer.runtime.endpoint, id: peer.runtime.runtimeId },
+              ...(invitationPath === undefined ? {} : { invitationPath }),
+            },
+          });
+          launched = true;
+          const bridgeEvidence = publicData(bridge.publicEvidence());
+          if (
+            bridgeEvidence.sessionId === null || !UUID.test(bridgeEvidence.sessionId) ||
+            bridgeEvidence.certificate?.verified !== true || !DIGEST.test(bridgeEvidence.certificate?.proofDigest)
+          ) fail();
+          await adapter.terminateSession({ sessionId: options.runId, reason: "mechanics-proof-complete" });
+          launched = false;
+          const harnessEvidence = publicData(await adapter.collectEvidence({ sessionId: options.runId }));
+          terminalEvidence = Object.freeze({
+            schema: "clockchain.mechanics-proof-party-evidence/v1",
+            runId: options.runId,
+            protocolSessionId: bridgeEvidence.sessionId,
+            role: options.role,
+            harness: options.harness,
+            runtimeId: options.runtimeId,
+            workloadAttestationDigest: options.workloadAttestationDigest,
+            peerRuntimeId: peer.runtime.runtimeId,
+            bridgeEvidenceDigest: digestHex(bridgeEvidence),
+            harnessEvidenceDigest: digestHex(harnessEvidence),
+            certificateProofDigest: bridgeEvidence.certificate.proofDigest,
+            externalBusinessActionPerformed: false,
+            terminalStatus: "completed",
+            teardown: Object.freeze({ completed: false }),
+          });
+        } catch { runFailed = true; }
+        let teardownResult;
+        try { teardownResult = await teardown(); } catch { runFailed = true; }
+        if (runFailed || terminalEvidence === null || teardownResult?.completed !== true) fail();
+        return Object.freeze({ ...terminalEvidence, teardown: Object.freeze({ completed: true }) });
+      },
+      destroy: teardown,
+    });
+  } catch (error) {
+    if (!constructed) {
+      const cleanup = [];
+      if (initialBootstrapSigner !== null && typeof initialBootstrapSigner.destroy === "function") cleanup.push(() => initialBootstrapSigner.destroy());
+      if (initialTls !== null && typeof initialTls.destroy === "function") cleanup.push(() => initialTls.destroy());
+      await Promise.allSettled(cleanup.map((task) => Promise.resolve().then(task)));
+      if (rootIdentity !== null) {
+        try {
+          const current = await lstat(rootIdentity.path);
+          if (current.isDirectory() && !current.isSymbolicLink() && current.dev === rootIdentity.dev && current.ino === rootIdentity.ino) {
+            await rm(rootIdentity.path, { recursive: true, force: false });
+          }
+        } catch {}
+      }
+    }
+    sanitize(error);
+  }
+}

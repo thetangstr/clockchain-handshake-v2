@@ -233,6 +233,7 @@ test("ACP process transport launches exact pinned stdio executable with isolated
     env: {
       CLOCKCHAIN_MCP_BEARER: "cc_secret_token_should_not_leak",
       HTTP_PROXY: "http://proxy.local:8080",
+      PATH: "/app/node_modules/.bin:/usr/local/bin:/usr/bin:/bin",
     },
     trustedAdapterPublicKeys: [action.adapterPublicKey],
   });
@@ -250,6 +251,7 @@ test("ACP process transport launches exact pinned stdio executable with isolated
   assert.equal(calls[0].options.env.HOME, "/workspace/initiator/home");
   assert.equal(calls[0].options.env.CLOCKCHAIN_MCP_URL, MCP_ENDPOINT);
   assert.equal(calls[0].options.env.CLOCKCHAIN_MCP_AUTH_HEADER, undefined);
+  assert.equal(calls[0].options.env.PATH, "/app/node_modules/.bin:/usr/local/bin:/usr/bin:/bin");
   assert.equal(calls[0].options.env.CLOCKCHAIN_MCP_BEARER, undefined);
   assert.equal(calls[0].options.stdio.length, 3);
 });
@@ -427,10 +429,11 @@ test("ACP process transport rejects authority, endpoint, pin, and secret leakage
     env: { CLOCKCHAIN_MCP_BEARER: "token" },
     privateKey: "0x1234",
   }));
+  const responderCalls = [];
   const transport = createAcpProcessTransport({
     harness: "claude",
     pin: ACP_VERSION_PINS.claude,
-    spawn: acpFixtureSpawn({ calls: [], helperAction: action }),
+    spawn: acpFixtureSpawn({ calls: responderCalls, helperAction: action }),
     workspace: "/workspace/responder",
     home: "/workspace/responder/home",
     nowMs: () => 1786337001000,
@@ -464,8 +467,12 @@ test("ACP process transport rejects authority, endpoint, pin, and secret leakage
     runtime: { runtimeId: "runtime-responder", sessionId: SESSION, role: "responder", harness: "claude" },
     mandate: VALID_MANDATE,
     mcpEndpoint: MCP_ENDPOINT,
-    a2aConfig: a2aConfig("responder"),
+    a2aConfig: { ...a2aConfig("responder"), invitationPath: "/workspace/responder/responder-invitation.txt" },
   });
+  const responderPrompt = responderCalls.find((entry) => entry[0] === "prompt")[1].prompt[0].text;
+  assert.match(responderPrompt, /read exactly one UTF-8 invitation from \/workspace\/responder\/responder-invitation\.txt/);
+  assert.match(responderPrompt, /agent_handshake_accept_invitation/);
+  assert.match(responderPrompt, /do not print/i);
   assert.equal((await transport.executeRetainedAction({ sessionId: SESSION, role: "responder", actionId: "action-1" })).executed, true);
   await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
   await assert.rejects(() => transport.streamEvents({ sessionId: "other" }));

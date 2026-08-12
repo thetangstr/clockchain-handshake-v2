@@ -77,16 +77,22 @@ function role(value) {
 }
 
 function a2aConfig(value) {
-  const item = objectValues(value, ["endpoint", "peerCard"]);
+  if (value === null || typeof value !== "object" || Array.isArray(value)) fail();
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Object.keys(descriptors);
+  if (!keys.includes("endpoint") || !keys.includes("peerCard") || keys.some((key) => !["endpoint", "peerCard", "invitationPath"].includes(key))) fail();
+  const item = objectValues(value, keys);
   if (typeof item.endpoint !== "string" || !item.endpoint.startsWith("https://")) fail();
   const peerCard = objectValues(item.peerCard, ["endpoint", "id"]);
   if (
     typeof peerCard.id !== "string" || peerCard.id.length === 0 ||
     typeof peerCard.endpoint !== "string" || !peerCard.endpoint.startsWith("https://")
   ) fail();
+  if (item.invitationPath !== undefined && (typeof item.invitationPath !== "string" || item.invitationPath.length === 0)) fail();
   return Object.freeze({
     endpoint: item.endpoint,
     peerCard: Object.freeze({ id: peerCard.id, endpoint: peerCard.endpoint }),
+    ...(item.invitationPath === undefined ? {} : { invitationPath: item.invitationPath }),
   });
 }
 

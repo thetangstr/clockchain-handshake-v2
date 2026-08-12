@@ -154,12 +154,13 @@ Commit with Lore intent `Bind live Clockchain sessions inside each party runtime
 - Test: `test/mechanics-proof-party-runtime.test.mjs`
 - Test: `test/mechanics-proof-party-entrypoint.test.mjs`
 - Test: `test/mechanics-proof-container.test.mjs`
+- Test: `test/ephemeral-tls-identity.test.mjs`
 
-- [ ] **Step 1: Write RED composition tests**
+- [x] **Step 1: Write RED composition tests**
 
 With fake ACP spawn and fake production MCP, prove `--run` generates party wallet, delegated A2A key, Ed25519 bootstrap key, and self-signed TLS key inside the runtime; emits one sanitized public bootstrap descriptor; reads exactly one peer public descriptor from stdin; starts Responder listener before the Responder agent; wires verified release recorder, dynamic bridge, signed channel bootstrap, private checkpoint client, and pinned Codex/Claude ACP adapter; verifies a terminal certificate; emits digest-only terminal evidence; and destroys every private key/state/listener/process. Reject controller signer material, peer descriptor drift, shared workload/credential/state roots, preexisting state, unsupported harness, and incomplete teardown.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 PATH=/opt/homebrew/opt/node@24/bin:$PATH node --test \
@@ -170,15 +171,17 @@ PATH=/opt/homebrew/opt/node@24/bin:$PATH node --test \
 
 Expected: `--run` remains fail closed and runtime module is missing.
 
-- [ ] **Step 3: Implement the party runtime**
+- [x] **Step 3: Implement the party runtime**
 
 Use OpenSSL only as an image-provided executable to generate an ephemeral P-256 self-signed TLS certificate and key under the mode-0700 party root; never accept a controller TLS key. Keep stdin/stdout as the portable public-control adapter: stdout line 1 is `clockchain.mechanics-proof-party-bootstrap/v1`; stdin line 1 is the exact peer descriptor; later stdout contains normalized digest-only events and one terminal `clockchain.mechanics-proof-party-evidence/v1`. Raw invitation, role access, MCP bodies, signer files, prompts, transcripts, and reasoning never cross that interface.
 
-- [ ] **Step 4: Run GREEN and full verification**
+Because party and delegated A2A keys do not exist until the live MCP join, the authenticated bootstrap derives the peer signer from the first self-signed Agent Card while still pinning its runtime, task, workload, TLS certificate, role, and session. The bootstrap listener closes gracefully only after the card acknowledgment, then the same private port is handed to the signed task transport. A terminal run is accepted only after the retained helper's exact `verify-certificate` result is reduced to a public proof digest.
+
+- [x] **Step 4: Run GREEN and full verification**
 
 Run the three focused tests, the Phase 6C0 gate, and `npm run verify`. Expected: all pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit with Lore intent `Run one complete stakeholder entirely inside its ephemeral runtime`.
 

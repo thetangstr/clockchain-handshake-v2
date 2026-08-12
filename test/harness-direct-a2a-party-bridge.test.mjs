@@ -99,6 +99,7 @@ async function setup(t, {
   const bridges = {};
   const completionHandlers = {};
   const activationCalls = [];
+  const activationContexts = [];
   const checkpointCalls = [];
   for (const role of ["initiator", "responder"]) {
     const completionRecorder = Object.freeze({
@@ -108,8 +109,9 @@ async function setup(t, {
       },
     });
     bridges[role] = createDirectA2APartyBridge({
-      activateSignedChannel: async () => {
+      activateSignedChannel: async (context) => {
         activationCalls.push(role);
+        activationContexts.push(context);
         return {
           authority: transformAuthority(authorities[role], role),
           cards,
@@ -133,37 +135,57 @@ async function setup(t, {
       },
     });
   }
-  return { activationCalls, authorities, bridges, channel, checkpointCalls, completionHandlers, fixture, invitationCalls };
+  return { activationCalls, activationContexts, authorities, bridges, channel, checkpointCalls, completionHandlers, fixture, invitationCalls };
 }
 
-function lifecycleStep(role) {
-  const shellCommand = `node helper init ${role}`;
+function lifecycleStep(role, operation = "init") {
+  const shellCommand = `node helper ${operation} ${role}`;
   const commandSha256 = createHash("sha256").update(shellCommand).digest("hex");
   return Object.freeze({
     approvalCommand: `clockchain-agent-authorize ${commandSha256}`,
     commandLength: Buffer.byteLength(shellCommand),
     commandSha256,
-    operation: "init",
+    operation,
     role,
     sessionId: SESSION_ID,
     shellCommand,
   });
 }
 
-function lifecycleCompletion(role, step) {
+function lifecycleCompletion(role, step, result = {}) {
   return Object.freeze({
-    actionId: `init-${role}`,
+    actionId: `${step.operation}-${role}`,
     commandSha256: step.commandSha256,
-    operation: "init",
+    operation: step.operation,
     requestDigest: role === "initiator" ? "a".repeat(64) : "b".repeat(64),
     result: Object.freeze({
-      address: role === "initiator" ? "0x1111111111111111111111111111111111111111" : "0x2222222222222222222222222222222222222222",
+      ...(step.operation === "verify-certificate" ? {} : {
+        address: role === "initiator" ? "0x1111111111111111111111111111111111111111" : "0x2222222222222222222222222222222222222222",
+      }),
       helperVersion: "2.1.2",
-      operation: "init",
+      operation: step.operation,
       schema: "clockchain.agent-handshake-cli-result/v1",
+      ...result,
     }),
     role,
     sessionId: SESSION_ID,
+  });
+}
+
+function joinResult(role, fixture) {
+  const party = fixture.parties[role];
+  return Object.freeze({
+    role,
+    sessionId: SESSION_ID,
+    repositorySha: REPOSITORY_SHA,
+    sessionDeadlineMs: String(NOW_MS + 30_000),
+    signingRequest: Object.freeze({
+      policyDigest: party.policyDigest,
+      repositorySha: REPOSITORY_SHA,
+      role,
+      sessionId: SESSION_ID,
+      terms: TERMS,
+    }),
   });
 }
 
@@ -221,8 +243,8 @@ function completion({ envelope, request, step, role }) {
   });
 }
 
-test("party-local bridges deliver invitation before signer readiness, then proposal and acceptance with additive checkpoints", async (t) => {
-  const { activationCalls, bridges, channel, checkpointCalls, completionHandlers, fixture, invitationCalls } = await setup(t);
+test("party-local bridges activate only from authoritative join context, then deliver proposal and acceptance with additive checkpoints", async (t) => {
+  const { activationCalls, activationContexts, bridges, channel, checkpointCalls, completionHandlers, fixture, invitationCalls } = await setup(t);
   const invitation = "opaque.responder.invitation";
   await bridges.initiator.observeToolResult({
     toolName: "agent_handshake_invite",
@@ -239,8 +261,20 @@ test("party-local bridges deliver invitation before signer readiness, then propo
       result: { structuredContent: { localAction: { helperStep: step }, roleAccess: ROLE_ACCESS[role] } },
     });
     assert.deepEqual(await completionHandlers[role](lifecycleCompletion(role, step)), { accepted: true });
+    assert.equal(activationCalls.includes(role), false);
+    await bridges[role].observeToolResult({
+      toolName: "agent_handshake_join",
+      result: joinResult(role, fixture),
+    });
   }
   assert.deepEqual(activationCalls.sort(), ["initiator", "responder"]);
+  assert.deepEqual(activationContexts.map((context) => context.role).sort(), ["initiator", "responder"]);
+  for (const context of activationContexts) {
+    assert.equal(context.sessionId, SESSION_ID);
+    assert.equal(context.repositorySha, REPOSITORY_SHA);
+    assert.deepEqual(context.terms, TERMS);
+    assert.equal(context.policyDigest, fixture.parties[context.role].policyDigest);
+  }
 
   const proposal = signingStep({
     envelope: fixture.proposalEnvelope,
@@ -373,6 +407,7 @@ test("checkpoint rejection sends no direct business artifact and releases no com
     result: { structuredContent: { localAction: { helperStep: initStep }, roleAccess: ROLE_ACCESS.initiator } },
   });
   assert.deepEqual(await completionHandlers.initiator(lifecycleCompletion("initiator", initStep)), { accepted: true });
+  await bridges.initiator.observeToolResult({ toolName: "agent_handshake_join", result: joinResult("initiator", fixture) });
   const proposal = signingStep({
     envelope: fixture.proposalEnvelope,
     operation: "proposal",
@@ -406,6 +441,7 @@ test("private MCP checkpoint rejection keeps the helper completion unreleased", 
     policyDigest: fixture.parties.initiator.policyDigest,
     role: "initiator",
   });
+  await bridges.initiator.observeToolResult({ toolName: "agent_handshake_join", result: joinResult("initiator", fixture) });
   await bridges.initiator.observeToolResult({
     toolName: "agent_handshake_next",
     result: { structuredContent: { localAction: { helperStep: proposal.step }, roleAccess: ROLE_ACCESS.initiator } },
@@ -457,7 +493,7 @@ test("identity and evidence signing completions remain local and do not require 
 
 test("destroy tears down party authority and returns a generic failure when transport close fails", async (t) => {
   let authorityDestroyed = 0;
-  const { bridges, completionHandlers } = await setup(t, {
+  const { bridges, completionHandlers, fixture } = await setup(t, {
     transformAuthority(authority, role) {
       if (role !== "initiator") return authority;
       const wrapped = { ...authority, async destroy() { authorityDestroyed += 1; await authority.destroy(); } };
@@ -478,6 +514,10 @@ test("destroy tears down party authority and returns a generic failure when tran
     result: { structuredContent: { localAction: { helperStep: step } } },
   });
   assert.deepEqual(await completionHandlers.initiator(lifecycleCompletion("initiator", step)), { accepted: true });
+  await bridges.initiator.observeToolResult({
+    toolName: "agent_handshake_join",
+    result: joinResult("initiator", fixture),
+  });
 
   await assert.rejects(bridges.initiator.destroy(), (error) => {
     assert.equal(error.message, "Direct A2A party bridge failed safely.");
@@ -485,4 +525,27 @@ test("destroy tears down party authority and returns a generic failure when tran
     return true;
   });
   assert.equal(authorityDestroyed, 1);
+});
+
+test("bridge records only a digest after exact terminal certificate verification", async (t) => {
+  const { bridges, completionHandlers } = await setup(t);
+  const step = lifecycleStep("initiator", "verify-certificate");
+  await bridges.initiator.observeToolResult({
+    toolName: "agent_handshake_get_certificate",
+    result: { localAction: { helperStep: step }, roleAccess: ROLE_ACCESS.initiator },
+  });
+  assert.deepEqual(await completionHandlers.initiator(lifecycleCompletion("initiator", step, {
+    certificateVerified: true,
+    externalBusinessActionPerformed: false,
+    identity: { sessionKeyAddress: "0x1111111111111111111111111111111111111111" },
+    outcome: "VERIFIED",
+    policyDigest: "a".repeat(64),
+    role: "initiator",
+    sessionId: SESSION_ID,
+    statementDigest: "b".repeat(64),
+  })), { accepted: true });
+  const evidence = bridges.initiator.publicEvidence();
+  assert.equal(evidence.certificate.verified, true);
+  assert.match(evidence.certificate.proofDigest, /^[0-9a-f]{64}$/);
+  assert.doesNotMatch(JSON.stringify(evidence), /sessionKeyAddress|statementDigest|outcome|identity/i);
 });

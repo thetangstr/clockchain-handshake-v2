@@ -39,6 +39,30 @@ function snapshot(value, keys) {
   }
 }
 
+function optionalSnapshot(value, required, optional = []) {
+  try {
+    if (
+      value === null || typeof value !== "object" || Array.isArray(value) || types.isProxy(value) ||
+      ![Object.prototype, null].includes(Object.getPrototypeOf(value))
+    ) fail();
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(descriptors);
+    const allowed = [...required, ...optional];
+    if (keys.some((key) => typeof key !== "string" || !allowed.includes(key))) fail();
+    for (const key of required) if (!Object.hasOwn(descriptors, key)) fail();
+    const result = {};
+    for (const key of keys) {
+      const descriptor = descriptors[key];
+      if (descriptor?.enumerable !== true || !Object.hasOwn(descriptor, "value")) fail();
+      result[key] = descriptor.value;
+    }
+    return result;
+  } catch (error) {
+    if (error?.message === "A2A card bootstrap failed safely.") throw error;
+    fail();
+  }
+}
+
 function binding(value) {
   const item = snapshot(value, [
     "endpoint", "partySignerAddress", "runtimeId", "taskId", "workloadAttestationDigest",
@@ -51,9 +75,18 @@ function binding(value) {
   return Object.freeze({ ...item });
 }
 
+function runtimeBinding(value) {
+  const item = snapshot(value, ["endpoint", "runtimeId", "taskId", "workloadAttestationDigest"]);
+  if (typeof item.runtimeId !== "string" || !TOKEN.test(item.runtimeId)) fail();
+  if (typeof item.taskId !== "string" || !TOKEN.test(item.taskId)) fail();
+  if (typeof item.workloadAttestationDigest !== "string" || !DIGEST.test(item.workloadAttestationDigest)) fail();
+  if (typeof item.endpoint !== "string" || !item.endpoint.startsWith("https://") || item.endpoint.length > 256) fail();
+  return Object.freeze({ ...item, partySignerAddress: null });
+}
+
 function exactCardBinding(card, expected) {
   if (
-    card.partySignerAddress !== expected.partySignerAddress ||
+    (expected.partySignerAddress !== null && card.partySignerAddress !== expected.partySignerAddress) ||
     card.runtimeId !== expected.runtimeId ||
     card.workloadAttestationDigest !== expected.workloadAttestationDigest ||
     card.taskId !== expected.taskId ||
@@ -107,14 +140,16 @@ function opposite(role) {
 }
 
 export function createA2ACardBootstrap(optionsInput) {
-  const options = snapshot(optionsInput, [
+  const options = optionalSnapshot(optionsInput, [
     "nowMs", "ownBinding", "peerBinding", "role", "sessionId", "transport",
-  ]);
+  ], ["peerRuntime"]);
   if (!ROLES.includes(options.role) || typeof options.sessionId !== "string" || !UUID.test(options.sessionId)) fail();
   if (typeof options.nowMs !== "function") fail();
   const ownBinding = binding(options.ownBinding);
-  const peerBinding = binding(options.peerBinding);
-  if (ownBinding.partySignerAddress === peerBinding.partySignerAddress) fail();
+  const peerBinding = options.peerBinding === null
+    ? runtimeBinding(options.peerRuntime)
+    : binding(options.peerBinding);
+  if (peerBinding.partySignerAddress !== null && ownBinding.partySignerAddress === peerBinding.partySignerAddress) fail();
   const capability = transportCapability(options.transport);
 
   const role = options.role;
@@ -139,6 +174,7 @@ export function createA2ACardBootstrap(optionsInput) {
     } catch {
       fail();
     }
+    if (expectedBinding.partySignerAddress === null && verified.partySignerAddress === ownBinding.partySignerAddress) fail();
     if (expectedRole === "responder" && verified.peerCardDigest !== null) fail();
     if (expectedRole === "initiator" && verified.peerCardDigest !== expectedPeerDigest) fail();
     exactCardBinding(verified, expectedBinding);

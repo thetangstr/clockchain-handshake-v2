@@ -15,6 +15,7 @@ test("mechanics proof Fargate app Dockerfile is pinned, nonroot, and entrypoint-
   assert.doesNotMatch(dockerfile, /^RUN test -n "\$SOURCE_COMMIT" && test "\$\{#SOURCE_COMMIT\}" = "40"$/m);
   assert.match(dockerfile, /^ENV NODE_ENV=production$/m);
   assert.match(dockerfile, /^RUN npm ci --omit=dev$/m);
+  assert.match(dockerfile, /^RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates openssl && rm -rf \/var\/lib\/apt\/lists\/\*$/m);
   assert.match(dockerfile, /^USER node$/m);
   assert.match(dockerfile, /^EXPOSE 8443$/m);
   assert.match(dockerfile, /^ENTRYPOINT \["node","bin\/mechanics-proof-party\.mjs"\]$/m);

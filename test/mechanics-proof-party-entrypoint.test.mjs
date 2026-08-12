@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { PassThrough, Readable } from "node:stream";
 import { promisify } from "node:util";
 import test from "node:test";
+
+import { runMain } from "../bin/mechanics-proof-party.mjs";
 
 const execFileAsync = promisify(execFile);
 const SESSION = "11111111-2222-4333-8444-555555555555";
@@ -98,3 +101,74 @@ test("mechanics proof party source does not contain provider secrets or local au
   const source = await readFile("bin/mechanics-proof-party.mjs", "utf8");
   assert.doesNotMatch(source, /readFile.*(?:auth|credentials|subscription)|ANTHROPIC_API_KEY.*stdout|privateKey.*JSON/i);
 });
+
+test("run mode emits bootstrap first, consumes one peer descriptor, then emits terminal evidence", async () => {
+  const output = new PassThrough();
+  let text = "";
+  output.on("data", (chunk) => { text += chunk.toString("utf8"); });
+  const peer = { schema: "clockchain.mechanics-proof-party-bootstrap/v1", peer: true };
+  const calls = [];
+  const code = await runMain({
+    argv: ["node", "bin/mechanics-proof-party.mjs", "--run"],
+    createRuntime: async () => ({
+      bootstrapDescriptor() { calls.push("bootstrap"); return { schema: "clockchain.mechanics-proof-party-bootstrap/v1", local: true }; },
+      async destroy() { calls.push("destroy"); },
+      async run({ peerDescriptor }) { calls.push("run"); assert.deepEqual(peerDescriptor, peer); return { schema: "clockchain.mechanics-proof-party-evidence/v1", completed: true }; },
+    }),
+    env: runEnv(),
+    stderr: new PassThrough(),
+    stdin: Readable.from([`${JSON.stringify(peer)}\n`]),
+    stdout: output,
+  });
+  assert.equal(code, 0);
+  assert.deepEqual(calls, ["bootstrap", "run"]);
+  assert.deepEqual(text.trim().split("\n").map(JSON.parse), [
+    { schema: "clockchain.mechanics-proof-party-bootstrap/v1", local: true },
+    { schema: "clockchain.mechanics-proof-party-evidence/v1", completed: true },
+  ]);
+});
+
+test("run mode rejects a second peer descriptor and destroys the unstarted runtime", async () => {
+  const calls = [];
+  const peer = JSON.stringify({ schema: "clockchain.mechanics-proof-party-bootstrap/v1" });
+  const code = await runMain({
+    argv: ["node", "bin/mechanics-proof-party.mjs", "--run"],
+    createRuntime: async () => ({
+      bootstrapDescriptor() { return { schema: "clockchain.mechanics-proof-party-bootstrap/v1" }; },
+      async destroy() { calls.push("destroy"); },
+      async run() { calls.push("run"); },
+    }),
+    env: runEnv(),
+    stderr: new PassThrough(),
+    stdin: Readable.from([`${peer}\n${peer}\n`]),
+    stdout: new PassThrough(),
+  });
+  assert.equal(code, 1);
+  assert.deepEqual(calls, ["destroy"]);
+});
+
+function runEnv(overrides = {}) {
+  return {
+    PATH: process.env.PATH,
+    CLOCKCHAIN_A2A_LISTEN_HOST: "0.0.0.0",
+    CLOCKCHAIN_A2A_PORT: "8443",
+    CLOCKCHAIN_A2A_PUBLIC_ENDPOINT: "https://responder.task.local:8443",
+    CLOCKCHAIN_CLIENT: "claude",
+    CLOCKCHAIN_HELPER_MANIFEST_DIGEST: "a".repeat(64),
+    CLOCKCHAIN_MANDATE_JSON: JSON.stringify({
+      reference: "northstar-harbor-demo",
+      statement: "Confirm terms.",
+      validForSeconds: "10",
+      identityPolicy: { erc8004: "required_fresh", chainId: "eip155:11155111", registryAddress: "0x8004a818bfb912233c491871b3d84c89a494bd9e" },
+    }),
+    CLOCKCHAIN_MCP_URL: "https://mcp.clockchain.network/handshake/mcp",
+    CLOCKCHAIN_OPENSSL_PATH: "/usr/bin/openssl",
+    CLOCKCHAIN_PARTY_ROOT: "/workspace/responder",
+    CLOCKCHAIN_ROLE: "responder",
+    CLOCKCHAIN_RUN_ID: SESSION,
+    CLOCKCHAIN_RUNTIME_ID: "runtime-responder",
+    CLOCKCHAIN_TASK_ID: "task-responder",
+    CLOCKCHAIN_WORKLOAD_ATTESTATION_DIGEST: "b".repeat(64),
+    ...overrides,
+  };
+}

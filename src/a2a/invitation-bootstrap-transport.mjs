@@ -687,15 +687,31 @@ export async function createInvitationBootstrapTransport(optionsInput = {}) {
         invitations: Object.freeze([...received, ...sent].map((entry) => Object.freeze({ ...entry }))),
       });
     },
-    async close() {
+    async close(input = {}) {
+      const closeOptions = optionalSnapshot(input, [], ["graceful"]);
+      const graceful = closeOptions.graceful ?? false;
+      if (graceful !== true && graceful !== false) fail();
       if (closed) return Object.freeze({ closed: true });
       closed = true;
       cardRetired = true;
       cardReceiver = null;
-      for (const socket of sockets) socket.destroy();
-      await new Promise((resolve, reject) => {
+      if (!graceful) for (const socket of sockets) socket.destroy();
+      const closedServer = new Promise((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
-      }).catch(() => fail());
+        if (graceful) server.closeIdleConnections?.();
+      });
+      let timeoutId;
+      const timeout = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error("timeout")), REQUEST_TIMEOUT_MS);
+      });
+      try {
+        await Promise.race([closedServer, timeout]);
+      } catch {
+        for (const socket of sockets) socket.destroy();
+        fail();
+      } finally {
+        clearTimeout(timeoutId);
+      }
       stored = null;
       return Object.freeze({ closed: true });
     },

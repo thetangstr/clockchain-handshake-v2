@@ -5,6 +5,7 @@ import { a2aAgentCardDigest } from "../a2a/agent-card.mjs";
 import { A2A_ENVELOPE_SCHEMA, a2aEnvelopeDigest } from "../a2a/envelope.mjs";
 import { a2aCanonicalBytes } from "../a2a/auth.mjs";
 import { commitmentCheckpointDigest } from "../agent-handshake/v2/commitment-checkpoint.mjs";
+import { validateAgentHandshakeV2Terms } from "../agent-handshake/v2/terms.mjs";
 import { decodeSigningBytes } from "../core/wallet-bridge.mjs";
 import { digestHex } from "../core/canonical.mjs";
 import { PARTY_A2A_ENVELOPE_CAPABILITY } from "./party-a2a-authority.mjs";
@@ -14,6 +15,7 @@ const ROLES = Object.freeze(["initiator", "responder"]);
 const DIGEST = /^[0-9a-f]{64}$/;
 const SIGNATURE = /^0x[0-9a-f]{130}$/;
 const ADDRESS = /^0x[0-9a-f]{40}$/;
+const SHA = /^[0-9a-f]{40}$/;
 const ROLE_ACCESS = /^ccra_[A-Za-z0-9_-]{22}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HELPER_SCHEMA = "clockchain.agent-handshake-cli-result/v1";
@@ -193,6 +195,24 @@ function helperResult(value, expected) {
   return Object.freeze(item);
 }
 
+function certificateResult(value, expectedRole, expectedSessionId) {
+  const item = snapshot(value, [
+    "certificateVerified", "externalBusinessActionPerformed", "helperVersion", "identity", "operation",
+    "outcome", "policyDigest", "role", "schema", "sessionId", "statementDigest",
+  ]);
+  if (
+    item.schema !== HELPER_SCHEMA || item.helperVersion !== "2.1.2" || item.operation !== "verify-certificate" ||
+    item.certificateVerified !== true || item.externalBusinessActionPerformed !== false || item.outcome !== "VERIFIED" ||
+    item.role !== expectedRole || item.sessionId !== expectedSessionId ||
+    !DIGEST.test(item.policyDigest) || !DIGEST.test(item.statementDigest)
+  ) fail();
+  const identity = publicClone(item.identity);
+  return Object.freeze({
+    proofDigest: createHash("sha256").update(a2aCanonicalBytes({ ...item, identity })).digest("hex"),
+    verified: true,
+  });
+}
+
 function signedArtifact(request, result) {
   let raw;
   let payload;
@@ -272,6 +292,8 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
     let signedChannelPromise = null;
     let roleAccess = null;
     let boundSessionId = options.sessionId;
+    let activationContext = null;
+    let certificate = null;
     let destroyed = false;
 
     function active() { if (destroyed) fail(); }
@@ -284,10 +306,10 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
 
     async function activate() {
       active();
-      if (boundSessionId === null) fail();
+      if (boundSessionId === null || activationContext === null) fail();
       if (signedChannelPromise === null) {
         signedChannelPromise = (async () => {
-          const activated = snapshot(await options.activateSignedChannel(), ["authority", "cards", "taskTransport"]);
+          const activated = snapshot(await options.activateSignedChannel(activationContext), ["authority", "cards", "taskTransport"]);
           const authority = projectMethods(activated.authority, [
             "destroy", "publicBinding", "signAcceptanceCheckpoint", "signInitiatorCard", "signProposalCheckpoint", "signResponderCard",
           ]);
@@ -363,8 +385,11 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
         ) fail();
         expected.state = "active";
         if (expected.direct !== true) {
+          if (completion.operation === "verify-certificate") {
+            if (certificate !== null) fail();
+            certificate = certificateResult(completion.result, options.role, boundSessionId);
+          }
           expected.state = "consumed";
-          if (completion.operation === "init") void activate().catch(() => {});
           return Object.freeze({ accepted: true });
         }
         if (completion.operation !== "sign") fail();
@@ -458,6 +483,17 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
             if (transportEvidence.sessionId !== acceptedSessionId) fail();
             bindSession(acceptedSessionId);
           }
+          if (item.toolName === "agent_handshake_join") {
+            const joinedRole = oneValue(result, "role", (value) => value === options.role);
+            const sessionId = bindSession(oneValue(result, "sessionId", (value) => typeof value === "string" && UUID.test(value)));
+            const repositorySha = oneValue(result, "repositorySha", (value) => typeof value === "string" && SHA.test(value));
+            const policyDigest = oneValue(result, "policyDigest", (value) => typeof value === "string" && DIGEST.test(value));
+            const termsInput = oneValue(result, "terms", (value) => value !== null && typeof value === "object" && !Array.isArray(value));
+            const terms = validateAgentHandshakeV2Terms(publicClone(termsInput));
+            if (activationContext !== null) fail();
+            activationContext = Object.freeze({ policyDigest, repositorySha, role: joinedRole, sessionId, terms });
+            await activate();
+          }
           const steps = findValues(result, "helperStep").filter((value) => value !== null && typeof value === "object");
           if (steps.length > 1) fail();
           if (steps.length === 1) {
@@ -486,6 +522,7 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
           }),
           invitations: Object.freeze(invitations.map((entry) => Object.freeze({ ...entry }))),
           deliveries: Object.freeze(deliveries.map((entry) => Object.freeze({ ...entry, messageDigests: Object.freeze([...entry.messageDigests]) }))),
+          certificate,
         });
       },
       async destroy() {

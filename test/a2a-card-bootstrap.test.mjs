@@ -26,6 +26,11 @@ function binding(role) {
   };
 }
 
+function runtimeBinding(role) {
+  const { partySignerAddress: _partySignerAddress, ...runtime } = binding(role);
+  return runtime;
+}
+
 function unsignedCard(role, peerCardDigest = null, overrides = {}) {
   const account = role === "initiator" ? INITIATOR : RESPONDER;
   const cardAccount = role === "initiator" ? INITIATOR_CARD : RESPONDER_CARD;
@@ -108,6 +113,52 @@ async function bootstraps() {
   });
   return { initiator, responder, transports };
 }
+
+async function dynamicBootstraps() {
+  const transports = connectedTransports();
+  const initiator = createA2ACardBootstrap({
+    role: "initiator",
+    sessionId: SESSION_ID,
+    nowMs: () => NOW,
+    ownBinding: binding("initiator"),
+    peerBinding: null,
+    peerRuntime: runtimeBinding("responder"),
+    transport: transports.initiator,
+  });
+  const responder = createA2ACardBootstrap({
+    role: "responder",
+    sessionId: SESSION_ID,
+    nowMs: () => NOW,
+    ownBinding: binding("responder"),
+    peerBinding: null,
+    peerRuntime: runtimeBinding("initiator"),
+    transport: transports.responder,
+  });
+  return { initiator, responder, transports };
+}
+
+test("authenticated bootstrap derives each late-created peer signer from its self-signed card", async () => {
+  const { initiator, responder } = await dynamicBootstraps();
+  const responderCard = await signedCard("responder");
+  await responder.publishResponderCard({ card: responderCard, expiresAtMs: NOW + 10_000 });
+  assert.equal(a2aAgentCardDigest(initiator.takeResponderCard()), a2aAgentCardDigest(responderCard));
+  const initiatorCard = await signedCard("initiator", a2aAgentCardDigest(responderCard));
+  await initiator.publishInitiatorCard({ card: initiatorCard, expiresAtMs: NOW + 10_000 });
+  assert.equal(a2aAgentCardDigest(responder.takeInitiatorCard()), a2aAgentCardDigest(initiatorCard));
+  await initiator.verifiedPair();
+  await responder.verifiedPair();
+
+  const fresh = await dynamicBootstraps();
+  const wrongRuntime = await signedCard("responder", null, { runtimeId: "runtime-other" });
+  await assert.rejects(
+    () => fresh.transports.responder[INVITATION_BOOTSTRAP_CARD_CAPABILITY].sendCard({
+      artifactKind: "responder_card",
+      body: JSON.stringify(wrongRuntime),
+      expiresAtMs: NOW + 10_000,
+    }),
+    /A2A card bootstrap failed safely/,
+  );
+});
 
 test("card bootstrap deterministically binds responder first then the initiator pin", async () => {
   const { initiator, responder, transports } = await bootstraps();

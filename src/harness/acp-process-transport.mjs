@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn as nodeSpawn } from "node:child_process";
-import { isAbsolute } from "node:path";
+import { isAbsolute, relative } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { types } from "node:util";
 
@@ -83,6 +83,13 @@ function envObject(value) {
     result[key] = descriptor.value;
   }
   return result;
+}
+
+function executablePath(value) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 4096) fail();
+  const entries = value.split(":");
+  if (entries.length < 1 || entries.some((entry) => !isAbsolute(entry) || entry.includes(".."))) fail();
+  return value;
 }
 
 function rejectAuthority(value) {
@@ -181,11 +188,16 @@ function cleanRetainedActions(value) {
 }
 
 function cleanA2A(value) {
-  const item = exactObject(value, ["endpoint", "peerCard"]);
+  const item = optionalObject(value, ["endpoint", "peerCard"], ["invitationPath"]);
   const peer = exactObject(item.peerCard, ["endpoint", "id"]);
   if (typeof item.endpoint !== "string" || !item.endpoint.startsWith("https://")) fail();
   if (typeof peer.endpoint !== "string" || !peer.endpoint.startsWith("https://") || typeof peer.id !== "string" || peer.id.length === 0) fail();
-  return Object.freeze({ endpoint: item.endpoint, peerCard: Object.freeze({ ...peer }) });
+  if (item.invitationPath !== undefined && (typeof item.invitationPath !== "string" || !isAbsolute(item.invitationPath))) fail();
+  return Object.freeze({
+    endpoint: item.endpoint,
+    peerCard: Object.freeze({ ...peer }),
+    ...(item.invitationPath === undefined ? {} : { invitationPath: item.invitationPath }),
+  });
 }
 
 function nonemptyBoundedString(value, max = MAX_STRING) {
@@ -245,6 +257,10 @@ function promptText({ role, sessionId, mandate, a2aConfig }) {
     `direct A2A endpoint: ${a2aConfig.endpoint}`,
     `direct A2A peer card: ${a2aConfig.peerCard.id}`,
     `direct A2A peer endpoint: ${a2aConfig.peerCard.endpoint}`,
+    ...(role === "responder" && a2aConfig.invitationPath !== undefined ? [
+      `Before your first MCP call, read exactly one UTF-8 invitation from ${a2aConfig.invitationPath}.`,
+      "Pass that exact value unchanged to agent_handshake_accept_invitation; do not print, summarize, or copy it anywhere else.",
+    ] : []),
     "Use the dedicated clockchain-handshake MCP server and retained local-action approvals only.",
   ].join("\n");
 }
@@ -621,6 +637,11 @@ export function createAcpProcessTransport(optionsInput = {}) {
       if (mcpEndpoint !== MCP_ENDPOINT) fail();
       const clean = cleanRuntime(runtime, harness);
       const cleanPeer = cleanA2A(a2aConfig);
+      if (cleanPeer.invitationPath !== undefined) {
+        if (clean.role !== "responder") fail();
+        const offset = relative(options.workspace, cleanPeer.invitationPath);
+        if (offset === "" || offset.startsWith("..") || isAbsolute(offset)) fail();
+      }
       session = { sessionId: clean.sessionId, role: clean.role };
       protocolSessionId = null;
       retainedByCommand.clear();
@@ -635,6 +656,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
         ...(baseEnv.HTTP_PROXY ? { HTTP_PROXY: baseEnv.HTTP_PROXY } : {}),
         ...(baseEnv.HTTPS_PROXY ? { HTTPS_PROXY: baseEnv.HTTPS_PROXY } : {}),
         NODE_USE_ENV_PROXY: "1",
+        ...(baseEnv.PATH ? { PATH: executablePath(baseEnv.PATH) } : {}),
       };
       child = spawn(pin.executableName, [], {
         cwd: options.workspace,
