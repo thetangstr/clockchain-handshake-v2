@@ -166,7 +166,6 @@ export async function runMechanicsProofController(config) {
       );
     }
     handshakeEvidence = await item.executePair(Object.freeze({
-      harnessAdapters: Object.freeze({ ...harnessAdapters }),
       harnessCapabilities: Object.freeze({
         initiator: Object.freeze({ ...harnessCapabilities.initiator }),
         responder: Object.freeze({ ...harnessCapabilities.responder }),

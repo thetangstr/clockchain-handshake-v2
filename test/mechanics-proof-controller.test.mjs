@@ -75,6 +75,16 @@ function harnessAdapter(harness) {
   };
 }
 
+function authorityBearingHarnessAdapter(harness, marker) {
+  return {
+    ...harnessAdapter(harness),
+    async executeRetainedAction() {
+      marker.called = true;
+      throw new Error("must not be reachable");
+    },
+  };
+}
+
 function config(overrides = {}) {
   return {
     sessionId: SESSION,
@@ -140,6 +150,7 @@ test("mechanics-proof controller executes pair without private authority and ret
       assert.equal(Object.isFrozen(payload), true);
       assert.equal(Object.isFrozen(payload.runtimes.initiator), true);
       assert.equal("runtimeAdapter" in payload, false);
+      assert.equal("harnessAdapters" in payload, false);
       assert.deepEqual(Object.keys(payload.runtimes.initiator).sort(), ["harness", "role", "runtimeId"]);
       assert.equal("signer" in payload, false);
       assert.equal("privateKey" in JSON.parse(JSON.stringify(payload)), false);
@@ -155,6 +166,23 @@ test("mechanics-proof controller executes pair without private authority and ret
   assert.deepEqual(runtime.calls.map((entry) => entry[0]), [
     "provision", "attest", "provision", "attest", "terminate", "destroy", "terminate", "destroy", "collect", "collect",
   ]);
+});
+
+test("mechanics-proof controller does not expose raw harness adapter action methods to executePair", async () => {
+  const marker = { called: false };
+  await runMechanicsProofController(config({
+    harnessAdapters: {
+      initiator: authorityBearingHarnessAdapter("codex", marker),
+      responder: harnessAdapter("claude"),
+    },
+    executePair: async (payload) => {
+      assert.equal("harnessAdapters" in payload, false);
+      assert.equal("executeRetainedAction" in payload, false);
+      assert.equal("executeRetainedAction" in JSON.parse(JSON.stringify(payload)), false);
+      return HANDSHAKE_EVIDENCE;
+    },
+  }));
+  assert.equal(marker.called, false);
 });
 
 test("mechanics-proof controller rejects authority smuggled through runtime or harness capabilities", async () => {
