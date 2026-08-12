@@ -1,0 +1,195 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Clockchain mechanics proof Phase4 dry-run Fargate runtime template. JSON syntax is intentional for dependency-free validation.",
+  "Parameters": {
+    "VpcId": { "Type": "AWS::EC2::VPC::Id" },
+    "PrivateSubnetIds": {
+      "Type": "List<AWS::EC2::Subnet::Id>",
+      "Description": "Private subnets only; HTTPS egress must use NAT or VPC endpoints for ECR, Logs, Secrets Manager or SSM, STS, CloudWatch, and CloudTrail."
+    },
+    "Node24ImageDigest": {
+      "Type": "String",
+      "AllowedPattern": "^.+@sha256:[0-9a-f]{64}$"
+    },
+    "InitiatorSecretArns": { "Type": "CommaDelimitedList" },
+    "ResponderSecretArns": { "Type": "CommaDelimitedList" },
+    "RunId": { "Type": "String" }
+  },
+  "Resources": {
+    "Cluster": { "Type": "AWS::ECS::Cluster" },
+    "InitiatorLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": { "Fn::Sub": "/clockchain/mechanics-proof/${RunId}/initiator" },
+        "RetentionInDays": 14,
+        "Tags": [
+          { "Key": "ClockchainPhase", "Value": "Phase4DryRun" },
+          { "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } }
+        ]
+      }
+    },
+    "ResponderLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": { "Fn::Sub": "/clockchain/mechanics-proof/${RunId}/responder" },
+        "RetentionInDays": 14,
+        "Tags": [
+          { "Key": "ClockchainPhase", "Value": "Phase4DryRun" },
+          { "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } }
+        ]
+      }
+    },
+    "InitiatorTaskRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{ "Effect": "Allow", "Principal": { "Service": "ecs-tasks.amazonaws.com" }, "Action": "sts:AssumeRole" }]
+        },
+        "Tags": [{ "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } }]
+      }
+    },
+    "ResponderTaskRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{ "Effect": "Allow", "Principal": { "Service": "ecs-tasks.amazonaws.com" }, "Action": "sts:AssumeRole" }]
+        },
+        "Tags": [{ "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } }]
+      }
+    },
+    "InitiatorExecutionRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{ "Effect": "Allow", "Principal": { "Service": "ecs-tasks.amazonaws.com" }, "Action": "sts:AssumeRole" }]
+        },
+        "Policies": [{
+          "PolicyName": "clockchain-mechanics-proof-initiator-execution",
+          "PolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [
+              { "Effect": "Allow", "Action": ["logs:CreateLogStream", "logs:PutLogEvents"], "Resource": { "Fn::Sub": "${InitiatorLogGroup.Arn}:*" } },
+              { "Effect": "Allow", "Action": ["secretsmanager:GetSecretValue", "ssm:GetParameters"], "Resource": { "Ref": "InitiatorSecretArns" } }
+            ]
+          }
+        }],
+        "Tags": [{ "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } }]
+      }
+    },
+    "ResponderExecutionRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{ "Effect": "Allow", "Principal": { "Service": "ecs-tasks.amazonaws.com" }, "Action": "sts:AssumeRole" }]
+        },
+        "Policies": [{
+          "PolicyName": "clockchain-mechanics-proof-responder-execution",
+          "PolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [
+              { "Effect": "Allow", "Action": ["logs:CreateLogStream", "logs:PutLogEvents"], "Resource": { "Fn::Sub": "${ResponderLogGroup.Arn}:*" } },
+              { "Effect": "Allow", "Action": ["secretsmanager:GetSecretValue", "ssm:GetParameters"], "Resource": { "Ref": "ResponderSecretArns" } }
+            ]
+          }
+        }],
+        "Tags": [{ "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } }]
+      }
+    },
+    "InitiatorSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Initiator peer-only A2A ingress.",
+        "VpcId": { "Ref": "VpcId" },
+        "SecurityGroupEgress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 443,
+            "ToPort": 443,
+            "CidrIp": "0.0.0.0/0",
+            "Description": "HTTPS egress only through private subnet NAT or required VPC endpoints."
+          }
+        ]
+      }
+    },
+    "ResponderSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Responder peer-only A2A ingress.",
+        "VpcId": { "Ref": "VpcId" },
+        "SecurityGroupEgress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 443,
+            "ToPort": 443,
+            "CidrIp": "0.0.0.0/0",
+            "Description": "HTTPS egress only through private subnet NAT or required VPC endpoints."
+          }
+        ]
+      }
+    },
+    "InitiatorPeerA2AIngress": {
+      "Type": "AWS::EC2::SecurityGroupIngress",
+      "Properties": {
+        "GroupId": { "Ref": "InitiatorSecurityGroup" },
+        "IpProtocol": "tcp",
+        "FromPort": 8443,
+        "ToPort": 8443,
+        "SourceSecurityGroupId": { "Ref": "ResponderSecurityGroup" }
+      }
+    },
+    "ResponderPeerA2AIngress": {
+      "Type": "AWS::EC2::SecurityGroupIngress",
+      "Properties": {
+        "GroupId": { "Ref": "ResponderSecurityGroup" },
+        "IpProtocol": "tcp",
+        "FromPort": 8443,
+        "ToPort": 8443,
+        "SourceSecurityGroupId": { "Ref": "InitiatorSecurityGroup" }
+      }
+    },
+    "InitiatorPeerA2AEgress": {
+      "Type": "AWS::EC2::SecurityGroupEgress",
+      "Properties": {
+        "GroupId": { "Ref": "InitiatorSecurityGroup" },
+        "IpProtocol": "tcp",
+        "FromPort": 8443,
+        "ToPort": 8443,
+        "DestinationSecurityGroupId": { "Ref": "ResponderSecurityGroup" }
+      }
+    },
+    "ResponderPeerA2AEgress": {
+      "Type": "AWS::EC2::SecurityGroupEgress",
+      "Properties": {
+        "GroupId": { "Ref": "ResponderSecurityGroup" },
+        "IpProtocol": "tcp",
+        "FromPort": 8443,
+        "ToPort": 8443,
+        "DestinationSecurityGroupId": { "Ref": "InitiatorSecurityGroup" }
+      }
+    }
+  },
+  "Metadata": {
+    "ClockchainMechanicsProof": {
+      "schema": "clockchain.fargate-runtime-template/v1",
+      "liveResourcesCreated": false,
+      "deploymentReady": false,
+      "imagePurpose": "pinned-node24-base-fixture",
+      "assignPublicIp": "DISABLED",
+      "ttlSeconds": 3600,
+      "maxConcurrency": 2,
+      "perRunBudgetUsd": "25.00",
+      "requiredCostTags": ["ClockchainSession", "ClockchainPhase", "ClockchainRunId"],
+      "requiredPrivateSubnetIds": { "Ref": "PrivateSubnetIds" },
+      "immutableNode24Image": { "Ref": "Node24ImageDigest" },
+      "cleanupSweeperPlan": {
+        "requiresStoppedEvidence": true,
+        "sweeper": "Expire run-scoped tasks and log streams by TTL tag after STOPPED evidence is collected."
+      },
+      "privateSubnetEgressRequirement": "Private subnets require NAT or VPC endpoints for ECR, CloudWatch Logs, Secrets Manager or SSM, STS, CloudTrail, and HTTPS access to the dedicated Clockchain MCP endpoint."
+    }
+  }
+}

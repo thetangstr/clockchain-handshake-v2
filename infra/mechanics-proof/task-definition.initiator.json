@@ -1,0 +1,69 @@
+{
+  "family": "clockchain-mechanics-proof-initiator",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "512",
+  "memory": "1024",
+  "runtimePlatform": {
+    "operatingSystemFamily": "LINUX",
+    "cpuArchitecture": "X86_64"
+  },
+  "taskRoleArn": "arn:aws:iam::123456789012:role/clockchain-mechanics-proof-initiator-task",
+  "executionRoleArn": "arn:aws:iam::123456789012:role/clockchain-mechanics-proof-initiator-execution",
+  "containerDefinitions": [
+    {
+      "name": "initiator",
+      "image": "docker.io/library/node:24.11.1-bookworm-slim@sha256:44b49d6e2d23f6754fb084ef9d34ff14590343ad1ee168f8acf8f7bc9fccde2f",
+      "essential": true,
+      "user": "10001",
+      "readonlyRootFilesystem": true,
+      "privileged": false,
+      "portMappings": [
+        { "containerPort": 8443, "protocol": "tcp" }
+      ],
+      "environment": [
+        { "name": "CLOCKCHAIN_ROLE", "value": "initiator" },
+        { "name": "CLOCKCHAIN_MCP_URL", "value": "https://mcp.clockchain.network/handshake/mcp" },
+        { "name": "CLOCKCHAIN_A2A_PORT", "value": "8443" },
+        { "name": "NODE_ENV", "value": "production" }
+      ],
+      "secrets": [
+        {
+          "name": "CLOCKCHAIN_PROVIDER_REF",
+          "valueFrom": "arn:aws:secretsmanager:us-west-2:123456789012:secret:clockchain/mechanics-proof/initiator/provider"
+        },
+        {
+          "name": "CLOCKCHAIN_MCP_CREDENTIAL_REF",
+          "valueFrom": "arn:aws:secretsmanager:us-west-2:123456789012:secret:clockchain/mechanics-proof/initiator/mcp"
+        },
+        {
+          "name": "CLOCKCHAIN_SIGNER_REF",
+          "valueFrom": "arn:aws:ssm:us-west-2:123456789012:parameter/clockchain/mechanics-proof/initiator/signer"
+        },
+        {
+          "name": "CLOCKCHAIN_STATE_REF",
+          "valueFrom": "arn:aws:ssm:us-west-2:123456789012:parameter/clockchain/mechanics-proof/initiator/state"
+        }
+      ],
+      "mountPoints": [
+        {
+          "sourceVolume": "initiator-workspace",
+          "containerPath": "/workspace",
+          "readOnly": false
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/clockchain/mechanics-proof/initiator",
+          "awslogs-region": "us-west-2",
+          "awslogs-stream-prefix": "initiator",
+          "mode": "blocking"
+        }
+      }
+    }
+  ],
+  "volumes": [
+    { "name": "initiator-workspace" }
+  ]
+}
