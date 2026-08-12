@@ -196,6 +196,7 @@ function codexExpectedHelperEvent(command) {
 
 function claudeExpectedHelperEvent(command, options = {}) {
   const {
+    contentShape = "string",
     id = "mcp-tool",
     includeToolUse = true,
     isError = false,
@@ -203,12 +204,15 @@ function claudeExpectedHelperEvent(command, options = {}) {
     toolResultId = id,
   } = options;
   const result = JSON.stringify({ localAction: { helperStep: helperStep(command, options) } });
+  const content = contentShape === "array"
+    ? [{ type: "text", text: result }]
+    : result;
   return (includeToolUse ? streamEvent({
     type: "assistant",
     message: { content: [{ type: "tool_use", id, name, input: {} }] },
   }) : "") + streamEvent({
     type: "user",
-    message: { content: [{ type: "tool_result", tool_use_id: toolResultId, content: result, is_error: isError }] },
+    message: { content: [{ type: "tool_result", tool_use_id: toolResultId, content, is_error: isError }] },
   });
 }
 
@@ -1721,6 +1725,205 @@ test("does not retain helper actions from model-authored or unrelated event payl
       })), /failed safely/);
 
       assert.equal(retained.some((entry) => entry.commandSha256 === fingerprintHelperExecutionCommand(spoofedCommand).commandSha256), false);
+      assert.deepEqual(await readdir(parent), []);
+    });
+  }
+});
+
+test("retains helper actions from correlated Claude MCP text-block array results", async (t) => {
+  for (const tool of ["agent_handshake_accept_invitation", "agent_handshake_invite", "agent_handshake_next"]) {
+    await t.test(tool, async (t) => {
+      const parent = await mkdtemp(join(tmpdir(), `fresh-agent-claude-array-action-${tool}-`));
+      t.after(() => rm(parent, { recursive: true, force: true }));
+      const children = {};
+      const retained = [];
+      const responderCommand = verifyCertificateCommand("responder");
+      const prepareAdapter = async ({ room }) => {
+        const adapter = await prepareTestAdapter({ room });
+        return Object.freeze({
+          ...adapter,
+          record: (command) => { retained.push(command); },
+        });
+      };
+      const spawnProcess = () => {
+        const role = children.initiator === undefined ? "initiator" : "responder";
+        const child = new EventEmitter();
+        child.pid = null;
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.stdin = { end() {
+          queueMicrotask(() => {
+            if (role === "initiator") {
+              child.stdout.emit("data", Buffer.from(codexInviteEvent()));
+              return;
+            }
+            children.initiator.stdout.emit("data", Buffer.from(codexRetainedHelperEvent(helperProof("initiator"))));
+            children.responder.stdout.emit("data", Buffer.from(claudeExpectedHelperEvent(responderCommand, {
+              contentShape: "array",
+              id: `${tool}-use`,
+              name: `mcp__clockchain-handshake__${tool}`,
+            })));
+            children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(
+              helperProof("responder"),
+              { command: approvalCommand(responderCommand), id: "approval" },
+            )));
+            children.initiator.emit("close", 0, null);
+            children.responder.emit("close", 0, null);
+          });
+        } };
+        child.kill = () => {};
+        children[role] = child;
+        return child;
+      };
+
+      const result = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, {
+        prepareAdapter,
+        spawnProcess,
+      }));
+
+      assert.equal(result.certificateVerified, true);
+      assert.equal(retained.some((entry) => entry.commandSha256 === fingerprintHelperExecutionCommand(responderCommand).commandSha256), true);
+      assert.deepEqual(await readdir(parent), []);
+    });
+  }
+});
+
+test("does not retain helper actions from untrusted or errored Claude array results", async (t) => {
+  const arrayContent = (command) => [{ type: "text", text: JSON.stringify({ localAction: { helperStep: helperStep(command) } }) }];
+  const cases = [
+    ["bash-array", (command) => streamEvent({
+      type: "assistant",
+      message: { content: [{ type: "tool_use", id: "bash-array", name: "Bash", input: { command: "printf localAction" } }] },
+    }) + streamEvent({
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: "bash-array", content: arrayContent(command), is_error: false }] },
+    })],
+    ["uncorrelated-array", (command) => streamEvent({
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: "missing-tool-use", content: arrayContent(command), is_error: false }] },
+    })],
+    ["unrelated-tool-array", (command) => claudeExpectedHelperEvent(command, {
+      contentShape: "array",
+      id: "other-tool",
+      name: "mcp__other-server__agent_handshake_next",
+    })],
+    ["errored-array", (command) => claudeExpectedHelperEvent(command, {
+      contentShape: "array",
+      id: "errored-mcp",
+      isError: true,
+      name: "mcp__clockchain-handshake__agent_handshake_next",
+    })],
+  ];
+
+  for (const [name, eventFactory] of cases) {
+    await t.test(name, async (t) => {
+      const parent = await mkdtemp(join(tmpdir(), `fresh-agent-claude-untrusted-array-${name}-`));
+      t.after(() => rm(parent, { recursive: true, force: true }));
+      const children = {};
+      const retained = [];
+      const responderCommand = verifyCertificateCommand("responder");
+      const prepareAdapter = async ({ room }) => {
+        const adapter = await prepareTestAdapter({ room });
+        return Object.freeze({
+          ...adapter,
+          record: (command) => { retained.push(command); },
+        });
+      };
+      const spawnProcess = () => {
+        const role = children.initiator === undefined ? "initiator" : "responder";
+        const child = new EventEmitter();
+        child.pid = null;
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.stdin = { end() {
+          queueMicrotask(() => {
+            if (role === "initiator") {
+              child.stdout.emit("data", Buffer.from(codexInviteEvent()));
+              return;
+            }
+            children.initiator.stdout.emit("data", Buffer.from(codexRetainedHelperEvent(helperProof("initiator"))));
+            children.responder.stdout.emit("data", Buffer.from(eventFactory(responderCommand)));
+            children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(
+              helperProof("responder"),
+              { command: approvalCommand(responderCommand), id: "approval" },
+            )));
+            children.initiator.emit("close", 0, null);
+            children.responder.emit("close", 0, null);
+          });
+        } };
+        child.kill = () => {};
+        children[role] = child;
+        return child;
+      };
+
+      await assert.rejects(() => runFreshAgentHandshake(baseFreshAgentRunOptions(parent, {
+        prepareAdapter,
+        spawnProcess,
+      })), /failed safely/);
+
+      assert.equal(retained.some((entry) => entry.commandSha256 === fingerprintHelperExecutionCommand(responderCommand).commandSha256), false);
+      assert.deepEqual(await readdir(parent), []);
+    });
+  }
+});
+
+test("rejects malformed correlated Claude MCP array content before retaining helper actions", async (t) => {
+  const malformed = [
+    ["non-text", [{ type: "image", text: JSON.stringify({}) }]],
+    ["missing-text", [{ type: "text" }]],
+    ["mixed", [{ type: "text", text: "{}" }, { type: "resource", text: "{}" }]],
+  ];
+  for (const [name, content] of malformed) {
+    await t.test(name, async (t) => {
+      const parent = await mkdtemp(join(tmpdir(), `fresh-agent-claude-malformed-array-${name}-`));
+      t.after(() => rm(parent, { recursive: true, force: true }));
+      const children = {};
+      const retained = [];
+      const responderCommand = verifyCertificateCommand("responder");
+      const prepareAdapter = async ({ room }) => {
+        const adapter = await prepareTestAdapter({ room });
+        return Object.freeze({
+          ...adapter,
+          record: (command) => { retained.push(command); },
+        });
+      };
+      const spawnProcess = () => {
+        const role = children.initiator === undefined ? "initiator" : "responder";
+        const child = new EventEmitter();
+        child.pid = null;
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.stdin = { end() {
+          queueMicrotask(() => {
+            if (role === "initiator") {
+              child.stdout.emit("data", Buffer.from(codexInviteEvent()));
+              return;
+            }
+            children.initiator.stdout.emit("data", Buffer.from(codexRetainedHelperEvent(helperProof("initiator"))));
+            children.responder.stdout.emit("data", Buffer.from(streamEvent({
+              type: "assistant",
+              message: { content: [{ type: "tool_use", id: "malformed-mcp", name: "mcp__clockchain-handshake__agent_handshake_next", input: {} }] },
+            })));
+            children.responder.stdout.emit("data", Buffer.from(streamEvent({
+              type: "user",
+              message: { content: [{ type: "tool_result", tool_use_id: "malformed-mcp", content, is_error: false }] },
+            })));
+            children.initiator.emit("close", 0, null);
+            children.responder.emit("close", 0, null);
+          });
+        } };
+        child.kill = () => {};
+        children[role] = child;
+        return child;
+      };
+
+      const error = await rejectsFreshAgentRun(parent, {
+        prepareAdapter,
+        spawnProcess,
+      });
+
+      assert.equal(error.diagnostic.code, "AGENT_OUTPUT_INVALID");
+      assert.equal(retained.length, 1);
       assert.deepEqual(await readdir(parent), []);
     });
   }

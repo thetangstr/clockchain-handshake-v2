@@ -1266,6 +1266,23 @@ function collectExpectedHelperCommandsFromPayload(value, found = [], seen = new 
   return found;
 }
 
+function claudeToolResultTexts(value) {
+  if (typeof value === "string") return Object.freeze([value]);
+  if (!Array.isArray(value)) fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
+  const texts = [];
+  for (const block of value) {
+    if (
+      block === null || typeof block !== "object" || Array.isArray(block) ||
+      Object.keys(block).sort().join(",") !== "text,type" ||
+      block.type !== "text" || typeof block.text !== "string"
+    ) {
+      fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
+    }
+    texts.push(block.text);
+  }
+  return Object.freeze(texts);
+}
+
 function collectExpectedHelperCommands(event, state) {
   if (event?.type === "item.completed") {
     if (
@@ -1306,8 +1323,10 @@ function collectExpectedHelperCommands(event, state) {
       }
       state.claudeCompletedHelperToolUseIds.add(block.tool_use_id);
       if (state.claudeCompletedHelperToolUseIds.size > 10_000) fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
-      if (block.is_error === true || typeof block.content !== "string") continue;
-      found = collectExpectedHelperCommandsFromPayload(block.content, found);
+      if (block.is_error === true) continue;
+      for (const text of claudeToolResultTexts(block.content)) {
+        found = collectExpectedHelperCommandsFromPayload(text, found);
+      }
     }
     return found;
   }
@@ -1551,6 +1570,13 @@ function observeChild(child, role, all, canaries, { adapter, expectedInvitation,
       const discoveredHelperCommands = collectExpectedHelperCommands(event, invitationState);
       for (const command of discoveredHelperCommands) {
         if (command.approvalCommand !== null) adapter.record(command);
+        traceLifecycle({
+          phase: "helper-action-retained",
+          role,
+          operation: command.operation,
+          commandSha256: command.commandSha256,
+          commandLength: command.commandLength,
+        });
       }
       expectedHelperCommands.push(...discoveredHelperCommands);
       observed = mergeObserved(observed, inspectEvent(event, role, invitationState));
