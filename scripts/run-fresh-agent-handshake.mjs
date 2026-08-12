@@ -24,7 +24,7 @@ import {
 const execFileAsync = promisify(execFile);
 const SAFE_ERROR = "Fresh agent compatibility check failed safely.\n";
 const SHA256 = /^[0-9a-f]{64}$/;
-const TRANSIENT_MONITOR_STATUSES = new Set([429, 502, 503, 504]);
+const TRANSIENT_MONITOR_STATUSES = new Set([429, 500, 502, 503, 504]);
 
 function safeMonitorError(category, code) {
   return new FreshAgentDiagnosticError({ phase: "monitor", category, code });
