@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const RUNTIME_EVIDENCE_SCHEMA = "clockchain.runtime-evidence/v1";
+export const LOCAL_RUNTIME_EVIDENCE_SCHEMA = "clockchain.local-runtime-evidence/v1";
 
 const ROLES = Object.freeze(["initiator", "responder"]);
 const SHA = /^[0-9a-f]{64}$/;
@@ -16,6 +17,11 @@ const RUNTIME_EVIDENCE_KEYS = Object.freeze([
   "stoppedAtMs", "subnetId", "taskArn", "taskDefinitionArn", "taskDefinitionDigest",
   "taskDefinitionRevision", "taskRoleArn", "taskStatus", "workspaceRootDigest",
   "writableVolumeSummary",
+]);
+const LOCAL_RUNTIME_EVIDENCE_KEYS = Object.freeze([
+  "cleanupCompleted", "createdAtMs", "credentialRefDigest", "harness", "provider", "role",
+  "runtimeId", "schema", "sessionSanitizationDigest", "signerRootDigest", "sourceCommitDigest",
+  "stateRootDigest", "status", "stoppedAtMs", "workspaceRootDigest",
 ]);
 
 function fail() {
@@ -68,6 +74,11 @@ function timestamp(value) {
 
 function digestOf(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function localStatus(value) {
+  if (!["PROVISIONED", "STOPPED", "DESTROYED"].includes(value)) fail();
+  return value;
 }
 
 export function validateRuntimeEvidence(value) {
@@ -146,6 +157,40 @@ export function validateRuntimePairEvidence(value) {
   return Object.freeze({ initiator, responder });
 }
 
+export function validateLocalRuntimeEvidence(value) {
+  const item = exactObject(value, LOCAL_RUNTIME_EVIDENCE_KEYS);
+  if (
+    item.schema !== LOCAL_RUNTIME_EVIDENCE_SCHEMA ||
+    item.provider !== "local-shim" ||
+    typeof item.harness !== "string" ||
+    item.harness.length === 0 ||
+    typeof item.cleanupCompleted !== "boolean"
+  ) fail();
+  const status = localStatus(item.status);
+  if ((status === "DESTROYED") !== item.cleanupCompleted) fail();
+  const createdAtMs = timestamp(item.createdAtMs);
+  const stoppedAtMs = item.stoppedAtMs === null ? null : timestamp(item.stoppedAtMs);
+  if (status === "PROVISIONED" && stoppedAtMs !== null) fail();
+  if (status !== "PROVISIONED" && (stoppedAtMs === null || stoppedAtMs < createdAtMs)) fail();
+  return Object.freeze({
+    schema: LOCAL_RUNTIME_EVIDENCE_SCHEMA,
+    provider: "local-shim",
+    runtimeId: nonempty(item.runtimeId),
+    role: cleanRole(item.role),
+    harness: item.harness,
+    status,
+    createdAtMs,
+    stoppedAtMs,
+    cleanupCompleted: item.cleanupCompleted,
+    sourceCommitDigest: digest(item.sourceCommitDigest),
+    credentialRefDigest: digest(item.credentialRefDigest),
+    workspaceRootDigest: digest(item.workspaceRootDigest),
+    stateRootDigest: digest(item.stateRootDigest),
+    signerRootDigest: digest(item.signerRootDigest),
+    sessionSanitizationDigest: digest(item.sessionSanitizationDigest),
+  });
+}
+
 export function createLocalRuntimeAdapter(options = {}) {
   if (options === null || typeof options !== "object" || Array.isArray(options)) fail();
   rejectAuthorityFields(options);
@@ -153,42 +198,24 @@ export function createLocalRuntimeAdapter(options = {}) {
   const runtimes = new Map();
   const cleanCommit = typeof sourceCommit === "string" && /^[0-9a-f]{40}$/.test(sourceCommit) ? sourceCommit : "0".repeat(40);
 
-  function buildEvidence(runtime, status = "PROVISIONED") {
+  function buildLocalEvidence(runtime) {
     const roleSeed = `${cleanCommit}:${runtime.role}`;
     const baseDigest = (name) => digestOf(`${roleSeed}:${name}`);
     return {
-      schema: RUNTIME_EVIDENCE_SCHEMA,
+      schema: LOCAL_RUNTIME_EVIDENCE_SCHEMA,
+      provider: "local-shim",
       runtimeId: runtime.runtimeId,
       role: runtime.role,
-      taskArn: `arn:aws:ecs:local:000000000000:task/${runtime.runtimeId}`,
-      taskStatus: status === "DESTROYED" ? "STOPPED" : status,
+      harness: runtime.harness,
+      status: runtime.status,
       createdAtMs: runtime.createdAtMs,
-      stoppedAtMs: runtime.stoppedAtMs ?? runtime.createdAtMs + 1,
-      taskRoleArn: `arn:aws:iam::000000000000:role/clockchain-local-${runtime.role}-task`,
-      executionRoleArn: `arn:aws:iam::000000000000:role/clockchain-local-${runtime.role}-execution`,
-      inTaskStsCallerIdentity: {
-        account: "000000000000",
-        arn: `arn:aws:sts::000000000000:assumed-role/clockchain-local-${runtime.role}-task/${runtime.runtimeId}`,
-        userId: `LOCAL${runtime.role.toUpperCase()}:${runtime.runtimeId}`,
-      },
-      imageDigest: `sha256:${baseDigest("image")}`,
-      taskDefinitionArn: `arn:aws:ecs:local:000000000000:task-definition/clockchain-local-${runtime.role}:1`,
-      taskDefinitionRevision: "1",
-      taskDefinitionDigest: baseDigest("task-definition"),
-      eniId: `eni-local-${runtime.role}`,
-      subnetId: `subnet-local-${runtime.role}`,
-      securityGroupIds: [`sg-local-${runtime.role}`],
-      writableVolumeSummary: { ephemeral: true, sharedWritable: false },
-      sharedEfsMounts: [],
-      secretArnDigests: [baseDigest(`secret:${runtime.secretsRef}`)],
+      stoppedAtMs: runtime.stoppedAtMs,
+      cleanupCompleted: runtime.status === "DESTROYED",
+      sourceCommitDigest: digestOf(cleanCommit),
       credentialRefDigest: baseDigest(`credential:${runtime.secretsRef}`),
       workspaceRootDigest: baseDigest("workspace"),
       stateRootDigest: baseDigest("state"),
       signerRootDigest: baseDigest("signer"),
-      logStreamDigests: [baseDigest("log")],
-      cloudTrailEventDigests: [baseDigest("cloudtrail")],
-      ecsDescribeTasksDigest: baseDigest("ecs-describe"),
-      cleanupEvidenceDigest: baseDigest("cleanup"),
       sessionSanitizationDigest: baseDigest("sanitization"),
       ...(overrides[runtime.role] ?? {}),
     };
@@ -219,7 +246,7 @@ export function createLocalRuntimeAdapter(options = {}) {
     async attestRuntime({ runtimeId }) {
       const runtime = runtimes.get(runtimeId);
       if (runtime === undefined) fail();
-      return validateRuntimeEvidence(buildEvidence(runtime, "STOPPED"));
+      return validateLocalRuntimeEvidence(buildLocalEvidence(runtime));
     },
     async streamRuntimeEvents({ runtimeId, since = null }) {
       if (!runtimes.has(runtimeId) || since !== null && typeof since !== "string") fail();
@@ -239,8 +266,8 @@ export function createLocalRuntimeAdapter(options = {}) {
     },
     async collectRuntimeEvidence({ runtimeId }) {
       const runtime = runtimes.get(runtimeId);
-      if (runtime === undefined) fail();
-      return validateRuntimeEvidence(buildEvidence(runtime, runtime.status));
+      if (runtime === undefined || runtime.status !== "DESTROYED") fail();
+      return validateLocalRuntimeEvidence(buildLocalEvidence(runtime));
     },
   });
 }

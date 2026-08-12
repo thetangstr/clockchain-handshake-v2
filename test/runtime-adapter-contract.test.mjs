@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  LOCAL_RUNTIME_EVIDENCE_SCHEMA,
   RUNTIME_EVIDENCE_SCHEMA,
   createLocalRuntimeAdapter,
+  validateLocalRuntimeEvidence,
   validateRuntimeEvidence,
   validateRuntimePairEvidence,
 } from "../src/runtime/runtime-adapter-contract.mjs";
@@ -90,7 +92,7 @@ test("runtime pair evidence rejects shared workload, credential, state, and sign
   }
 });
 
-test("local runtime adapter shim emits contract-shaped collected evidence", async () => {
+test("local runtime adapter shim emits separate local evidence after cleanup only", async () => {
   const adapter = createLocalRuntimeAdapter({ sourceCommit: "1".repeat(40) });
   const provisioned = await Promise.all(["initiator", "responder"].map((role) =>
     adapter.provisionPartyRuntime({
@@ -103,16 +105,24 @@ test("local runtime adapter shim emits contract-shaped collected evidence", asyn
       costTags: { phase: "test" },
     })));
   for (const runtime of provisioned) {
-    await adapter.attestRuntime({ runtimeId: runtime.runtimeId });
+    const attestation = await adapter.attestRuntime({ runtimeId: runtime.runtimeId });
+    assert.equal(attestation.schema, LOCAL_RUNTIME_EVIDENCE_SCHEMA);
+    assert.equal(attestation.provider, "local-shim");
+    assert.equal(attestation.status, "PROVISIONED");
+    assert.equal(attestation.cleanupCompleted, false);
+    assert.throws(() => validateRuntimeEvidence(attestation));
+    await assert.rejects(() => adapter.collectRuntimeEvidence({ runtimeId: runtime.runtimeId }));
     await adapter.terminateRuntime({ runtimeId: runtime.runtimeId, reason: "test" });
+    await assert.rejects(() => adapter.collectRuntimeEvidence({ runtimeId: runtime.runtimeId }));
     await adapter.destroyRuntime({ runtimeId: runtime.runtimeId });
   }
-  const pair = validateRuntimePairEvidence({
-    initiator: await adapter.collectRuntimeEvidence({ runtimeId: provisioned[0].runtimeId }),
-    responder: await adapter.collectRuntimeEvidence({ runtimeId: provisioned[1].runtimeId }),
-  });
+  const pair = {
+    initiator: validateLocalRuntimeEvidence(await adapter.collectRuntimeEvidence({ runtimeId: provisioned[0].runtimeId })),
+    responder: validateLocalRuntimeEvidence(await adapter.collectRuntimeEvidence({ runtimeId: provisioned[1].runtimeId })),
+  };
   assert.equal(pair.initiator.role, "initiator");
   assert.equal(pair.responder.role, "responder");
+  assert.throws(() => validateRuntimePairEvidence(pair));
 });
 
 test("local runtime adapter factory rejects authority-bearing private fields", () => {

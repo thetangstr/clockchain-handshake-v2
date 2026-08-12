@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, createPublicKey, randomUUID, verify } from "node:crypto";
 
 export const HARNESS_EVENT_SCHEMA = "clockchain.harness-event/v1";
 export const RETAINED_LOCAL_ACTION_SCHEMA = "clockchain.retained-local-action/v1";
@@ -13,10 +13,15 @@ const ACTION_KEYS = Object.freeze([
   "commandSha256", "expiresAtMs", "issuedAtMs", "operation", "policyDigest", "requestDigest",
   "requestLength", "role", "schema", "sessionId",
 ]);
+const ACTION_BODY_KEYS = Object.freeze([
+  "schema", "sessionId", "role", "actionId", "operation", "requestDigest", "requestLength",
+  "commandSha256", "commandLength", "policyDigest", "issuedAtMs", "expiresAtMs",
+]);
 const EVENT_KEYS = Object.freeze([
   "evidenceRef", "harness", "publicSummary", "redacted", "role", "schema", "sequence",
   "sessionId", "timestampMs", "type",
 ]);
+const SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
 function fail() {
   throw new Error("Harness adapter contract validation failed safely.");
@@ -56,6 +61,16 @@ function timestamp(value) {
   return value;
 }
 
+function bodyBytes(item) {
+  const body = {};
+  for (const key of ACTION_BODY_KEYS) body[key] = item[key];
+  return Buffer.from(JSON.stringify(body), "utf8");
+}
+
+function publicKeyFromRaw(value) {
+  return createPublicKey({ key: Buffer.concat([SPKI_PREFIX, Buffer.from(value, "base64")]), format: "der", type: "spki" });
+}
+
 function safeText(value) {
   if (typeof value !== "string" || !SAFE_TEXT.test(value) || /\/(?:Users|private|tmp|Volumes)\//.test(value)) fail();
   return value;
@@ -85,6 +100,16 @@ export function validateRetainedLocalAction(value) {
   const issuedAtMs = timestamp(item.issuedAtMs);
   const expiresAtMs = timestamp(item.expiresAtMs);
   if (expiresAtMs <= issuedAtMs) fail();
+  const bytes = bodyBytes(item);
+  const adapterRecordDigest = digest(item.adapterRecordDigest);
+  if (createHash("sha256").update(bytes).digest("hex") !== adapterRecordDigest) fail();
+  let accepted = false;
+  try {
+    accepted = verify(null, bytes, publicKeyFromRaw(item.adapterPublicKey), Buffer.from(item.adapterSignature, "base64"));
+  } catch {
+    accepted = false;
+  }
+  if (!accepted) fail();
   return Object.freeze({
     schema: RETAINED_LOCAL_ACTION_SCHEMA,
     sessionId: item.sessionId,
@@ -98,7 +123,7 @@ export function validateRetainedLocalAction(value) {
     policyDigest: digest(item.policyDigest),
     issuedAtMs,
     expiresAtMs,
-    adapterRecordDigest: digest(item.adapterRecordDigest),
+    adapterRecordDigest,
     adapterSignature: item.adapterSignature,
     adapterPublicKey: item.adapterPublicKey,
   });
@@ -136,10 +161,32 @@ export function validateHarnessEvent(value) {
 export function createLocalHarnessAdapter(options = {}) {
   if (options === null || typeof options !== "object" || Array.isArray(options)) fail();
   rejectAuthorityFields(options);
-  const { harness = "local", retainedActions = [] } = options;
+  const { decisionCallback = null, harness = "local", nowMs = () => Date.now(), retainedActions = [] } = options;
   if (!Array.isArray(retainedActions)) fail();
+  if (typeof harness !== "string" || harness.length === 0) fail();
+  if (typeof nowMs !== "function") fail();
+  if (decisionCallback !== null && typeof decisionCallback !== "function") fail();
   const cleanRetainedActions = Object.freeze(retainedActions.map(validateRetainedLocalAction));
   const sessions = new Map();
+  function now() {
+    const value = nowMs();
+    if (!Number.isSafeInteger(value) || value < 0) fail();
+    return value;
+  }
+  function retained(sessionId, actionRole, actionId, allowedStates = ["pending"]) {
+    const session = sessions.get(sessionId);
+    if (session === undefined || session.role !== actionRole) fail();
+    const entry = session.retainedActions.get(actionId);
+    if (entry === undefined || entry.action.role !== actionRole || entry.action.sessionId !== sessionId) fail();
+    if (!allowedStates.includes(entry.state)) fail();
+    if (now() > entry.action.expiresAtMs) fail();
+    return { session, entry };
+  }
+  function decisionFor(args) {
+    if (decisionCallback !== null) return decisionCallback(args);
+    if (args.modelDecision !== undefined) return args.modelDecision;
+    fail();
+  }
   return Object.freeze({
     async inspectCapabilities() {
       return Object.freeze({
@@ -157,19 +204,30 @@ export function createLocalHarnessAdapter(options = {}) {
         a2aConfig === null || typeof a2aConfig !== "object"
       ) fail();
       const sessionId = UUIDISH.test(runtime.sessionId ?? "") ? runtime.sessionId : randomUUID();
+      const sessionRole = role(runtime.role);
+      const indexed = new Map();
+      for (const action of cleanRetainedActions) {
+        if (action.sessionId !== sessionId || action.role !== sessionRole) continue;
+        if (indexed.has(action.actionId)) fail();
+        indexed.set(action.actionId, { action, state: "pending" });
+      }
       sessions.set(sessionId, {
-        role: runtime.role,
-        retainedActions: cleanRetainedActions,
+        role: sessionRole,
+        retainedActions: indexed,
         terminated: false,
       });
       return Object.freeze({ sessionId });
     },
-    async decideLocalAction({ retainedAction }) {
-      return Object.freeze({ decision: "authorize", retainedAction: validateRetainedLocalAction(retainedAction) });
+    async decideLocalAction({ sessionId, role: actionRole, actionId, modelDecision }) {
+      const { entry } = retained(sessionId, role(actionRole), actionId);
+      const decision = decisionFor({ sessionId, role: actionRole, actionId, retainedAction: entry.action, modelDecision });
+      if (exactObject(decision, ["decision"]).decision !== "authorize") fail();
+      entry.state = "authorized";
+      return Object.freeze({ decision: "authorize", retainedAction: entry.action });
     },
     async executeRetainedAction({ sessionId, role: actionRole, actionId }) {
-      const session = sessions.get(sessionId);
-      if (session === undefined || !ROLES.includes(actionRole) || typeof actionId !== "string" || actionId.length === 0) fail();
+      const { entry } = retained(sessionId, role(actionRole), actionId, ["authorized"]);
+      entry.state = "consumed";
       return Object.freeze({ sessionId, role: actionRole, actionId, executed: true });
     },
     async streamEvents({ sessionId }) {
@@ -190,7 +248,7 @@ export function createLocalHarnessAdapter(options = {}) {
         schema: "clockchain.harness-evidence/v1",
         sessionId,
         teardown: Object.freeze({ completed: session.terminated === true }),
-        retainedActions: Object.freeze([...session.retainedActions]),
+        retainedActions: Object.freeze([...session.retainedActions.values()].map((entry) => entry.action)),
       });
     },
   });
