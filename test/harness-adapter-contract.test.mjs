@@ -42,6 +42,15 @@ function retainedAction(overrides = {}) {
   };
 }
 
+function harnessAdapter(options = {}) {
+  const retainedActions = options.retainedActions ?? [];
+  const keys = options.trustedAdapterPublicKeys ?? [...new Set(retainedActions.map((action) => action.adapterPublicKey))];
+  const trustedAdapterPublicKeys = keys.length > 0 ? keys : [DEFAULT_TRUSTED_ADAPTER_PUBLIC_KEY];
+  return createLocalHarnessAdapter({ trustedAdapterPublicKeys, ...options });
+}
+
+const DEFAULT_TRUSTED_ADAPTER_PUBLIC_KEY = retainedAction({ actionId: "default-trusted" }).adapterPublicKey;
+
 test("retained local actions must be adapter-signed and never expose argv or shell payloads", () => {
   assert.equal(validateRetainedLocalAction(retainedAction()).schema, RETAINED_LOCAL_ACTION_SCHEMA);
   for (const candidate of [
@@ -83,7 +92,7 @@ test("harness events are normalized, redacted, and non-authoritative", () => {
 });
 
 test("local harness adapter shim exposes only capabilities and sanitized evidence", async () => {
-  const adapter = createLocalHarnessAdapter({ harness: "codex" });
+  const adapter = harnessAdapter({ harness: "codex" });
   assert.deepEqual(await adapter.inspectCapabilities({ runtime: { runtimeId: "runtime-1" } }), {
     schema: "clockchain.harness-capabilities/v1",
     harness: "codex",
@@ -109,9 +118,10 @@ test("local harness adapter factory rejects authority fields and missing teardow
     { retainedActions: [{ privateKey: "secret" }] },
     { retainedActions: [{ ...retainedAction(), adapterSignature: undefined }] },
   ]) {
-    assert.throws(() => createLocalHarnessAdapter(options));
+    assert.throws(() => harnessAdapter(options));
   }
-  const adapter = createLocalHarnessAdapter({ harness: "codex" });
+  assert.throws(() => createLocalHarnessAdapter({ harness: "codex", retainedActions: [retainedAction()] }));
+  const adapter = harnessAdapter({ harness: "codex" });
   const launched = await adapter.launchSession({
     runtime: { runtimeId: "runtime-1", role: "initiator" },
     mandate: { reference: "NS-1847" },
@@ -123,7 +133,8 @@ test("local harness adapter factory rejects authority fields and missing teardow
 
 test("local harness retained actions require explicit decision and exact session role binding", async () => {
   const action = retainedAction();
-  const adapter = createLocalHarnessAdapter({
+  const foreignAction = retainedAction({ actionId: "foreign" });
+  const adapter = harnessAdapter({
     harness: "codex",
     nowMs: () => 1786337001000,
     retainedActions: [action],
@@ -143,12 +154,31 @@ test("local harness retained actions require explicit decision and exact session
     harness: "codex",
     nowMs: () => 1786337001000,
     retainedActions: [action],
-  }).decideLocalAction({ sessionId: SESSION, role: "initiator", actionId: action.actionId }));
-  await assert.rejects(() => adapter.decideLocalAction({ sessionId: OTHER_SESSION, role: "initiator", actionId: action.actionId }));
-  await assert.rejects(() => adapter.decideLocalAction({ sessionId: SESSION, role: "responder", actionId: action.actionId }));
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  }).decideLocalAction({ sessionId: SESSION, role: "initiator", retainedAction: action }));
+  assert.throws(() => createLocalHarnessAdapter({
+    harness: "codex",
+    nowMs: () => 1786337001000,
+    retainedActions: [foreignAction],
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  }));
+  await assert.rejects(() => adapter.decideLocalAction({ sessionId: OTHER_SESSION, role: "initiator", retainedAction: action }));
+  await assert.rejects(() => adapter.decideLocalAction({ sessionId: SESSION, role: "responder", retainedAction: action }));
+  await assert.rejects(() => adapter.decideLocalAction({
+    sessionId: SESSION,
+    role: "initiator",
+    retainedAction: action,
+    modelDecision: { decision: "authorize" },
+  }));
   await assert.rejects(() => adapter.executeRetainedAction({ sessionId: SESSION, role: "initiator", actionId: "unknown-action" }));
 
-  const decision = await adapter.decideLocalAction({ sessionId: SESSION, role: "initiator", actionId: action.actionId });
+  await assert.rejects(() => adapter.decideLocalAction({
+    sessionId: SESSION,
+    role: "initiator",
+    retainedAction: retainedAction({ actionId: action.actionId, commandLength: action.commandLength + 1 }),
+  }));
+
+  const decision = await adapter.decideLocalAction({ sessionId: SESSION, role: "initiator", retainedAction: action });
   assert.equal(decision.decision, "authorize");
   assert.equal(decision.retainedAction.actionId, action.actionId);
 });
@@ -156,7 +186,7 @@ test("local harness retained actions require explicit decision and exact session
 test("local harness retained actions reject expiry and one-use replay", async () => {
   const expired = retainedAction({ actionId: "expired", expiresAtMs: 1786337060000 });
   const live = retainedAction({ actionId: "live", expiresAtMs: 1786337080000 });
-  const adapter = createLocalHarnessAdapter({
+  const adapter = harnessAdapter({
     harness: "codex",
     nowMs: () => 1786337070000,
     retainedActions: [expired, live],
@@ -169,10 +199,10 @@ test("local harness retained actions reject expiry and one-use replay", async ()
     a2aConfig: { mode: "local-shim" },
   });
 
-  await assert.rejects(() => adapter.decideLocalAction({ sessionId: SESSION, role: "initiator", actionId: expired.actionId }));
+  await assert.rejects(() => adapter.decideLocalAction({ sessionId: SESSION, role: "initiator", retainedAction: expired }));
   await assert.rejects(() => adapter.executeRetainedAction({ sessionId: SESSION, role: "initiator", actionId: live.actionId }));
-  await adapter.decideLocalAction({ sessionId: SESSION, role: "initiator", actionId: live.actionId });
+  await adapter.decideLocalAction({ sessionId: SESSION, role: "initiator", retainedAction: live });
   assert.equal((await adapter.executeRetainedAction({ sessionId: SESSION, role: "initiator", actionId: live.actionId })).executed, true);
-  await assert.rejects(() => adapter.decideLocalAction({ sessionId: SESSION, role: "initiator", actionId: live.actionId }));
+  await assert.rejects(() => adapter.decideLocalAction({ sessionId: SESSION, role: "initiator", retainedAction: live }));
   await assert.rejects(() => adapter.executeRetainedAction({ sessionId: SESSION, role: "initiator", actionId: live.actionId }));
 });

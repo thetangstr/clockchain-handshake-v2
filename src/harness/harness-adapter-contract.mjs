@@ -71,6 +71,11 @@ function publicKeyFromRaw(value) {
   return createPublicKey({ key: Buffer.concat([SPKI_PREFIX, Buffer.from(value, "base64")]), format: "der", type: "spki" });
 }
 
+function rawPublicKey(value) {
+  if (typeof value !== "string" || !BASE64.test(value) || Buffer.from(value, "base64").length !== 32) fail();
+  return value;
+}
+
 function safeText(value) {
   if (typeof value !== "string" || !SAFE_TEXT.test(value) || /\/(?:Users|private|tmp|Volumes)\//.test(value)) fail();
   return value;
@@ -161,12 +166,24 @@ export function validateHarnessEvent(value) {
 export function createLocalHarnessAdapter(options = {}) {
   if (options === null || typeof options !== "object" || Array.isArray(options)) fail();
   rejectAuthorityFields(options);
-  const { decisionCallback = null, harness = "local", nowMs = () => Date.now(), retainedActions = [] } = options;
+  const {
+    decisionCallback = null,
+    harness = "local",
+    nowMs = () => Date.now(),
+    retainedActions = [],
+    trustedAdapterPublicKeys,
+  } = options;
   if (!Array.isArray(retainedActions)) fail();
+  if (!Array.isArray(trustedAdapterPublicKeys) || trustedAdapterPublicKeys.length < 1) fail();
   if (typeof harness !== "string" || harness.length === 0) fail();
   if (typeof nowMs !== "function") fail();
   if (decisionCallback !== null && typeof decisionCallback !== "function") fail();
+  const trustedKeys = new Set(trustedAdapterPublicKeys.map(rawPublicKey));
+  if (trustedKeys.size !== trustedAdapterPublicKeys.length) fail();
   const cleanRetainedActions = Object.freeze(retainedActions.map(validateRetainedLocalAction));
+  for (const action of cleanRetainedActions) {
+    if (!trustedKeys.has(action.adapterPublicKey)) fail();
+  }
   const sessions = new Map();
   function now() {
     const value = nowMs();
@@ -182,10 +199,8 @@ export function createLocalHarnessAdapter(options = {}) {
     if (now() > entry.action.expiresAtMs) fail();
     return { session, entry };
   }
-  function decisionFor(args) {
-    if (decisionCallback !== null) return decisionCallback(args);
-    if (args.modelDecision !== undefined) return args.modelDecision;
-    fail();
+  function sameAction(left, right) {
+    return JSON.stringify(left) === JSON.stringify(right);
   }
   return Object.freeze({
     async inspectCapabilities() {
@@ -218,9 +233,13 @@ export function createLocalHarnessAdapter(options = {}) {
       });
       return Object.freeze({ sessionId });
     },
-    async decideLocalAction({ sessionId, role: actionRole, actionId, modelDecision }) {
-      const { entry } = retained(sessionId, role(actionRole), actionId);
-      const decision = decisionFor({ sessionId, role: actionRole, actionId, retainedAction: entry.action, modelDecision });
+    async decideLocalAction(args) {
+      const item = exactObject(args, ["sessionId", "role", "retainedAction"]);
+      const suppliedAction = validateRetainedLocalAction(item.retainedAction);
+      const { entry } = retained(item.sessionId, role(item.role), suppliedAction.actionId);
+      if (!sameAction(suppliedAction, entry.action)) fail();
+      if (decisionCallback === null) fail();
+      const decision = decisionCallback({ sessionId: item.sessionId, role: item.role, retainedAction: entry.action });
       if (exactObject(decision, ["decision"]).decision !== "authorize") fail();
       entry.state = "authorized";
       return Object.freeze({ decision: "authorize", retainedAction: entry.action });
