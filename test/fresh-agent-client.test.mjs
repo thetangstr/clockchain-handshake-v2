@@ -885,6 +885,25 @@ test("fresh-agent monitor retries a transient presentation-proxy 500", async (t)
   assert.equal(fetch.calls, 2);
 });
 
+test("fresh-agent monitor resolves the authoritative exact-session snapshot URL", async (t) => {
+  const previousEndpoint = process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL;
+  process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL = "http://relay.example.test/v1/sessions/{sessionId}/snapshot";
+  t.after(() => {
+    if (previousEndpoint === undefined) delete process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL;
+    else process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL = previousEndpoint;
+  });
+  let requestedUrl = null;
+  t.mock.method(globalThis, "fetch", async (url) => {
+    requestedUrl = url;
+    return { ok: true, status: 200, json: async () => completeMonitorSnapshot() };
+  });
+
+  const result = await runFreshAgentMonitor({ sessionId: SESSION, retryDelayMs: 1, timeoutMs: 1_000 });
+
+  assert.equal(result.sessionId, SESSION);
+  assert.equal(requestedUrl, `http://relay.example.test/v1/sessions/${SESSION}/snapshot`);
+});
+
 test("fresh-agent monitor fails permanent 401 immediately with a safe diagnostic", async (t) => {
   const previousEndpoint = process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL;
   process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL = "https://monitor.example.test/session";
