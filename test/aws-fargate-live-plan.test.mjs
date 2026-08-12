@@ -106,7 +106,7 @@ function outputs() {
 function stackResources() {
   const value = outputs();
   const bound = new Map([
-    ["Cluster", value.ClusterArn],
+    ["Cluster", value.ClusterArn.split("/").at(-1)],
     ["InitiatorPrivateSubnet", value.InitiatorPrivateSubnetId],
     ["ResponderPrivateSubnet", value.ResponderPrivateSubnetId],
     ["InitiatorSecurityGroup", value.InitiatorSecurityGroupId],

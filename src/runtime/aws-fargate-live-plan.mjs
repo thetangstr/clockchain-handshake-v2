@@ -45,7 +45,7 @@ const EXPECTED_OUTPUTS = Object.freeze([
   "ResponderTaskRoleArn",
 ]);
 const STACK_RESOURCE_BINDINGS = Object.freeze({
-  Cluster: Object.freeze({ output: "ClusterArn", type: "AWS::ECS::Cluster" }),
+  Cluster: Object.freeze({ output: "ClusterArn", type: "AWS::ECS::Cluster", arnName: true }),
   InitiatorExecutionRole: Object.freeze({ output: "InitiatorExecutionRoleArn", type: "AWS::IAM::Role", arnName: true }),
   InitiatorLogGroup: Object.freeze({ output: "InitiatorLogGroupName", type: "AWS::Logs::LogGroup" }),
   InitiatorPrivateSubnet: Object.freeze({ output: "InitiatorPrivateSubnetId", type: "AWS::EC2::Subnet" }),

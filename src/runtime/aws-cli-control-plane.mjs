@@ -173,7 +173,9 @@ export function createAwsCliControlPlane(optionsInput = {}) {
     if (regionIndex < 0 || argvInput[regionIndex + 1] !== region) fail();
     let response;
     try {
-      response = await executor("aws", Object.freeze([...argvInput]), Object.freeze({ timeoutMs }));
+      const commandTimeoutMs = options.timeoutMs ?? timeoutMs;
+      if (!Number.isSafeInteger(commandTimeoutMs) || commandTimeoutMs < 1 || commandTimeoutMs > 300_000) fail();
+      response = await executor("aws", Object.freeze([...argvInput]), Object.freeze({ timeoutMs: commandTimeoutMs }));
     } catch (error) {
       if (options.allowMissingStack && isMissingStack(error)) throw error;
       fail();
@@ -276,7 +278,7 @@ export function createAwsCliControlPlane(optionsInput = {}) {
     waitStackCreateComplete({ stackName: name, stackId = null }) {
       stackName(name);
       const identifier = stackId === null ? name : stackIdArn(stackId, { stackName: name, region, accountId });
-      return callAws(["cloudformation", "wait", "stack-create-complete", "--stack-name", identifier, "--region", region, "--output", "json"]);
+      return callAws(["cloudformation", "wait", "stack-create-complete", "--stack-name", identifier, "--region", region, "--output", "json"], { timeoutMs: 300_000 });
     },
     async describeStackOutputs({ stackName: name, stackId = null }) {
       stackName(name);
@@ -319,11 +321,11 @@ export function createAwsCliControlPlane(optionsInput = {}) {
     },
     waitTasksStopped({ cluster, taskArns }) {
       if (typeof cluster !== "string" || !Array.isArray(taskArns) || taskArns.length > 2 || taskArns.length < 1) fail();
-      return callAws(["ecs", "wait", "tasks-stopped", "--cluster", cluster, "--tasks", ...taskArns, "--region", region, "--output", "json"]);
+      return callAws(["ecs", "wait", "tasks-stopped", "--cluster", cluster, "--tasks", ...taskArns, "--region", region, "--output", "json"], { timeoutMs: 300_000 });
     },
     waitTasksRunning({ cluster, taskArns }) {
       if (typeof cluster !== "string" || !Array.isArray(taskArns) || taskArns.length !== 2) fail();
-      return callAws(["ecs", "wait", "tasks-running", "--cluster", cluster, "--tasks", ...taskArns, "--region", region, "--output", "json"]);
+      return callAws(["ecs", "wait", "tasks-running", "--cluster", cluster, "--tasks", ...taskArns, "--region", region, "--output", "json"], { timeoutMs: 300_000 });
     },
     stopTask({ cluster, taskArn, role }) {
       if (!["initiator", "responder"].includes(role) || typeof cluster !== "string" || typeof taskArn !== "string") fail();
@@ -339,7 +341,7 @@ export function createAwsCliControlPlane(optionsInput = {}) {
     },
     waitStackDeleteComplete({ stackName: name }) {
       stackName(name);
-      return callAws(["cloudformation", "wait", "stack-delete-complete", "--stack-name", name, "--region", region, "--output", "json"]);
+      return callAws(["cloudformation", "wait", "stack-delete-complete", "--stack-name", name, "--region", region, "--output", "json"], { timeoutMs: 300_000 });
     },
     async confirmAbsence({ stackName: name }) {
       stackName(name);

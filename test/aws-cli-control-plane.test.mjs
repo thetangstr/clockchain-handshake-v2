@@ -70,6 +70,22 @@ test("AWS CLI control plane accepts empty wait/delete output but does not treat 
   await assert.rejects(() => control.stackExists({ stackName: "clockchain-11111111-2222-4333-8444-555555555555" }), /AWS CLI control-plane validation failed safely/);
 });
 
+test("AWS CLI control plane gives bounded CloudFormation waiters enough time for live stack creation", async () => {
+  const observedTimeouts = [];
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    executor: async (_file, _argv, options) => {
+      observedTimeouts.push(options.timeoutMs);
+      return { stdout: "", stderr: "", exitCode: 0 };
+    },
+  });
+  await control.waitStackCreateComplete({ stackName: "clockchain-11111111-2222-4333-8444-555555555555" });
+  await control.waitStackDeleteComplete({ stackName: "clockchain-11111111-2222-4333-8444-555555555555" });
+  await control.waitTasksRunning({ cluster: "cluster", taskArns: ["task-a", "task-b"] });
+  await control.waitTasksStopped({ cluster: "cluster", taskArns: ["task-a", "task-b"] });
+  assert.deepEqual(observedTimeouts, [300_000, 300_000, 300_000, 300_000]);
+});
+
 test("AWS CLI control plane has exact allowlisted argv shapes for Task 4 actions", async () => {
   const calls = [];
   const responseFor = (argv) => {

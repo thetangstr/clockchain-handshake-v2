@@ -399,7 +399,7 @@ function liveOutputs() {
 
 function liveResources(plan, outputs) {
   const physical = new Map([
-    ["Cluster", outputs.ClusterArn],
+    ["Cluster", outputs.ClusterArn.split("/").at(-1)],
     ["InitiatorPrivateSubnet", outputs.InitiatorPrivateSubnetId],
     ["ResponderPrivateSubnet", outputs.ResponderPrivateSubnetId],
     ["InitiatorSecurityGroup", outputs.InitiatorSecurityGroupId],

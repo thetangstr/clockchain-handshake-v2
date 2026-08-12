@@ -82,7 +82,7 @@ test("task-definition proof normalization accepts only the one reviewed workspac
     ResponderTaskRoleArn: `arn:aws:iam::123456789012:role/cc-${SESSION_ID}-r-task`,
   };
   const boundLogical = [
-    ["Cluster", stackOutputs.ClusterArn, "AWS::ECS::Cluster"],
+    ["Cluster", stackOutputs.ClusterArn.split("/").at(-1), "AWS::ECS::Cluster"],
     ["InitiatorPrivateSubnet", "subnet-i", "AWS::EC2::Subnet"], ["ResponderPrivateSubnet", "subnet-r", "AWS::EC2::Subnet"],
     ["InitiatorSecurityGroup", "sg-i", "AWS::EC2::SecurityGroup"], ["ResponderSecurityGroup", "sg-r", "AWS::EC2::SecurityGroup"],
     ["InitiatorQueue", stackOutputs.InitiatorQueueUrl, "AWS::SQS::Queue"], ["ResponderQueue", stackOutputs.ResponderQueueUrl, "AWS::SQS::Queue"],
