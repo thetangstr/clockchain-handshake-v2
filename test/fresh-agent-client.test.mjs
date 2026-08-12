@@ -1103,6 +1103,57 @@ test("harness adapter executes the exact MCP-bound argv after only a short diges
   assert.deepEqual(await readdir(adapter.pending), []);
 });
 
+test("harness adapter replays a completed approval without manufacturing exit 86", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-adapter-replay-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const run = await createFreshAgentRun({ parent });
+  const room = run.roles.responder;
+  const helperSource = `process.stdout.write(JSON.stringify({schema:"clockchain.agent-handshake-cli-result/v1",helperVersion:"2.1.2",operation:"init",address:"0x${"2".repeat(40)}"})+"\\n");`;
+  const helperDigest = createHash("sha256").update(helperSource).digest("hex");
+  const manifest = JSON.stringify({
+    schema: "clockchain.agent-handshake-release-manifest/v1",
+    version: "2.1.2",
+    nodeRuntime: "24.0.0",
+    assets: [{
+      filename: "clockchain-agent-handshake.cjs",
+      url: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/clockchain-agent-handshake.cjs",
+      sha256: helperDigest,
+    }],
+  });
+  const manifestDigest = createHash("sha256").update(manifest).digest("hex");
+  const command = `node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${manifestDigest} ./manifest.json ./clockchain-agent-handshake.cjs init --state-dir "$TMPDIR/.clockchain/handshakes/${SESSION}/responder"`;
+  const step = helperStep(command);
+  const fetchImpl = async (url) => ({
+    ok: true,
+    status: 200,
+    arrayBuffer: async () => Buffer.from(url.endsWith("/manifest.json") ? manifest : helperSource),
+  });
+  const adapter = await prepareAgentHarnessAdapter({
+    fetchImpl,
+    manifestDigest,
+    room,
+    runtimeExecPath: process.execPath,
+  });
+  adapter.record(step);
+
+  const firstApproval = execFileAsync(adapter.executable, [step.commandSha256], {
+    cwd: room.workspace,
+    env: { ...process.env, PATH: `${adapter.bin}:${process.env.PATH}`, TMPDIR: room.tmp },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await adapter.authorize(step);
+  const first = await firstApproval;
+
+  await adapter.authorize(step);
+  const second = await execFileAsync(adapter.executable, [step.commandSha256], {
+    cwd: room.workspace,
+    env: { ...process.env, PATH: `${adapter.bin}:${process.env.PATH}`, TMPDIR: room.tmp },
+  });
+
+  assert.equal(second.stdout, first.stdout);
+  assert.equal(JSON.parse(second.stdout).operation, "init");
+});
+
 test("harness adapter rejects a release helper that does not match the pinned manifest", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "fresh-agent-adapter-release-mismatch-"));
   t.after(() => rm(parent, { recursive: true, force: true }));

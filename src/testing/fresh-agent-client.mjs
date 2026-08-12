@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, generateKeyPairSync, randomUUID, sign as signBytes, verify as verifyBytes } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, readFile, realpath, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -787,7 +787,9 @@ const body = record.body;
 if (!body || Object.keys(body).sort().join(",") !== "exitCode,schema,stderrBase64,stdoutBase64" || body.schema !== "clockchain.agent-harness-action-result/v1") stop();
 if (!Number.isSafeInteger(body.exitCode) || body.exitCode < 0 || body.exitCode > 255) stop();
 for (const name of ["stdoutBase64", "stderrBase64"]) if (typeof body[name] !== "string" || !/^[A-Za-z0-9+/]*={0,2}$/.test(body[name])) stop();
-try { rmSync(response); } catch { stop(); }
+if (body.exitCode !== 0) {
+  try { rmSync(response); } catch { stop(); }
+}
 process.stdout.write(Buffer.from(body.stdoutBase64, "base64"));
 process.stderr.write(Buffer.from(body.stderrBase64, "base64"));
 process.exitCode = body.exitCode;
@@ -885,6 +887,7 @@ export async function prepareAgentHarnessAdapter({
   function record(value) {
     const expected = expectedHelperCommand(value);
     if (expected === null || expected.approvalCommand !== `clockchain-agent-authorize ${expected.commandSha256}`) fail();
+    if (existsSync(join(responses, `${expected.commandSha256}.json`))) return expected;
     const argv = [...expected.argv];
     if (argv[0] !== "node") fail();
     argv[5] = isAbsolute(argv[5]) ? descendant(workspace, argv[5]) : descendant(workspace, resolve(workspace, argv[5]));
@@ -918,11 +921,12 @@ export async function prepareAgentHarnessAdapter({
   async function authorize(value) {
     const expected = expectedHelperCommand(value);
     if (expected === null || expected.approvalCommand === null) fail();
+    const responsePath = join(responses, `${expected.commandSha256}.json`);
+    if (existsSync(responsePath)) return;
     if (active.has(expected.commandSha256)) return active.get(expected.commandSha256);
     const task = (async () => {
       const pendingPath = join(pending, `${expected.commandSha256}.json`);
       const runningPath = join(running, `${expected.commandSha256}.json`);
-      const responsePath = join(responses, `${expected.commandSha256}.json`);
       let retryable = true;
       let child = null;
       const writeResponse = async (exitCode, output = { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) }) => {
@@ -995,7 +999,12 @@ export async function prepareAgentHarnessAdapter({
         });
         retryable = exitCode !== 0;
         await writeResponse(exitCode, output);
-      } catch {
+      } catch (error) {
+        traceLifecycle({
+          phase: "helper-action-error",
+          code: typeof error?.code === "string" && /^[A-Z0-9_]+$/.test(error.code) ? error.code : null,
+          name: typeof error?.name === "string" && /^[A-Za-z]+$/.test(error.name) ? error.name : null,
+        });
         await writeResponse(86).catch(() => {});
       } finally {
         active.delete(`${expected.commandSha256}:child`);
