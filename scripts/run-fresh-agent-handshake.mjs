@@ -16,6 +16,8 @@ import {
   validateFreshAgentMonitorSnapshot,
   writeFreshAgentAttemptArtifact,
 } from "../src/testing/fresh-agent-client.mjs";
+import { createLocalRuntimeAdapter } from "../src/runtime/runtime-adapter-contract.mjs";
+import { runMechanicsProofController } from "../src/testing/mechanics-proof-controller.mjs";
 import {
   installAppleClientAuthentication,
   loadAppleClientAuthentication,
@@ -57,6 +59,19 @@ function roots(name) {
   const result = value(name).split(",");
   if (result.length < 1 || result.length > 2 || result.some((entry) => !SHA256.test(entry))) throw new Error("invalid");
   return result;
+}
+
+function inspectionHarnessAdapter(harness) {
+  return Object.freeze({
+    async inspectCapabilities() {
+      return Object.freeze({
+        schema: "clockchain.harness-capabilities/v1",
+        harness,
+        retainedLocalActions: true,
+        rawPayloadTransport: false,
+      });
+    },
+  });
 }
 
 async function probeClaudeExistingLogin() {
@@ -191,6 +206,45 @@ export function hardenFreshAgentPrompt(prompt) {
     );
 }
 
+export function createFreshAgentRunnerExecutePair({
+  authentication,
+  clients,
+  configureClientImpl = configureClient,
+  monitorImpl = monitor,
+  parent,
+  prepareClientImpl = prepareClient,
+  prompts,
+  release,
+  runFreshAgentHandshakeImpl = runFreshAgentHandshake,
+  runtime,
+}) {
+  return async function executePair() {
+    return runFreshAgentHandshakeImpl({
+      authenticationModes: {
+        initiator: authentication.initiator.existingLoginIsolated === true ? "existing_login_isolated" : "disposable",
+        responder: authentication.responder.existingLoginIsolated === true ? "existing_login_isolated" : "disposable",
+      },
+      clients,
+      configureClient: (entry) => configureClientImpl({ ...entry, authentication: authentication[entry.role] }),
+      prepareClient: (entry) => prepareClientImpl({ ...entry, authentication: authentication[entry.role] }),
+      modelEnvironment: {
+        initiator: authentication.initiator.environment,
+        responder: authentication.responder.environment,
+      },
+      secretCanaries: {
+        initiator: authentication.initiator.secretCanaries,
+        responder: authentication.responder.secretCanaries,
+      },
+      monitor: monitorImpl,
+      parent,
+      prompts,
+      release,
+      runtimeExecPath: runtime.execPath,
+      runtimeVersion: runtime.version,
+    });
+  };
+}
+
 export async function runFreshAgentCliAttempt({
   artifactDirectory,
   attemptId = randomUUID(),
@@ -243,6 +297,7 @@ async function main() {
       initiator: process.env.CLOCKCHAIN_INITIATOR_CLIENT ?? "codex",
       responder: process.env.CLOCKCHAIN_RESPONDER_CLIENT ?? "claude",
     };
+    const controllerSessionId = randomUUID();
     await runFreshAgentCliAttempt({
       artifactDirectory,
       preflight: async () => {
@@ -266,29 +321,12 @@ async function main() {
           ],
         });
       },
-      runHandshake: ({ authentication, runtime }) => runFreshAgentHandshake({
-        authenticationModes: {
-          initiator: authentication.initiator.existingLoginIsolated === true ? "existing_login_isolated" : "disposable",
-          responder: authentication.responder.existingLoginIsolated === true ? "existing_login_isolated" : "disposable",
-        },
-        clients,
-        configureClient: (entry) => configureClient({ ...entry, authentication: authentication[entry.role] }),
-        prepareClient: (entry) => prepareClient({ ...entry, authentication: authentication[entry.role] }),
-        modelEnvironment: {
-          initiator: authentication.initiator.environment,
-          responder: authentication.responder.environment,
-        },
-        secretCanaries: {
-          initiator: authentication.initiator.secretCanaries,
-          responder: authentication.responder.secretCanaries,
-        },
-        monitor,
-        parent,
-        prompts: {
+      runHandshake: async ({ authentication, runtime }) => {
+        const hardenedPrompts = {
           initiator: hardenFreshAgentPrompt(prompts.initiator),
           responder: hardenFreshAgentPrompt(prompts.responder),
-        },
-        release: {
+        };
+        const release = {
           mcp: {
             manifestDigest: value("CLOCKCHAIN_MCP_RELEASE_MANIFEST_DIGEST"),
             hostRoots: roots("CLOCKCHAIN_MCP_HOST_ROOT_FINGERPRINTS"),
@@ -297,10 +335,32 @@ async function main() {
             manifestDigest: value("CLOCKCHAIN_RESEARCH_RELEASE_MANIFEST_DIGEST"),
             hostRoots: roots("CLOCKCHAIN_RESEARCH_HOST_ROOT_FINGERPRINTS"),
           },
-        },
-        runtimeExecPath: runtime.execPath,
-        runtimeVersion: runtime.version,
-      }),
+        };
+        const result = await runMechanicsProofController({
+          sessionId: controllerSessionId,
+          runtimeAdapter: createLocalRuntimeAdapter({ sourceCommit: "0".repeat(40) }),
+          harnessAdapters: {
+            initiator: inspectionHarnessAdapter(clients.initiator),
+            responder: inspectionHarnessAdapter(clients.responder),
+          },
+          executePair: createFreshAgentRunnerExecutePair({
+            authentication,
+            clients,
+            parent,
+            prompts: hardenedPrompts,
+            release,
+            runtime,
+          }),
+          roles: {
+            initiator: { harness: clients.initiator, secretsRef: "fresh-agent-initiator-auth", stateRef: "fresh-agent-initiator-state" },
+            responder: { harness: clients.responder, secretsRef: "fresh-agent-responder-auth", stateRef: "fresh-agent-responder-state" },
+          },
+          networkPolicy: { mode: "fresh-agent-local-shim" },
+          ttlMs: 10 * 60 * 1000,
+          costTags: { phase: "fresh-agent-cli" },
+        });
+        return result.handshakeEvidence;
+      },
     });
   } catch (error) {
     process.stderr.write(SAFE_ERROR);
