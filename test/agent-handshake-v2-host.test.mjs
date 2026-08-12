@@ -1,11 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { digestHex } from "../src/core/canonical.mjs";
+import { commitmentCheckpointDigest, signAgentHandshakeV2CommitmentCheckpoint } from "../src/agent-handshake/v2/commitment-checkpoint.mjs";
+
 import {
   prepareAgentHandshakeV2Identities,
   runAgentHandshakeV2HostSession,
 } from "../src/agent-handshake/v2/host.mjs";
-import { buildV2Fixture, SESSION_OPENED_BLOCK, buildV2Fixture as fixtureFactory } from "./support/agent-handshake-v2-fixture.mjs";
+import { buildV2Fixture, INITIATOR, RESPONDER, SESSION_ID, SESSION_OPENED_BLOCK, buildV2Fixture as fixtureFactory } from "./support/agent-handshake-v2-fixture.mjs";
+
+async function checkpoints(fixture) {
+  const proposal = await signAgentHandshakeV2CommitmentCheckpoint({
+    checkpoint: { schema: "clockchain.agent-handshake-commitment-checkpoint/v1", version: 1, protocol: "clockchain.agent-handshake/v2", sessionId: SESSION_ID, role: "initiator", artifactType: "proposal", artifactDigest: digestHex(fixture.proposalEnvelope), sequence: "1", previousCheckpointDigest: null, issuedAtMs: "1786337160000", expiresAtMs: "1786337190000", signerAddress: INITIATOR.address.toLowerCase() },
+    signMessage: (raw) => INITIATOR.signMessage({ message: { raw } }),
+  });
+  const acceptance = await signAgentHandshakeV2CommitmentCheckpoint({
+    checkpoint: { schema: "clockchain.agent-handshake-commitment-checkpoint/v1", version: 1, protocol: "clockchain.agent-handshake/v2", sessionId: SESSION_ID, role: "responder", artifactType: "acceptance", artifactDigest: digestHex(fixture.acceptanceEnvelope), sequence: "2", previousCheckpointDigest: commitmentCheckpointDigest(proposal), issuedAtMs: "1786337160000", expiresAtMs: "1786337190000", signerAddress: RESPONDER.address.toLowerCase() },
+    signMessage: (raw) => RESPONDER.signMessage({ message: { raw } }),
+  });
+  return { initiator: proposal, responder: acceptance };
+}
 
 function ports(fixture, { existing = {}, registrationBlock } = {}) {
   const calls = [];
@@ -113,6 +128,7 @@ test("duplicate claims, pre-session fresh registration, and party drift fail clo
 test("the v2 host verifies the full artifact chain and publishes one closing certificate", async () => {
   const fixture = await buildV2Fixture();
   const active = ports(fixture);
+  const commitmentCheckpoints = await checkpoints(fixture);
   let publishedDescriptor = null;
   let publishedResult = null;
   Object.assign(active, {
@@ -123,6 +139,7 @@ test("the v2 host verifies the full artifact chain and publishes one closing cer
       receipts: fixture.receipts,
       transitions: fixture.transitions,
     }),
+    awaitCommitmentCheckpoint: async (role) => commitmentCheckpoints[role],
     awaitEvidence: async (role) => fixture.evidence[role],
     awaitInvitationClaimed: async () => 1786337000001,
     awaitProposal: async () => fixture.proposalEnvelope,

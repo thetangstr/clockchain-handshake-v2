@@ -79,6 +79,7 @@ test("production ports map only role-tagged v2 messages and reserve before fundi
     agent_v2_party_ready: { body: { ok: "party" } },
     agent_v2_proposal: { body: { proposalEnvelope: { ok: "proposal" } } },
     agent_v2_acceptance: { body: { acceptanceEnvelope: { ok: "acceptance" } } },
+    agent_v2_commitment_checkpoint: { body: { checkpoint: { ok: "checkpoint" } } },
     agent_v2_evidence: { body: { evidenceEnvelope: { ok: "evidence" } } },
     agent_v2_anchor_report: { body: { transitions: [{}, {}, {}] } },
   };
@@ -107,6 +108,7 @@ test("production ports map only role-tagged v2 messages and reserve before fundi
   });
   assert.equal(await ports.awaitInvitationClaimed(), 1786337000001);
   assert.deepEqual(seen[0], ["wait", "agent_v2_invitation_claimed", "responder", 1786337120000]);
+  assert.deepEqual(await ports.awaitCommitmentCheckpoint("initiator"), { ok: "checkpoint" });
   assert.equal((await ports.awaitIdentityClaim("initiator")).policyDigest, "a".repeat(64));
   assert.deepEqual(await ports.awaitProposal(), { ok: "proposal" });
   await ports.reserveFunding({

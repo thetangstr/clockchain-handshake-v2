@@ -152,6 +152,7 @@ function requireSessionPorts(ports) {
     "anchorsRecorded",
     "awaitAcceptance",
     "awaitAnchors",
+    "awaitCommitmentCheckpoint",
     "awaitEvidence",
     "awaitInvitationClaimed",
     "awaitProposal",
@@ -211,6 +212,10 @@ export async function runAgentHandshakeV2HostSession({
     proposalEnvelope,
   });
   await ports.acceptanceSigned(acceptanceEnvelope);
+  const commitmentCheckpoints = [
+    await ports.awaitCommitmentCheckpoint("initiator"),
+    await ports.awaitCommitmentCheckpoint("responder"),
+  ];
   const descriptorEnvelope = createAgentHandshakeV2DescriptorEnvelope({
     agreementExpiresAtMs: proposal.payload.expiresAtMs,
     externalBusinessActionPerformed: false,
@@ -241,6 +246,7 @@ export async function runAgentHandshakeV2HostSession({
   let verdict;
   try {
     verdict = await verifyAgentHandshakeV2Authorization({
+      commitmentCheckpoints,
       acceptanceEnvelope,
       descriptorEnvelope,
       evidence,
@@ -253,6 +259,7 @@ export async function runAgentHandshakeV2HostSession({
       nowMs: now(),
       proposalEnvelope,
       receipts: anchorReport.receipts,
+      requireCommitmentCheckpoints: true,
       resolveRegistration: ports.resolveRegistration,
       transitions: anchorReport.transitions,
     });

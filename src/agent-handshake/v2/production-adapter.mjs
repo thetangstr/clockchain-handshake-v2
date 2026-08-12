@@ -348,6 +348,8 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
   };
 
   return Object.freeze({
+    awaitCommitmentCheckpoint: async (role) =>
+      (await waitForMessage("agent_v2_commitment_checkpoint", role)).body.checkpoint,
     awaitAcceptance: async () =>
       (await waitForMessage("agent_v2_acceptance", "responder")).body.acceptanceEnvelope,
     awaitAnchors: async () =>
