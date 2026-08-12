@@ -442,16 +442,21 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
         });
       },
       async destroy() {
-        destroyed = true;
-        retained.clear();
-        if (signedChannelPromise !== null) {
-          try { await signedChannelPromise; } catch {}
-        }
-        if (signedChannel !== null) {
-          await signedChannel.taskTransport.close();
-          await signedChannel.authority.destroy();
-        }
-        return Object.freeze({ destroyed: true });
+        try {
+          destroyed = true;
+          retained.clear();
+          if (signedChannelPromise !== null) {
+            try { await signedChannelPromise; } catch {}
+          }
+          if (signedChannel !== null) {
+            const results = await Promise.allSettled([
+              signedChannel.taskTransport.close(),
+              signedChannel.authority.destroy(),
+            ]);
+            if (results.some((result) => result.status === "rejected")) fail();
+          }
+          return Object.freeze({ destroyed: true });
+        } catch (error) { sanitize(error); }
       },
     });
     completionRecorder.setCompletionHandler(handleCompletion);

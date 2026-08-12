@@ -39,7 +39,10 @@ const RUNTIME = Object.freeze({
   }),
 });
 
-async function setup(t, { transformAuthority = (authority) => authority } = {}) {
+async function setup(t, {
+  transformAuthority = (authority) => authority,
+  transformTaskTransport = (transport) => transport,
+} = {}) {
   const fixture = await buildV2Fixture();
   const root = await mkdtemp(join(tmpdir(), "direct-a2a-party-bridge-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -99,7 +102,7 @@ async function setup(t, { transformAuthority = (authority) => authority } = {}) 
         return {
           authority: transformAuthority(authorities[role], role),
           cards,
-          taskTransport: taskTransport(role),
+          taskTransport: transformTaskTransport(taskTransport(role), role),
         };
       },
       completionRecorder,
@@ -355,4 +358,36 @@ test("identity and evidence signing completions remain local and do not require 
   assert.deepEqual(await completionHandlers.initiator(localCompletion), { accepted: true });
   assert.equal(channel.publicEvidence().messages.length, 0);
   assert.deepEqual(bridges.initiator.publicEvidence().cardDigests, { initiator: null, responder: null });
+});
+
+test("destroy tears down party authority and returns a generic failure when transport close fails", async (t) => {
+  let authorityDestroyed = 0;
+  const { bridges, completionHandlers } = await setup(t, {
+    transformAuthority(authority, role) {
+      if (role !== "initiator") return authority;
+      const wrapped = { ...authority, async destroy() { authorityDestroyed += 1; await authority.destroy(); } };
+      Object.defineProperty(wrapped, PARTY_A2A_ENVELOPE_CAPABILITY, {
+        enumerable: false,
+        value: authority[PARTY_A2A_ENVELOPE_CAPABILITY],
+      });
+      return Object.freeze(wrapped);
+    },
+    transformTaskTransport(transport, role) {
+      if (role !== "initiator") return transport;
+      return Object.freeze({ ...transport, async close() { throw new Error("raw transport detail"); } });
+    },
+  });
+  const step = lifecycleStep("initiator");
+  await bridges.initiator.observeToolResult({
+    toolName: "agent_handshake_next",
+    result: { structuredContent: { localAction: { helperStep: step } } },
+  });
+  assert.deepEqual(await completionHandlers.initiator(lifecycleCompletion("initiator", step)), { accepted: true });
+
+  await assert.rejects(bridges.initiator.destroy(), (error) => {
+    assert.equal(error.message, "Direct A2A party bridge failed safely.");
+    assert.doesNotMatch(error.message, /transport/i);
+    return true;
+  });
+  assert.equal(authorityDestroyed, 1);
 });
