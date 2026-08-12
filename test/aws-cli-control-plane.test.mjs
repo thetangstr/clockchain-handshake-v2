@@ -95,7 +95,7 @@ test("AWS CLI control plane bounds post-delete absence retries across eventual c
   assert.deepEqual(sleeps, [1000, 1000]);
 });
 
-test("AWS CLI control plane stops absence confirmation after thirty bounded observations", async () => {
+test("AWS CLI control plane stops absence confirmation after one hundred twenty bounded observations", async () => {
   let calls = 0;
   const sleeps = [];
   const control = createAwsCliControlPlane({
@@ -108,8 +108,8 @@ test("AWS CLI control plane stops absence confirmation after thirty bounded obse
   });
 
   assert.deepEqual(await control.confirmAbsence({ stackName: "clockchain-11111111-2222-4333-8444-555555555555" }), { absent: false });
-  assert.equal(calls, 30);
-  assert.equal(sleeps.length, 29);
+  assert.equal(calls, 120);
+  assert.equal(sleeps.length, 119);
   assert.equal(sleeps.every((ms) => ms === 1000), true);
 });
 
