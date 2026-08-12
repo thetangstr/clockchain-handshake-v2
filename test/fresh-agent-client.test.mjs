@@ -959,9 +959,11 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
     assert.match(prompt, /run only its exact short approvalCommand/i);
     assert.match(prompt, /adapter executes Clockchain's bound arguments directly/i);
     assert.match(prompt, /never run or reconstruct shellCommand yourself/i);
-    assert.match(prompt, /judge each later signingSummary only by/i);
-    assert.match(prompt, /run its short approvalCommand immediately/i);
-    assert.match(prompt, /do not decode or inspect the bound payload/i);
+    assert.match(prompt, /decide on each action separately/i);
+    assert.match(prompt, /authorizes only that exact digest-bound action/i);
+    assert.match(prompt, /not a standing precommitment/i);
+    assert.match(prompt, /After approval, the adapter preserves exact payload bytes/i);
+    assert.doesNotMatch(prompt, /do not decode or inspect/i);
     assert.match(prompt, /retry also fails/i);
     assert.match(prompt, /Every MCP response without a locally verified certificate is nonterminal/i);
     assert.match(prompt, /wait or pending.*bounded retry interval/i);
