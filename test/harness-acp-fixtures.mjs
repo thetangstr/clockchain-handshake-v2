@@ -130,8 +130,11 @@ export async function runAcpAdapterBehavior({ createAdapter, harness, pin, role 
     decision: "authorize",
     retainedAction: action,
   });
+  await assert.rejects(() => adapter.executeRetainedAction({ sessionId: SESSION, role, actionId: action.actionId, argv: ["node"] }));
   assert.equal((await adapter.executeRetainedAction({ sessionId: SESSION, role, actionId: action.actionId })).executed, true);
-  assert.equal(calls.some((entry) => entry[0] === "execute" && entry[1].actionId === action.actionId), true);
+  const executeCall = calls.find((entry) => entry[0] === "execute" && entry[1].actionId === action.actionId);
+  assert.deepEqual(Object.keys(executeCall[1]).sort(), ["actionId", "role", "sessionId"]);
+  assert.equal(Object.isFrozen(executeCall[1]), true);
   await assert.rejects(() => adapter.executeRetainedAction({ sessionId: SESSION, role, actionId: action.actionId }));
 
   const events = await adapter.streamEvents({ sessionId: SESSION });

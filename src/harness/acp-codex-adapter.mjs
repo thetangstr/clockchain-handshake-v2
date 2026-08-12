@@ -11,6 +11,10 @@ const EVIDENCE_KEYS = Object.freeze([
 ]);
 const PIN_KEYS = Object.freeze(["executableName", "integrity", "packageName", "version"]);
 const TRANSPORT_METHODS = Object.freeze(["collectEvidence", "executeRetainedAction", "launch", "streamEvents", "terminate"]);
+const OPTIONS_KEYS = Object.freeze([
+  "decisionCallback", "harness", "nowMs", "pin", "processFactory", "retainedActions",
+  "transport", "trustedAdapterPublicKeys",
+]);
 const MAX_DATA_DEPTH = 8;
 const MAX_ARRAY_LENGTH = 32;
 const MAX_OBJECT_KEYS = 64;
@@ -23,20 +27,42 @@ function fail() {
 function rejectAuthorityFields(value) {
   if (value === null || value === undefined) return;
   if (Array.isArray(value)) {
-    for (const item of value) rejectAuthorityFields(item);
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (descriptor === undefined || !Object.hasOwn(descriptor, "value")) fail();
+      rejectAuthorityFields(descriptor.value);
+    }
     return;
   }
   if (typeof value !== "object") return;
-  for (const [key, child] of Object.entries(value)) {
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (const [key, descriptor] of Object.entries(descriptors)) {
+    if (!descriptor.enumerable) continue;
+    if (!Object.hasOwn(descriptor, "value")) fail();
     if (/(?:private.?key|secret.?key|controller.?private.?key|signer|override|control)/i.test(key)) fail();
-    rejectAuthorityFields(child);
+    rejectAuthorityFields(descriptor.value);
   }
 }
 
 function exactObject(value, keys) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) fail();
-  if (JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([...keys].sort())) fail();
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const objectKeys = Object.keys(descriptors);
+  if (JSON.stringify(objectKeys.sort()) !== JSON.stringify([...keys].sort())) fail();
+  for (const key of objectKeys) {
+    const descriptor = descriptors[key];
+    if (!descriptor.enumerable || !Object.hasOwn(descriptor, "value")) fail();
+  }
   return value;
+}
+
+function objectValues(value, keys) {
+  const item = exactObject(value, keys);
+  const descriptors = Object.getOwnPropertyDescriptors(item);
+  const result = {};
+  for (const key of keys) result[key] = descriptors[key].value;
+  return result;
 }
 
 function isPlainDataObject(value) {
@@ -51,9 +77,9 @@ function role(value) {
 }
 
 function a2aConfig(value) {
-  const item = exactObject(value, ["endpoint", "peerCard"]);
+  const item = objectValues(value, ["endpoint", "peerCard"]);
   if (typeof item.endpoint !== "string" || !item.endpoint.startsWith("https://")) fail();
-  const peerCard = exactObject(item.peerCard, ["endpoint", "id"]);
+  const peerCard = objectValues(item.peerCard, ["endpoint", "id"]);
   if (
     typeof peerCard.id !== "string" || peerCard.id.length === 0 ||
     typeof peerCard.endpoint !== "string" || !peerCard.endpoint.startsWith("https://")
@@ -65,24 +91,24 @@ function a2aConfig(value) {
 }
 
 function validateRuntime(runtime, expectedHarness) {
-  if (runtime === null || typeof runtime !== "object" || Array.isArray(runtime)) fail();
+  const item = objectValues(runtime, ["harness", "role", "runtimeId", "sessionId"]);
   if (
-    typeof runtime.runtimeId !== "string" || runtime.runtimeId.length === 0 ||
-    typeof runtime.sessionId !== "string" || runtime.sessionId.length === 0 ||
-    runtime.harness !== expectedHarness
+    typeof item.runtimeId !== "string" || item.runtimeId.length === 0 ||
+    typeof item.sessionId !== "string" || item.sessionId.length === 0 ||
+    item.harness !== expectedHarness
   ) fail();
   return Object.freeze({
-    runtimeId: runtime.runtimeId,
-    sessionId: runtime.sessionId,
-    role: role(runtime.role),
+    runtimeId: item.runtimeId,
+    sessionId: item.sessionId,
+    role: role(item.role),
     harness: expectedHarness,
   });
 }
 
 function validateEvidence(value, sessionId, harness, sessionRole) {
-  const item = exactObject(value, EVIDENCE_KEYS);
-  const teardown = exactObject(item.teardown, ["completed"]);
-  const usage = exactObject(item.usage, ["inputTokens", "outputTokens"]);
+  const item = objectValues(value, EVIDENCE_KEYS);
+  const teardown = objectValues(item.teardown, ["completed"]);
+  const usage = objectValues(item.usage, ["inputTokens", "outputTokens"]);
   if (
     item.schema !== "clockchain.harness-evidence/v1" ||
     item.sessionId !== sessionId ||
@@ -121,7 +147,16 @@ function freezeData(value, depth) {
   }
   if (Array.isArray(value)) {
     if (value.length > MAX_ARRAY_LENGTH) fail();
-    return Object.freeze(value.map((entry) => freezeData(entry, depth + 1)));
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Object.keys(descriptors).filter((key) => key !== "length");
+    if (keys.length !== value.length) fail();
+    const result = [];
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (descriptor === undefined || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) fail();
+      result.push(freezeData(descriptor.value, depth + 1));
+    }
+    return Object.freeze(result);
   }
   if (!isPlainDataObject(value)) fail();
   rejectAuthorityFields(value);
@@ -138,8 +173,15 @@ function freezeData(value, depth) {
 }
 
 function publicPin(pin) {
-  const item = exactObject(pin, PIN_KEYS);
-  return Object.freeze({ ...item });
+  const item = objectValues(pin, PIN_KEYS);
+  const accepted = Object.values(ACP_VERSION_PINS).find((candidate) => (
+    candidate.executableName === item.executableName &&
+    candidate.integrity === item.integrity &&
+    candidate.packageName === item.packageName &&
+    candidate.version === item.version
+  ));
+  if (!accepted) fail();
+  return Object.freeze({ ...accepted });
 }
 
 function snapshotTransport(transport) {
@@ -156,24 +198,29 @@ function snapshotTransport(transport) {
 }
 
 export function createAcpHarnessAdapter(options = {}) {
+  const descriptors = Object.getOwnPropertyDescriptors(options);
+  const optionKeys = Object.keys(descriptors);
+  for (const key of optionKeys) {
+    if (!OPTIONS_KEYS.includes(key)) fail();
+    const descriptor = descriptors[key];
+    if (!descriptor.enumerable || !Object.hasOwn(descriptor, "value")) fail();
+  }
   rejectAuthorityFields(options);
-  const {
-    decisionCallback = null,
-    harness,
-    nowMs = () => Date.now(),
-    pin,
-    processFactory = null,
-    retainedActions = [],
-    transport,
-    trustedAdapterPublicKeys,
-  } = options;
-  if (Object.keys(options).some((key) => ![
-    "decisionCallback", "harness", "nowMs", "pin", "processFactory", "retainedActions",
-    "transport", "trustedAdapterPublicKeys",
-  ].includes(key))) fail();
+  const decisionCallback = descriptors.decisionCallback?.value ?? null;
+  const harness = descriptors.harness?.value;
+  const nowMs = descriptors.nowMs?.value ?? (() => Date.now());
+  const pin = descriptors.pin?.value;
+  const processFactory = descriptors.processFactory?.value ?? null;
+  const retainedActions = descriptors.retainedActions?.value ?? [];
+  const transport = descriptors.transport?.value;
+  const trustedAdapterPublicKeys = descriptors.trustedAdapterPublicKeys?.value;
   if (processFactory !== null && typeof processFactory !== "function") fail();
   const cleanTransport = snapshotTransport(transport);
   const cleanPin = publicPin(pin);
+  if (
+    cleanPin.packageName === ACP_VERSION_PINS.codex.packageName && harness !== "codex" ||
+    cleanPin.packageName === ACP_VERSION_PINS.claude.packageName && harness !== "claude"
+  ) fail();
   const local = createLocalHarnessAdapter({
     decisionCallback,
     harness,
@@ -186,8 +233,10 @@ export function createAcpHarnessAdapter(options = {}) {
     if (cleanTransport.launch !== undefined) return cleanTransport.launch(args);
     if (processFactory === null) fail();
     const child = await processFactory({ acp: cleanPin, executableName: cleanPin.executableName });
-    if (child === null || typeof child !== "object" || typeof child.launch !== "function") fail();
-    return child.launch(args);
+    if (child === null || typeof child !== "object" || Array.isArray(child)) fail();
+    const descriptor = Object.getOwnPropertyDescriptor(child, "launch");
+    if (descriptor === undefined || !Object.hasOwn(descriptor, "value") || typeof descriptor.value !== "function") fail();
+    return descriptor.value.call(child, args);
   }
   return Object.freeze({
     async inspectCapabilities() {
@@ -223,8 +272,18 @@ export function createAcpHarnessAdapter(options = {}) {
       return local.decideLocalAction(args);
     },
     async executeRetainedAction(args) {
-      const result = await local.executeRetainedAction(args);
-      if (cleanTransport.executeRetainedAction !== undefined) await cleanTransport.executeRetainedAction(args);
+      const cleanArgs = objectValues(args, ["actionId", "role", "sessionId"]);
+      if (
+        typeof cleanArgs.sessionId !== "string" || cleanArgs.sessionId.length === 0 ||
+        typeof cleanArgs.actionId !== "string" || cleanArgs.actionId.length === 0
+      ) fail();
+      const sanitized = Object.freeze({
+        sessionId: cleanArgs.sessionId,
+        role: role(cleanArgs.role),
+        actionId: cleanArgs.actionId,
+      });
+      const result = await local.executeRetainedAction(sanitized);
+      if (cleanTransport.executeRetainedAction !== undefined) await cleanTransport.executeRetainedAction(sanitized);
       return result;
     },
     async streamEvents({ sessionId, since = null }) {
@@ -249,10 +308,21 @@ export function createAcpHarnessAdapter(options = {}) {
   });
 }
 
+export function createPinnedAcpHarnessAdapter(options, harness, pin) {
+  if (options === null || typeof options !== "object" || Array.isArray(options)) fail();
+  const descriptors = Object.getOwnPropertyDescriptors(options);
+  const result = {};
+  for (const [key, descriptor] of Object.entries(descriptors)) {
+    if (key === "harness" || key === "pin") fail();
+    if (!OPTIONS_KEYS.includes(key)) fail();
+    if (!descriptor.enumerable || !Object.hasOwn(descriptor, "value")) fail();
+    result[key] = descriptor.value;
+  }
+  result.harness = harness;
+  result.pin = pin;
+  return createAcpHarnessAdapter(result);
+}
+
 export function createAcpCodexHarnessAdapter(options = {}) {
-  return createAcpHarnessAdapter({
-    ...options,
-    harness: "codex",
-    pin: ACP_VERSION_PINS.codex,
-  });
+  return createPinnedAcpHarnessAdapter(options, "codex", ACP_VERSION_PINS.codex);
 }
