@@ -6,6 +6,10 @@ import { types } from "node:util";
 import { a2aCanonicalBytes } from "./auth.mjs";
 
 const PATH = "/a2a/v1/bootstrap/invitations";
+const CARD_PATHS = Object.freeze({
+  initiator_card: "/a2a/v1/bootstrap/cards/initiator",
+  responder_card: "/a2a/v1/bootstrap/cards/responder",
+});
 const SCHEMA = "clockchain.invitation-bootstrap-envelope/v1";
 const EVIDENCE_SCHEMA = "clockchain.invitation-bootstrap-transport-evidence/v1";
 const ROLES = Object.freeze(["initiator", "responder"]);
@@ -40,6 +44,8 @@ const ENVELOPE_KEYS = Object.freeze([
   "sessionId",
   "version",
 ]);
+
+export const INVITATION_BOOTSTRAP_CARD_CAPABILITY = Symbol("clockchain.invitation-bootstrap-card-capability");
 
 function fail() {
   throw new Error("Invitation bootstrap transport failed safely.");
@@ -313,15 +319,15 @@ function assertDecimalString(value) {
   return value;
 }
 
-function verifyEnvelope({ envelope, body, now, expected }) {
+function verifyEnvelope({ envelope, body, now, expected, artifactKind = "invitation", path = PATH }) {
   const clean = cleanEnvelope(envelope);
   const unsigned = clean.unsigned;
   if (
     unsigned.schema !== SCHEMA ||
     unsigned.version !== 1 ||
-    unsigned.artifactKind !== "invitation" ||
+    unsigned.artifactKind !== artifactKind ||
     unsigned.method !== "POST" ||
-    unsigned.path !== PATH ||
+    unsigned.path !== path ||
     unsigned.runId !== expected.runId ||
     unsigned.senderRole !== expected.peerRole ||
     unsigned.receiverRole !== expected.role ||
@@ -355,13 +361,13 @@ function verifyEnvelope({ envelope, body, now, expected }) {
   return unsigned;
 }
 
-function signedEnvelope({ bootstrapSigner, body, expiresAtMs, localRuntime, peerBootstrapPublicKey, peerRuntime, peerRole, peerUrl, role, runId, sessionId, tls, now, nonce, jti }) {
+function signedEnvelope({ artifactKind = "invitation", bootstrapSigner, body, expiresAtMs, localRuntime, path = PATH, peerBootstrapPublicKey, peerRuntime, peerRole, peerUrl, role, runId, sessionId, tls, now, nonce, jti }) {
   const unsigned = Object.freeze({
     schema: SCHEMA,
     version: 1,
-    artifactKind: "invitation",
+    artifactKind,
     method: "POST",
-    path: PATH,
+    path,
     runId,
     sessionId,
     senderRole: role,
@@ -423,7 +429,7 @@ export async function createInvitationBootstrapTransport(optionsInput = {}) {
   const runId = assertToken(options.runId);
   let boundSessionId = options.initialSessionId;
   if (boundSessionId !== null) assertSessionId(boundSessionId);
-  const currentPeerUrl = options.peerUrl === undefined || options.peerUrl === null ? null : endpoint(options.peerUrl, { allowLoopbackForTests });
+  let currentPeerUrl = options.peerUrl === undefined || options.peerUrl === null ? null : endpoint(options.peerUrl, { allowLoopbackForTests });
   if (listenHost === "0.0.0.0" && !allowLoopbackForTests && options.publicEndpoint === undefined) fail();
   const configuredPublicUrl = options.publicEndpoint === undefined ? null : endpoint(options.publicEndpoint, { allowLoopbackForTests });
   const received = [];
@@ -436,15 +442,70 @@ export async function createInvitationBootstrapTransport(optionsInput = {}) {
   let closed = false;
   let publicUrl = null;
   const sockets = new Set();
+  const cardReceiving = new Set();
+  const cardReceived = new Set();
+  const cardSent = new Set();
+  let cardReceiver = null;
+  let cardRetired = false;
+
+  async function receiveCard(req, res, artifactKind) {
+    const path = CARD_PATHS[artifactKind];
+    if (
+      cardRetired || cardReceiver === null || boundSessionId === null ||
+      cardReceiving.has(artifactKind) || cardReceived.has(artifactKind)
+    ) fail();
+    cardReceiving.add(artifactKind);
+    try {
+      const request = await readBoundedJson(req, maxBytes);
+      if (typeof request.body !== "string" || Buffer.byteLength(request.body) < 1 || Buffer.byteLength(request.body) > maxBytes) fail();
+      const now = nowMs();
+      if (!Number.isSafeInteger(now)) fail();
+      const unsigned = verifyEnvelope({
+        artifactKind,
+        path,
+        envelope: request.envelope,
+        body: request.body,
+        now,
+        expected: {
+          bootstrapSigner: cleanSigner,
+          localRuntime: cleanLocalRuntime,
+          peerBootstrapPublicKey,
+          peerRole: remoteRole,
+          peerRuntime: cleanPeerRuntime,
+          publicUrl,
+          role: localRole,
+          runId,
+          tls: cleanTls,
+        },
+      });
+      if (unsigned.sessionId !== boundSessionId) fail();
+      const replayKey = `${unsigned.nonce}:${unsigned.jti}`;
+      if (used.has(replayKey)) fail();
+      used.add(replayKey);
+      const artifactDigest = await cardReceiver({ artifactKind, body: request.body });
+      assertDigest(artifactDigest);
+      cardReceived.add(artifactKind);
+      jsonResponse(res, 202, { ok: true, artifactDigest });
+    } finally {
+      cardReceiving.delete(artifactKind);
+    }
+  }
 
   const server = https.createServer({ key: cleanTls.privateKey, cert: cleanTls.certificate }, async (req, res) => {
     try {
-      if (req.method !== "POST" || req.url !== PATH || req.headers["content-type"] !== "application/json") {
+      const cardEntry = Object.entries(CARD_PATHS).find(([, path]) => path === req.url) ?? null;
+      const knownPath = req.url === PATH || cardEntry !== null;
+      if (req.method !== "POST" || !knownPath || req.headers["content-type"] !== "application/json") {
         jsonResponse(res, req.method === "POST" ? 404 : 405, { ok: false });
         return;
       }
       req.setTimeout(REQUEST_TIMEOUT_MS, () => req.destroy());
       res.setTimeout(REQUEST_TIMEOUT_MS, () => res.destroy());
+      if (cardEntry !== null) {
+        await receiveCard(req, res, cardEntry[0]);
+        return;
+      }
+      if (cardRetired) fail();
       if (receiving || receivedOnce || stored !== null) fail();
       receiving = true;
       try {
@@ -504,10 +565,64 @@ export async function createInvitationBootstrapTransport(optionsInput = {}) {
   const localUrl = `https://${address.address === "0.0.0.0" ? "127.0.0.1" : address.address}:${address.port}`;
   publicUrl = configuredPublicUrl ?? endpoint(localUrl, { allowLoopbackForTests });
 
-  return Object.freeze({
+  const cardCapability = Object.freeze({
+    registerReceiver(receiver) {
+      if (closed || cardRetired || cardReceiver !== null || typeof receiver !== "function") fail();
+      cardReceiver = receiver;
+    },
+    async sendCard(input) {
+      if (closed || cardRetired || boundSessionId === null || typeof currentPeerUrl !== "string") fail();
+      const item = snapshot(input, ["artifactKind", "body", "expiresAtMs"]);
+      const expectedKind = `${localRole}_card`;
+      if (item.artifactKind !== expectedKind || cardSent.has(expectedKind)) fail();
+      if (typeof item.body !== "string" || Buffer.byteLength(item.body) < 1 || Buffer.byteLength(item.body) > maxBytes) fail();
+      const now = nowMs();
+      if (
+        !Number.isSafeInteger(now) || !Number.isSafeInteger(item.expiresAtMs) ||
+        item.expiresAtMs <= now || item.expiresAtMs - now > MAX_SIGNATURE_LIFETIME_MS
+      ) fail();
+      cardSent.add(expectedKind);
+      const path = CARD_PATHS[expectedKind];
+      const envelope = signedEnvelope({
+        artifactKind: expectedKind,
+        path,
+        bootstrapSigner: cleanSigner,
+        body: item.body,
+        expiresAtMs: item.expiresAtMs,
+        localRuntime: cleanLocalRuntime,
+        peerBootstrapPublicKey,
+        peerRuntime: cleanPeerRuntime,
+        peerRole: remoteRole,
+        peerUrl: currentPeerUrl,
+        role: localRole,
+        runId,
+        sessionId: boundSessionId,
+        tls: cleanTls,
+        now,
+        nonce: `nonce-${randomUUID()}`,
+        jti: `jti-${randomUUID()}`,
+      });
+      const response = await postJson(`${currentPeerUrl}${path}`, { envelope, body: item.body }, cleanTls, maxBytes);
+      if (response.status !== 202 || response.body?.ok !== true) fail();
+      assertDigest(response.body.artifactDigest);
+      return Object.freeze({ artifactDigest: response.body.artifactDigest, acknowledged: true });
+    },
+    retire() {
+      cardRetired = true;
+      cardReceiver = null;
+    },
+  });
+
+  const api = {
     publicUrl,
+    setPeerUrl(value) {
+      if (closed || cardRetired || sentOnce || cardSent.size > 0) fail();
+      const next = endpoint(value, { allowLoopbackForTests });
+      if (currentPeerUrl !== null && currentPeerUrl !== next) fail();
+      currentPeerUrl = next;
+    },
     async sendInvitation(input) {
-      if (closed || typeof currentPeerUrl !== "string") fail();
+      if (closed || cardRetired || typeof currentPeerUrl !== "string") fail();
       if (sentOnce) fail();
       const item = snapshot(input, ["expiresAtMs", "invitation", "sessionId"]);
       if (typeof item.invitation !== "string" || Buffer.byteLength(item.invitation) < 1 || Buffer.byteLength(item.invitation) > maxBytes) fail();
@@ -575,6 +690,8 @@ export async function createInvitationBootstrapTransport(optionsInput = {}) {
     async close() {
       if (closed) return Object.freeze({ closed: true });
       closed = true;
+      cardRetired = true;
+      cardReceiver = null;
       for (const socket of sockets) socket.destroy();
       await new Promise((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
@@ -582,5 +699,12 @@ export async function createInvitationBootstrapTransport(optionsInput = {}) {
       stored = null;
       return Object.freeze({ closed: true });
     },
+  };
+  Object.defineProperty(api, INVITATION_BOOTSTRAP_CARD_CAPABILITY, {
+    configurable: false,
+    enumerable: false,
+    value: cardCapability,
+    writable: false,
   });
+  return Object.freeze(api);
 }

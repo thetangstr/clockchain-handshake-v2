@@ -3,7 +3,11 @@ import { createHash, generateKeyPairSync, sign, X509Certificate } from "node:cry
 import https from "node:https";
 import test from "node:test";
 
+import { privateKeyToAccount } from "viem/accounts";
+
+import { A2A_AGENT_CARD_SCHEMA, a2aAgentCardDigest, signA2AAgentCard } from "../src/a2a/agent-card.mjs";
 import { a2aCanonicalBytes } from "../src/a2a/auth.mjs";
+import { createA2ACardBootstrap } from "../src/a2a/card-bootstrap.mjs";
 import { createInvitationBootstrapTransport } from "../src/a2a/invitation-bootstrap-transport.mjs";
 
 const RUN_ID = "run-6c0-task1";
@@ -11,6 +15,10 @@ const SESSION_ID = "11111111-2222-4333-8444-555555555555";
 const OTHER_SESSION_ID = "22222222-3333-4444-8555-666666666666";
 const INVITATION = "cc_invitation_live_secret_value_roleAccess_123";
 const NOW = 1786337000000;
+const INITIATOR_PARTY = privateKeyToAccount(`0x${"1".repeat(64)}`);
+const RESPONDER_PARTY = privateKeyToAccount(`0x${"2".repeat(64)}`);
+const INITIATOR_CARD_KEY = privateKeyToAccount(`0x${"6".repeat(64)}`);
+const RESPONDER_CARD_KEY = privateKeyToAccount(`0x${"7".repeat(64)}`);
 const TLS_KEY = `-----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC2EOIie3N+z5se
 QQMDMZdpg9YFOeB95gJpJyFJgQNfg5GEhUYkdSLdMTykCfS88d0l+8AwL1kgt9Do
@@ -150,7 +158,47 @@ async function pair(overrides = {}) {
     tls: tls(),
     ...overrides.initiator,
   });
+  responder.setPeerUrl(initiator.publicUrl);
   return { initiator, responder, initiatorSigner, responderSigner };
+}
+
+function partyBinding(role) {
+  const account = role === "initiator" ? INITIATOR_PARTY : RESPONDER_PARTY;
+  return {
+    partySignerAddress: account.address.toLowerCase(),
+    runtimeId: `runtime-${role}`,
+    workloadAttestationDigest: role === "initiator" ? "4".repeat(64) : "5".repeat(64),
+    taskId: `task-${role}`,
+    endpoint: `https://${role}.task.local:8443`,
+  };
+}
+
+async function partyCard(role, peerCardDigest = null) {
+  const account = role === "initiator" ? INITIATOR_PARTY : RESPONDER_PARTY;
+  const cardAccount = role === "initiator" ? INITIATOR_CARD_KEY : RESPONDER_CARD_KEY;
+  const binding = partyBinding(role);
+  return signA2AAgentCard({
+    card: {
+      schema: A2A_AGENT_CARD_SCHEMA,
+      version: 1,
+      sessionId: SESSION_ID,
+      role,
+      partySignerAddress: binding.partySignerAddress,
+      partySignerPublicKey: account.publicKey,
+      a2aCardPublicKey: cardAccount.publicKey,
+      workloadAttestationDigest: binding.workloadAttestationDigest,
+      runtimeId: binding.runtimeId,
+      taskId: binding.taskId,
+      endpoint: binding.endpoint,
+      peerCardDigest,
+      issuedAtMs: String(NOW - 1_000),
+      expiresAtMs: String(NOW + 60_000),
+      nonce: `nonce-network-${role}`,
+      jti: `jti-network-${role}`,
+      supportedArtifacts: ["invitation", "proposal", "counterproposal", "acceptance"],
+    },
+    signMessage: (raw) => account.signMessage({ message: { raw } }),
+  });
 }
 
 function signedRequest({
@@ -222,6 +270,43 @@ test("invitation bootstrap sends one opaque invitation directly and exposes dige
     assert.doesNotMatch(JSON.stringify(evidence), /roleAccess|invitation_live_secret|private reasoning|\/Users\/alice/i);
   }
   assert.throws(() => responder.takeInvitation(), /Invitation bootstrap transport failed safely/);
+});
+
+test("the same pinned HTTPS listeners carry the responder-first signed card bootstrap", async (t) => {
+  const { initiator: initiatorTransport, responder: responderTransport } = await pair();
+  t.after(() => initiatorTransport.close());
+  t.after(() => responderTransport.close());
+  const initiatorUrl = initiatorTransport.publicUrl;
+  const responderUrl = responderTransport.publicUrl;
+  await initiatorTransport.sendInvitation({ invitation: INVITATION, sessionId: SESSION_ID, expiresAtMs: NOW + 10_000 });
+  responderTransport.takeInvitation();
+
+  const initiator = createA2ACardBootstrap({
+    role: "initiator",
+    sessionId: SESSION_ID,
+    nowMs: () => NOW,
+    ownBinding: partyBinding("initiator"),
+    peerBinding: partyBinding("responder"),
+    transport: initiatorTransport,
+  });
+  const responder = createA2ACardBootstrap({
+    role: "responder",
+    sessionId: SESSION_ID,
+    nowMs: () => NOW,
+    ownBinding: partyBinding("responder"),
+    peerBinding: partyBinding("initiator"),
+    transport: responderTransport,
+  });
+  const responderCard = await partyCard("responder");
+  await responder.publishResponderCard({ card: responderCard, expiresAtMs: NOW + 10_000 });
+  initiator.takeResponderCard();
+  const initiatorCard = await partyCard("initiator", a2aAgentCardDigest(responderCard));
+  await initiator.publishInitiatorCard({ card: initiatorCard, expiresAtMs: NOW + 10_000 });
+  responder.takeInitiatorCard();
+  await initiator.verifiedPair();
+  await responder.verifiedPair();
+  assert.equal(initiatorTransport.publicUrl, initiatorUrl);
+  assert.equal(responderTransport.publicUrl, responderUrl);
 });
 
 test("invitation bootstrap rejects replay, second invitations, and session rebinding", async (t) => {
