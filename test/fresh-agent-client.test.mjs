@@ -1270,9 +1270,10 @@ test("harness adapter rejects unknown, replayed, and expired retained short-dige
   await runDecision(adapter, room, step.commandSha256);
   await rejectsWithCode(adapter, room, step.commandSha256, "HELPER_ACTION_REPLAYED");
 
-  const expiredAdapter = await prepareAgentHarnessAdapter({ actionTtlMs: -1, fetchImpl, manifestDigest, room: run.roles.responder, runtimeExecPath: process.execPath });
+  const expiredAdapter = await prepareAgentHarnessAdapter({ actionTtlMs: 1, fetchImpl, manifestDigest, room: run.roles.responder, runtimeExecPath: process.execPath });
   const expiredCommand = command.replace("/initiator", "/responder");
   const expired = expiredAdapter.record(helperStep(expiredCommand));
+  await new Promise((resolve) => setTimeout(resolve, 5));
   await rejectsWithCode(expiredAdapter, run.roles.responder, expired.commandSha256, "HELPER_ACTION_EXPIRED");
 });
 

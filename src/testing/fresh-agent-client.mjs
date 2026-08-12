@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
-import { createHash, generateKeyPairSync, randomUUID, sign as signBytes } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
-import { chmod, mkdir, realpath, rm, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { chmod, mkdir, mkdtemp, realpath, rmdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -21,6 +20,10 @@ import {
   AGENT_HANDSHAKE_V2_SNAPSHOT_SCHEMA,
   buildAgentHandshakeV2Snapshot,
 } from "../monitor/agent-snapshot-v2.mjs";
+import {
+  createVerifiedReleaseActionRecorder,
+  VERIFIED_RELEASE_HELPER_BOOTSTRAP,
+} from "../harness/verified-release-action-recorder.mjs";
 
 const ROLES = Object.freeze(["initiator", "responder"]);
 const HELPER_OPERATIONS = Object.freeze([
@@ -42,7 +45,7 @@ export const CLOCKCHAIN_HANDSHAKE_TOOLS = Object.freeze([
 ]);
 const CLOCKCHAIN_HELPER_ACTION_TOOLS = Object.freeze(new Set(CLOCKCHAIN_HANDSHAKE_TOOLS));
 const CLAUDE_INVITE_TOOL = "mcp__clockchain-handshake__agent_handshake_invite";
-export const VERIFIED_HELPER_BOOTSTRAP = 'const fs=require("node:fs");const crypto=require("node:crypto");const Module=require("node:module");const argv=process.argv.slice(1);const expected=argv.shift();const manifestPath=argv.shift();const helperPath=argv.shift();const manifestBytes=fs.readFileSync(manifestPath);const manifestDigest=crypto.createHash("sha256").update(manifestBytes).digest("hex");if(manifestDigest!==expected)process.exit(86);const manifest=JSON.parse(manifestBytes);if(manifest.schema!=="clockchain.agent-handshake-release-manifest/v1"||manifest.version!=="2.1.2"||!/^24\\./.test(manifest.nodeRuntime)||!/^24\\./.test(process.versions.node)||!Array.isArray(manifest.assets)||manifest.assets.length!==1)process.exit(86);const asset=manifest.assets[0];if(asset.filename!=="clockchain-agent-handshake.cjs"||asset.url!=="https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/clockchain-agent-handshake.cjs"||typeof asset.sha256!=="string"||!/^[0-9a-f]{64}$/.test(asset.sha256))process.exit(86);const helperBytes=fs.readFileSync(helperPath);const helperDigest=crypto.createHash("sha256").update(helperBytes).digest("hex");if(helperDigest!==asset.sha256)process.exit(86);process.argv=[process.execPath].concat(helperPath).concat(argv);const loaded=new Module(helperPath);loaded.filename=helperPath;loaded.paths=[];const compile=loaded._compile.bind(loaded);compile(...[helperBytes.toString("utf8")].concat(helperPath));';
+export const VERIFIED_HELPER_BOOTSTRAP = VERIFIED_RELEASE_HELPER_BOOTSTRAP;
 
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
 const SHA = /^[0-9a-f]{40}$/;
@@ -748,144 +751,6 @@ export async function createFreshAgentRun({ parent, runId = randomUUID() } = {})
   return Object.freeze({ root, roles: Object.freeze(roles), runId });
 }
 
-function adapterExecutable(runtimeExecPath, publicKeyDer) {
-  return `#!${runtimeExecPath}\n` + String.raw`"use strict";
-const { spawnSync } = require("node:child_process");
-const { createHash, createPublicKey, verify } = require("node:crypto");
-const { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } = require("node:fs");
-const { dirname, join, resolve } = require("node:path");
-const SHA256 = /^[0-9a-f]{64}$/;
-const ROLES = new Set(["initiator", "responder"]);
-const OPERATIONS = new Set(["init", "policy", "inspect", "register", "sign", "verify-certificate"]);
-function stop(code = "HELPER_COMMAND_MISMATCH") {
-  try { process.stderr.write(JSON.stringify({ code }) + "\n"); } catch {}
-  process.exit(86);
-}
-function exact(value, keys) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) stop();
-  if (Object.keys(value).sort().join(",") !== keys.slice().sort().join(",")) stop();
-  return value;
-}
-function readEnvelope(path, digest) {
-  const envelope = JSON.parse(readFileSync(path, "utf8"));
-  if (!envelope || Object.keys(envelope).sort().join(",") !== "body,schema,signature" || envelope.schema !== "clockchain.agent-harness-bound-action/v1") stop();
-  const bodyBytes = Buffer.from(JSON.stringify(envelope.body), "utf8");
-  const key = createPublicKey({ key: Buffer.from("${publicKeyDer}", "base64"), format: "der", type: "spki" });
-  if (!verify(null, bodyBytes, key, Buffer.from(envelope.signature, "base64"))) stop();
-  const body = exact(envelope.body, ["args", "commandLength", "commandSha256", "cwd", "expiresAtMs", "file", "manifestDigest", "operation", "policyDigest", "role", "schema", "sessionId", "stateDir"]);
-  if (
-    body.schema !== "clockchain.agent-harness-bound-action-body/v1" || body.commandSha256 !== digest ||
-    !Number.isSafeInteger(body.commandLength) || body.commandLength < 1 || body.commandLength > 1024 * 1024 ||
-    !SHA256.test(body.manifestDigest) || !(body.policyDigest === null || SHA256.test(body.policyDigest)) ||
-    !OPERATIONS.has(body.operation) || !ROLES.has(body.role) || !Number.isSafeInteger(body.expiresAtMs)
-  ) stop();
-  if (Date.now() > body.expiresAtMs) stop("HELPER_ACTION_EXPIRED");
-  if (body.file !== process.execPath || body.cwd !== process.cwd() || !Array.isArray(body.args) || body.args.some((value) => typeof value !== "string")) stop();
-  const tmp = resolve(process.env.TMPDIR || "");
-  const state = resolve(body.stateDir);
-  if (!tmp || !state.startsWith(tmp + "/")) stop();
-  return body;
-}
-function verifyAssets(body) {
-  const args = body.args;
-  if (
-    args.length < 9 || args[0] !== "--input-type=commonjs" || args[1] !== "--eval" ||
-    args[3] !== body.manifestDigest || args[6] !== body.operation
-  ) stop();
-  const manifestBytes = readFileSync(args[4]);
-  if (createHash("sha256").update(manifestBytes).digest("hex") !== body.manifestDigest) stop();
-  const manifest = JSON.parse(manifestBytes);
-  if (
-    manifest.schema !== "clockchain.agent-handshake-release-manifest/v1" || manifest.version !== "2.1.2" ||
-    !Array.isArray(manifest.assets) || manifest.assets.length !== 1
-  ) stop();
-  const asset = manifest.assets[0];
-  if (asset.filename !== "clockchain-agent-handshake.cjs" || !SHA256.test(asset.sha256)) stop();
-  const helperBytes = readFileSync(args[5]);
-  if (createHash("sha256").update(helperBytes).digest("hex") !== asset.sha256) stop();
-}
-const digest = process.argv.length === 3 ? process.argv[2] : "";
-if (!SHA256.test(digest)) stop();
-const root = dirname(dirname(__filename));
-const pending = join(root, "pending", digest + ".json");
-const running = join(root, "running", digest + "." + process.pid + ".json");
-const consumed = join(root, "consumed", digest + ".json");
-let body;
-try {
-  try { readFileSync(consumed); stop("HELPER_ACTION_REPLAYED"); } catch (error) { if (error && error.code !== "ENOENT") stop(); }
-  body = readEnvelope(pending, digest);
-  verifyAssets(body);
-  try { renameSync(pending, running); } catch {
-    try { readFileSync(consumed); stop("HELPER_ACTION_REPLAYED"); } catch {}
-    stop();
-  }
-  writeFileSync(consumed, JSON.stringify({ schema: "clockchain.agent-harness-consumed-action/v1", commandSha256: body.commandSha256 }) + "\n", { encoding: "utf8", flag: "wx", mode: 0o600 });
-  const state = resolve(body.stateDir);
-  mkdirSync(state, { recursive: true, mode: 0o700 });
-  const child = spawnSync(body.file, body.args, { cwd: body.cwd, env: process.env, stdio: "inherit" });
-  if (child.error || !Number.isSafeInteger(child.status)) stop();
-  if (child.status !== 0) {
-    try { process.stderr.write(JSON.stringify({ code: "HELPER_EXECUTION_FAILED" }) + "\n"); } catch {}
-  }
-  process.exitCode = child.status;
-} catch { stop(); }
-finally { try { rmSync(running, { force: true }); } catch {} }
-`;
-}
-
-function adapterNodeShim(runtimeExecPath) {
-  return `#!${runtimeExecPath}\n` + String.raw`"use strict";
-const { spawnSync } = require("node:child_process");
-const args = process.argv.slice(2);
-if (args[0] === "--input-type=commonjs" && args[1] === "--eval" && args.at(-1) !== "--version") process.exit(86);
-const child = spawnSync("${runtimeExecPath}", args, { env: process.env, stdio: "inherit" });
-if (child.error || !Number.isSafeInteger(child.status)) process.exit(86);
-process.exitCode = child.status;
-`;
-}
-
-async function fetchReleaseAsset(fetchImpl, url, maxBytes) {
-  let response;
-  try {
-    response = await fetchImpl(url);
-  } catch {
-    fail();
-  }
-  if (response?.ok !== true || typeof response.arrayBuffer !== "function") fail();
-  let bytes;
-  try {
-    bytes = Buffer.from(await response.arrayBuffer());
-  } catch {
-    fail();
-  }
-  if (bytes.length < 1 || bytes.length > maxBytes) fail();
-  return bytes;
-}
-
-async function preloadVerifiedReleaseAssets({ fetchImpl, manifestDigest, workspace }) {
-  if (typeof fetchImpl !== "function") fail();
-  const manifestBytes = await fetchReleaseAsset(fetchImpl, `${RELEASE_PREFIX}manifest.json`, 64 * 1024);
-  if (createHash("sha256").update(manifestBytes).digest("hex") !== manifestDigest) fail();
-  let manifest;
-  try { manifest = JSON.parse(manifestBytes.toString("utf8")); } catch { fail(); }
-  if (
-    manifest?.schema !== "clockchain.agent-handshake-release-manifest/v1" ||
-    manifest?.version !== "2.1.2" || typeof manifest?.nodeRuntime !== "string" ||
-    !/^24\./.test(manifest.nodeRuntime) || !Array.isArray(manifest?.assets) ||
-    manifest.assets.length !== 1
-  ) fail();
-  const asset = manifest.assets[0];
-  const helperUrl = `${RELEASE_PREFIX}clockchain-agent-handshake.cjs`;
-  if (
-    asset?.filename !== "clockchain-agent-handshake.cjs" || asset?.url !== helperUrl ||
-    typeof asset?.sha256 !== "string" || !SHA256.test(asset.sha256)
-  ) fail();
-  const helperBytes = await fetchReleaseAsset(fetchImpl, helperUrl, 1024 * 1024);
-  if (createHash("sha256").update(helperBytes).digest("hex") !== asset.sha256) fail();
-  await writeFile(join(workspace, "manifest.json"), manifestBytes, { mode: 0o600 });
-  await writeFile(join(workspace, "clockchain-agent-handshake.cjs"), helperBytes, { mode: 0o600 });
-}
-
 export async function prepareAgentHarnessAdapter({
   actionTtlMs = 5 * 60_000,
   fetchImpl = globalThis.fetch,
@@ -893,64 +758,33 @@ export async function prepareAgentHarnessAdapter({
   room,
   runtimeExecPath = process.execPath,
 } = {}) {
-  if (!SHA256.test(manifestDigest) || room === null || typeof room !== "object" || Array.isArray(room)) fail();
-  if (!Number.isSafeInteger(actionTtlMs)) fail();
-  const workspace = absolute(room.workspace);
-  const tmp = descendant(workspace, room.tmp);
-  const runtime = absolute(runtimeExecPath);
-  await preloadVerifiedReleaseAssets({ fetchImpl, manifestDigest, workspace });
-  const root = join(workspace, ".clockchain-adapter");
-  const bin = join(root, "bin");
-  const pending = join(root, "pending");
-  const running = join(root, "running");
-  const consumed = join(root, "consumed");
-  for (const path of [root, bin, pending, running, consumed]) await privateDirectory(path);
-  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-  const publicKeyDer = publicKey.export({ type: "spki", format: "der" }).toString("base64");
-  const executable = join(bin, "clockchain-agent-authorize");
-  await writePrivateFile({ path: executable, bytes: Buffer.from(adapterExecutable(runtime, publicKeyDer), "utf8") });
-  await chmod(executable, 0o500);
-  const nodeShim = join(bin, "node");
-  await writePrivateFile({ path: nodeShim, bytes: Buffer.from(adapterNodeShim(runtime), "utf8") });
-  await chmod(nodeShim, 0o500);
-
-  function record(value) {
-    const expected = expectedHelperCommand(value);
-    if (expected === null || expected.approvalCommand !== `clockchain-agent-authorize ${expected.commandSha256}`) fail();
-    const argv = [...expected.argv];
-    if (argv[0] !== "node") fail();
-    argv[5] = isAbsolute(argv[5]) ? descendant(workspace, argv[5]) : descendant(workspace, resolve(workspace, argv[5]));
-    argv[6] = isAbsolute(argv[6]) ? descendant(workspace, argv[6]) : descendant(workspace, resolve(workspace, argv[6]));
-    if (typeof argv[9] !== "string" || !argv[9].startsWith("$TMPDIR/")) fail();
-    argv[9] = descendant(tmp, resolve(tmp, argv[9].slice("$TMPDIR/".length)));
-    validateHelperCommand({ argv, kind: "helper", manifestDigest, workspace });
-    const body = Object.freeze({
-      schema: "clockchain.agent-harness-bound-action-body/v1",
-      commandSha256: expected.commandSha256,
-      commandLength: expected.commandLength,
-      operation: expected.operation,
+  const socketRoot = await mkdtemp("/tmp/clockchain-legacy-rec-");
+  let recorder;
+  try {
+    recorder = await createVerifiedReleaseActionRecorder({
+      actionTtlMs,
+      fetchImpl,
       manifestDigest,
-      policyDigest: expected.policyDigest,
-      role: expected.role,
-      sessionId: expected.sessionId,
-      expiresAtMs: Date.now() + actionTtlMs,
-      file: runtime,
-      args: Object.freeze(argv.slice(1)),
-      cwd: workspace,
-      stateDir: argv[9],
+      room,
+      runtimeExecPath,
+      socketRoot,
     });
-    const signature = signBytes(null, Buffer.from(JSON.stringify(body), "utf8"), privateKey).toString("base64");
-    const bytes = `${JSON.stringify({ schema: "clockchain.agent-harness-bound-action/v1", body, signature })}\n`;
-    const target = join(pending, `${expected.commandSha256}.json`);
-    try {
-      writeFileSync(target, bytes, { encoding: "utf8", flag: "wx", mode: 0o600 });
-    } catch (error) {
-      if (error?.code !== "EEXIST" || readFileSync(target, "utf8") !== bytes) fail();
-    }
-    return expected;
+  } catch (error) {
+    await rmdir(socketRoot).catch(() => {});
+    throw error;
   }
-
-  return Object.freeze({ bin, consumed, pending, record, root });
+  recorder.setCompletionHandler(async (completion) => {
+    const parsed = parsedHelperOutput(JSON.stringify(completion.result), completion.role);
+    if (parsed.matched !== true) fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
+    return Object.freeze({ accepted: true });
+  });
+  return Object.freeze({
+    ...recorder,
+    async close() {
+      await recorder.close();
+      await rmdir(socketRoot);
+    },
+  });
 }
 
 function append(output, chunk) {
@@ -2237,6 +2071,8 @@ export async function runFreshAgentHandshake({
   });
   let run;
   const children = [];
+  const adapters = [];
+  let adaptersClosed = false;
   let timer;
   try {
     run = await createFreshAgentRun({ parent });
@@ -2249,6 +2085,7 @@ export async function runFreshAgentHandshake({
         room: run.roles[role],
         runtimeExecPath: runtime?.execPath ?? process.execPath,
       });
+      adapters.push(adapter);
       const env = childEnvironment(run.roles[role], modelEnvironment[role], runtime, {
         adapterBin: adapter.bin,
         authenticationMode,
@@ -2373,6 +2210,10 @@ export async function runFreshAgentHandshake({
     const initiator = publicRole(initiatorProof, monitorResult, binding);
     const responder = publicRole(responderProof, monitorResult, binding);
     if (initiator.address === responder.address || initiator.erc8004.agentId === responder.erc8004.agentId || initiator.policyDigest === responder.policyDigest) fail();
+    await Promise.all(adapters.map(async (adapter) => {
+      if (typeof adapter?.close === "function") await adapter.close();
+    }));
+    adaptersClosed = true;
     const evidence = Object.freeze({
       schema: EVIDENCE_SCHEMA,
       runId: run.runId,
@@ -2399,6 +2240,11 @@ export async function runFreshAgentHandshake({
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     children.forEach(killProcessGroup);
+    if (!adaptersClosed) {
+      await Promise.all(adapters.map(async (adapter) => {
+        if (typeof adapter?.close === "function") await adapter.close().catch(() => {});
+      }));
+    }
     if (run !== undefined) await rm(run.root, { recursive: true, force: true }).catch(() => {});
   }
 }
