@@ -123,6 +123,10 @@ function timing(value) {
 
 function invitation(value, timingFacts) {
   const item = exact(value, ["createdAtMs", "responderClaimedAtMs"]);
+  if (item.createdAtMs === null) {
+    if (item.responderClaimedAtMs !== null) invalid();
+    return Object.freeze(item);
+  }
   safeMs(item.createdAtMs);
   if (item.createdAtMs < timingFacts.createdAtMs ||
     item.createdAtMs >= timingFacts.invitationExpiresAtMs) invalid();

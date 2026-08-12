@@ -38,7 +38,7 @@ export function createAgentHandshakeV2Monitor({ now = Date.now, publish, session
       sessionDeadlineMs: session.sessionDeadlineMs,
       agreementValidForSeconds: session.terms.validForSeconds,
     },
-    invitation: { createdAtMs: session.sessionOpenedAtMs, responderClaimedAtMs: null },
+    invitation: { createdAtMs: null, responderClaimedAtMs: null },
     terms: {
       reference: session.terms.reference,
       statement: session.terms.statement,
@@ -69,9 +69,20 @@ export function createAgentHandshakeV2Monitor({ now = Date.now, publish, session
 
   return Object.freeze({
     start: flush,
+    async invitationCreated(createdAtMs) {
+      if (
+        !Number.isSafeInteger(createdAtMs) ||
+        state.invitation.createdAtMs !== null ||
+        createdAtMs < state.timing.createdAtMs ||
+        createdAtMs >= state.timing.invitationExpiresAtMs
+      ) throw new Error("AGENT_HANDSHAKE_V2_MONITOR_INVALID");
+      state.invitation.createdAtMs = createdAtMs;
+      await flush();
+    },
     async invitationClaimed(claimedAtMs) {
       if (
         !Number.isSafeInteger(claimedAtMs) ||
+        state.invitation.createdAtMs === null ||
         claimedAtMs < state.invitation.createdAtMs ||
         claimedAtMs >= state.timing.invitationExpiresAtMs
       ) throw new Error("AGENT_HANDSHAKE_V2_MONITOR_INVALID");

@@ -66,8 +66,12 @@ test("production ports map only role-tagged v2 messages and reserve before fundi
     externalBusinessActionPerformed: false,
   };
   const messages = {
+    agent_v2_invitation_created: { body: {
+      createdAtMs: "1786337000001",
+      externalBusinessActionPerformed: false,
+    } },
     agent_v2_invitation_claimed: { body: {
-      claimedAtMs: "1786337000001",
+      claimedAtMs: "1786337000002",
       externalBusinessActionPerformed: false,
     } },
     agent_v2_identity_claim: { body: {
@@ -98,6 +102,7 @@ test("production ports map only role-tagged v2 messages and reserve before fundi
     postHostMessage: async (kind, body) => seen.push([kind, body]),
     publicClient: {},
     monitor: {
+      invitationCreated: async (createdAtMs) => seen.push(["created", createdAtMs]),
       invitationClaimed: async (claimedAtMs) => seen.push(["invitation", claimedAtMs]),
       identityClaimed: async (role, claim) => seen.push(["identity", role, claim]),
     },
@@ -107,8 +112,16 @@ test("production ports map only role-tagged v2 messages and reserve before fundi
       return messages[kind];
     },
   });
-  assert.equal(await ports.awaitInvitationClaimed(), 1786337000001);
-  assert.deepEqual(seen[0], ["wait", "agent_v2_invitation_claimed", "responder", 1786337120000]);
+  assert.equal(await ports.awaitInvitationCreated(), 1786337000001);
+  assert.deepEqual(seen.slice(0, 2), [
+    ["wait", "agent_v2_invitation_created", "initiator", 1786337120000],
+    ["created", 1786337000001],
+  ]);
+  assert.equal(await ports.awaitInvitationClaimed(), 1786337000002);
+  assert.deepEqual(seen.slice(2, 4), [
+    ["wait", "agent_v2_invitation_claimed", "responder", 1786337120000],
+    ["invitation", 1786337000002],
+  ]);
   assert.equal((await ports.awaitIdentityClaim("initiator")).policyDigest, "a".repeat(64));
   assert.deepEqual(await ports.awaitProposal(), { ok: "proposal" });
   await ports.reserveFunding({

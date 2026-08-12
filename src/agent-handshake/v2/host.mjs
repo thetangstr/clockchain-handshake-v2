@@ -153,6 +153,7 @@ function requireSessionPorts(ports) {
     "awaitAcceptance",
     "awaitAnchors",
     "awaitEvidence",
+    "awaitInvitationCreated",
     "awaitInvitationClaimed",
     "awaitProposal",
     "certificateIssued",
@@ -184,6 +185,7 @@ export async function runAgentHandshakeV2HostSession({
     now() >= session.sessionDeadlineMs
   ) invalid();
   await ports.publishInitial();
+  await ports.awaitInvitationCreated();
   await ports.awaitInvitationClaimed();
   const parties = await prepareAgentHandshakeV2Identities({
     identityPolicy: session.terms.identityPolicy,

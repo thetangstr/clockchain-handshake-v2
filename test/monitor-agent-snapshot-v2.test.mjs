@@ -122,6 +122,32 @@ test("each artifact may be absent independently without being fabricated by a la
   assert.equal(buildAgentHandshakeV2Snapshot(value).receipts.acceptance, null);
 });
 
+test("an invitation may be ready but not created, and cannot be claimed before creation", () => {
+  const ready = completeV2Snapshot();
+  ready.invitation = { createdAtMs: null, responderClaimedAtMs: null };
+  ready.policies = { initiator: null, responder: null };
+  ready.parties = { initiator: null, responder: null };
+  ready.statements = { proposalDigest: null, acceptanceDigest: null };
+  ready.receipts = { proposal: null, acceptance: null, acknowledgment: null };
+  ready.evidence = { initiator: null, responder: null };
+  ready.checker = { stage: "WAITING", lastSeenMs: ready.timing.createdAtMs };
+  ready.certificate = null;
+  ready.freshness = {
+    initiator: null,
+    responder: null,
+    host: { lastSeenMs: ready.timing.createdAtMs },
+    checker: { lastSeenMs: ready.timing.createdAtMs },
+  };
+  assert.equal(validateAgentHandshakeV2Snapshot(ready), true);
+  ready.invitation.responderClaimedAtMs = ready.timing.createdAtMs + 2;
+  assert.throws(() => validateAgentHandshakeV2Snapshot(ready));
+  ready.invitation = {
+    createdAtMs: ready.timing.invitationExpiresAtMs,
+    responderClaimedAtMs: null,
+  };
+  assert.throws(() => validateAgentHandshakeV2Snapshot(ready));
+});
+
 test("unknown keys, partial nested facts, duplicate parties, secret-shaped fields, and false invariants reject", () => {
   const base = completeV2Snapshot();
   for (const value of [

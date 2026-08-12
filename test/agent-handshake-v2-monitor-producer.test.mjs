@@ -49,13 +49,22 @@ test("the live producer publishes only the artifact just observed", async () => 
   });
   await monitor.start();
   assert.equal(published.at(-1).policies.initiator, null);
-  await monitor.invitationClaimed(Number(SESSION_OPENED_AT_MS) + 1);
-  assert.equal(published.at(-1).invitation.responderClaimedAtMs, Number(SESSION_OPENED_AT_MS) + 1);
+  assert.deepEqual(published.at(-1).invitation, {
+    createdAtMs: null,
+    responderClaimedAtMs: null,
+  });
+  await monitor.invitationCreated(Number(SESSION_OPENED_AT_MS) + 1);
+  assert.deepEqual(published.at(-1).invitation, {
+    createdAtMs: Number(SESSION_OPENED_AT_MS) + 1,
+    responderClaimedAtMs: null,
+  });
+  await monitor.invitationClaimed(Number(SESSION_OPENED_AT_MS) + 2);
+  assert.equal(published.at(-1).invitation.responderClaimedAtMs, Number(SESSION_OPENED_AT_MS) + 2);
   await monitor.identityClaimed("initiator", identityClaims.initiator);
   assert.equal(published.at(-1).policies.initiator.digest, identityClaims.initiator.policyDigest);
   assert.equal(published.at(-1).parties.initiator, null);
   await monitor.identityClaimed("responder", identityClaims.responder);
-  assert.equal(published.at(-1).invitation.responderClaimedAtMs, Number(SESSION_OPENED_AT_MS) + 1);
+  assert.equal(published.at(-1).invitation.responderClaimedAtMs, Number(SESSION_OPENED_AT_MS) + 2);
   await monitor.partiesReady(fixture.parties);
   assert.equal(published.at(-1).parties.initiator.erc8004.agentId, "9452");
   await monitor.proposalSigned(fixture.proposalEnvelope);

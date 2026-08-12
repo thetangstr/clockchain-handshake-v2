@@ -113,6 +113,8 @@ test("duplicate claims, pre-session fresh registration, and party drift fail clo
 test("the v2 host verifies the full artifact chain and publishes one closing certificate", async () => {
   const fixture = await buildV2Fixture();
   const active = ports(fixture);
+  const lifecycle = [];
+  const awaitIdentityClaim = active.awaitIdentityClaim;
   let publishedDescriptor = null;
   let publishedResult = null;
   Object.assign(active, {
@@ -124,7 +126,12 @@ test("the v2 host verifies the full artifact chain and publishes one closing cer
       transitions: fixture.transitions,
     }),
     awaitEvidence: async (role) => fixture.evidence[role],
-    awaitInvitationClaimed: async () => 1786337000001,
+    awaitIdentityClaim: async (role) => {
+      lifecycle.push(`identity:${role}`);
+      return awaitIdentityClaim(role);
+    },
+    awaitInvitationCreated: async () => { lifecycle.push("created"); return 1786337000001; },
+    awaitInvitationClaimed: async () => { lifecycle.push("claimed"); return 1786337000002; },
     awaitProposal: async () => fixture.proposalEnvelope,
     certificateIssued: async () => {},
     checkerStage: async () => {},
@@ -132,7 +139,7 @@ test("the v2 host verifies the full artifact chain and publishes one closing cer
     failed: async () => {},
     partiesReady: async () => {},
     proposalSigned: async () => {},
-    publishInitial: async () => {},
+    publishInitial: async () => { lifecycle.push("initial"); },
     publishDescriptor: async (value) => { publishedDescriptor = value; },
     publishResult: async (value) => { publishedResult = value; },
   });
@@ -161,4 +168,10 @@ test("the v2 host verifies the full artifact chain and publishes one closing cer
   assert.deepEqual(publishedDescriptor, result.descriptorEnvelope);
   assert.deepEqual(publishedResult, result.certificate);
   assert.equal(result.verdict.outcome, "VERIFIED");
+  assert.deepEqual(lifecycle.slice(0, 4), [
+    "initial",
+    "created",
+    "claimed",
+    "identity:initiator",
+  ]);
 });

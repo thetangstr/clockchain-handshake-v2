@@ -356,6 +356,30 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
       anchorReport(await waitForMessage("agent_v2_anchor_report", "initiator")),
     awaitEvidence: async (role) =>
       (await waitForMessage("agent_v2_evidence", role)).body.evidenceEnvelope,
+    awaitInvitationCreated: async () => {
+      const message = await waitForMessage(
+        "agent_v2_invitation_created",
+        "initiator",
+        session.invitationExpiresAtMs,
+      );
+      const body = message.body;
+      if (
+        body === null || typeof body !== "object" || Array.isArray(body) ||
+        Object.keys(body).sort().join(",") !==
+          "createdAtMs,externalBusinessActionPerformed" ||
+        typeof body.createdAtMs !== "string" ||
+        !/^(?:0|[1-9][0-9]*)$/.test(body.createdAtMs) ||
+        body.externalBusinessActionPerformed !== false
+      ) throw new Error("AGENT_HANDSHAKE_V2_INVITATION_CREATED_INVALID");
+      const createdAtMs = Number(body.createdAtMs);
+      if (
+        !Number.isSafeInteger(createdAtMs) ||
+        createdAtMs < session.sessionOpenedAtMs ||
+        createdAtMs >= session.invitationExpiresAtMs
+      ) throw new Error("AGENT_HANDSHAKE_V2_INVITATION_CREATED_INVALID");
+      await monitor.invitationCreated(createdAtMs);
+      return createdAtMs;
+    },
     awaitInvitationClaimed: async () => {
       const message = await waitForMessage(
         "agent_v2_invitation_claimed",
