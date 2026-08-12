@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { open } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { validateFreshAgentAttemptArtifact } from "../src/testing/fresh-agent-client.mjs";
@@ -15,9 +16,22 @@ function fail() {
 
 async function readJson(path) {
   if (typeof path !== "string" || path.length === 0) fail();
-  const text = await readFile(path, "utf8");
-  if (Buffer.byteLength(text, "utf8") > MAX_ARTIFACT_BYTES) fail();
-  return JSON.parse(text);
+  const flags = constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0);
+  const handle = await open(path, flags);
+  try {
+    const before = await handle.stat();
+    if (!before.isFile() || !Number.isSafeInteger(before.size) || before.size > MAX_ARTIFACT_BYTES) fail();
+    const buffer = Buffer.alloc(before.size);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    const after = await handle.stat();
+    if (
+      bytesRead !== buffer.length || after.dev !== before.dev ||
+      after.ino !== before.ino || after.size !== before.size
+    ) fail();
+    return JSON.parse(buffer.toString("utf8"));
+  } finally {
+    await handle.close().catch(() => {});
+  }
 }
 
 function roleSummary(role) {

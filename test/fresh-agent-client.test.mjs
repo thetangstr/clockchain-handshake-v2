@@ -874,6 +874,33 @@ test("offline verifier rejects failure, malformed, and private-shaped attempt ar
   }
 });
 
+test("offline verifier rejects oversized and non-regular attempt inputs before reading", async (t) => {
+  const artifacts = await mkdtemp(join(tmpdir(), "fresh-agent-verify-run-file-boundary-"));
+  t.after(() => rm(artifacts, { recursive: true, force: true }));
+  const oversized = join(artifacts, "oversized.json");
+  const fifo = join(artifacts, "attempt.fifo");
+  await writeFile(oversized, Buffer.alloc(1024 * 1024 + 1, "{"));
+  await execFileAsync("mkfifo", [fifo]);
+
+  for (const [name, file] of [["oversized", oversized], ["fifo", fifo]]) {
+    await t.test(name, async () => {
+      await assert.rejects(async () => {
+        await execFileAsync(process.execPath, ["scripts/verify-run.mjs", file], {
+          cwd: new URL("..", import.meta.url).pathname,
+          timeout: 1_000,
+        });
+      }, (error) => {
+        assert.equal(error.killed, false);
+        assert.equal(error.code, 1);
+        assert.equal(error.stdout, "");
+        assert.equal(error.stderr, "Fresh agent run verification failed safely.\n");
+        assert.equal(error.stderr.includes(file), false);
+        return true;
+      });
+    });
+  }
+});
+
 test("malformed success evidence is rejected before creating an attempt artifact", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "fresh-agent-malformed-evidence-parent-"));
   const artifacts = await mkdtemp(join(tmpdir(), "fresh-agent-malformed-evidence-"));
