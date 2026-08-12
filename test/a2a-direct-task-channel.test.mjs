@@ -4,6 +4,7 @@ import test from "node:test";
 import { privateKeyToAccount } from "viem/accounts";
 
 import { canonicalBytes } from "../src/core/canonical.mjs";
+import { a2aCanonicalBytes } from "../src/a2a/auth.mjs";
 import { A2A_AGENT_CARD_SCHEMA, a2aAgentCardDigest, signA2AAgentCard } from "../src/a2a/agent-card.mjs";
 import { A2A_ENVELOPE_SCHEMA, a2aEnvelopeDigest, signA2AEnvelope } from "../src/a2a/envelope.mjs";
 import { createDirectTaskChannel } from "../src/a2a/direct-task-channel.mjs";
@@ -48,6 +49,13 @@ async function pair(overrides = {}) {
   return { initiator, responder };
 }
 
+async function pairWithCardExpiry({ initiatorExpiresAtMs = "3000", responderExpiresAtMs = "3000" } = {}) {
+  return pair({
+    initiator: { expiresAtMs: initiatorExpiresAtMs },
+    responder: { expiresAtMs: responderExpiresAtMs },
+  });
+}
+
 async function signedArtifact(account, value) {
   return {
     payload: value,
@@ -83,6 +91,32 @@ async function message({ fromAccount, fromCard, toCard, sequence, previousMessag
   });
 }
 
+async function ciphertextOnlyMessage({ fromCard, toCard }) {
+  const payload = {
+    schema: A2A_ENVELOPE_SCHEMA,
+    version: 1,
+    sessionId: SESSION_ID,
+    fromCardDigest: a2aAgentCardDigest(fromCard),
+    toCardDigest: a2aAgentCardDigest(toCard),
+    sequence: "1",
+    artifactType: "proposal",
+    artifactDigest: "9".repeat(64),
+    previousMessageDigest: null,
+    expiresAtMs: "2500",
+    nonce: "message-ciphertext-only",
+    body: null,
+    ciphertext: "opaque-ciphertext",
+  };
+  return {
+    ...payload,
+    signature: {
+      address: INITIATOR_CARD.address.toLowerCase(),
+      algorithm: "eip191",
+      value: await INITIATOR_CARD.signMessage({ message: { raw: a2aCanonicalBytes(payload) } }),
+    },
+  };
+}
+
 test("direct task channel delivers private bodies while evidence retains only public digests", async () => {
   const cards = await pair();
   const channel = await createDirectTaskChannel({
@@ -107,6 +141,67 @@ test("direct task channel delivers private bodies while evidence retains only pu
     "toRole",
   ]);
   assert.doesNotMatch(JSON.stringify(evidence), /transcript|private reasoning|body|ciphertext/);
+});
+
+test("direct task channel rejects ciphertext-only envelopes before public evidence", async () => {
+  const cards = await pair();
+  const channel = await createDirectTaskChannel({
+    sessionId: SESSION_ID,
+    initiatorCard: cards.initiator,
+    responderCard: cards.responder,
+    nowMs: 1500,
+  });
+  const envelope = await ciphertextOnlyMessage({ fromCard: cards.initiator, toCard: cards.responder });
+
+  await assert.rejects(
+    () => channel.send({ fromRole: "initiator", toRole: "responder", envelope, nowMs: 1500 }),
+    /A2A verification failed safely/,
+  );
+  assert.equal(channel.publicEvidence().messages.length, 0);
+});
+
+test("direct task channel rejects sends outside either card window or beyond card expiry", async () => {
+  const expiredSender = await pairWithCardExpiry({ initiatorExpiresAtMs: "2000" });
+  const senderChannel = await createDirectTaskChannel({
+    sessionId: SESSION_ID,
+    initiatorCard: expiredSender.initiator,
+    responderCard: expiredSender.responder,
+    nowMs: 1500,
+  });
+  const senderMessage = await message({ fromAccount: INITIATOR, fromCard: expiredSender.initiator, toCard: expiredSender.responder, sequence: "1" });
+  await assert.rejects(
+    () => senderChannel.send({ fromRole: "initiator", toRole: "responder", envelope: senderMessage, nowMs: 2100 }),
+    /A2A verification failed safely/,
+    "sender card expired",
+  );
+
+  const expiredRecipient = await pairWithCardExpiry({ responderExpiresAtMs: "2000" });
+  const recipientChannel = await createDirectTaskChannel({
+    sessionId: SESSION_ID,
+    initiatorCard: expiredRecipient.initiator,
+    responderCard: expiredRecipient.responder,
+    nowMs: 1500,
+  });
+  const recipientMessage = await message({ fromAccount: INITIATOR, fromCard: expiredRecipient.initiator, toCard: expiredRecipient.responder, sequence: "1" });
+  await assert.rejects(
+    () => recipientChannel.send({ fromRole: "initiator", toRole: "responder", envelope: recipientMessage, nowMs: 2100 }),
+    /A2A verification failed safely/,
+    "recipient card expired",
+  );
+
+  const outlivingCards = await pairWithCardExpiry({ responderExpiresAtMs: "2400" });
+  const outlivingChannel = await createDirectTaskChannel({
+    sessionId: SESSION_ID,
+    initiatorCard: outlivingCards.initiator,
+    responderCard: outlivingCards.responder,
+    nowMs: 1500,
+  });
+  const outlivingMessage = await message({ fromAccount: INITIATOR, fromCard: outlivingCards.initiator, toCard: outlivingCards.responder, sequence: "1" });
+  await assert.rejects(
+    () => outlivingChannel.send({ fromRole: "initiator", toRole: "responder", envelope: outlivingMessage, nowMs: 1500 }),
+    /A2A verification failed safely/,
+    "envelope outlives card",
+  );
 });
 
 test("direct task channel rejects reused card jti or nonce during bootstrap", async () => {

@@ -4,6 +4,7 @@ import test from "node:test";
 import { privateKeyToAccount } from "viem/accounts";
 
 import { canonicalBytes } from "../src/core/canonical.mjs";
+import { a2aCanonicalBytes } from "../src/a2a/auth.mjs";
 import {
   A2A_AGENT_CARD_SCHEMA,
   a2aAgentCardDigest,
@@ -64,6 +65,32 @@ async function signedArtifact(account, artifact) {
       address: account.address.toLowerCase(),
       algorithm: "eip191",
       value: await account.signMessage({ message: { raw: canonicalBytes(artifact) } }),
+    },
+  };
+}
+
+async function delegatedEnvelope({ fromCard, toCard, body, ciphertext, artifactDigest = "9".repeat(64), nonce = "message-unsupported" }) {
+  const payload = {
+    schema: A2A_ENVELOPE_SCHEMA,
+    version: 1,
+    sessionId: SESSION_ID,
+    fromCardDigest: a2aAgentCardDigest(fromCard),
+    toCardDigest: a2aAgentCardDigest(toCard),
+    sequence: "1",
+    artifactType: "proposal",
+    artifactDigest,
+    previousMessageDigest: null,
+    expiresAtMs: "2500",
+    nonce,
+    body,
+    ciphertext,
+  };
+  return {
+    ...payload,
+    signature: {
+      address: INITIATOR_CARD.address.toLowerCase(),
+      algorithm: "eip191",
+      value: await INITIATOR_CARD.signMessage({ message: { raw: a2aCanonicalBytes(payload) } }),
     },
   };
 }
@@ -149,4 +176,43 @@ test("A2A envelopes reject changed digest, director-authored artifacts, expiry, 
       name,
     );
   }
+});
+
+test("A2A envelopes reject ciphertext-only and body-plus-ciphertext material artifacts", async () => {
+  const { initiator, responder } = await cardPair();
+  const artifact = await signedArtifact(INITIATOR, { statement: "proposal", amount: "100" });
+  const ciphertextOnly = await delegatedEnvelope({
+    fromCard: initiator,
+    toCard: responder,
+    body: null,
+    ciphertext: "opaque-ciphertext",
+    artifactDigest: "9".repeat(64),
+  });
+  const ambiguous = await delegatedEnvelope({
+    fromCard: initiator,
+    toCard: responder,
+    body: artifact,
+    ciphertext: "opaque-ciphertext",
+    artifactDigest: a2aEnvelopeDigest({ artifact }),
+    nonce: "message-ambiguous",
+  });
+
+  for (const [name, envelope] of [
+    ["ciphertext-only", ciphertextOnly],
+    ["body plus ciphertext", ambiguous],
+  ]) {
+    await assert.rejects(
+      () => verifyA2AEnvelope({ envelope, fromCard: initiator, toCard: responder, nowMs: 1500 }),
+      /A2A verification failed safely/,
+      name,
+    );
+  }
+});
+
+test("A2A canonical bytes reject sparse array holes instead of normalizing them as null", () => {
+  const sparse = [];
+  sparse.length = 1;
+
+  assert.equal(JSON.stringify(sparse), JSON.stringify([null]));
+  assert.throws(() => a2aCanonicalBytes(sparse), /A2A verification failed safely/);
 });

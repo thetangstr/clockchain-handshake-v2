@@ -76,6 +76,9 @@ function canonicalize(value, ancestors = new Set(), depth = 0) {
         const descriptor = descriptors[key];
         if (descriptor?.enumerable !== true || !Object.hasOwn(descriptor, "value")) invalid();
       }
+      for (let index = 0; index < value.length; index += 1) {
+        if (!Object.hasOwn(descriptors, String(index))) invalid();
+      }
       return value.map((entry) => canonicalize(entry, ancestors, depth + 1));
     }
     if (![Object.prototype, null].includes(Object.getPrototypeOf(value))) invalid();

@@ -72,8 +72,7 @@ function unsignedEnvelope(value) {
   if (item.previousMessageDigest !== null) assertDigest(item.previousMessageDigest);
   assertDecimal(item.expiresAtMs);
   assertToken(item.nonce);
-  if (item.ciphertext !== null && (typeof item.ciphertext !== "string" || item.ciphertext.length === 0 || item.ciphertext.length > 4096)) invalid();
-  if (item.body === null && item.ciphertext === null) invalid();
+  if (item.body === null || item.ciphertext !== null) invalid();
   return Object.freeze(item);
 }
 
@@ -103,7 +102,9 @@ export async function verifyA2AEnvelope({ envelope, fromCard, toCard, nowMs }) {
     verified.toCardDigest !== a2aAgentCardDigest(toCard) ||
     verified.signature.address !== addressFromPublicKey(fromCard.a2aCardPublicKey)
   ) invalid();
-  assertWindow({ issuedAtMs: fromCard.issuedAtMs, expiresAtMs: verified.expiresAtMs, nowMs });
+  assertWindow({ issuedAtMs: fromCard.issuedAtMs, expiresAtMs: fromCard.expiresAtMs, nowMs });
+  assertWindow({ issuedAtMs: toCard.issuedAtMs, expiresAtMs: toCard.expiresAtMs, nowMs });
+  if (BigInt(verified.expiresAtMs) > BigInt(fromCard.expiresAtMs) || BigInt(verified.expiresAtMs) > BigInt(toCard.expiresAtMs) || BigInt(nowMs) >= BigInt(verified.expiresAtMs)) invalid();
   const payload = Object.fromEntries(ENVELOPE_KEYS.map((key) => [key, verified[key]]));
   if (await recoverSigner(payload, verified.signature.value) !== addressFromPublicKey(fromCard.a2aCardPublicKey)) invalid();
   if (verified.body !== null) {
