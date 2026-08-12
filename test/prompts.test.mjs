@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PROMPTS = ["requestor", "payer"];
 const HERMES_PROMPTS = ["hermes-requestor", "hermes-payer"];
+const DEDICATED_HERMES_PROMPTS = ["hermes-initiator", "hermes-responder"];
 // 40 originally, then 60, now 75 -- and a number I keep raising is a number
 // that was never measuring the right thing. What the limit defends against is a
 // wall of text nobody reads to the end, so that is now asserted directly: no
@@ -260,6 +261,34 @@ for (const name of HERMES_PROMPTS) {
     assert.doesNotMatch(text, /party ACK signature/i);
     assert.doesNotMatch(text, /host signs as/i);
     assert.doesNotMatch(text, /Mac mini signs/i);
+  });
+}
+
+for (const name of DEDICATED_HERMES_PROMPTS) {
+  test(`prompts/${name}.md uses dedicated handshake tools without legacy role vocabulary`, async () => {
+    const text = await loadHermes(name);
+    const expectedRole = name.endsWith("initiator") ? "Initiator" : "Responder";
+    const forbiddenRole = expectedRole === "Initiator" ? "Responder" : "Initiator";
+    assert.match(text, new RegExp(`Role: ${expectedRole}\\b`));
+    assert.doesNotMatch(text, new RegExp(`Role: ${forbiddenRole}\\b`));
+    assert.match(text, /https:\/\/mcp\.clockchain\.network\/handshake\/mcp/);
+    assert.doesNotMatch(text, /https:\/\/mcp\.clockchain\.network\/mcp/);
+    for (const tool of [
+      "agent_handshake_invite",
+      "agent_handshake_accept_invitation",
+      "agent_handshake_join",
+      "agent_handshake_status",
+      "agent_handshake_next",
+      "agent_handshake_submit",
+      "agent_handshake_get_certificate",
+    ]) {
+      assert.match(text, new RegExp(`\\b${tool}\\b`));
+    }
+    assert.doesNotMatch(text, /\b(?:payer|requestor|payment|invoice|funding_record|payer_mandate|requestor_identity_ready)\b/i);
+    assert.doesNotMatch(text, /Mac mini|local host|local-host/i);
+    assert.match(text, /launcher and gateway/i);
+    assert.match(text, /retained local helper actions/i);
+    assert.match(text, /Never provide argv, shell text, private keys, transcript, paths, or secrets/i);
   });
 }
 

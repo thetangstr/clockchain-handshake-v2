@@ -31,7 +31,9 @@ import {
 const execFileAsync = promisify(execFileCallback);
 
 const VALID_ROLES = Object.freeze(["payer", "requestor"]);
+const MCP_MODES = Object.freeze(["legacy", "dedicated-v2"]);
 const CLOCKCHAIN_URL = "https://mcp.clockchain.network/mcp";
+const DEDICATED_CLOCKCHAIN_URL = "https://mcp.clockchain.network/handshake/mcp";
 const RAW_CLOCKCHAIN_TOOLS = Object.freeze([
   "handshake_status",
   "handshake_join",
@@ -39,8 +41,20 @@ const RAW_CLOCKCHAIN_TOOLS = Object.freeze([
   "handshake_submit",
   "handshake_get_certificate",
 ]);
+const DEDICATED_RAW_CLOCKCHAIN_TOOLS = Object.freeze([
+  "agent_handshake_invite",
+  "agent_handshake_accept_invitation",
+  "agent_handshake_join",
+  "agent_handshake_status",
+  "agent_handshake_next",
+  "agent_handshake_submit",
+  "agent_handshake_get_certificate",
+]);
 const REGISTERED_CLOCKCHAIN_TOOLS = Object.freeze(
   RAW_CLOCKCHAIN_TOOLS.map((name) => `mcp__clockchain__${name}`),
+);
+const DEDICATED_REGISTERED_CLOCKCHAIN_TOOLS = Object.freeze(
+  DEDICATED_RAW_CLOCKCHAIN_TOOLS.map((name) => `mcp__clockchain__${name}`),
 );
 const DEFAULT_HERMES_BINARY = "/Users/maxiaoer/.local/bin/hermes";
 const DEFAULT_HERMES_INSTALL_ROOT = "/Users/maxiaoer/.hermes/hermes-agent";
@@ -125,6 +139,11 @@ function canonicalAbsolutePath(value) {
 
 function role(value) {
   if (!VALID_ROLES.includes(value)) fail();
+  return value;
+}
+
+function mcpMode(value = "legacy") {
+  if (!MCP_MODES.includes(value)) fail();
   return value;
 }
 
@@ -653,7 +672,24 @@ export function fingerprintClockchainDemoToken(token) {
   return createHash("sha256").update(`jti:${parseClockchainDemoTokenPayload(token).jti}`).digest("hex");
 }
 
-function buildConfig(paths) {
+function mcpConfigForMode(inputMode) {
+  const mode = mcpMode(inputMode);
+  if (mode === "dedicated-v2") {
+    return Object.freeze({
+      rawTools: DEDICATED_RAW_CLOCKCHAIN_TOOLS,
+      registeredTools: DEDICATED_REGISTERED_CLOCKCHAIN_TOOLS,
+      url: DEDICATED_CLOCKCHAIN_URL,
+    });
+  }
+  return Object.freeze({
+    rawTools: RAW_CLOCKCHAIN_TOOLS,
+    registeredTools: REGISTERED_CLOCKCHAIN_TOOLS,
+    url: CLOCKCHAIN_URL,
+  });
+}
+
+function buildConfig(paths, inputMode = "legacy") {
+  const mcp = mcpConfigForMode(inputMode);
   return Object.freeze({
     _config_version: 33,
     agent: { max_turns: 500 },
@@ -667,11 +703,11 @@ function buildConfig(paths) {
         supports_parallel_tool_calls: false,
         tools: {
           exclude: [],
-          include: RAW_CLOCKCHAIN_TOOLS,
+          include: mcp.rawTools,
           prompts: false,
           resources: false,
         },
-        url: CLOCKCHAIN_URL,
+        url: mcp.url,
       },
     },
     memory: { memory_enabled: false, user_profile_enabled: false },
@@ -790,21 +826,22 @@ async function defaultProbeEnvLoader({ dotenvKeys, env, hermesInstallRoot, provi
   return JSON.parse(stdout);
 }
 
-function normalizeMcpDiscovery(result) {
+function normalizeMcpDiscovery(result, inputMode = "legacy") {
   if (result === null || typeof result !== "object") fail();
+  const mcp = mcpConfigForMode(inputMode);
   const registeredTools = result.registeredTools ?? result.registered_tools;
   const shutdownCalled = result.shutdownCalled ?? result.shutdown_called;
   if (shutdownCalled !== true) fail();
   if (
     !Array.isArray(registeredTools) ||
-    JSON.stringify(registeredTools) !== JSON.stringify(REGISTERED_CLOCKCHAIN_TOOLS)
+    JSON.stringify(registeredTools) !== JSON.stringify(mcp.registeredTools)
   ) {
     fail();
   }
   // Hermes discovery exposes registered tool names. Static server URL/resources/prompts
   // are proven separately by the generated config, not inferred from discovery.
   return Object.freeze({
-    registeredTools: REGISTERED_CLOCKCHAIN_TOOLS,
+    registeredTools: mcp.registeredTools,
     shutdownCalled: true,
   });
 }
@@ -975,6 +1012,7 @@ export async function provisionHermesCleanRoom({
   discoverMcp = defaultDiscoverMcp,
   inferenceKeyName,
   inferenceKeyValue,
+  mcpMode: inputMcpMode = "legacy",
   peerClockchainMcpToken,
   prepared,
   probeEnvLoader = defaultProbeEnvLoader,
@@ -988,12 +1026,13 @@ export async function provisionHermesCleanRoom({
     const preparedRoom = room ?? prepared;
     if (preparedRoom === null || typeof preparedRoom !== "object") fail();
     const providerName = assertProviderKeyName(inferenceKeyName ?? providerKeyName);
+    const cleanMcpMode = mcpMode(inputMcpMode);
     const providerSecret = assertSecretString(inferenceKeyValue ?? providerKeyValue);
     const mcpToken = assertSecretString(clockchainMcpToken);
     if (peerClockchainMcpToken !== undefined && peerClockchainMcpToken === mcpToken) fail();
     const principalFingerprint = fingerprintClockchainDemoToken(mcpToken);
     const paths = preparedRoom.paths;
-    const config = buildConfig(paths);
+    const config = buildConfig(paths, cleanMcpMode);
     configPath = paths.config;
     await writeJsonPrivate(configPath, config);
     const env = childEnv({
@@ -1018,7 +1057,7 @@ export async function provisionHermesCleanRoom({
       env,
       hermesHome: paths.hermesHome,
       hermesInstallRoot: preparedRoom.hermesInstallRoot,
-    }));
+    }), cleanMcpMode);
     await cleanupMcpDiscoveryArtifacts(paths.hermesHome);
     const expected = await expectedTree({
       includeConfig: true,

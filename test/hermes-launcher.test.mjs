@@ -1325,6 +1325,34 @@ test("kit URL and commit are validated before prompt creation", () => {
   assert.doesNotMatch(prompt, /submit the public registration fields/i);
 });
 
+test("buildHermesPrompt supports dedicated-v2 Initiator and Responder without payment vocabulary", () => {
+  for (const [role, label] of [["initiator", "Initiator"], ["responder", "Responder"]]) {
+    const prompt = buildHermesPrompt({
+      role,
+      mcpMode: "dedicated-v2",
+      kitUrl: KIT_URL,
+      kitCommit: KIT_COMMIT,
+      invitationId: SESSION_ID,
+    });
+    assert.match(prompt, new RegExp(`Role: ${label}`));
+    assert.match(prompt, /https:\/\/mcp\.clockchain\.network\/handshake\/mcp/);
+    for (const tool of [
+      "agent_handshake_invite",
+      "agent_handshake_accept_invitation",
+      "agent_handshake_join",
+      "agent_handshake_status",
+      "agent_handshake_next",
+      "agent_handshake_submit",
+      "agent_handshake_get_certificate",
+    ]) {
+      assert.match(prompt, new RegExp(tool));
+    }
+    assert.doesNotMatch(prompt, /\b(?:payer|requestor|payment|invoice|funding_record|payer_mandate|requestor_identity_ready)\b/i);
+    assert.doesNotMatch(prompt, /Mac mini|local host|local-host/i);
+    assert.match(prompt, /launcher and gateway/i);
+  }
+});
+
 test("generated role prompts keep every coordinator dependency in the retry loop", () => {
   const payer = buildHermesPrompt({ role: "payer", kitUrl: KIT_URL, kitCommit: KIT_COMMIT, invitationId: SESSION_ID });
   const requestor = buildHermesPrompt({ role: "requestor", kitUrl: KIT_URL, kitCommit: KIT_COMMIT, invitationId: SESSION_ID });

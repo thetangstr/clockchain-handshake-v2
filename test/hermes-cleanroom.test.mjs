@@ -36,7 +36,18 @@ const RAW_TOOLS = Object.freeze([
   "handshake_get_certificate",
 ]);
 const REGISTERED_TOOLS = Object.freeze(RAW_TOOLS.map((name) => `mcp__clockchain__${name}`));
+const DEDICATED_RAW_TOOLS = Object.freeze([
+  "agent_handshake_invite",
+  "agent_handshake_accept_invitation",
+  "agent_handshake_join",
+  "agent_handshake_status",
+  "agent_handshake_next",
+  "agent_handshake_submit",
+  "agent_handshake_get_certificate",
+]);
+const DEDICATED_REGISTERED_TOOLS = Object.freeze(DEDICATED_RAW_TOOLS.map((name) => `mcp__clockchain__${name}`));
 const CLOCKCHAIN_URL = "https://mcp.clockchain.network/mcp";
+const DEDICATED_CLOCKCHAIN_URL = "https://mcp.clockchain.network/handshake/mcp";
 const KIT_COMMIT = "0123456789abcdef0123456789abcdef01234567";
 
 async function temporaryRoot(t) {
@@ -324,6 +335,26 @@ test("prepare and provision are split so both rooms can be prepared before any s
     providerInput(UUIDS.payer).providerKeyValue,
     payer.paths.hermesHome,
   ]);
+});
+
+test("dedicated-v2 cleanroom config uses the locked handshake MCP endpoint and seven tools", async (t) => {
+  const root = await temporaryRoot(t);
+  const install = await makeFakeHermesInstall(root);
+  const room = await prepareHermesCleanRoom({ ...basePrepare(root, install), role: "payer" });
+  const provisioned = await provisionHermesCleanRoom({
+    room,
+    ...providerInput(UUIDS.payer),
+    mcpMode: "dedicated-v2",
+    discoverMcp: async ({ config }) => ({
+      registeredTools: DEDICATED_REGISTERED_TOOLS,
+      servers: [{ enabled: true, name: "clockchain", url: config.mcp_servers.clockchain.url }],
+      shutdownCalled: true,
+    }),
+  });
+  const config = await readJson(provisioned.paths.config);
+  assert.equal(config.mcp_servers.clockchain.url, DEDICATED_CLOCKCHAIN_URL);
+  assert.deepEqual(config.mcp_servers.clockchain.tools.include, DEDICATED_RAW_TOOLS);
+  assert.deepEqual(provisioned.probes.mcp.registeredTools, DEDICATED_REGISTERED_TOOLS);
 });
 
 test("production default adapters use fake executable and venv-python contracts", async (t) => {

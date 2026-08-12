@@ -14,14 +14,27 @@ import { verifyResultEnvelope } from "./result.mjs";
 const execFile = promisify(execFileCallback);
 
 const ROLES = Object.freeze(["payer", "requestor"]);
+const DEDICATED_ROLES = Object.freeze(["initiator", "responder"]);
+const MCP_MODES = Object.freeze(["legacy", "dedicated-v2"]);
 const ROLE_LABELS = Object.freeze({ payer: "Payer", requestor: "Requestor" });
+const DEDICATED_ROLE_LABELS = Object.freeze({ initiator: "Initiator", responder: "Responder" });
 const CLOCKCHAIN_MCP_URL = "https://mcp.clockchain.network/mcp";
+const DEDICATED_CLOCKCHAIN_MCP_URL = "https://mcp.clockchain.network/handshake/mcp";
 const CLOCKCHAIN_TOOLS = Object.freeze([
   "handshake_status",
   "handshake_join",
   "handshake_next",
   "handshake_submit",
   "handshake_get_certificate",
+]);
+const DEDICATED_CLOCKCHAIN_TOOLS = Object.freeze([
+  "agent_handshake_invite",
+  "agent_handshake_accept_invitation",
+  "agent_handshake_join",
+  "agent_handshake_status",
+  "agent_handshake_next",
+  "agent_handshake_submit",
+  "agent_handshake_get_certificate",
 ]);
 const INVOICE_DEMO_TERMS = Object.freeze({
   amount: Object.freeze({ currency: "USD", value: "18750" }),
@@ -127,6 +140,19 @@ function absolutePath(value) {
 
 function role(value) {
   if (!ROLES.includes(value)) fail();
+  return value;
+}
+
+function promptRole(value, mode) {
+  if (mode === "dedicated-v2") {
+    if (!DEDICATED_ROLES.includes(value)) fail();
+    return value;
+  }
+  return role(value);
+}
+
+function mcpMode(value = "legacy") {
+  if (!MCP_MODES.includes(value)) fail();
   return value;
 }
 
@@ -397,13 +423,49 @@ ${TERMINAL_MARKER} {"role":"${cleanRole}","sessionId":"00000000-0000-4000-8000-0
 `;
 }
 
-export function buildHermesPrompt({ role: inputRole, kitUrl: inputKitUrl, kitCommit: inputKitCommit, invitationId: inputInvitationId } = {}) {
+function dedicatedPrompt({ role: cleanRole }) {
+  const label = DEDICATED_ROLE_LABELS[cleanRole];
+  const opposite = cleanRole === "initiator" ? "Responder" : "Initiator";
+  return `# Clockchain Handshake Hermes ${label}
+
+Role: ${label}
+
+You are one fresh Hermes agent in an empty workspace. Clockchain is the host and independent checker; Clockchain is not a party. The runtime wrapper is only the launcher and gateway. Never read, print, copy, or infer another role's files, wallet, environment, token, or state.
+
+## Install the pinned public kit
+
+Do not cd outside the current blank workspace. Keep the checkout and dependencies inside it. Run exactly:
+
+1. git clone <KIT_URL> ./handshake-kit
+2. cd ./handshake-kit
+3. git checkout <KIT_COMMIT>
+4. npm ci
+
+The only acceptable MCP endpoint is ${DEDICATED_CLOCKCHAIN_MCP_URL}. Use shared discovery through the Clockchain MCP server and these exact seven Clockchain tools: ${DEDICATED_CLOCKCHAIN_TOOLS.join(", ")}. Terminal and file are only for clone, install, retained local helper authorization, local wallet signing, local registration, and your own public certificate file.
+
+## MCP loop
+
+Use role "${cleanRole}" only. If you are the Initiator, call agent_handshake_invite for reference NS-1847 and statement "Two stakeholder agents may communicate about shipment NS-1847."; then use agent_handshake_join. If you are the Responder, call agent_handshake_accept_invitation with the supplied invitation and then agent_handshake_join. Retain the exact sessionId, operatorPublicKey, repositorySha, and policy digest returned by Clockchain; stop on any mismatch.
+
+Call agent_handshake_status, agent_handshake_next, agent_handshake_submit, and agent_handshake_get_certificate only for that retained session and role. For local helper work, authorize only the short retained action decision or compact digest returned by Clockchain; never provide argv, shell, private key, transcript, or path payloads. If the server reports that the ${opposite} must act or returns any wait state, treat that as a dependency wait and keep looping without authoring the other role's artifact.
+
+Save only the public returned certificate envelope to "$HOME/clockchain-certificate.json", then run exactly: node bin/agent-certificate-proof.mjs verify --file "$HOME/clockchain-certificate.json" --role ${cleanRole} --expected-public-key "$OPERATOR_PUBLIC_KEY" --session-id "$SESSION_ID". Do not run npm test, npm run verify, or any test suite; the launcher handles integration verification.
+
+## Terminal success contract
+
+Do not announce success in prose. FINAL_HANDSHAKE_JSON is success-only. Do not emit FINAL_HANDSHAKE_JSON until the proof command succeeds. Copy its JSON verbatim after the marker, with no tests, tool calls, or prose afterward.
+`;
+}
+
+export function buildHermesPrompt({ role: inputRole, mcpMode: inputMcpMode = "legacy", kitUrl: inputKitUrl, kitCommit: inputKitCommit, invitationId: inputInvitationId } = {}) {
   try {
-    const cleanRole = role(inputRole);
+    const cleanMode = mcpMode(inputMcpMode);
+    const cleanRole = promptRole(inputRole, cleanMode);
     const cleanUrl = kitUrl(inputKitUrl);
     const cleanCommit = kitCommit(inputKitCommit);
     if (!UUID_PATTERN.test(inputInvitationId)) fail();
-    return staticPrompt({ role: cleanRole })
+    const template = cleanMode === "dedicated-v2" ? dedicatedPrompt({ role: cleanRole }) : staticPrompt({ role: cleanRole });
+    return template
       .replaceAll("<KIT_URL>", cleanUrl)
       .replaceAll("<KIT_COMMIT>", cleanCommit)
       .replaceAll("<INVITATION_ID>", inputInvitationId);

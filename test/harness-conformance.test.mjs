@@ -5,6 +5,7 @@ import test from "node:test";
 import { HARNESS_EVENT_SCHEMA } from "../src/harness/harness-adapter-contract.mjs";
 import { createAcpClaudeHarnessAdapter } from "../src/harness/acp-claude-adapter.mjs";
 import { createAcpCodexHarnessAdapter, createAcpHarnessAdapter } from "../src/harness/acp-codex-adapter.mjs";
+import { createHermesNativeHarnessAdapter } from "../src/harness/hermes-native-adapter.mjs";
 import { createLocalRuntimeAdapter } from "../src/runtime/runtime-adapter-contract.mjs";
 import { runMechanicsProofController } from "../src/testing/mechanics-proof-controller.mjs";
 import { ACP_VERSION_PINS, assertAcpPackageLockPins } from "../src/harness/version-pins.mjs";
@@ -219,3 +220,40 @@ for (const { name, createAdapter, harness, pin, role } of [
     assert.equal(getterCounts.child, 0);
   });
 }
+
+test("Hermes native adapter remains compatible with the Phase 2 controller inspection path", async () => {
+  const runtimeAdapter = createLocalRuntimeAdapter({ sourceCommit: "0".repeat(40) });
+  let observed;
+  const result = await runMechanicsProofController({
+    sessionId: SESSION,
+    runtimeAdapter,
+    harnessAdapters: {
+      initiator: createHermesNativeHarnessAdapter({ retainedActions: [], transport: {}, trustedAdapterPublicKeys: [retainedAction({ role: "initiator" }).adapterPublicKey] }),
+      responder: createHermesNativeHarnessAdapter({ retainedActions: [], transport: {}, trustedAdapterPublicKeys: [retainedAction({ role: "responder" }).adapterPublicKey] }),
+    },
+    executePair: async (payload) => {
+      observed = payload;
+      return { ok: true };
+    },
+    roles: {
+      initiator: { harness: "hermes", secretsRef: "secret-initiator", stateRef: "state-initiator" },
+      responder: { harness: "hermes", secretsRef: "secret-responder", stateRef: "state-responder" },
+    },
+    networkPolicy: { mode: "local-controller" },
+    ttlMs: 60_000,
+    costTags: { phase: "phase3b" },
+  });
+  assert.equal(result.handshakeEvidence.ok, true);
+  assert.deepEqual(observed.harnessCapabilities.initiator, {
+    schema: "clockchain.harness-capabilities/v1",
+    harness: "hermes",
+    retainedLocalActions: true,
+    rawPayloadTransport: false,
+  });
+  assert.deepEqual(observed.harnessCapabilities.responder, {
+    schema: "clockchain.harness-capabilities/v1",
+    harness: "hermes",
+    retainedLocalActions: true,
+    rawPayloadTransport: false,
+  });
+});
