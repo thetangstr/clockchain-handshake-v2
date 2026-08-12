@@ -317,6 +317,50 @@ test("AWS CLI control plane retains only the latest exact public progress stage 
   });
 });
 
+test("AWS CLI control plane reduces exact ECS attestations to a fixed public progress stage", async () => {
+  let current = 0;
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    now: () => current,
+    sleep: async () => { current = 2000; },
+    executor: async (_file, argv) => {
+      const role = argv.some((value) => value.includes("/responder")) ? "responder" : "initiator";
+      return { stdout: JSON.stringify({ events: [{
+        timestamp: 1786565101000,
+        message: JSON.stringify({
+          schema: "clockchain.mechanics-proof-ecs-attestation/v1",
+          accountId: "123456789012",
+          availabilityZone: "us-west-2a",
+          containerArn: `arn:aws:ecs:us-west-2:123456789012:container/cluster/task/${role}`,
+          family: `clockchain-run-${role}`,
+          imageId: `sha256:${"1".repeat(64)}`,
+          launchType: "FARGATE",
+          privateIp: role === "initiator" ? "10.0.2.10" : "10.0.3.10",
+          region: "us-west-2",
+          revision: "1",
+          role,
+          stsArn: `arn:aws:sts::123456789012:assumed-role/${role}/task`,
+          stsUserId: `USER:${role}`,
+          taskArn: `arn:aws:ecs:us-west-2:123456789012:task/cluster/${role}`,
+          taskId: `task-${role}`,
+          workloadAttestationDigest: "1".repeat(64),
+        }),
+      }] }), stderr: "", exitCode: 0 };
+    },
+  });
+
+  await assert.rejects(() => control.pollPublicEvents({
+    logGroupNames: ["/clockchain/mechanics-proof/run/initiator", "/clockchain/mechanics-proof/run/responder"],
+    deadlineMs: 1000,
+  }), (error) => {
+    assert.deepEqual(publicPartyProgressStages(error), {
+      initiator: "ecs.attested",
+      responder: "ecs.attested",
+    });
+    return true;
+  });
+});
+
 test("AWS CLI control plane derives VPC inspection only from explicit subnet, route, and CIDR queries", async () => {
   const calls = [];
   const control = createAwsCliControlPlane({

@@ -32,6 +32,10 @@ const ALLOWED = new Set([
 const PARTY_FAILURE_PREFIX = "Mechanics proof party failed safely. stage=";
 const PARTY_FAILURE_STAGE = /^(?:runtime-create|exchange-create|bootstrap-publish|bootstrap-await|exchange-destroy|managed-hold|runtime-run(?:\.(?:peer-validate|listener-create|listener-ready|invitation-await|recorder-create|bridge-create|provider-auth|transport-create|adapter-create|agent-starting|agent-launch|evidence-validate|certificate-event|agent-terminate|evidence-collect|teardown|listener-listen-(?:eacces|eaddrinuse|eaddrnotavail|eperm|other)))?)$/;
 const PARTY_PROGRESS_TYPES = Object.freeze(["a2a.listener.ready", "a2a.invitation.received", "agent.starting", "certificate.verified"]);
+const ECS_ATTESTATION_KEYS = Object.freeze([
+  "accountId", "availabilityZone", "containerArn", "family", "imageId", "launchType", "privateIp", "region",
+  "revision", "role", "schema", "stsArn", "stsUserId", "taskArn", "taskId", "workloadAttestationDigest",
+]);
 const PUBLIC_PARTY_FAILURES = new WeakMap();
 const PUBLIC_PARTY_PROGRESS = new WeakMap();
 
@@ -403,6 +407,17 @@ export function createAwsCliControlPlane(optionsInput = {}) {
               continue;
             }
             const record = parse(event.message);
+            if (record.schema === "clockchain.mechanics-proof-ecs-attestation/v1") {
+              if (
+                JSON.stringify(Object.keys(record).sort()) !== JSON.stringify(ECS_ATTESTATION_KEYS) ||
+                record.role !== groupRole || record.launchType !== "FARGATE" || !/^[0-9]{12}$/.test(record.accountId) ||
+                !/^[0-9a-f]{64}$/.test(record.workloadAttestationDigest) || !/^sha256:[0-9a-f]{64}$/.test(record.imageId) ||
+                [record.availabilityZone, record.containerArn, record.family, record.privateIp, record.region, record.revision,
+                  record.stsArn, record.stsUserId, record.taskArn, record.taskId].some((value) => typeof value !== "string" || value.length < 1 || value.length > 4096)
+              ) fail();
+              if (!progress.has(groupRole)) progress.set(groupRole, "ecs.attested");
+              continue;
+            }
             if (record.schema === "clockchain.mechanics-proof-party-event/v1") {
               const keys = Object.keys(record).sort();
               if (
