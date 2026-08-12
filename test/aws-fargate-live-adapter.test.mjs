@@ -422,6 +422,37 @@ test("live Fargate adapter returns failed-clean after protocol failure with conf
   assert.equal(retained.length, 0);
 });
 
+test("live Fargate adapter reports only fixed cleanup step codes when cleanup is unconfirmed", async () => {
+  const plan = await livePlan();
+  const controlPlane = fakeControlPlane(plan, { failAt: "stop-initiator" });
+  const diagnostic = createAwsCliControlPlane({
+    region: REGION,
+    executor: async (_file, argv) => {
+      const role = argv.some((value) => value.includes("/responder")) ? "responder" : "initiator";
+      return { stdout: JSON.stringify({ events: [{
+        timestamp: 1786565101000,
+        message: `Mechanics proof party failed safely. stage=runtime-run.listener-create`,
+      }] }), stderr: "", exitCode: 0 };
+    },
+  });
+  controlPlane.pollPublicEvents = (input) => diagnostic.pollPublicEvents(input);
+
+  const result = await runFargateLiveMechanicsProof({
+    plan,
+    controlPlane,
+    mcpGate: async () => { controlPlane.calls.push("mcp-gate"); return { healthy: true, checkpointTool: true, endpoint: "https://mcp.clockchain.network/handshake/mcp" }; },
+    retainEvidence: async () => { throw new Error("must not retain"); },
+  });
+
+  assert.equal(result.status, CLEANUP_UNCONFIRMED);
+  assert.deepEqual(result.failureStages, {
+    initiator: "runtime-run.listener-create",
+    responder: "runtime-run.listener-create",
+  });
+  assert.deepEqual(result.cleanupFailedSteps, ["stop-initiator"]);
+  assert.equal(JSON.stringify(result).includes("fail stop-initiator"), false);
+});
+
 test("live Fargate adapter rejects unsafe live inputs before mutation", async () => {
   const cases = [
     livePlan({ maxConcurrency: 3 }),

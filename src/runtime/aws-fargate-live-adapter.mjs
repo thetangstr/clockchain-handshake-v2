@@ -144,12 +144,17 @@ function pollingDeadline(plan) {
 
 async function cleanup({ controlPlane, stackName, clusterArn, taskArns, taskDefinitions, reconcile, stackCreated }) {
   const cleanupErrors = [];
+  const cleanupFailedSteps = [];
+  const failed = (step, error) => {
+    cleanupErrors.push(error);
+    cleanupFailedSteps.push(step);
+  };
   if (reconcile.stack) {
     try {
       const stack = await controlPlane.reconcileCreatedStack({ stackName });
       clusterArn = clusterArn ?? stack.clusterArn ?? clusterArn;
     } catch (error) {
-      cleanupErrors.push(error);
+      failed("reconcile-stack", error);
     }
   }
   if (reconcile.taskDefinitions) {
@@ -158,7 +163,7 @@ async function cleanup({ controlPlane, stackName, clusterArn, taskArns, taskDefi
         if (ROLES.includes(item.role) && !taskDefinitions[item.role]) taskDefinitions[item.role] = item.taskDefinitionArn;
       }
     } catch (error) {
-      cleanupErrors.push(error);
+      failed("reconcile-task-definitions", error);
     }
   }
   if (reconcile.tasks && clusterArn) {
@@ -167,53 +172,55 @@ async function cleanup({ controlPlane, stackName, clusterArn, taskArns, taskDefi
         if (ROLES.includes(item.role) && !taskArns[item.role]) taskArns[item.role] = item.taskArn;
       }
     } catch (error) {
-      cleanupErrors.push(error);
+      failed("reconcile-tasks", error);
     }
   }
   for (const role of ROLES) {
     if (taskArns[role]) {
-      try { await controlPlane.stopTask({ cluster: clusterArn, taskArn: taskArns[role], role }); } catch (error) { cleanupErrors.push(error); }
+      try { await controlPlane.stopTask({ cluster: clusterArn, taskArn: taskArns[role], role }); } catch (error) { failed(`stop-${role}`, error); }
     }
   }
   const arns = ROLES.map((role) => taskArns[role]).filter(Boolean);
   if (arns.length > 0) {
-    try { await controlPlane.waitTasksStopped({ cluster: clusterArn, taskArns: arns }); } catch (error) { cleanupErrors.push(error); }
+    try { await controlPlane.waitTasksStopped({ cluster: clusterArn, taskArns: arns }); } catch (error) { failed("wait-tasks-stopped", error); }
   }
   for (const role of ROLES) {
     if (taskDefinitions[role]) {
-      try { await controlPlane.deregisterTaskDefinition({ taskDefinitionArn: taskDefinitions[role], role }); } catch (error) { cleanupErrors.push(error); }
+      try { await controlPlane.deregisterTaskDefinition({ taskDefinitionArn: taskDefinitions[role], role }); } catch (error) { failed(`deregister-${role}`, error); }
     }
   }
   if (stackCreated) {
-    try { await controlPlane.deleteStack({ stackName }); } catch (error) { cleanupErrors.push(error); }
-    try { await controlPlane.waitStackDeleteComplete({ stackName }); } catch (error) { cleanupErrors.push(error); }
+    try { await controlPlane.deleteStack({ stackName }); } catch (error) { failed("delete-stack", error); }
+    try { await controlPlane.waitStackDeleteComplete({ stackName }); } catch (error) { failed("wait-stack-delete", error); }
   }
   let absence = { absent: false };
-  try { absence = await controlPlane.confirmAbsence({ stackName }); } catch (error) { cleanupErrors.push(error); }
-  return Object.freeze({ absence, cleanupErrors });
+  try { absence = await controlPlane.confirmAbsence({ stackName }); } catch (error) { failed("confirm-absence", error); }
+  return Object.freeze({ absence, cleanupErrors, cleanupFailedSteps: Object.freeze(cleanupFailedSteps) });
 }
 
 async function stopSuccessfulTasks({ controlPlane, clusterArn, taskArns }) {
   const cleanupErrors = [];
+  const cleanupFailedSteps = [];
   for (const role of ROLES) {
-    try { await controlPlane.stopTask({ cluster: clusterArn, taskArn: taskArns[role], role }); } catch (error) { cleanupErrors.push(error); }
+    try { await controlPlane.stopTask({ cluster: clusterArn, taskArn: taskArns[role], role }); } catch (error) { cleanupErrors.push(error); cleanupFailedSteps.push(`stop-${role}`); }
   }
-  try { await controlPlane.waitTasksStopped({ cluster: clusterArn, taskArns: ROLES.map((role) => taskArns[role]) }); } catch (error) { cleanupErrors.push(error); }
-  return Object.freeze({ cleanupErrors });
+  try { await controlPlane.waitTasksStopped({ cluster: clusterArn, taskArns: ROLES.map((role) => taskArns[role]) }); } catch (error) { cleanupErrors.push(error); cleanupFailedSteps.push("wait-tasks-stopped"); }
+  return Object.freeze({ cleanupErrors, cleanupFailedSteps: Object.freeze(cleanupFailedSteps) });
 }
 
 async function cleanupAfterRuntimeCollection({ controlPlane, stackName, taskDefinitions, stackCreated }) {
   const cleanupErrors = [];
+  const cleanupFailedSteps = [];
   for (const role of ROLES) {
-    try { await controlPlane.deregisterTaskDefinition({ taskDefinitionArn: taskDefinitions[role], role }); } catch (error) { cleanupErrors.push(error); }
+    try { await controlPlane.deregisterTaskDefinition({ taskDefinitionArn: taskDefinitions[role], role }); } catch (error) { cleanupErrors.push(error); cleanupFailedSteps.push(`deregister-${role}`); }
   }
   if (stackCreated) {
-    try { await controlPlane.deleteStack({ stackName }); } catch (error) { cleanupErrors.push(error); }
-    try { await controlPlane.waitStackDeleteComplete({ stackName }); } catch (error) { cleanupErrors.push(error); }
+    try { await controlPlane.deleteStack({ stackName }); } catch (error) { cleanupErrors.push(error); cleanupFailedSteps.push("delete-stack"); }
+    try { await controlPlane.waitStackDeleteComplete({ stackName }); } catch (error) { cleanupErrors.push(error); cleanupFailedSteps.push("wait-stack-delete"); }
   }
   let absence = { absent: false };
-  try { absence = await controlPlane.confirmAbsence({ stackName }); } catch (error) { cleanupErrors.push(error); }
-  return Object.freeze({ absence, cleanupErrors });
+  try { absence = await controlPlane.confirmAbsence({ stackName }); } catch (error) { cleanupErrors.push(error); cleanupFailedSteps.push("confirm-absence"); }
+  return Object.freeze({ absence, cleanupErrors, cleanupFailedSteps: Object.freeze(cleanupFailedSteps) });
 }
 
 export async function runFargateLiveMechanicsProof(optionsInput) {
@@ -325,7 +332,11 @@ export async function runFargateLiveMechanicsProof(optionsInput) {
     }
     const cleaned = await cleanupAfterRuntimeCollection({ controlPlane, stackName, taskDefinitions, stackCreated });
     if (stopped.cleanupErrors.length > 0 || cleaned.cleanupErrors.length > 0 || cleaned.absence?.absent !== true) {
-      return Object.freeze({ schema: FARGATE_LIVE_RESULT_SCHEMA, status: CLEANUP_UNCONFIRMED });
+      return Object.freeze({
+        schema: FARGATE_LIVE_RESULT_SCHEMA,
+        status: CLEANUP_UNCONFIRMED,
+        cleanupFailedSteps: Object.freeze([...stopped.cleanupFailedSteps, ...cleaned.cleanupFailedSteps]),
+      });
     }
     if (collectionError !== null) {
       return Object.freeze({ schema: FARGATE_LIVE_RESULT_SCHEMA, status: PROTOCOL_FAILED_CLEAN });
@@ -368,6 +379,12 @@ export async function runFargateLiveMechanicsProof(optionsInput) {
           ...(failureStages === null ? {} : { failureStages }),
         });
       }
+      return Object.freeze({
+        schema: FARGATE_LIVE_RESULT_SCHEMA,
+        status: CLEANUP_UNCONFIRMED,
+        ...(failureStages === null ? {} : { failureStages }),
+        cleanupFailedSteps: cleaned.cleanupFailedSteps,
+      });
     }
     return Object.freeze({ schema: FARGATE_LIVE_RESULT_SCHEMA, status: CLEANUP_UNCONFIRMED });
   }
