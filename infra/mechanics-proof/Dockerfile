@@ -16,7 +16,7 @@ COPY bin ./bin
 COPY src ./src
 COPY prompts ./prompts
 
-RUN mkdir -p /workspace && chown -R node:node /workspace /app
+RUN mkdir -p /workspace && chown node:node /workspace
 USER node
 
 EXPOSE 8443
