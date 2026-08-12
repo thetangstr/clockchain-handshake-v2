@@ -80,6 +80,7 @@ function acpFixtureSpawn({
   fastClose = false,
   useCloseEvent = false,
   stopReason = "end_turn",
+  skipPermission = false,
   permissionCommand = `clockchain-agent-authorize ${DIGEST}`,
   permissionTitle = "display-only approval label",
 }) {
@@ -142,34 +143,36 @@ function acpFixtureSpawn({
             },
           });
         }
-        await connection.sessionUpdate({
-          sessionId: params.sessionId,
-          update: {
-            sessionUpdate: "tool_call",
-            toolCallId: "tool-1",
-            title: permissionTitle,
-            name: "Bash",
-            kind: "execute",
-            status: "pending",
-            rawInput: { command: permissionCommand, transcript: "secret-canary /Users/alice/secret" },
-          },
-        });
-        const permission = await connection.requestPermission({
-          sessionId: params.sessionId,
-          toolCall: {
-            toolCallId: "tool-1",
-            title: permissionTitle,
-            name: "Bash",
-            kind: "execute",
-            status: "pending",
-            rawInput: { command: permissionCommand },
-          },
-          options: [
-            { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
-            { optionId: "reject_once", name: "Reject", kind: "reject_once" },
-          ],
-        });
-        calls.push(["permission", permission]);
+        if (!skipPermission) {
+          await connection.sessionUpdate({
+            sessionId: params.sessionId,
+            update: {
+              sessionUpdate: "tool_call",
+              toolCallId: "tool-1",
+              title: permissionTitle,
+              name: "Bash",
+              kind: "execute",
+              status: "pending",
+              rawInput: { command: permissionCommand, transcript: "secret-canary /Users/alice/secret" },
+            },
+          });
+          const permission = await connection.requestPermission({
+            sessionId: params.sessionId,
+            toolCall: {
+              toolCallId: "tool-1",
+              title: permissionTitle,
+              name: "Bash",
+              kind: "execute",
+              status: "pending",
+              rawInput: { command: permissionCommand },
+            },
+            options: [
+              { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
+              { optionId: "reject_once", name: "Reject", kind: "reject_once" },
+            ],
+          });
+          calls.push(["permission", permission]);
+        }
         await connection.sessionUpdate({
           sessionId: params.sessionId,
           update: { sessionUpdate: "usage_update", used: 7, size: 100000 },
@@ -1320,7 +1323,10 @@ test("ACP process transport fails closed on ambiguous or malformed MCP helper ou
       mandate: VALID_MANDATE,
       mcpEndpoint: MCP_ENDPOINT,
       a2aConfig: a2aConfig("initiator"),
-    }));
+    }), (error) => {
+      assert.equal(acpProcessTransportFailureStage(error), "completion-protocol");
+      return true;
+    });
     const events = await transport.streamEvents({ sessionId: SESSION });
     assert.doesNotMatch(JSON.stringify(events), /secret-canary|\/Users\/alice\/secret|helperStep|command|rawOutput/);
   }
@@ -1474,12 +1480,15 @@ test("ACP process transport rejects broad shell permission and non-end-turn comp
     mandate: VALID_MANDATE,
     mcpEndpoint: MCP_ENDPOINT,
     a2aConfig: a2aConfig("initiator"),
-  }));
+  }), (error) => {
+    assert.equal(acpProcessTransportFailureStage(error), "completion-permission");
+    return true;
+  });
 
   const refusalTransport = createAcpProcessTransport({
     harness: "codex",
     pin: ACP_VERSION_PINS.codex,
-    spawn: acpFixtureSpawn({ calls: [], helperAction: action, stopReason: "refusal" }),
+    spawn: acpFixtureSpawn({ calls: [], stopReason: "refusal", skipPermission: true }),
     workspace: "/workspace/initiator",
     home: "/workspace/initiator/home",
     env: {},
@@ -1493,5 +1502,8 @@ test("ACP process transport rejects broad shell permission and non-end-turn comp
     mandate: VALID_MANDATE,
     mcpEndpoint: MCP_ENDPOINT,
     a2aConfig: a2aConfig("initiator"),
-  }));
+  }), (error) => {
+    assert.equal(acpProcessTransportFailureStage(error), "completion-stop");
+    return true;
+  });
 });

@@ -31,7 +31,10 @@ const PROCESS_TERM_GRACE_MS = 50;
 const PROCESS_KILL_GRACE_MS = 50;
 const CODEX_MODEL = "gpt-5.6-terra";
 const CLAUDE_BEDROCK_MODEL = "us.anthropic.claude-sonnet-4-6";
-const LAUNCH_FAILURE_STAGES = Object.freeze(["spawn", "stream", "initialize", "session", "model", "prompt", "completion"]);
+const LAUNCH_FAILURE_STAGES = Object.freeze([
+  "spawn", "stream", "initialize", "session", "model", "prompt", "completion",
+  "completion-protocol", "completion-permission", "completion-stop",
+]);
 const LAUNCH_FAILURES = new WeakMap();
 
 function fail() {
@@ -765,7 +768,18 @@ export function createAcpProcessTransport(optionsInput = {}) {
           }],
         });
         launchStage = "completion";
-        if (protocolFailure || permissionDenied || prompted?.stopReason !== "end_turn") fail();
+        if (protocolFailure) {
+          launchStage = "completion-protocol";
+          fail();
+        }
+        if (permissionDenied) {
+          launchStage = "completion-permission";
+          fail();
+        }
+        if (prompted?.stopReason !== "end_turn") {
+          launchStage = "completion-stop";
+          fail();
+        }
         usage = safeUsage(prompted.usage);
         completed = true;
         event("acp.prompt.end_turn", "ACP prompt completed end_turn", digestJson(usage));
