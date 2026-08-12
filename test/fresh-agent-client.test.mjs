@@ -946,7 +946,7 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
   const fixture = JSON.parse(await readFile(new URL("./fixtures/fresh-agent/prompts.json", import.meta.url), "utf8"));
   assert.equal(fixture.endpoint, CLOCKCHAIN_HANDSHAKE_MCP_URL);
   for (const prompt of [fixture.initiator, fixture.responder].map((value) => `${value}\n\n${fixture.actionDecision}`)) {
-    assert.ok(prompt.length < 2_200);
+    assert.ok(prompt.length < 2_450);
     assert.match(prompt, /direct authorization/i);
     assert.match(prompt, /controlled Sepolia test/i);
     assert.match(prompt, /fresh ERC-8004 identity/i);
@@ -963,6 +963,7 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
     assert.match(prompt, /authorizes only that exact digest-bound action/i);
     assert.match(prompt, /not a standing precommitment/i);
     assert.match(prompt, /After approval, the adapter preserves exact payload bytes/i);
+    assert.match(prompt, /manifest digest.*independently pins.*manifest bytes.*manifest.*pins.*helper bytes.*host root.*separate.*session and closing certificate signatures.*not.*asset bootstrap/i);
     assert.doesNotMatch(prompt, /do not decode or inspect/i);
     assert.match(prompt, /retry also fails/i);
     assert.match(prompt, /Every MCP response without a locally verified certificate is nonterminal/i);
