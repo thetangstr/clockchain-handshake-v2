@@ -156,3 +156,63 @@ test("A2A agent cards require a delegated card key distinct from the party signe
     /A2A verification failed safely/,
   );
 });
+
+test("A2A agent cards reject hostile supportedArtifacts arrays without invoking getters or leaking contents", async () => {
+  let getterCount = 0;
+  const artifacts = ["invitation", "proposal", "counterproposal", "acceptance"];
+  Object.defineProperty(artifacts, "0", {
+    enumerable: true,
+    get() {
+      getterCount += 1;
+      throw new Error("secret /private/tmp/card-artifacts");
+    },
+  });
+
+  await assert.rejects(
+    () => signA2AAgentCard({
+      card: baseCard(INITIATOR, "initiator", { supportedArtifacts: artifacts }),
+      signMessage: (raw) => INITIATOR.signMessage({ message: { raw } }),
+    }),
+    (error) => {
+      assert.equal(error.message, "A2A verification failed safely.");
+      assert.doesNotMatch(error.message, /secret|private\/tmp/);
+      return true;
+    },
+  );
+  assert.equal(getterCount, 0);
+});
+
+test("A2A agent cards reject proxied supportedArtifacts before any proxy trap", async () => {
+  let trapCount = 0;
+  const artifacts = new Proxy(["invitation", "proposal", "counterproposal", "acceptance"], {
+    get() {
+      trapCount += 1;
+      throw new Error("secret /Users/alice/card-artifacts");
+    },
+    getOwnPropertyDescriptor() {
+      trapCount += 1;
+      throw new Error("secret /Users/alice/card-artifacts");
+    },
+    getPrototypeOf() {
+      trapCount += 1;
+      throw new Error("secret /Users/alice/card-artifacts");
+    },
+    ownKeys() {
+      trapCount += 1;
+      throw new Error("secret /Users/alice/card-artifacts");
+    },
+  });
+
+  await assert.rejects(
+    () => signA2AAgentCard({
+      card: baseCard(INITIATOR, "initiator", { supportedArtifacts: artifacts }),
+      signMessage: (raw) => INITIATOR.signMessage({ message: { raw } }),
+    }),
+    (error) => {
+      assert.equal(error.message, "A2A verification failed safely.");
+      assert.doesNotMatch(error.message, /secret|Users\/alice/);
+      return true;
+    },
+  );
+  assert.equal(trapCount, 0);
+});

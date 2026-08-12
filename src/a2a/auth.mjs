@@ -186,9 +186,23 @@ export async function signPayload({ payload, signerAddress, signMessage }) {
 }
 
 export function assertArtifacts(value) {
-  if (!Array.isArray(value) || value.length !== A2A_ARTIFACTS.length) invalid();
-  for (let index = 0; index < A2A_ARTIFACTS.length; index += 1) {
-    if (value[index] !== A2A_ARTIFACTS[index]) invalid();
+  try {
+    if (value === null || typeof value !== "object" || types.isProxy(value) || !Array.isArray(value)) invalid();
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Reflect.ownKeys(descriptors);
+    if (keys.length !== A2A_ARTIFACTS.length + 1 || !keys.includes("length")) invalid();
+    const length = descriptors.length;
+    if (length?.enumerable !== false || !Object.hasOwn(length, "value") || length.value !== A2A_ARTIFACTS.length) invalid();
+    const result = [];
+    for (let index = 0; index < A2A_ARTIFACTS.length; index += 1) {
+      const key = String(index);
+      const descriptor = descriptors[key];
+      if (!keys.includes(key) || descriptor?.enumerable !== true || !Object.hasOwn(descriptor, "value") || descriptor.value !== A2A_ARTIFACTS[index]) invalid();
+      result.push(descriptor.value);
+    }
+    return Object.freeze(result);
+  } catch (error) {
+    if (error instanceof A2AVerificationError) throw error;
+    invalid();
   }
-  return Object.freeze([...value]);
 }
