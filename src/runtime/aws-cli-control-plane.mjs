@@ -66,7 +66,7 @@ function stackName(value) {
 
 function stackIdArn(value, { stackName: expectedName, region, accountId = null }) {
   if (typeof value !== "string") fail();
-  const match = value.match(/^arn:aws(?:-us-gov)?:cloudformation:([a-z]{2}(?:-gov)?-[a-z]+-[0-9]):([0-9]{12}):stack\/(clockchain-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/);
+  const match = value.match(/^arn:aws(?:-us-gov)?:cloudformation:([a-z]{2}(?:-gov)?-[a-z]+-[0-9]):([0-9]{12}):stack\/(clockchain-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/);
   if (!match || match[1] !== region || match[3] !== expectedName || (accountId !== null && match[2] !== accountId)) fail();
   return value;
 }
@@ -264,9 +264,14 @@ export function createAwsCliControlPlane(optionsInput = {}) {
         "cloudformation", "create-stack", "--stack-name", name, "--template-body", templateBody,
         "--parameters", JSON.stringify(parameters), "--capabilities", ...capabilities, "--region", region, "--output", "json",
       ]);
-      if (JSON.stringify(Object.keys(response).sort()) !== JSON.stringify(["StackId"])) fail();
+      const responseKeys = Object.keys(response).sort();
+      if (
+        JSON.stringify(responseKeys) !== JSON.stringify(["StackId"]) &&
+        JSON.stringify(responseKeys) !== JSON.stringify(["OperationId", "StackId"])
+      ) fail();
+      if (response.OperationId !== undefined && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(response.OperationId)) fail();
       stackIdArn(response.StackId, { stackName: name, region, accountId });
-      return Object.freeze(response);
+      return Object.freeze({ StackId: response.StackId });
     },
     waitStackCreateComplete({ stackName: name, stackId = null }) {
       stackName(name);

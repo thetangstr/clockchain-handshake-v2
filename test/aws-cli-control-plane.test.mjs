@@ -134,14 +134,15 @@ test("AWS CLI control plane has exact allowlisted argv shapes for Task 4 actions
 
 test("AWS CLI control plane validates real create-stack StackId and binds later calls to that identifier", async () => {
   const stackName = "clockchain-11111111-2222-4333-8444-555555555555";
-  const stackId = "arn:aws:cloudformation:us-west-2:123456789012:stack/clockchain-11111111-2222-4333-8444-555555555555/97dae5b0-9663-91f1-9cbe-0a4a1f6a7123";
+  const stackId = "arn:aws:cloudformation:us-west-2:123456789012:stack/clockchain-11111111-2222-4333-8444-555555555555/840b9190-9665-11f1-8539-0232ad8fd72d";
+  const operationId = "a5f2ff95-2d39-4653-aa98-1daf5e41dd79";
   const seen = [];
   const control = createAwsCliControlPlane({
     region: "us-west-2",
     executor: async (_file, argv) => {
       seen.push(argv);
       const key = argv.slice(0, argv[0] === "cloudformation" && argv[1] === "wait" ? 3 : 2).join(" ");
-      if (key === "cloudformation create-stack") return { stdout: JSON.stringify({ StackId: stackId }), stderr: "", exitCode: 0 };
+      if (key === "cloudformation create-stack") return { stdout: JSON.stringify({ StackId: stackId, OperationId: operationId }), stderr: "", exitCode: 0 };
       if (key === "cloudformation describe-stacks") return { stdout: JSON.stringify({ Stacks: [{ StackId: stackId, StackName: stackName, Outputs: [] }] }), stderr: "", exitCode: 0 };
       return { stdout: JSON.stringify({ StackResourceSummaries: [{ LogicalResourceId: "Cluster", PhysicalResourceId: "cluster", ResourceType: "AWS::ECS::Cluster" }] }), stderr: "", exitCode: 0 };
     },
