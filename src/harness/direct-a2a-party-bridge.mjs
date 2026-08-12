@@ -14,6 +14,7 @@ const ROLES = Object.freeze(["initiator", "responder"]);
 const DIGEST = /^[0-9a-f]{64}$/;
 const SIGNATURE = /^0x[0-9a-f]{130}$/;
 const ADDRESS = /^0x[0-9a-f]{40}$/;
+const ROLE_ACCESS = /^ccra_[A-Za-z0-9_-]{22}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HELPER_SCHEMA = "clockchain.agent-handshake-cli-result/v1";
 const REQUEST_SCHEMA = "clockchain.agent-handshake-signing-request/v1";
@@ -253,11 +254,11 @@ function reconstructInbound(message, schema) {
 export function createDirectA2APartyBridge(optionsInput = {}) {
   try {
     const options = snapshot(optionsInput, [
-      "activateSignedChannel", "completionRecorder", "invitationTransport", "nowMs", "role", "sessionId",
+      "activateSignedChannel", "completionRecorder", "invitationTransport", "nowMs", "role", "sessionId", "submitCheckpoint",
     ]);
     if (
       !ROLES.includes(options.role) || !UUID.test(options.sessionId) || typeof options.nowMs !== "function" ||
-      typeof options.activateSignedChannel !== "function"
+      typeof options.activateSignedChannel !== "function" || typeof options.submitCheckpoint !== "function"
     ) fail();
     const completionRecorder = projectMethods(options.completionRecorder, ["setCompletionHandler"]);
     const invitationTransport = projectMethods(options.invitationTransport, ["sendInvitation"]);
@@ -266,6 +267,7 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
     const invitations = [];
     let signedChannel = null;
     let signedChannelPromise = null;
+    let roleAccess = null;
     let destroyed = false;
 
     function active() { if (destroyed) fail(); }
@@ -382,12 +384,23 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
           previousMessageDigest: first.messageDigest,
           sequence: "2",
         });
+        if (roleAccess === null) fail();
+        const checkpointDigest = commitmentCheckpointDigest(checkpoint);
+        const submitted = snapshot(await options.submitCheckpoint({
+          access: roleAccess,
+          artifactSignatureHex: result.signatureHex,
+          checkpoint,
+        }), ["checkpointDigest", "role", "sessionId", "stage"]);
+        if (
+          submitted.checkpointDigest !== checkpointDigest || submitted.role !== options.role ||
+          submitted.sessionId !== options.sessionId || submitted.stage !== `${artifactType}_checkpoint_submitted`
+        ) fail();
         expected.state = "consumed";
         deliveries.push(Object.freeze({
           acknowledged: true,
           artifactDigest: digestHex(signed.envelope),
           artifactType,
-          checkpointDigest: commitmentCheckpointDigest(checkpoint),
+          checkpointDigest,
           messageDigests: Object.freeze([first.messageDigest, second.messageDigest]),
         }));
         return Object.freeze({ accepted: true });
@@ -401,6 +414,13 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
           const item = snapshot(input, ["result", "toolName"]);
           if (typeof item.toolName !== "string" || !item.toolName.startsWith("agent_handshake_")) fail();
           const result = publicClone(item.result);
+          const roleAccessValues = findValues(result, "roleAccess").filter((value) => typeof value === "string");
+          if (roleAccessValues.length > 0) {
+            const unique = [...new Set(roleAccessValues)];
+            if (unique.length !== 1 || !ROLE_ACCESS.test(unique[0])) fail();
+            if (roleAccess !== null && roleAccess !== unique[0]) fail();
+            roleAccess = unique[0];
+          }
           if (item.toolName === "agent_handshake_invite") {
             if (options.role !== "initiator") fail();
             const invitation = oneValue(result, "responderInvitation", (value) => typeof value === "string" && value.length > 0);

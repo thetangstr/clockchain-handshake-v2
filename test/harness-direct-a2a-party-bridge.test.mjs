@@ -7,6 +7,7 @@ import { gzipSync } from "node:zlib";
 import test from "node:test";
 
 import { createDirectTaskChannel } from "../src/a2a/direct-task-channel.mjs";
+import { commitmentCheckpointDigest } from "../src/agent-handshake/v2/commitment-checkpoint.mjs";
 import { initializeWallet } from "../src/core/wallet-bridge.mjs";
 import { createDirectA2APartyBridge } from "../src/harness/direct-a2a-party-bridge.mjs";
 import {
@@ -22,6 +23,7 @@ import {
 } from "./support/agent-handshake-v2-fixture.mjs";
 
 const KEYS = Object.freeze({ initiator: `0x${"4".repeat(64)}`, responder: `0x${"5".repeat(64)}` });
+const ROLE_ACCESS = Object.freeze({ initiator: `ccra_${"I".repeat(22)}`, responder: `ccra_${"R".repeat(22)}` });
 const RUNTIME = Object.freeze({
   initiator: Object.freeze({
     endpoint: "https://initiator.task.local:8443",
@@ -41,6 +43,12 @@ const RUNTIME = Object.freeze({
 
 async function setup(t, {
   transformAuthority = (authority) => authority,
+  transformCheckpointSubmission = async (input, role) => ({
+    role,
+    sessionId: SESSION_ID,
+    stage: `${input.checkpoint.artifactType}_checkpoint_submitted`,
+    checkpointDigest: commitmentCheckpointDigest(input.checkpoint),
+  }),
   transformTaskTransport = (transport) => transport,
 } = {}) {
   const fixture = await buildV2Fixture();
@@ -89,6 +97,7 @@ async function setup(t, {
   const bridges = {};
   const completionHandlers = {};
   const activationCalls = [];
+  const checkpointCalls = [];
   for (const role of ["initiator", "responder"]) {
     const completionRecorder = Object.freeze({
       setCompletionHandler(handler) {
@@ -115,9 +124,13 @@ async function setup(t, {
       nowMs: () => NOW_MS,
       role,
       sessionId: SESSION_ID,
+      submitCheckpoint: async (input) => {
+        checkpointCalls.push({ ...input, observedMessages: channel.publicEvidence().messages.length });
+        return transformCheckpointSubmission(input, role);
+      },
     });
   }
-  return { activationCalls, authorities, bridges, channel, completionHandlers, fixture, invitationCalls };
+  return { activationCalls, authorities, bridges, channel, checkpointCalls, completionHandlers, fixture, invitationCalls };
 }
 
 function lifecycleStep(role) {
@@ -206,11 +219,11 @@ function completion({ envelope, request, step, role }) {
 }
 
 test("party-local bridges deliver invitation before signer readiness, then proposal and acceptance with additive checkpoints", async (t) => {
-  const { activationCalls, bridges, channel, completionHandlers, fixture, invitationCalls } = await setup(t);
+  const { activationCalls, bridges, channel, checkpointCalls, completionHandlers, fixture, invitationCalls } = await setup(t);
   const invitation = "opaque.responder.invitation";
   await bridges.initiator.observeToolResult({
     toolName: "agent_handshake_invite",
-    result: { responderInvitation: invitation },
+    result: { responderInvitation: invitation, roleAccess: ROLE_ACCESS.initiator },
   });
   assert.equal(invitationCalls.length, 1);
   assert.equal(invitationCalls[0].invitation, invitation);
@@ -220,7 +233,7 @@ test("party-local bridges deliver invitation before signer readiness, then propo
     const step = lifecycleStep(role);
     await bridges[role].observeToolResult({
       toolName: "agent_handshake_next",
-      result: { structuredContent: { localAction: { helperStep: step } } },
+      result: { structuredContent: { localAction: { helperStep: step }, roleAccess: ROLE_ACCESS[role] } },
     });
     assert.deepEqual(await completionHandlers[role](lifecycleCompletion(role, step)), { accepted: true });
   }
@@ -234,7 +247,7 @@ test("party-local bridges deliver invitation before signer readiness, then propo
   });
   await bridges.initiator.observeToolResult({
     toolName: "agent_handshake_next",
-    result: { structuredContent: { localAction: { helperStep: proposal.step } } },
+    result: { structuredContent: { localAction: { helperStep: proposal.step }, roleAccess: ROLE_ACCESS.initiator } },
   });
   const proposalCompletion = await completionHandlers.initiator(completion({
     envelope: fixture.proposalEnvelope,
@@ -252,7 +265,7 @@ test("party-local bridges deliver invitation before signer readiness, then propo
   });
   await bridges.responder.observeToolResult({
     toolName: "agent_handshake_next",
-    result: { content: [{ type: "text", text: JSON.stringify({ localAction: { helperStep: acceptance.step } }) }] },
+    result: { content: [{ type: "text", text: JSON.stringify({ localAction: { helperStep: acceptance.step }, roleAccess: ROLE_ACCESS.responder }) }] },
   });
   assert.deepEqual(await completionHandlers.responder(completion({
     envelope: fixture.acceptanceEnvelope,
@@ -264,6 +277,11 @@ test("party-local bridges deliver invitation before signer readiness, then propo
   const initiatorInbound = [await channel.receive({ role: "initiator" }), await channel.receive({ role: "initiator" })];
   assert.equal(initiatorInbound[0].body.payload.schema, "clockchain.agent-handshake-acceptance/v2");
   assert.equal(initiatorInbound[1].body.payload.schema, "clockchain.agent-handshake-commitment-checkpoint/v1");
+  assert.equal(checkpointCalls.length, 2);
+  assert.deepEqual(checkpointCalls.map((call) => [call.access, call.artifactSignatureHex, call.observedMessages]), [
+    [ROLE_ACCESS.initiator, fixture.proposalEnvelope.signature.value, 2],
+    [ROLE_ACCESS.responder, fixture.acceptanceEnvelope.signature.value, 4],
+  ]);
   for (const evidence of [bridges.initiator.publicEvidence(), bridges.responder.publicEvidence()]) {
     assert.equal(evidence.schema, "clockchain.direct-a2a-party-bridge-evidence/v1");
     assert.doesNotMatch(JSON.stringify(evidence), /opaque\.responder|helperStep|shellCommand|signatureHex|bytesGzip|body|payload|private/i);
@@ -305,7 +323,7 @@ test("checkpoint rejection sends no direct business artifact and releases no com
   const initStep = lifecycleStep("initiator");
   await bridges.initiator.observeToolResult({
     toolName: "agent_handshake_next",
-    result: { structuredContent: { localAction: { helperStep: initStep } } },
+    result: { structuredContent: { localAction: { helperStep: initStep }, roleAccess: ROLE_ACCESS.initiator } },
   });
   assert.deepEqual(await completionHandlers.initiator(lifecycleCompletion("initiator", initStep)), { accepted: true });
   const proposal = signingStep({
@@ -316,7 +334,7 @@ test("checkpoint rejection sends no direct business artifact and releases no com
   });
   await bridges.initiator.observeToolResult({
     toolName: "agent_handshake_next",
-    result: { structuredContent: { localAction: { helperStep: proposal.step } } },
+    result: { structuredContent: { localAction: { helperStep: proposal.step }, roleAccess: ROLE_ACCESS.initiator } },
   });
   await assert.rejects(
     completionHandlers.initiator(completion({
@@ -329,6 +347,36 @@ test("checkpoint rejection sends no direct business artifact and releases no com
   );
   assert.equal(channel.publicEvidence().messages.length, 0);
   assert.equal(bridges.initiator.publicEvidence().deliveries.length, 0);
+});
+
+test("private MCP checkpoint rejection keeps the helper completion unreleased", async (t) => {
+  const { bridges, channel, checkpointCalls, completionHandlers, fixture } = await setup(t, {
+    transformCheckpointSubmission: async () => { throw new Error("private access and checkpoint must not escape"); },
+  });
+  const proposal = signingStep({
+    envelope: fixture.proposalEnvelope,
+    operation: "proposal",
+    policyDigest: fixture.parties.initiator.policyDigest,
+    role: "initiator",
+  });
+  await bridges.initiator.observeToolResult({
+    toolName: "agent_handshake_next",
+    result: { structuredContent: { localAction: { helperStep: proposal.step }, roleAccess: ROLE_ACCESS.initiator } },
+  });
+  await assert.rejects(
+    completionHandlers.initiator(completion({
+      envelope: fixture.proposalEnvelope,
+      request: proposal.request,
+      role: "initiator",
+      step: proposal.step,
+    })),
+    /Direct A2A party bridge failed safely/,
+  );
+  assert.equal(checkpointCalls.length, 1);
+  assert.equal(checkpointCalls[0].observedMessages, 2);
+  assert.equal(channel.publicEvidence().messages.length, 2);
+  assert.equal(bridges.initiator.publicEvidence().deliveries.length, 0);
+  assert.doesNotMatch(JSON.stringify(bridges.initiator.publicEvidence()), /ccra_|signature|checkpoint.*payload/i);
 });
 
 test("identity and evidence signing completions remain local and do not require an active A2A channel", async (t) => {
@@ -352,7 +400,7 @@ test("identity and evidence signing completions remain local and do not require 
   };
   await bridges.initiator.observeToolResult({
     toolName: "agent_handshake_next",
-    result: { structuredContent: { localAction: { helperStep: step } } },
+    result: { structuredContent: { localAction: { helperStep: step }, roleAccess: ROLE_ACCESS.initiator } },
   });
   const localCompletion = completion({ envelope: fixture.proposalEnvelope, request, role: "initiator", step });
   assert.deepEqual(await completionHandlers.initiator(localCompletion), { accepted: true });
