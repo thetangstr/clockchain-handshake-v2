@@ -54,6 +54,16 @@ Success requires both clients to report the same session and certificate digest,
 
 The retained JSON contains only public evidence. Disposable homes, workspaces, caches, client configuration, helper state, local keys, role capabilities, invitations, transcripts, and raw stdout/stderr are removed on success and failure.
 
+## Verified Phase 1 production proof
+
+The retained sanitized success artifact is [phase1-production-canary-2026-08-11.json](evidence/supervised-fresh-agent-mechanics-proof/phase1-production-canary-2026-08-11.json). Verify it offline with:
+
+```bash
+node scripts/verify-run.mjs docs/evidence/supervised-fresh-agent-mechanics-proof/phase1-production-canary-2026-08-11.json
+```
+
+The verified session used Codex Terra as Initiator and Claude Sonnet as Responder. It produced distinct fresh Sepolia ERC-8004 identities `9540` and `9541`, three shared receipt ids, one shared closing-certificate digest, `certificateVerified: true`, `externalBusinessActionPerformed: false`, and completed disposable-state cleanup. This is the Phase 1 local-harness proof; it is not yet the isolated Fargate or direct-A2A mechanics proof required by later phases.
+
 ## Known Codex boundary
 
 Codex `workspace-write` isolates the fresh workspace but does not promise literal per-command pattern enforcement. The helper itself therefore accepts only six fixed operations, exact base64url payloads, a descendant state directory, an immutable release URL, and digest verification. This limitation is recorded; it is not represented as a stronger sandbox guarantee.

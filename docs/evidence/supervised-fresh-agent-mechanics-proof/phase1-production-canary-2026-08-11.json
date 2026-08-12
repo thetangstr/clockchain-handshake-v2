@@ -1,0 +1,120 @@
+{
+  "schema": "clockchain.fresh-agent-canary-attempt/v1",
+  "attemptId": "b2b656e0-c4c1-4c1f-8a4b-ca5558614904",
+  "outcome": "success",
+  "result": {
+    "schema": "clockchain.fresh-agent-canary-evidence/v1",
+    "runId": "22a76db7-40e8-4653-9afc-1848302dc088",
+    "release": {
+      "manifestDigest": "fa3c408a3739227b5bdb71486b4d291b8f4dffdb0d1f2fa79dd59644ba5e09ad",
+      "hostRoots": [
+        "da2771c36bf2298525d2bbd8351b6122bb67115e9979624e8bb56537bcf71ed8"
+      ]
+    },
+    "clients": {
+      "initiator": "codex",
+      "responder": "claude"
+    },
+    "roles": {
+      "initiator": {
+        "address": "0x36bef8d4dae618637e37e469ce498ae04274e41e",
+        "certificateDigest": "60cc752afcc2e2017008a4eedc28858dcdfbe4fed958401cc4917ddf12cf64a8",
+        "certificateVerified": true,
+        "erc8004": {
+          "agentId": "9540",
+          "chainId": "eip155:11155111",
+          "registryAddress": "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+          "reference": "eip155:11155111:0x8004a818bfb912233c491871b3d84c89a494bd9e:9540",
+          "registrationTx": "0x6339deba369a769586ac2856455d57de8473dd6cf17af53a863d5fd48afab539",
+          "registrationBlock": "11469805"
+        },
+        "externalBusinessActionPerformed": false,
+        "policyDigest": "dd8b6ab768e6be24bedd4a33d94793ac615bf622891c4a9ccff28c8b56d34e54",
+        "receiptIds": [
+          "021ea7dd-50e6-4aea-801f-7c5a82f79f1e",
+          "fd7b43be-0f6a-4062-a7f9-03e8a477d104",
+          "1a3fba1d-84d8-49ac-a34c-86f51df9d1f5"
+        ],
+        "role": "initiator",
+        "sessionId": "39c961f2-d675-4e72-9892-6c9278dd7039"
+      },
+      "responder": {
+        "address": "0xfea068f89af4087e3c86e5ae4d994cfb1e9c1531",
+        "certificateDigest": "60cc752afcc2e2017008a4eedc28858dcdfbe4fed958401cc4917ddf12cf64a8",
+        "certificateVerified": true,
+        "erc8004": {
+          "agentId": "9541",
+          "chainId": "eip155:11155111",
+          "registryAddress": "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+          "reference": "eip155:11155111:0x8004a818bfb912233c491871b3d84c89a494bd9e:9541",
+          "registrationTx": "0xf6fca2b0af3bd0b69f4fcb2cf7395dd30db2821ea00b7cde541c0910f27b8018",
+          "registrationBlock": "11469806"
+        },
+        "externalBusinessActionPerformed": false,
+        "policyDigest": "13954adde204c0fefd2fbddb33e5078023ad4ce492108b248de7c5f3858da1c1",
+        "receiptIds": [
+          "021ea7dd-50e6-4aea-801f-7c5a82f79f1e",
+          "fd7b43be-0f6a-4062-a7f9-03e8a477d104",
+          "1a3fba1d-84d8-49ac-a34c-86f51df9d1f5"
+        ],
+        "role": "responder",
+        "sessionId": "39c961f2-d675-4e72-9892-6c9278dd7039"
+      }
+    },
+    "certificateVerified": true,
+    "binding": {
+      "certificateDigest": "60cc752afcc2e2017008a4eedc28858dcdfbe4fed958401cc4917ddf12cf64a8",
+      "hostRootFingerprint": "da2771c36bf2298525d2bbd8351b6122bb67115e9979624e8bb56537bcf71ed8",
+      "hostSessionKeyCertificateDigest": "ab67cee102e9f529780ca2b7511060cc35da52d423c0da579fa939b633d0313a",
+      "repositorySha": "ef654288ed4a8461245bdac33f6cbb5c59dc5578",
+      "sessionDeadlineMs": 1786496586113
+    },
+    "monitor": {
+      "certificate": {
+        "digest": "60cc752afcc2e2017008a4eedc28858dcdfbe4fed958401cc4917ddf12cf64a8",
+        "issuedAtMs": 1786496242414,
+        "outcome": "VERIFIED"
+      },
+      "checker": {
+        "stage": "VERIFIED",
+        "lastSeenMs": 1786496242414
+      },
+      "hostTrust": {
+        "rootKid": "root-2026-08",
+        "rootFingerprint": "da2771c36bf2298525d2bbd8351b6122bb67115e9979624e8bb56537bcf71ed8",
+        "sessionPublicKey": "eGKm3GRLnoAAoSxyxjCWtixn8VO1ZcQq/ZitSyQC3s8=",
+        "sessionKeyCertificateDigest": "ab67cee102e9f529780ca2b7511060cc35da52d423c0da579fa939b633d0313a"
+      },
+      "receipts": {
+        "proposal": {
+          "blockHeight": "3405572",
+          "blockTimeRaw": "2026-08-12T00:56:54.669473596Z",
+          "digest": "e2aca8a4eee7a8a0083c12328bfdc7ec327ec93a74f26c4a477703ad362db0d3",
+          "explorerUrl": "https://clockchain.network/ledger/021ea7dd-50e6-4aea-801f-7c5a82f79f1e",
+          "kind": "proposal",
+          "ledgerId": "021ea7dd-50e6-4aea-801f-7c5a82f79f1e"
+        },
+        "acceptance": {
+          "blockHeight": "3405575",
+          "blockTimeRaw": "2026-08-12T00:56:57.744085645Z",
+          "digest": "c8ca05c3a3072c6d05c96d819eb033e4419341f7a841c6961625f21138fc2558",
+          "explorerUrl": "https://clockchain.network/ledger/fd7b43be-0f6a-4062-a7f9-03e8a477d104",
+          "kind": "acceptance",
+          "ledgerId": "fd7b43be-0f6a-4062-a7f9-03e8a477d104"
+        },
+        "acknowledgment": {
+          "blockHeight": "3405580",
+          "blockTimeRaw": "2026-08-12T00:57:02.864288748Z",
+          "digest": "31722aaaacd88d61d544e079c8b0984a0731280cc44002bff74386b15c132d9d",
+          "explorerUrl": "https://clockchain.network/ledger/1a3fba1d-84d8-49ac-a34c-86f51df9d1f5",
+          "kind": "acknowledgment",
+          "ledgerId": "1a3fba1d-84d8-49ac-a34c-86f51df9d1f5"
+        }
+      },
+      "sessionId": "39c961f2-d675-4e72-9892-6c9278dd7039"
+    },
+    "cleanup": {
+      "completed": true
+    }
+  }
+}
