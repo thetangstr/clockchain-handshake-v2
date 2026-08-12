@@ -181,6 +181,13 @@ test("Hermes native adapter rejects mandate smuggling before transport while all
     { reference: "NS-1847", nested: { cwd: "/workspace" } },
     { reference: "NS-1847", nested: { home: "~/state" } },
     { reference: "NS-1847", nested: { publicStatement: "C:\\Users\\secret\\file" } },
+    { reference: "NS-1847", statement: "see /Users/alice/secret for details" },
+    { reference: "NS-1847", statement: "see /private/tmp/secret for details" },
+    { reference: "NS-1847", statement: "see /tmp/secret for details" },
+    { reference: "NS-1847", statement: "see /workspace/run for details" },
+    { reference: "NS-1847", statement: "see /custom/root for details" },
+    { reference: "NS-1847", statement: "see ~/secret for details" },
+    { reference: "NS-1847", statement: "see C:\\Users\\alice\\secret for details" },
   ]) {
     const calls = [];
     const adapter = createHermesNativeHarnessAdapter({
@@ -212,6 +219,7 @@ test("Hermes native adapter rejects mandate smuggling before transport while all
       terms: {
         statement: "Verify the Clockchain mechanics proof.",
         evidenceUrl: "https://example.test/public",
+        ordinarySlashProse: "proposal / acceptance",
       },
     },
     mcpEndpoint: MCP_ENDPOINT,
