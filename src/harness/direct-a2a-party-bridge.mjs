@@ -136,11 +136,19 @@ function signingRequestFromStep(step) {
     "approvalCommand", "commandLength", "commandSha256", "operation", "role", "sessionId", "shellCommand",
   ], ["policyDigest"]);
   if (
-    item.operation !== "sign" || !ROLES.includes(item.role) || !UUID.test(item.sessionId) ||
+    !ROLES.includes(item.role) || !UUID.test(item.sessionId) ||
     !DIGEST.test(item.commandSha256) || item.approvalCommand !== `clockchain-agent-authorize ${item.commandSha256}` ||
     typeof item.shellCommand !== "string" || item.commandLength !== Buffer.byteLength(item.shellCommand) ||
     createHash("sha256").update(item.shellCommand).digest("hex") !== item.commandSha256
   ) fail();
+  if (item.operation !== "sign") {
+    return Object.freeze({
+      commandSha256: item.commandSha256,
+      direct: false,
+      operation: item.operation,
+      requestDigest: null,
+    });
+  }
   const match = item.shellCommand.match(/--payload-base64url\s+([A-Za-z0-9_-]+)(?:\s|$)/);
   if (match === null) fail();
   const raw = Buffer.from(match[1], "base64url");
@@ -149,13 +157,23 @@ function signingRequestFromStep(step) {
   try { request = JSON.parse(raw.toString("utf8")); } catch { fail(); }
   request = publicClone(request);
   if (
-    request.schema !== REQUEST_SCHEMA || !["proposal", "acceptance"].includes(request.operation) ||
+    request.schema !== REQUEST_SCHEMA || typeof request.operation !== "string" || request.operation.length === 0 ||
     request.role !== item.role || request.sessionId !== item.sessionId ||
     !DIGEST.test(request.bytesSha256) || !DIGEST.test(request.policyDigest) ||
     typeof request.bytesGzipBase64Url !== "string"
   ) fail();
+  if (!["proposal", "acceptance"].includes(request.operation)) {
+    return Object.freeze({
+      commandSha256: item.commandSha256,
+      direct: false,
+      operation: item.operation,
+      requestDigest: createHash("sha256").update(raw).digest("hex"),
+    });
+  }
   return Object.freeze({
     commandSha256: item.commandSha256,
+    direct: true,
+    operation: item.operation,
     request,
     requestDigest: createHash("sha256").update(raw).digest("hex"),
   });
@@ -235,27 +253,46 @@ function reconstructInbound(message, schema) {
 export function createDirectA2APartyBridge(optionsInput = {}) {
   try {
     const options = snapshot(optionsInput, [
-      "authority", "cards", "invitationTransport", "nowMs", "role", "sessionId", "taskTransport",
+      "activateSignedChannel", "completionRecorder", "invitationTransport", "nowMs", "role", "sessionId",
     ]);
-    if (!ROLES.includes(options.role) || !UUID.test(options.sessionId) || typeof options.nowMs !== "function") fail();
-    const authority = projectMethods(options.authority, [
-      "destroy", "publicBinding", "signAcceptanceCheckpoint", "signInitiatorCard", "signProposalCheckpoint", "signResponderCard",
-    ]);
-    const signCapability = capability(options.authority);
+    if (
+      !ROLES.includes(options.role) || !UUID.test(options.sessionId) || typeof options.nowMs !== "function" ||
+      typeof options.activateSignedChannel !== "function"
+    ) fail();
+    const completionRecorder = projectMethods(options.completionRecorder, ["setCompletionHandler"]);
     const invitationTransport = projectMethods(options.invitationTransport, ["sendInvitation"]);
-    const taskTransport = projectMethods(options.taskTransport, ["publicEvidence", "receive", "sendEnvelope"]);
-    const cardsInput = snapshot(options.cards, ["initiator", "responder"]);
-    const cards = Object.freeze({ initiator: publicClone(cardsInput.initiator), responder: publicClone(cardsInput.responder) });
-    const binding = authority.publicBinding();
-    if (binding.sessionId !== options.sessionId || binding.role !== options.role) fail();
     const retained = new Map();
     const deliveries = [];
     const invitations = [];
+    let signedChannel = null;
+    let signedChannelPromise = null;
     let destroyed = false;
 
     function active() { if (destroyed) fail(); }
 
+    async function activate() {
+      active();
+      if (signedChannelPromise === null) {
+        signedChannelPromise = (async () => {
+          const activated = snapshot(await options.activateSignedChannel(), ["authority", "cards", "taskTransport"]);
+          const authority = projectMethods(activated.authority, [
+            "destroy", "publicBinding", "signAcceptanceCheckpoint", "signInitiatorCard", "signProposalCheckpoint", "signResponderCard",
+          ]);
+          const signCapability = capability(activated.authority);
+          const taskTransport = projectMethods(activated.taskTransport, ["close", "publicEvidence", "receive", "sendEnvelope"]);
+          const cardsInput = snapshot(activated.cards, ["initiator", "responder"]);
+          const cards = Object.freeze({ initiator: publicClone(cardsInput.initiator), responder: publicClone(cardsInput.responder) });
+          const binding = authority.publicBinding();
+          if (binding.sessionId !== options.sessionId || binding.role !== options.role) fail();
+          signedChannel = Object.freeze({ authority, cards, signCapability, taskTransport });
+          return signedChannel;
+        })();
+      }
+      return await signedChannelPromise;
+    }
+
     async function sendArtifact({ artifact, artifactType, expiresAtMs, previousMessageDigest, sequence }) {
+      const { cards, signCapability, taskTransport } = await activate();
       const now = options.nowMs();
       const deliveryExpiry = Math.min(
         Number(expiresAtMs),
@@ -285,6 +322,7 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
     }
 
     async function takeProposalContext() {
+      const { taskTransport } = await activate();
       const first = await taskTransport.receive();
       const second = await taskTransport.receive();
       if (first === null || second === null || first.artifactType !== "proposal" || second.artifactType !== "proposal") fail();
@@ -301,24 +339,28 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
           "actionId", "commandSha256", "operation", "requestDigest", "result", "role", "sessionId",
         ]);
         if (
-          completion.operation !== "sign" || completion.role !== options.role || completion.sessionId !== options.sessionId ||
+          typeof completion.operation !== "string" || completion.operation.length === 0 ||
+          completion.role !== options.role || completion.sessionId !== options.sessionId ||
           !DIGEST.test(completion.commandSha256) || !DIGEST.test(completion.requestDigest)
         ) fail();
         const expected = retained.get(completion.commandSha256);
-        if (!expected || expected.state !== "pending" || expected.requestDigest !== completion.requestDigest) fail();
+        if (
+          expected === undefined || expected.state !== "pending" || expected.operation !== completion.operation ||
+          (expected.requestDigest !== null && expected.requestDigest !== completion.requestDigest)
+        ) fail();
         expected.state = "active";
+        if (expected.direct !== true) {
+          expected.state = "consumed";
+          if (completion.operation === "init") void activate().catch(() => {});
+          return Object.freeze({ accepted: true });
+        }
+        if (completion.operation !== "sign") fail();
         const result = helperResult(completion.result, expected);
         const signed = signedArtifact(expected.request, result);
         const artifactType = expected.request.operation;
         let proposalContext = null;
         if (artifactType === "acceptance") proposalContext = await takeProposalContext();
-        const first = await sendArtifact({
-          artifact: signed.artifact,
-          artifactType,
-          expiresAtMs: signed.envelope.payload.expiresAtMs,
-          previousMessageDigest: null,
-          sequence: "1",
-        });
+        const { authority } = await activate();
         const checkpoint = artifactType === "proposal"
           ? await authority.signProposalCheckpoint({ proposalEnvelope: signed.envelope })
           : await authority.signAcceptanceCheckpoint({
@@ -326,6 +368,13 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
               proposalCheckpoint: proposalContext.proposalCheckpoint,
               proposalEnvelope: proposalContext.proposalEnvelope,
             });
+        const first = await sendArtifact({
+          artifact: signed.artifact,
+          artifactType,
+          expiresAtMs: signed.envelope.payload.expiresAtMs,
+          previousMessageDigest: null,
+          sequence: "1",
+        });
         const second = await sendArtifact({
           artifact: checkpointArtifact(checkpoint),
           artifactType,
@@ -345,7 +394,7 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
       } catch (error) { sanitize(error); }
     }
 
-    return Object.freeze({
+    const bridge = Object.freeze({
       async observeToolResult(input) {
         try {
           active();
@@ -367,15 +416,17 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
           if (steps.length > 1) fail();
           if (steps.length === 1) {
             const expected = signingRequestFromStep(steps[0]);
-            if (expected.request.sessionId !== options.sessionId || expected.request.role !== options.role) fail();
+            if (expected.direct === true && (expected.request.sessionId !== options.sessionId || expected.request.role !== options.role)) fail();
             const prior = retained.get(expected.commandSha256);
-            if (prior !== undefined && prior.requestDigest !== expected.requestDigest) fail();
+            if (
+              prior !== undefined &&
+              (prior.requestDigest !== expected.requestDigest || prior.operation !== expected.operation || prior.direct !== expected.direct)
+            ) fail();
             retained.set(expected.commandSha256, { ...expected, state: prior?.state ?? "pending" });
           }
           return Object.freeze({ observed: true, toolResultDigest: createHash("sha256").update(a2aCanonicalBytes(result)).digest("hex") });
         } catch (error) { sanitize(error); }
       },
-      completionHandler: handleCompletion,
       publicEvidence() {
         active();
         return Object.freeze({
@@ -383,8 +434,8 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
           sessionId: options.sessionId,
           role: options.role,
           cardDigests: Object.freeze({
-            initiator: a2aAgentCardDigest(cards.initiator),
-            responder: a2aAgentCardDigest(cards.responder),
+            initiator: signedChannel === null ? null : a2aAgentCardDigest(signedChannel.cards.initiator),
+            responder: signedChannel === null ? null : a2aAgentCardDigest(signedChannel.cards.responder),
           }),
           invitations: Object.freeze(invitations.map((entry) => Object.freeze({ ...entry }))),
           deliveries: Object.freeze(deliveries.map((entry) => Object.freeze({ ...entry, messageDigests: Object.freeze([...entry.messageDigests]) }))),
@@ -393,8 +444,17 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
       async destroy() {
         destroyed = true;
         retained.clear();
+        if (signedChannelPromise !== null) {
+          try { await signedChannelPromise; } catch {}
+        }
+        if (signedChannel !== null) {
+          await signedChannel.taskTransport.close();
+          await signedChannel.authority.destroy();
+        }
         return Object.freeze({ destroyed: true });
       },
     });
+    completionRecorder.setCompletionHandler(handleCompletion);
+    return bridge;
   } catch (error) { sanitize(error); }
 }
