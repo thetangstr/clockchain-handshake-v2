@@ -341,7 +341,7 @@ export async function runFargateLiveMechanicsProof(optionsInput) {
       runtimeEvidenceInputs,
       cleanupAbsence: cleaned.absence,
     });
-    await finalizeVerifiedEvidence(fullEvidence);
+    const publicProof = await finalizeVerifiedEvidence(fullEvidence);
     const evidence = Object.freeze({
       schema: "clockchain.fargate-live-controller-evidence/v1",
       runId: plan.runId,
@@ -354,7 +354,7 @@ export async function runFargateLiveMechanicsProof(optionsInput) {
       publicEvents: reducePublicEvents(events),
       cleanupAbsenceDigest: sha256Hex(cleaned.absence),
     });
-    await retainEvidence(evidence);
+    await retainEvidence(Object.freeze({ controllerEvidence: evidence, publicProof }));
     return Object.freeze({ schema: FARGATE_LIVE_RESULT_SCHEMA, status: FARGATE_LIVE_STATUS_SUCCEEDED, evidence });
   } catch (error) {
     if (stackCreated || reconcile.stack) {

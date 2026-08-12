@@ -23,7 +23,8 @@ import {
   collectFargateCleanupProofInputs,
   collectFargateLiveInfraProofInputs,
   collectFargateRuntimeProofInputs,
-  retainFargatePublicProofEvidence,
+  buildFargatePublicProofEvidence,
+  retainFargateSuccessEvidence,
 } from "../scripts/run-mechanics-proof-fargate.mjs";
 
 const RUN_ID = "11111111-2222-4333-8444-555555555555";
@@ -595,7 +596,11 @@ test("cloud evidence rejects model prose, forged runtime claims, missing cleanup
 test("runner retains only canonical public cloud proof after reducer validation", async () => {
   const root = await mkdtemp(join(tmpdir(), "mechanics-proof-cloud-"));
   const dir = join(root, "mechanics-proof-public-proof");
-  const proof = await retainFargatePublicProofEvidence(dir, await cloudInput());
+  const proof = buildFargatePublicProofEvidence(await cloudInput());
+  await retainFargateSuccessEvidence(dir, {
+    controllerEvidence: { schema: "clockchain.fargate-live-controller-evidence/v1" },
+    publicProof: proof,
+  });
   const retained = JSON.parse(await readFile(join(dir, "public-proof.json"), "utf8"));
 
   assert.equal(retained.schema, MECHANICS_PROOF_CLOUD_EVIDENCE_SCHEMA);
@@ -610,28 +615,37 @@ test("runner collector gathers exact raw proof inputs before cleanup and raw abs
   const base = await cloudInput();
   const calls = [];
   const controlPlane = {
-    async callAws(argv) {
-      calls.push(argv);
-      const key = argv.slice(0, 2).join(" ");
-      if (key === "ecs describe-tasks") return base.runtimeInputs.initiator.aws.describeTasks.tasks[0].taskArn === argv.at(-5)
+    async describeTasks({ taskArns }) {
+      calls.push(["describeTasks", taskArns]);
+      return base.runtimeInputs.initiator.aws.describeTasks.tasks[0].taskArn === taskArns[0]
         ? base.runtimeInputs.initiator.aws.describeTasks
         : base.runtimeInputs.responder.aws.describeTasks;
-      if (key === "ecs describe-task-definition") return argv.join(" ").includes("initiator:1")
+    },
+    async describeTaskDefinition({ taskDefinitionArn }) {
+      calls.push(["describeTaskDefinition", taskDefinitionArn]);
+      return taskDefinitionArn.includes("initiator:1")
         ? base.runtimeInputs.initiator.aws.taskDefinition
         : base.runtimeInputs.responder.aws.taskDefinition;
-      if (key === "ec2 describe-network-interfaces") {
-        return { NetworkInterfaces: [argv.includes("eni-initiator") ? base.runtimeInputs.initiator.aws.networkInterface : base.runtimeInputs.responder.aws.networkInterface] };
-      }
-      if (key === "ec2 describe-subnets") return argv.includes("subnet-private-initiator")
+    },
+    async describeNetworkInterfaces({ networkInterfaceIds }) {
+      calls.push(["describeNetworkInterfaces", networkInterfaceIds]);
+      return { NetworkInterfaces: [networkInterfaceIds.includes("eni-initiator") ? base.runtimeInputs.initiator.aws.networkInterface : base.runtimeInputs.responder.aws.networkInterface] };
+    },
+    async describeSubnetsByIds({ subnetIds }) {
+      calls.push(["describeSubnetsByIds", subnetIds]);
+      return subnetIds.includes("subnet-private-initiator")
         ? { Subnets: [base.runtimeInputs.initiator.aws.describeSubnet.Subnet] }
         : { Subnets: [base.runtimeInputs.responder.aws.describeSubnet.Subnet] };
-      if (key === "ec2 describe-security-groups") {
-        const role = argv.includes(rolePlan(base.runtimeInputs.initiator.plan, "initiator").securityGroupId) ? "initiator" : "responder";
+    },
+    async describeSecurityGroups({ groupIds }) {
+      calls.push(["describeSecurityGroups", groupIds]);
+      const role = groupIds.includes(rolePlan(base.runtimeInputs.initiator.plan, "initiator").securityGroupId) ? "initiator" : "responder";
         const sg = rolePlan(base.runtimeInputs[role].plan, role).securityGroupId;
-        return { SecurityGroups: [base.runtimeInputs[role].aws.securityGroups[sg]] };
-      }
-      if (key === "cloudtrail lookup-events") {
-        return {
+      return { SecurityGroups: [base.runtimeInputs[role].aws.securityGroups[sg]] };
+    },
+    async lookupEcsCloudTrailEvents({ startTime, endTime }) {
+      calls.push(["lookupEcsCloudTrailEvents", { startTime, endTime }]);
+      return {
           Events: [
             { eventName: "RunTask", eventSource: "ecs.amazonaws.com", eventTime: "2026-08-11T11:59:00.000Z", account: "123456789012", taskArn: "arn:aws:ecs:us-west-2:123456789012:task/clockchain-mechanics-proof/unrelated", requestParameters: { startedBy: "other-run" } },
             ...base.runtimeInputs.initiator.aws.cloudTrailEvents,
@@ -648,16 +662,23 @@ test("runner collector gathers exact raw proof inputs before cleanup and raw abs
                 : { task: { taskArn: event.taskArn } },
             }),
           })),
-        };
-      }
-      if (key === "logs filter-log-events") return argv.join(" ").includes("/initiator")
+      };
+    },
+    async filterLogEvents({ logGroupName }) {
+      calls.push(["filterLogEvents", logGroupName]);
+      return logGroupName.includes("/initiator")
         ? { events: base.runtimeInputs.initiator.aws.cloudWatchLogs[0].events }
         : { events: base.runtimeInputs.responder.aws.cloudWatchLogs[0].events };
-      if (key === "sqs list-queues") return base.cleanupResponses.listQueues;
-      if (key === "ecs list-task-definitions") return argv.includes("ACTIVE")
+    },
+    async listQueues({ queueNamePrefix }) {
+      calls.push(["listQueues", queueNamePrefix]);
+      return base.cleanupResponses.listQueues;
+    },
+    async listTaskDefinitions({ status }) {
+      calls.push(["listTaskDefinitions", status]);
+      return status === "ACTIVE"
         ? base.cleanupResponses.listActiveTaskDefinitions
         : base.cleanupResponses.listInactiveTaskDefinitions;
-      throw new Error(`unexpected ${argv.join(" ")}`);
     },
   };
 
@@ -720,13 +741,10 @@ test("runner collector gathers exact raw proof inputs before cleanup and raw abs
   assert.equal(collected.runtimeInputs.responder.aws.cloudWatchLogs[0].events.length, 6);
   assert.equal(collected.cleanupResponses.confirmAbsence.absent, true);
   assert.doesNotThrow(() => buildMechanicsProofCloudEvidence(collected));
-  assert.equal(calls.some((argv) => argv[0] === "logs" && argv[1] === "filter-log-events"), true);
-  assert.equal(calls.some((argv) => argv[0] === "sqs" && argv[1] === "list-queues"), true);
-  const cloudTrailCalls = calls.filter((argv) => argv[0] === "cloudtrail" && argv[1] === "lookup-events");
+  assert.equal(calls.some(([method]) => method === "filterLogEvents"), true);
+  assert.equal(calls.some(([method]) => method === "listQueues"), true);
+  const cloudTrailCalls = calls.filter(([method]) => method === "lookupEcsCloudTrailEvents");
   assert.equal(cloudTrailCalls.length, 1);
-  assert.equal(cloudTrailCalls[0].includes("AttributeKey=EventSource,AttributeValue=ecs.amazonaws.com"), true);
-  assert.equal(cloudTrailCalls[0].includes("--start-time"), true);
-  assert.equal(cloudTrailCalls[0].includes("--end-time"), true);
-  assert.equal(cloudTrailCalls[0].includes("--no-paginate"), true);
-  assert.equal(cloudTrailCalls[0].includes("--max-items"), false);
+  assert.equal(typeof cloudTrailCalls[0][1].startTime, "string");
+  assert.equal(typeof cloudTrailCalls[0][1].endTime, "string");
 });

@@ -33,7 +33,7 @@ test("AWS CLI control plane rejects unexpected commands, non-json, stderr, timeo
     region: "us-west-2",
     executor: async () => ({ stdout: "not-json", stderr: "", exitCode: 0 }),
   });
-  await assert.rejects(() => control.callAws(["sts", "get-caller-identity", "--region", "us-west-2", "--output", "json"]), /AWS CLI control-plane validation failed safely/);
+  await assert.rejects(() => control.getCallerIdentity(), /AWS CLI control-plane validation failed safely/);
 
   for (const executor of [
     async () => ({ stdout: "{}", stderr: "warning", exitCode: 0 }),
@@ -48,9 +48,9 @@ test("AWS CLI control plane rejects unexpected commands, non-json, stderr, timeo
   }
 
   const safe = createAwsCliControlPlane({ region: "us-west-2", executor: async () => ({ stdout: "{}", stderr: "", exitCode: 0 }) });
-  await assert.rejects(() => safe.callAws(["cloudformation", "delete-stack;rm", "--region", "us-west-2", "--output", "json"]), /AWS CLI control-plane validation failed safely/);
-  await assert.rejects(() => safe.callAws(["s3", "ls", "--region", "us-west-2", "--output", "json"]), /AWS CLI control-plane validation failed safely/);
-  await assert.rejects(() => safe.callAws(["sts", "get-caller-identity", "--region", "us-east-1", "--output", "json"]), /AWS CLI control-plane validation failed safely/);
+  assert.equal(safe.callAws, undefined, "raw AWS argv execution is not a public control-plane capability");
+  assert.throws(() => safe.deleteStack({ stackName: "clockchain-11111111-2222-4333-8444-555555555555;rm" }), /AWS CLI control-plane validation failed safely/);
+  assert.throws(() => createAwsCliControlPlane({ region: "us-east-1;profile", executor: async () => ({ stdout: "{}", stderr: "", exitCode: 0 }) }), /AWS CLI control-plane validation failed safely/);
   await assert.rejects(() => safe.getCallerIdentity(), /AWS CLI control-plane validation failed safely/);
 });
 
@@ -108,6 +108,15 @@ test("AWS CLI control plane has exact allowlisted argv shapes for Task 4 actions
   await control.runTask({ cluster: "cluster", taskDefinitionArn: "td", role: "initiator", networkConfiguration: { awsvpcConfiguration: { assignPublicIp: "DISABLED" } }, startedBy: "run" });
   await control.waitTasksRunning({ cluster: "cluster", taskArns: ["task-a", "task-b"] });
   await control.waitTasksStopped({ cluster: "cluster", taskArns: ["task-a", "task-b"] });
+  await control.describeTasks({ cluster: "cluster", taskArns: ["task-a"] });
+  await control.describeTaskDefinition({ taskDefinitionArn: "td" });
+  await control.describeNetworkInterfaces({ networkInterfaceIds: ["eni-1"] });
+  await control.describeSubnetsByIds({ subnetIds: ["subnet-1"] });
+  await control.describeSecurityGroups({ groupIds: ["sg-1"] });
+  await control.filterLogEvents({ logGroupName: "/clockchain/mechanics-proof/run/initiator" });
+  await control.lookupEcsCloudTrailEvents({ startTime: "2026-08-12T20:00:00.000Z", endTime: "2026-08-12T20:10:00.000Z" });
+  await control.listQueues({ queueNamePrefix: stackName });
+  await control.listTaskDefinitions({ familyPrefix: `${stackName}-`, status: "ACTIVE" });
   await control.stopTask({ cluster: "cluster", taskArn: "task-a", role: "initiator" });
   await control.deregisterTaskDefinition({ taskDefinitionArn: "td", role: "initiator" });
   await control.deleteStack({ stackName });
@@ -183,7 +192,8 @@ test("AWS CLI control plane accepts dollars only inside canonical template JSON 
 
   assert.throws(() => control.validateTemplate({ templateBody: "{\"z\":1,\"a\":2}" }), /AWS CLI control-plane validation failed safely/);
   await assert.rejects(() => control.createStack({ stackName, templateBody: "{}", parameters: [{ ParameterKey: "Bad", ParameterValue: "${not-template}" }], capabilities: ["CAPABILITY_NAMED_IAM"] }), /AWS CLI control-plane validation failed safely/);
-  await assert.rejects(() => control.callAws(["cloudformation", "delete-stack", "--stack-name", `${stackName}$`, "--region", "us-west-2", "--output", "json"]), /AWS CLI control-plane validation failed safely/);
+  assert.equal(control.callAws, undefined);
+  assert.throws(() => control.deleteStack({ stackName: `${stackName}$` }), /AWS CLI control-plane validation failed safely/);
 });
 
 test("AWS CLI control plane preserves CloudWatch event timestamps with terminal records", async () => {

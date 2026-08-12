@@ -233,10 +233,17 @@ test("production MCP gate reads response bodies through a capped stream and reje
 test("retained success evidence uses private exclusive directory and file modes", async () => {
   const root = await mkdtemp(join(tmpdir(), "mechanics-proof-test-"));
   const dir = join(root, "mechanics-proof-fargate");
-  await retainFargateSuccessEvidence(dir, { schema: "clockchain.fargate-live-controller-evidence/v1", ok: true });
+  const bundle = {
+    controllerEvidence: { schema: "clockchain.fargate-live-controller-evidence/v1", ok: true },
+    publicProof: { schema: "clockchain.mechanics-proof-cloud-evidence/v1", ok: true },
+  };
+  await retainFargateSuccessEvidence(dir, bundle);
   assert.equal((await stat(dir)).mode & 0o777, 0o700);
   assert.equal((await stat(join(dir, "controller-evidence.json"))).mode & 0o777, 0o600);
-  await assert.rejects(() => retainFargateSuccessEvidence(dir, { ok: true }), /Fargate mechanics proof runner failed safely/);
+  assert.equal((await stat(join(dir, "public-proof.json"))).mode & 0o777, 0o600);
+  await assert.rejects(() => retainFargateSuccessEvidence(dir, bundle), /Fargate mechanics proof runner failed safely/);
+  assert.deepEqual(JSON.parse(await readFile(join(dir, "controller-evidence.json"), "utf8")), bundle.controllerEvidence);
+  assert.deepEqual(JSON.parse(await readFile(join(dir, "public-proof.json"), "utf8")), bundle.publicProof);
 });
 
 test("retained success evidence rejects unsafe evidence paths", async () => {
@@ -253,6 +260,9 @@ test("retained success evidence rejects unsafe evidence paths", async () => {
     join(root, "mechanics-proof-permissive"),
     "/etc/mechanics-proof-fargate",
   ]) {
-    await assert.rejects(() => retainFargateSuccessEvidence(dir, { ok: true }), /Fargate mechanics proof runner failed safely/, dir);
+    await assert.rejects(() => retainFargateSuccessEvidence(dir, {
+      controllerEvidence: { ok: true },
+      publicProof: { ok: true },
+    }), /Fargate mechanics proof runner failed safely/, dir);
   }
 });

@@ -182,12 +182,63 @@ export function createAwsCliControlPlane(optionsInput = {}) {
   }
 
   return Object.freeze({
-    callAws,
     async getCallerIdentity() {
       const identity = await callAws(["sts", "get-caller-identity", "--region", region, "--output", "json"]);
       if (JSON.stringify(Object.keys(identity).sort()) !== JSON.stringify(["Account", "Arn", "UserId"])) fail();
       if (!/^[0-9]{12}$/.test(identity.Account) || typeof identity.Arn !== "string" || typeof identity.UserId !== "string") fail();
       return Object.freeze({ accountId: identity.Account, arn: identity.Arn, userId: identity.UserId });
+    },
+    describeTasks({ cluster, taskArns }) {
+      string(cluster);
+      if (!Array.isArray(taskArns) || taskArns.length < 1 || taskArns.length > 2) fail();
+      taskArns.forEach(string);
+      return callAws(["ecs", "describe-tasks", "--cluster", cluster, "--tasks", ...taskArns, "--region", region, "--output", "json"]);
+    },
+    describeTaskDefinition({ taskDefinitionArn }) {
+      string(taskDefinitionArn);
+      return callAws(["ecs", "describe-task-definition", "--task-definition", taskDefinitionArn, "--region", region, "--output", "json"]);
+    },
+    describeNetworkInterfaces({ networkInterfaceIds }) {
+      if (!Array.isArray(networkInterfaceIds) || networkInterfaceIds.length !== 1) fail();
+      networkInterfaceIds.forEach(string);
+      return callAws(["ec2", "describe-network-interfaces", "--network-interface-ids", ...networkInterfaceIds, "--region", region, "--output", "json"]);
+    },
+    describeSubnetsByIds({ subnetIds }) {
+      if (!Array.isArray(subnetIds) || subnetIds.length !== 1) fail();
+      subnetIds.forEach(string);
+      return callAws(["ec2", "describe-subnets", "--subnet-ids", ...subnetIds, "--region", region, "--output", "json"]);
+    },
+    describeSecurityGroups({ groupIds }) {
+      if (!Array.isArray(groupIds) || groupIds.length !== 1) fail();
+      groupIds.forEach(string);
+      return callAws(["ec2", "describe-security-groups", "--group-ids", ...groupIds, "--region", region, "--output", "json"]);
+    },
+    filterLogEvents({ logGroupName }) {
+      if (typeof logGroupName !== "string" || !logGroupName.startsWith("/clockchain/mechanics-proof/")) fail();
+      string(logGroupName);
+      return callAws(["logs", "filter-log-events", "--log-group-name", logGroupName, "--region", region, "--output", "json"]);
+    },
+    lookupEcsCloudTrailEvents({ startTime, endTime }) {
+      if (
+        typeof startTime !== "string" ||
+        typeof endTime !== "string" ||
+        new Date(startTime).toISOString() !== startTime ||
+        new Date(endTime).toISOString() !== endTime ||
+        Date.parse(startTime) >= Date.parse(endTime)
+      ) fail();
+      return callAws([
+        "cloudtrail", "lookup-events", "--lookup-attributes", "AttributeKey=EventSource,AttributeValue=ecs.amazonaws.com",
+        "--start-time", startTime, "--end-time", endTime, "--no-paginate", "--region", region, "--output", "json",
+      ]);
+    },
+    listQueues({ queueNamePrefix }) {
+      stackName(queueNamePrefix);
+      return callAws(["sqs", "list-queues", "--queue-name-prefix", queueNamePrefix, "--region", region, "--output", "json"]);
+    },
+    listTaskDefinitions({ familyPrefix, status }) {
+      if (typeof familyPrefix !== "string" || !familyPrefix.endsWith("-") || !STACK.test(familyPrefix.slice(0, -1))) fail();
+      if (!['ACTIVE', 'INACTIVE'].includes(status)) fail();
+      return callAws(["ecs", "list-task-definitions", "--family-prefix", familyPrefix, "--status", status, "--region", region, "--output", "json"]);
     },
     validateTemplate({ templateBody }) {
       templateJsonBody(templateBody);

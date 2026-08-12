@@ -195,9 +195,9 @@ test("live Fargate adapter runs exact lifecycle and starts both tasks before wai
     "wait-stack-delete", "confirm-absence",
   ]);
   assert.equal(retained.length, 1);
-  assert.equal(retained[0].stackResourceCount, 25);
-  assert.equal(Object.keys(retained[0].stackOutputBindings).length, 13);
-  assert.deepEqual(retained[0].publicEvents, [
+  assert.equal(retained[0].controllerEvidence.stackResourceCount, 25);
+  assert.equal(Object.keys(retained[0].controllerEvidence.stackOutputBindings).length, 13);
+  assert.deepEqual(retained[0].controllerEvidence.publicEvents, [
     { runId: RUN_ID, role: "initiator", state: "completed", timestamp: "2026-08-12T20:05:01.000Z", digests: {
       bridgeEvidenceDigest: "3".repeat(64),
       certificateDigest: "a".repeat(64),
@@ -213,8 +213,8 @@ test("live Fargate adapter runs exact lifecycle and starts both tasks before wai
       workloadAttestationDigest: "2".repeat(64),
     } },
   ]);
-  assert.equal(JSON.stringify(retained[0]).includes("directDelivery"), false);
-  assert.equal(JSON.stringify(retained[0]).includes("identity"), false);
+  assert.equal(JSON.stringify(retained[0].controllerEvidence).includes("directDelivery"), false);
+  assert.equal(JSON.stringify(retained[0].controllerEvidence).includes("identity"), false);
 });
 
 test("live Fargate adapter exposes full terminal evidence only to an in-memory finalizer after cleanup confirmation", async () => {
@@ -226,7 +226,7 @@ test("live Fargate adapter exposes full terminal evidence only to an in-memory f
     plan,
     controlPlane,
     mcpGate: async () => { controlPlane.calls.push("mcp-gate"); return { healthy: true, checkpointTool: true, endpoint: "https://mcp.clockchain.network/handshake/mcp" }; },
-    finalizeVerifiedEvidence: async (evidence) => { controlPlane.calls.push("finalize-evidence"); fullEvidence.push(evidence); },
+    finalizeVerifiedEvidence: async (evidence) => { controlPlane.calls.push("finalize-evidence"); fullEvidence.push(evidence); return { verified: true }; },
     retainEvidence: async (evidence) => { retained.push(evidence); },
   });
   assert.equal(result.status, "SUCCEEDED");
@@ -234,7 +234,8 @@ test("live Fargate adapter exposes full terminal evidence only to an in-memory f
   assert.equal(fullEvidence[0].terminalEvents[0].directDelivery.acknowledged, true);
   assert.deepEqual(fullEvidence[0].cleanupAbsence, { absent: true });
   assert.equal(controlPlane.calls.indexOf("confirm-absence") < controlPlane.calls.indexOf("finalize-evidence"), true);
-  assert.equal(JSON.stringify(retained[0].publicEvents).includes("directDelivery"), false);
+  assert.deepEqual(retained[0].publicProof, { verified: true });
+  assert.equal(JSON.stringify(retained[0].controllerEvidence.publicEvents).includes("directDelivery"), false);
 });
 
 test("live Fargate adapter collects runtime evidence after tasks stop and before destructive cleanup", async () => {
@@ -271,6 +272,7 @@ test("live Fargate adapter collects runtime evidence after tasks stop and before
     finalizeVerifiedEvidence: async (evidence) => {
       controlPlane.calls.push("finalize-evidence");
       finalized.push(evidence);
+      return { verified: true };
     },
     retainEvidence: async () => {},
   });
@@ -283,6 +285,28 @@ test("live Fargate adapter collects runtime evidence after tasks stop and before
   assert.equal(controlPlane.calls.indexOf("collect-runtime-evidence") < controlPlane.calls.indexOf("delete-stack"), true);
   assert.equal(controlPlane.calls.indexOf("confirm-absence") < controlPlane.calls.indexOf("finalize-evidence"), true);
   assert.equal(finalized[0].runtimeEvidenceInputs, collected);
+});
+
+test("live Fargate adapter publishes controller and public proof through one retention call", async () => {
+  const plan = await livePlan();
+  const controlPlane = fakeControlPlane(plan);
+  const calls = [];
+  const result = await runFargateLiveMechanicsProof({
+    plan,
+    controlPlane,
+    mcpGate: async () => ({ healthy: true, checkpointTool: true, endpoint: "https://mcp.clockchain.network/handshake/mcp" }),
+    finalizeVerifiedEvidence: async () => {
+      calls.push("build-public-proof");
+      return { schema: "clockchain.mechanics-proof-cloud-evidence/v1" };
+    },
+    retainEvidence: async (bundle) => {
+      calls.push("retain-bundle");
+      assert.equal(bundle.controllerEvidence.schema, "clockchain.fargate-live-controller-evidence/v1");
+      assert.equal(bundle.publicProof.schema, "clockchain.mechanics-proof-cloud-evidence/v1");
+    },
+  });
+  assert.equal(result.status, "SUCCEEDED");
+  assert.deepEqual(calls, ["build-public-proof", "retain-bundle"]);
 });
 
 test("live Fargate adapter cleans all resources when runtime evidence collection fails", async () => {

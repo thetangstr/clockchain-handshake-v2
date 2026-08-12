@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { fileURLToPath } from "node:url";
-import { chmod, lstat, mkdir, open, realpath, stat } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, open, realpath, stat, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -185,8 +185,8 @@ export async function checkProductionMcpGate(options = {}) {
   return Object.freeze({ healthy: true, checkpointTool: true, endpoint: url, toolNames: Object.freeze(names) });
 }
 
-async function retainEvidenceFile(evidenceDir, evidence) {
-  const handle = await open(join(evidenceDir, "controller-evidence.json"), "wx", 0o600);
+async function retainEvidenceFile(path, evidence) {
+  const handle = await open(path, "wx", 0o600);
   try {
     await handle.writeFile(`${JSON.stringify(evidence)}\n`, "utf8");
   } finally {
@@ -194,35 +194,58 @@ async function retainEvidenceFile(evidenceDir, evidence) {
   }
 }
 
-async function retainPublicProofFile(evidenceDir, evidence) {
-  const handle = await open(join(evidenceDir, "public-proof.json"), "wx", 0o600);
+async function unlinkIfPresent(path) {
   try {
-    await handle.writeFile(`${JSON.stringify(evidence)}\n`, "utf8");
-  } finally {
-    await handle.close();
-  }
-}
-
-export async function retainFargateSuccessEvidence(evidenceDir, evidence) {
-  try {
-    await reserveFargateEvidenceDir(evidenceDir);
-    await retainEvidenceFile(evidenceDir, evidence);
-    await chmod(join(evidenceDir, "controller-evidence.json"), 0o600);
-    if (((await stat(join(evidenceDir, "controller-evidence.json"))).mode & 0o777) !== 0o600) fail();
+    await unlink(path);
   } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+}
+
+export async function retainFargateSuccessEvidence(evidenceDir, evidenceBundle) {
+  const controllerFinal = join(evidenceDir, "controller-evidence.json");
+  const publicFinal = join(evidenceDir, "public-proof.json");
+  const controllerTemp = join(evidenceDir, ".controller-evidence.json.pending");
+  const publicTemp = join(evidenceDir, ".public-proof.json.pending");
+  let controllerLinked = false;
+  let publicLinked = false;
+  try {
+    if (
+      evidenceBundle === null ||
+      typeof evidenceBundle !== "object" ||
+      Array.isArray(evidenceBundle) ||
+      JSON.stringify(Object.keys(evidenceBundle).sort()) !== JSON.stringify(["controllerEvidence", "publicProof"])
+    ) fail();
+    await reserveFargateEvidenceDir(evidenceDir);
+    await Promise.all([
+      lstat(controllerFinal).then(() => fail(), (error) => { if (error?.code !== "ENOENT") throw error; }),
+      lstat(publicFinal).then(() => fail(), (error) => { if (error?.code !== "ENOENT") throw error; }),
+    ]);
+    await retainEvidenceFile(controllerTemp, evidenceBundle.controllerEvidence);
+    await retainEvidenceFile(publicTemp, evidenceBundle.publicProof);
+    await chmod(controllerTemp, 0o600);
+    await chmod(publicTemp, 0o600);
+    await link(controllerTemp, controllerFinal);
+    controllerLinked = true;
+    await link(publicTemp, publicFinal);
+    publicLinked = true;
+    await unlink(controllerTemp);
+    await unlink(publicTemp);
+    if (((await stat(controllerFinal)).mode & 0o777) !== 0o600) fail();
+    if (((await stat(publicFinal)).mode & 0o777) !== 0o600) fail();
+  } catch (error) {
+    if (publicLinked) await unlinkIfPresent(publicFinal);
+    if (controllerLinked) await unlinkIfPresent(controllerFinal);
+    await unlinkIfPresent(publicTemp);
+    await unlinkIfPresent(controllerTemp);
     if (error?.message === "Fargate mechanics proof runner failed safely.") throw error;
     fail();
   }
 }
 
-export async function retainFargatePublicProofEvidence(evidenceDir, proofInput) {
+export function buildFargatePublicProofEvidence(proofInput) {
   try {
-    const proof = buildMechanicsProofCloudEvidence(proofInput);
-    await reserveFargateEvidenceDir(evidenceDir);
-    await retainPublicProofFile(evidenceDir, proof);
-    await chmod(join(evidenceDir, "public-proof.json"), 0o600);
-    if (((await stat(join(evidenceDir, "public-proof.json"))).mode & 0o777) !== 0o600) fail();
-    return proof;
+    return buildMechanicsProofCloudEvidence(proofInput);
   } catch (error) {
     if (error?.message === "Fargate mechanics proof runner failed safely.") throw error;
     fail();
@@ -303,10 +326,7 @@ function cloudTrailWindow(tasks) {
 async function lookupEcsCloudTrailEvents({ controlPlane, region, taskArns, runId, startTime, endTime, sleep = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms)) }) {
   const collected = [];
   for (let attempt = 0; attempt < 120; attempt += 1) {
-    const response = await controlPlane.callAws([
-      "cloudtrail", "lookup-events", "--lookup-attributes", "AttributeKey=EventSource,AttributeValue=ecs.amazonaws.com",
-      "--start-time", startTime, "--end-time", endTime, "--no-paginate", "--region", region, "--output", "json",
-    ]);
+    const response = await controlPlane.lookupEcsCloudTrailEvents({ startTime, endTime });
     if (!Array.isArray(response?.Events)) fail();
     collected.push(...response.Events);
     if (hasExactCloudTrailEvents(collected, taskArns, runId)) return collected;
@@ -316,18 +336,18 @@ async function lookupEcsCloudTrailEvents({ controlPlane, region, taskArns, runId
 }
 
 async function collectRoleLiveInfraInput({ controlPlane, region, role, clusterArn, taskArn, taskDefinitionArn, securityGroupId }) {
-  const describeTasks = await controlPlane.callAws(["ecs", "describe-tasks", "--cluster", clusterArn, "--tasks", taskArn, "--region", region, "--output", "json"]);
+  const describeTasks = await controlPlane.describeTasks({ cluster: clusterArn, taskArns: [taskArn] });
   const task = describeTasks.tasks?.[0];
   if (task?.taskArn !== taskArn) fail();
-  const taskDefinition = await controlPlane.callAws(["ecs", "describe-task-definition", "--task-definition", taskDefinitionArn, "--region", region, "--output", "json"]);
+  const taskDefinition = await controlPlane.describeTaskDefinition({ taskDefinitionArn });
   const taskDefinitionBody = taskDefinition.taskDefinition;
   if (taskDefinitionBody?.taskDefinitionArn !== taskDefinitionArn) fail();
   const eniId = taskEniId(task);
   const subnetId = taskSubnetId(task);
-  const eniResponse = await controlPlane.callAws(["ec2", "describe-network-interfaces", "--network-interface-ids", eniId, "--region", region, "--output", "json"]);
+  const eniResponse = await controlPlane.describeNetworkInterfaces({ networkInterfaceIds: [eniId] });
   const networkInterface = eniResponse.NetworkInterfaces?.[0];
-  const describeSubnet = await controlPlane.callAws(["ec2", "describe-subnets", "--subnet-ids", subnetId, "--region", region, "--output", "json"]);
-  const securityGroupResponse = await controlPlane.callAws(["ec2", "describe-security-groups", "--group-ids", securityGroupId, "--region", region, "--output", "json"]);
+  const describeSubnet = await controlPlane.describeSubnetsByIds({ subnetIds: [subnetId] });
+  const securityGroupResponse = await controlPlane.describeSecurityGroups({ groupIds: [securityGroupId] });
   return Object.freeze({
     role,
     taskDefinition: taskDefinitionBody,
@@ -342,14 +362,14 @@ async function collectRoleLiveInfraInput({ controlPlane, region, role, clusterAr
 }
 
 async function collectRoleRuntimeRaw({ controlPlane, runId, region, role, clusterArn, taskArn, taskDefinitionArn, securityGroupId, liveRoleInput = null, cloudTrailEvents }) {
-  const describeTasks = await controlPlane.callAws(["ecs", "describe-tasks", "--cluster", clusterArn, "--tasks", taskArn, "--region", region, "--output", "json"]);
+  const describeTasks = await controlPlane.describeTasks({ cluster: clusterArn, taskArns: [taskArn] });
   const task = describeTasks.tasks?.[0];
   if (task?.taskArn !== taskArn || task.lastStatus !== "STOPPED") fail();
   const live = liveRoleInput ?? await collectRoleLiveInfraInput({ controlPlane, region, role, clusterArn, taskArn, taskDefinitionArn, securityGroupId });
   if (live.role !== role || live.securityGroupId !== securityGroupId || live.taskDefinition?.taskDefinitionArn !== taskDefinitionArn) fail();
   if (!Array.isArray(cloudTrailEvents) || cloudTrailEvents.length === 0) fail();
   const logGroupName = logGroupFromTaskDefinition(live.taskDefinition, role);
-  const logs = await controlPlane.callAws(["logs", "filter-log-events", "--log-group-name", logGroupName, "--region", region, "--output", "json"]);
+  const logs = await controlPlane.filterLogEvents({ logGroupName });
   if (!Array.isArray(logs.events)) fail();
   const logStreamName = logs.events.find((event) => typeof event?.logStreamName === "string")?.logStreamName ?? `${role}/${role}/${taskArn.split("/").at(-1)}`;
   return {
@@ -377,7 +397,7 @@ export async function collectFargateLiveInfraProofInputs(optionsInput) {
     const options = optionsInput;
     if (options === null || typeof options !== "object" || Array.isArray(options)) fail();
     const { stackOutputs, clusterArn, taskArns, taskDefinitionArns, controlPlane } = options;
-    if (controlPlane === null || typeof controlPlane !== "object" || typeof controlPlane.callAws !== "function") fail();
+    if (controlPlane === null || typeof controlPlane !== "object" || typeof controlPlane.describeTasks !== "function") fail();
     const runId = typeof options.runId === "string" ? options.runId : options.plan?.runId;
     const region = typeof options.region === "string" ? options.region : options.plan?.region;
     if (typeof runId !== "string" || typeof region !== "string") fail();
@@ -405,7 +425,12 @@ export async function collectFargateRuntimeProofInputs(optionsInput) {
     const options = optionsInput;
     if (options === null || typeof options !== "object" || Array.isArray(options)) fail();
     const { plan, stackOutputs, clusterArn, taskArns, taskDefinitionArns, controlPlane } = options;
-    if (controlPlane === null || typeof controlPlane !== "object" || typeof controlPlane.callAws !== "function") fail();
+    if (
+      controlPlane === null ||
+      typeof controlPlane !== "object" ||
+      typeof controlPlane.describeTasks !== "function" ||
+      typeof controlPlane.lookupEcsCloudTrailEvents !== "function"
+    ) fail();
     if (plan === null || typeof plan !== "object") fail();
     const runId = typeof options.runId === "string" ? options.runId : plan.runId;
     const region = typeof options.region === "string" ? options.region : plan.region;
@@ -415,9 +440,7 @@ export async function collectFargateRuntimeProofInputs(optionsInput) {
     const rawControlPlaneEnvelopes = [];
     const stoppedTasksForWindow = [];
     for (const role of ["initiator", "responder"]) {
-      const described = await controlPlane.callAws([
-        "ecs", "describe-tasks", "--cluster", clusterArn, "--tasks", roleValue(taskArns, role), "--region", region, "--output", "json",
-      ]);
+      const described = await controlPlane.describeTasks({ cluster: clusterArn, taskArns: [roleValue(taskArns, role)] });
       const task = described.tasks?.[0];
       if (task?.taskArn !== roleValue(taskArns, role) || task.lastStatus !== "STOPPED") fail();
       stoppedTasksForWindow.push(task);
@@ -490,7 +513,7 @@ export async function collectFargateCleanupProofInputs(optionsInput) {
     const options = optionsInput;
     if (options === null || typeof options !== "object" || Array.isArray(options)) fail();
     const { stackOutputs, taskArns, taskDefinitionArns, controlPlane, runtimeProofInput } = options;
-    if (controlPlane === null || typeof controlPlane !== "object" || typeof controlPlane.callAws !== "function" || typeof controlPlane.confirmAbsence !== "function") fail();
+    if (controlPlane === null || typeof controlPlane !== "object" || typeof controlPlane.listQueues !== "function" || typeof controlPlane.confirmAbsence !== "function") fail();
     const runId = typeof options.runId === "string" ? options.runId : runtimeProofInput?.runId;
     const region = typeof options.region === "string" ? options.region : undefined;
     if (typeof runId !== "string" || typeof region !== "string") fail();
@@ -513,9 +536,9 @@ export async function collectFargateCleanupProofInputs(optionsInput) {
         taskArns,
       },
       confirmAbsence: await controlPlane.confirmAbsence({ stackName }),
-      listQueues: await controlPlane.callAws(["sqs", "list-queues", "--queue-name-prefix", stackName, "--region", region, "--output", "json"]),
-      listActiveTaskDefinitions: await controlPlane.callAws(["ecs", "list-task-definitions", "--family-prefix", stackName, "--status", "ACTIVE", "--region", region, "--output", "json"]),
-      listInactiveTaskDefinitions: await controlPlane.callAws(["ecs", "list-task-definitions", "--family-prefix", stackName, "--status", "INACTIVE", "--region", region, "--output", "json"]),
+      listQueues: await controlPlane.listQueues({ queueNamePrefix: stackName }),
+      listActiveTaskDefinitions: await controlPlane.listTaskDefinitions({ familyPrefix: `${stackName}-`, status: "ACTIVE" }),
+      listInactiveTaskDefinitions: await controlPlane.listTaskDefinitions({ familyPrefix: `${stackName}-`, status: "INACTIVE" }),
       stoppedTasks,
     });
   } catch (error) {
@@ -653,12 +676,12 @@ async function main() {
           runtimeProofInput: context.runtimeEvidenceInputs,
           controlPlane,
         });
-        await retainFargatePublicProofEvidence(parsed.evidenceDir, {
+        return buildFargatePublicProofEvidence({
           ...context.runtimeEvidenceInputs,
           cleanupResponses,
         });
       },
-      retainEvidence: (evidence) => retainFargateSuccessEvidence(parsed.evidenceDir, evidence),
+      retainEvidence: ({ controllerEvidence, publicProof }) => retainFargateSuccessEvidence(parsed.evidenceDir, { controllerEvidence, publicProof }),
     });
     process.stdout.write(`${JSON.stringify(result)}\n`);
     if (result.status !== "SUCCEEDED") process.exitCode = 1;
