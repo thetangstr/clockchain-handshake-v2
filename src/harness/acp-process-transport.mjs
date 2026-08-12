@@ -313,7 +313,6 @@ function parseToolName(update) {
   const title = update.title;
   if (typeof title === "string") {
     if (title.startsWith(`mcp.${TOOL_SERVER}.${TOOL_PREFIX}`)) return title.slice(`mcp.${TOOL_SERVER}.`.length);
-    if (title.startsWith(TOOL_PREFIX)) return title;
   }
   return null;
 }
