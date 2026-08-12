@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
@@ -13,6 +14,11 @@ const HANDSHAKE_EVIDENCE = Object.freeze({ schema: "clockchain.fresh-agent-canar
 const CERTIFICATE_DIGEST = "1".repeat(64);
 const HOST_ROOT = "2".repeat(64);
 const HOST_CERT = "3".repeat(64);
+const SOURCE_COMMIT = "1234567890abcdef1234567890abcdef12345678";
+
+function evidenceDigest(value) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
 
 function localEvidence(role, runtimeId, overrides = {}) {
   return {
@@ -140,6 +146,56 @@ function liveAttemptArtifact(overrides = {}) {
   return { ...artifact, ...overrides };
 }
 
+function livePreflight(overrides = {}) {
+  return {
+    schema: "clockchain.fargate-live-preflight/v1",
+    sourceCommit: SOURCE_COMMIT,
+    pair: "codex:claude",
+    directA2A: true,
+    mcpUrl: "https://mcp.clockchain.network/handshake/mcp",
+    deploymentReady: false,
+    imageProvenanceVerified: false,
+    ...overrides,
+  };
+}
+
+function liveArtifact({ runtimeEvidence, overrides = {} } = {}) {
+  const initiatorRuntime = runtimeEvidence?.initiator ?? awsEvidence("initiator", "runtime-initiator");
+  const responderRuntime = runtimeEvidence?.responder ?? awsEvidence("responder", "runtime-responder");
+  return {
+    schema: "clockchain.mechanics-proof-live-artifact/v1",
+    sessionId: SESSION,
+    sourceCommit: SOURCE_COMMIT,
+    clients: { initiator: "codex", responder: "claude" },
+    runtimeBindings: {
+      initiator: {
+        runtimeId: "runtime-initiator",
+        taskArn: initiatorRuntime.taskArn,
+        runtimeEvidenceDigest: evidenceDigest(initiatorRuntime),
+      },
+      responder: {
+        runtimeId: "runtime-responder",
+        taskArn: responderRuntime.taskArn,
+        runtimeEvidenceDigest: evidenceDigest(responderRuntime),
+      },
+    },
+    directA2A: {
+      agentCardDigests: { initiator: "a".repeat(64), responder: "b".repeat(64) },
+      envelopeDigests: ["c".repeat(64), "d".repeat(64)],
+      commitmentCheckpointDigests: ["e".repeat(64), "f".repeat(64)],
+      controllerRoutedRawContent: false,
+    },
+    roles: {
+      initiator: { address: `0x${"1".repeat(40)}`, erc8004AgentId: "101" },
+      responder: { address: `0x${"2".repeat(40)}`, erc8004AgentId: "202" },
+    },
+    certificateVerified: true,
+    certificateDigest: CERTIFICATE_DIGEST,
+    cleanup: { completed: true, stoppedAndSanitized: true },
+    ...overrides,
+  };
+}
+
 function runtimeAdapter(overrides = {}) {
   const calls = [];
   return {
@@ -229,28 +285,36 @@ test("mechanics-proof controller rejects private authority and authority-bearing
 });
 
 test("mechanics-proof controller live gate requires fresh success evidence and AWS runtime cleanup", async () => {
+  const collected = {};
   const runtime = runtimeAdapter({
     async collectRuntimeEvidence({ runtimeId }) {
       runtime.calls.push(["collect", runtimeId]);
       const role = runtimeId.endsWith("initiator") ? "initiator" : "responder";
-      return awsEvidence(role, runtimeId);
+      collected[role] = awsEvidence(role, runtimeId);
+      return collected[role];
     },
   });
 
   const result = await runMechanicsProofController(config({
     runtimeAdapter: runtime,
     requireLiveEvidence: true,
+    livePreflight: livePreflight(),
     executePair: async (payload) => {
       assert.equal("runtimeAdapter" in payload, false);
       assert.equal("harnessAdapters" in payload, false);
-      return liveAttemptArtifact();
+      return liveArtifact({
+        runtimeEvidence: {
+          initiator: awsEvidence("initiator", "runtime-initiator"),
+          responder: awsEvidence("responder", "runtime-responder"),
+        },
+      });
     },
   }));
 
-  assert.equal(result.handshakeEvidence.result.certificateVerified, true);
-  assert.equal(result.handshakeEvidence.result.clients.initiator, "codex");
-  assert.equal(result.handshakeEvidence.result.clients.responder, "claude");
-  assert.notEqual(result.handshakeEvidence.result.roles.initiator.erc8004.agentId, result.handshakeEvidence.result.roles.responder.erc8004.agentId);
+  assert.equal(result.handshakeEvidence.certificateVerified, true);
+  assert.equal(result.handshakeEvidence.clients.initiator, "codex");
+  assert.equal(result.handshakeEvidence.clients.responder, "claude");
+  assert.notEqual(result.handshakeEvidence.roles.initiator.erc8004AgentId, result.handshakeEvidence.roles.responder.erc8004AgentId);
   assert.equal(result.runtimeEvidence.initiator.schema, RUNTIME_EVIDENCE_SCHEMA);
   assert.deepEqual(runtime.calls.map((entry) => entry[0]), [
     "provision", "attest", "provision", "attest", "terminate", "destroy", "terminate", "destroy", "collect", "collect",
@@ -260,21 +324,69 @@ test("mechanics-proof controller live gate requires fresh success evidence and A
 test("mechanics-proof controller live gate rejects local evidence and malformed live artifacts", async () => {
   await assert.rejects(() => runMechanicsProofController(config({
     requireLiveEvidence: true,
+    livePreflight: livePreflight(),
     executePair: async () => HANDSHAKE_EVIDENCE,
   })));
 
-  await assert.rejects(() => runMechanicsProofController(config({
-    requireLiveEvidence: true,
-    runtimeAdapter: runtimeAdapter({
-      async collectRuntimeEvidence({ runtimeId }) {
-        const role = runtimeId.endsWith("initiator") ? "initiator" : "responder";
-        return awsEvidence(role, runtimeId);
-      },
-    }),
-    executePair: async () => liveAttemptArtifact({
-      result: { ...liveAttemptArtifact().result, clients: { initiator: "claude", responder: "codex" } },
-    }),
-  })));
+  const runtime = runtimeAdapter({
+    async collectRuntimeEvidence({ runtimeId }) {
+      const role = runtimeId.endsWith("initiator") ? "initiator" : "responder";
+      return awsEvidence(role, runtimeId);
+    },
+  });
+  for (const artifact of [
+    liveAttemptArtifact(),
+    liveArtifact({ overrides: { sessionId: "22222222-2222-4333-8444-555555555555" } }),
+    liveArtifact({ overrides: { sourceCommit: "abcdefabcdefabcdefabcdefabcdefabcdefabcd" } }),
+    liveArtifact({ overrides: { clients: { initiator: "claude", responder: "codex" } } }),
+    liveArtifact({ overrides: { runtimeBindings: { ...liveArtifact().runtimeBindings, initiator: { ...liveArtifact().runtimeBindings.initiator, runtimeId: "runtime-responder" } } } }),
+    liveArtifact({ overrides: { directA2A: { ...liveArtifact().directA2A, agentCardDigests: { initiator: "a".repeat(64) } } } }),
+    liveArtifact({ overrides: { directA2A: { ...liveArtifact().directA2A, envelopeDigests: [] } } }),
+    liveArtifact({ overrides: { directA2A: { ...liveArtifact().directA2A, commitmentCheckpointDigests: [] } } }),
+    liveArtifact({ overrides: { directA2A: { ...liveArtifact().directA2A, rawTranscript: "private" } } }),
+    liveArtifact({ overrides: { certificateVerified: false } }),
+    liveArtifact({ overrides: { roles: { initiator: { address: `0x${"1".repeat(40)}`, erc8004AgentId: "101" }, responder: { address: `0x${"1".repeat(40)}`, erc8004AgentId: "202" } } } }),
+    liveArtifact({ overrides: { cleanup: { completed: true, stoppedAndSanitized: false } } }),
+  ]) {
+    await assert.rejects(() => runMechanicsProofController(config({
+      requireLiveEvidence: true,
+      livePreflight: livePreflight(),
+      runtimeAdapter: runtime,
+      executePair: async () => artifact,
+    })));
+  }
+});
+
+test("mechanics-proof controller snapshots config before proxy or accessor traps", async () => {
+  let traps = 0;
+  const proxy = new Proxy({}, {
+    ownKeys() {
+      traps += 1;
+      return [];
+    },
+    get() {
+      traps += 1;
+      return "secret-canary /Users/alice/secret";
+    },
+  });
+  await assert.rejects(
+    () => runMechanicsProofController(proxy),
+    (error) => {
+      assert.match(error.message, /Mechanics-proof controller validation failed safely/);
+      assert.doesNotMatch(error.message, /secret-canary|\/Users\/alice\/secret/);
+      return true;
+    },
+  );
+  assert.equal(traps, 0);
+
+  await assert.rejects(
+    () => runMechanicsProofController({ get sessionId() { throw new Error("secret-canary /Users/alice/secret"); } }),
+    (error) => {
+      assert.match(error.message, /Mechanics-proof controller validation failed safely/);
+      assert.doesNotMatch(error.message, /secret-canary|\/Users\/alice\/secret/);
+      return true;
+    },
+  );
 });
 
 test("mechanics-proof controller rejects shared opaque credential or state refs", async () => {

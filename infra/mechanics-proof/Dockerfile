@@ -1,0 +1,21 @@
+FROM docker.io/library/node:24.11.1-bookworm-slim@sha256:44b49d6e2d23f6754fb084ef9d34ff14590343ad1ee168f8acf8f7bc9fccde2f
+
+ARG SOURCE_COMMIT
+RUN test -n "$SOURCE_COMMIT" && test "${#SOURCE_COMMIT}" = "40"
+LABEL org.opencontainers.image.revision=$SOURCE_COMMIT
+
+WORKDIR /app
+ENV NODE_ENV=production
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+
+COPY bin ./bin
+COPY src ./src
+COPY prompts ./prompts
+
+RUN mkdir -p /workspace && chown -R node:node /workspace /app
+USER node
+
+EXPOSE 8443
+ENTRYPOINT ["node","bin/mechanics-proof-party.mjs"]

@@ -201,16 +201,27 @@ async function safeEvidenceDirectory(root, value) {
   const directPlatformTmp = dirname(value) === platformTmp;
   const directPrivateTmp = dirname(value) === privateTmp;
   if (!repoLocal && !directPlatformTmp && !directPrivateTmp) liveFail();
-  const existingParent = await nearestExistingParent(value);
-  const parentReal = await realpath(existingParent).catch(() => liveFail());
+  let targetExists = false;
+  try {
+    const target = await lstat(value);
+    targetExists = true;
+    if (target.isSymbolicLink() || !target.isDirectory()) liveFail();
+  } catch (error) {
+    if (error?.message === "Fargate live preflight validation failed safely.") throw error;
+    if (error?.code !== "ENOENT") liveFail();
+  }
+  const existingParent = targetExists ? value : await nearestExistingParent(value);
+  const targetReal = await realpath(existingParent).catch(() => liveFail());
   if (repoLocal) {
     const repoTmpReal = await realpath(repoTmp).catch(() => realpath(root));
-    if (parentReal !== repoTmpReal && !pathInside(repoTmpReal, parentReal)) liveFail();
+    if (targetReal !== repoTmpReal && !pathInside(repoTmpReal, targetReal)) liveFail();
     return value;
   }
   const tmpRoot = directPrivateTmp ? privateTmp : platformTmp;
   const tmpReal = await realpath(tmpRoot).catch(() => tmpRoot);
-  if (parentReal !== tmpReal) liveFail();
+  if (targetExists) {
+    if (dirname(targetReal) !== tmpReal) liveFail();
+  } else if (targetReal !== tmpReal) liveFail();
   return value;
 }
 
@@ -887,7 +898,19 @@ export function createAwsFargateRuntimeAdapter(optionsInput = {}) {
     },
     async inspectLivePreflight(options = {}) {
       const current = configuredPlan === null ? await loadFargateDryRunPlan() : configuredPlan;
-      return buildFargateLivePreflightPlan({ plan: current, ...options });
+      const liveOptions = exactLiveOptions(options, [
+        "appImage", "directA2A", "evidenceDir", "executor", "mcpUrl", "pair", "runId",
+      ]);
+      return buildFargateLivePreflightPlan({
+        plan: current,
+        appImage: liveOptions.appImage,
+        directA2A: liveOptions.directA2A,
+        evidenceDir: liveOptions.evidenceDir,
+        executor: liveOptions.executor,
+        mcpUrl: liveOptions.mcpUrl,
+        pair: liveOptions.pair,
+        runId: liveOptions.runId,
+      });
     },
     async provisionPartyRuntime() {
       fail();

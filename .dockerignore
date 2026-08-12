@@ -19,3 +19,11 @@ state/
 config/secrets.json
 .context/
 *.secret.json
+.codex/
+.claude/
+.config/
+.npmrc
+**/auth.json
+**/credentials.json
+**/*.secret
+**/mechanics-proof-evidence/

@@ -521,15 +521,25 @@ test("Fargate live preflight accepts only safe explicit evidence directories", a
   const plan = await checkedPlan();
   const repoEvidenceDir = `${process.cwd()}/.tmp/mechanics-proof-repo-evidence`;
   const tmpEvidenceDir = "/private/tmp/mechanics-proof-evidence";
+  const existingTmpEvidenceDir = "/private/tmp/mechanics-proof-existing-dir";
+  const fileEvidenceDir = "/private/tmp/mechanics-proof-file-target";
+  const symlinkEvidenceDir = "/private/tmp/mechanics-proof-symlink-target";
   const escapedParent = await mkdtemp(join(tmpdir(), "mechanics-proof-escape-"));
   const link = join(process.cwd(), ".tmp", "mechanics-proof-parent-link");
   t.after(() => rm(link, { force: true }));
+  t.after(() => rm(existingTmpEvidenceDir, { recursive: true, force: true }));
+  t.after(() => rm(fileEvidenceDir, { force: true }));
+  t.after(() => rm(symlinkEvidenceDir, { force: true }));
   t.after(() => rm(escapedParent, { recursive: true, force: true }));
   await mkdir(join(process.cwd(), ".tmp"), { recursive: true });
+  await mkdir(existingTmpEvidenceDir, { recursive: true });
+  await writeFile(fileEvidenceDir, "not a directory");
   await rm(link, { force: true });
+  await rm(symlinkEvidenceDir, { force: true });
   await symlink(escapedParent, link);
+  await symlink(escapedParent, symlinkEvidenceDir);
 
-  for (const evidenceDir of [repoEvidenceDir, tmpEvidenceDir]) {
+  for (const evidenceDir of [repoEvidenceDir, tmpEvidenceDir, existingTmpEvidenceDir]) {
     const summary = await buildFargateLivePreflightPlan({
       plan,
       pair: "codex:claude",
@@ -547,6 +557,8 @@ test("Fargate live preflight accepts only safe explicit evidence directories", a
     "/private/tmp",
     process.env.HOME,
     process.cwd(),
+    fileEvidenceDir,
+    symlinkEvidenceDir,
     `${process.cwd()}/.tmp/../mechanics-proof-traversal`,
     `${process.cwd()}/.tmp/not-proof-evidence`,
     `${link}/mechanics-proof-output`,
@@ -562,6 +574,38 @@ test("Fargate live preflight accepts only safe explicit evidence directories", a
       executor: gitExecutor(),
     }), /Fargate live preflight validation failed safely/);
   }
+});
+
+test("Fargate live preflight inspection snapshots public options before proxy or accessor traps", async () => {
+  const adapter = createAwsFargateRuntimeAdapter({ plan: await checkedPlan() });
+  let traps = 0;
+  const proxy = new Proxy({}, {
+    ownKeys() {
+      traps += 1;
+      return [];
+    },
+    get() {
+      traps += 1;
+      return "secret-canary /Users/alice/secret";
+    },
+  });
+  await assert.rejects(
+    () => adapter.inspectLivePreflight(proxy),
+    (error) => {
+      assert.match(error.message, /Fargate live preflight validation failed safely/);
+      assert.doesNotMatch(error.message, /secret-canary|\/Users\/alice\/secret/);
+      return true;
+    },
+  );
+  assert.equal(traps, 0);
+  await assert.rejects(
+    () => adapter.inspectLivePreflight({ get evidenceDir() { throw new Error("secret-canary /Users/alice/secret"); } }),
+    (error) => {
+      assert.match(error.message, /Fargate live preflight validation failed safely/);
+      assert.doesNotMatch(error.message, /secret-canary|\/Users\/alice\/secret/);
+      return true;
+    },
+  );
 });
 
 test("Fargate live preflight rejects non-production gates and controller-held signer material", async () => {
