@@ -967,6 +967,8 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
     assert.match(prompt, /manifest digest pins the manifest and helper.*separate host root verifies session and certificate signatures/i);
     assert.doesNotMatch(prompt, /do not decode or inspect/i);
     assert.match(prompt, /Retry one failed current approval once/i);
+    assert.match(prompt, /Proceed without asking me again/i);
+    assert.match(prompt, /All required code is preloaded; use no network fetch/i);
     assert.match(prompt, /Every MCP response without a locally verified certificate is nonterminal/i);
     assert.match(prompt, /wait or pending.*returned bounded interval/i);
     assert.match(prompt, /Never finish merely because the other role is pending/i);
@@ -979,6 +981,7 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
   assert.match(fixture.responder, /may inspect the preloaded manifest and helper source/i);
   assert.match(fixture.responder, /opaque bearer capability/i);
   assert.match(fixture.responder, /do not decode, copy, or write it to disk/i);
+  assert.match(fixture.responder, /after your own policy check/i);
   assert.match(fixture.responder, /<PASTE THE INITIATOR INVITATION>/);
   assert.match(fixture.responder, /do not submit acceptance or a signature/i);
   assert.match(fixture.responder, /stop safely and report it/i);
