@@ -180,7 +180,7 @@ test("AWS CLI control plane has exact allowlisted argv shapes for Task 4 actions
   await control.deregisterTaskDefinition({ taskDefinitionArn: "td", role: "initiator" });
   await control.deleteStack({ stackName });
   await control.waitStackDeleteComplete({ stackName });
-  await control.pollPublicEvents({ logGroupNames: ["/clockchain/mechanics-proof/run/initiator", "/clockchain/mechanics-proof/run/responder"], deadlineMs: Date.now() + 1000 });
+  await control.pollPublicEvents({ logGroupNames: ["/clockchain/mechanics-proof/run/initiator", "/clockchain/mechanics-proof/run/responder"], runId: "11111111-2222-4333-8444-555555555555", startTimeMs: 0, deadlineMs: Date.now() + 1000 });
 
   for (const [file, argv] of calls) {
     assert.equal(file, "aws");
@@ -268,6 +268,8 @@ test("AWS CLI control plane preserves CloudWatch event timestamps with terminal 
   });
   const events = await control.pollPublicEvents({
     logGroupNames: ["/clockchain/mechanics-proof/run/initiator", "/clockchain/mechanics-proof/run/responder"],
+    runId: "11111111-2222-4333-8444-555555555555",
+    startTimeMs: 1786565100000,
     deadlineMs: Date.now() + 1000,
   });
   assert.equal(events[0].timestamp, "2026-08-12T20:05:01.000Z");
@@ -288,6 +290,8 @@ test("AWS CLI control plane brands only exact allowlisted party failure stages",
   });
   await assert.rejects(() => control.pollPublicEvents({
     logGroupNames: ["/clockchain/mechanics-proof/run/initiator", "/clockchain/mechanics-proof/run/responder"],
+    runId: "11111111-2222-4333-8444-555555555555",
+    startTimeMs: 0,
     deadlineMs: Date.now() + 1000,
   }), (error) => {
     assert.deepEqual(publicPartyFailureStages(error), {
@@ -325,6 +329,8 @@ test("AWS CLI control plane retains only the latest exact public progress stage 
 
   await assert.rejects(() => control.pollPublicEvents({
     logGroupNames: ["/clockchain/mechanics-proof/run/initiator", "/clockchain/mechanics-proof/run/responder"],
+    runId: "11111111-2222-4333-8444-555555555555",
+    startTimeMs: 0,
     deadlineMs: 1000,
   }), (error) => {
     assert.deepEqual(publicPartyProgressStages(error), {
@@ -335,6 +341,50 @@ test("AWS CLI control plane retains only the latest exact public progress stage 
     assert.doesNotMatch(JSON.stringify(error), /amazonaws|secret|certificate|private/i);
     return true;
   });
+});
+
+test("AWS CLI control plane excludes stale same-run failures from a later cloud attempt", async () => {
+  let current = 2_000;
+  const calls = [];
+  const runId = "11111111-2222-4333-8444-555555555555";
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    now: () => current,
+    sleep: async () => { current = 4_000; },
+    executor: async (_file, argv) => {
+      calls.push(argv);
+      const role = argv.some((value) => value.includes("/responder")) ? "responder" : "initiator";
+      return { stdout: JSON.stringify({ events: [{
+        timestamp: 1_000,
+        message: "Mechanics proof party failed safely. stage=runtime-run.transport-create",
+      }, {
+        timestamp: 2_001,
+        message: JSON.stringify({
+          schema: "clockchain.mechanics-proof-party-event/v1",
+          runId,
+          role,
+          sequence: "1",
+          type: "agent.starting",
+          evidenceDigest: "1".repeat(64),
+        }),
+      }] }), stderr: "", exitCode: 0 };
+    },
+  });
+
+  await assert.rejects(() => control.pollPublicEvents({
+    logGroupNames: ["/clockchain/mechanics-proof/run/initiator", "/clockchain/mechanics-proof/run/responder"],
+    runId,
+    startTimeMs: 2_000,
+    deadlineMs: 3_000,
+  }), (error) => {
+    assert.equal(publicPartyFailureStages(error), null);
+    assert.deepEqual(publicPartyProgressStages(error), {
+      initiator: "agent.starting",
+      responder: "agent.starting",
+    });
+    return true;
+  });
+  assert.equal(calls.every((argv) => argv.includes("--start-time") && argv[argv.indexOf("--start-time") + 1] === "2000"), true);
 });
 
 test("AWS CLI control plane reduces exact ECS attestations to a fixed public progress stage", async () => {
@@ -371,6 +421,8 @@ test("AWS CLI control plane reduces exact ECS attestations to a fixed public pro
 
   await assert.rejects(() => control.pollPublicEvents({
     logGroupNames: ["/clockchain/mechanics-proof/run/initiator", "/clockchain/mechanics-proof/run/responder"],
+    runId: "11111111-2222-4333-8444-555555555555",
+    startTimeMs: 0,
     deadlineMs: 1000,
   }), (error) => {
     assert.deepEqual(publicPartyProgressStages(error), {
@@ -424,7 +476,7 @@ test("AWS CLI control plane reconciles run-scoped task definitions and tasks, th
       if (key === "ecs describe-tasks") return { stdout: JSON.stringify({ tasks: [{ taskArn: "arn:aws:ecs:us-west-2:123456789012:task/cluster/task-i", startedBy: "11111111-2222-4333-8444-555555555555", group: "family:clockchain-11111111-2222-4333-8444-555555555555-initiator" }] }), stderr: "", exitCode: 0 };
       const role = argv.includes("/clockchain/mechanics-proof/run/responder") ? "responder" : "initiator";
       return { stdout: JSON.stringify({ events: [
-        { message: JSON.stringify({ schema: "clockchain.fargate-runtime-attestation/v1", runId: "11111111-2222-4333-8444-555555555555" }) },
+        { timestamp: 1786565100000, message: JSON.stringify({ schema: "clockchain.fargate-runtime-attestation/v1", runId: "11111111-2222-4333-8444-555555555555" }) },
         { timestamp: 1786565101000, message: JSON.stringify({ schema: "clockchain.mechanics-proof-party-evidence/v1", runId: "11111111-2222-4333-8444-555555555555", protocolSessionId: "protocol-session-1", role, harness: role === "initiator" ? "codex" : "claude", runtimeId: `runtime-${role}`, workloadAttestationDigest: "1".repeat(64), peerRuntimeId: role === "initiator" ? "runtime-responder" : "runtime-initiator", bridgeEvidenceDigest: "2".repeat(64), harnessEvidenceDigest: "3".repeat(64), certificateProofDigest: "4".repeat(64), certificateDigest: "a".repeat(64), identity: {}, anchors: [], directDelivery: { acknowledged: true }, externalBusinessActionPerformed: false, terminalStatus: "completed", teardown: { completed: true } }) },
       ] }), stderr: "", exitCode: 0 };
     },
@@ -433,7 +485,7 @@ test("AWS CLI control plane reconciles run-scoped task definitions and tasks, th
   assert.equal((await control.reconcileCreatedStack({ stackName })).clusterArn, "cluster");
   assert.deepEqual(await control.reconcileTaskDefinitions({ stackName }), [{ role: "initiator", taskDefinitionArn: "arn:aws:ecs:us-west-2:123456789012:task-definition/clockchain-11111111-2222-4333-8444-555555555555-initiator:1" }]);
   assert.deepEqual(await control.reconcileTasks({ stackName, cluster: "cluster" }), [{ role: "initiator", taskArn: "arn:aws:ecs:us-west-2:123456789012:task/cluster/task-i" }]);
-  const events = await control.pollPublicEvents({ logGroupNames: ["/clockchain/mechanics-proof/run/initiator", "/clockchain/mechanics-proof/run/responder"], runId: "11111111-2222-4333-8444-555555555555", deadlineMs: Date.now() + 1000 });
+  const events = await control.pollPublicEvents({ logGroupNames: ["/clockchain/mechanics-proof/run/initiator", "/clockchain/mechanics-proof/run/responder"], runId: "11111111-2222-4333-8444-555555555555", startTimeMs: 0, deadlineMs: Date.now() + 1000 });
   assert.equal(events.length, 2);
   assert.equal(seen.some((argv) => argv.includes("--started-by") && argv.includes("11111111-2222-4333-8444-555555555555")), true);
 });
@@ -452,6 +504,8 @@ test("AWS CLI control plane log polling rejects conflicting duplicate terminal r
   });
   await assert.rejects(() => control.pollPublicEvents({
     logGroupNames: ["/clockchain/mechanics-proof/run/initiator", "/clockchain/mechanics-proof/run/responder"],
+    runId: "11111111-2222-4333-8444-555555555555",
+    startTimeMs: 0,
     deadlineMs: 2000,
   }), /AWS CLI control-plane validation failed safely/);
 });

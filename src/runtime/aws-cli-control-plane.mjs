@@ -382,9 +382,14 @@ export function createAwsCliControlPlane(optionsInput = {}) {
       }
       return Object.freeze({ absent: false });
     },
-    async pollPublicEvents({ logGroupNames, deadlineMs }) {
+    async pollPublicEvents({ logGroupNames, runId, startTimeMs, deadlineMs }) {
       if (!Array.isArray(logGroupNames) || logGroupNames.length !== 2) fail();
-      if (!Number.isSafeInteger(deadlineMs) || deadlineMs <= now() || deadlineMs - now() > 300_000) fail();
+      if (
+        typeof runId !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(runId) ||
+        !Number.isSafeInteger(startTimeMs) || startTimeMs < 0 || startTimeMs > now() ||
+        !Number.isSafeInteger(deadlineMs) || deadlineMs <= now() || deadlineMs - now() > 300_000
+      ) fail();
       const byRole = new Map();
       const failures = new Map();
       const progress = new Map();
@@ -394,9 +399,14 @@ export function createAwsCliControlPlane(optionsInput = {}) {
         for (const group of logGroupNames) {
           const groupRole = group.includes("/initiator") ? "initiator" : group.includes("/responder") ? "responder" : null;
           if (groupRole === null) fail();
-          const response = await callAws(["logs", "filter-log-events", "--log-group-name", group, "--region", region, "--output", "json"]);
+          const response = await callAws([
+            "logs", "filter-log-events", "--log-group-name", group, "--start-time", String(startTimeMs),
+            "--region", region, "--output", "json",
+          ]);
           if (!Array.isArray(response.events) || response.nextToken !== undefined) fail();
           for (const event of response.events) {
+            if (!Number.isSafeInteger(event.timestamp)) fail();
+            if (event.timestamp < startTimeMs) continue;
             if (typeof event.message !== "string") fail();
             if (event.message.startsWith(PARTY_FAILURE_PREFIX)) {
               const stage = event.message.slice(PARTY_FAILURE_PREFIX.length);
@@ -422,7 +432,7 @@ export function createAwsCliControlPlane(optionsInput = {}) {
               const keys = Object.keys(record).sort();
               if (
                 JSON.stringify(keys) !== JSON.stringify(["evidenceDigest", "role", "runId", "schema", "sequence", "type"]) ||
-                record.role !== groupRole || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(record.runId) ||
+                record.role !== groupRole || record.runId !== runId ||
                 !/^[1-9][0-9]*$/.test(record.sequence) || !PARTY_PROGRESS_TYPES.includes(record.type) || !/^[0-9a-f]{64}$/.test(record.evidenceDigest)
               ) fail();
               const sequence = Number(record.sequence);
@@ -439,9 +449,8 @@ export function createAwsCliControlPlane(optionsInput = {}) {
               continue;
             }
             if (record.schema !== "clockchain.mechanics-proof-party-evidence/v1") continue;
-            if (!Number.isSafeInteger(event.timestamp)) fail();
             if (!["initiator", "responder"].includes(record.role)) fail();
-            if (record.role !== groupRole) fail();
+            if (record.role !== groupRole || record.runId !== runId) fail();
             record.timestamp = new Date(event.timestamp).toISOString();
             const previous = byRole.get(record.role);
             const serialized = JSON.stringify(record);

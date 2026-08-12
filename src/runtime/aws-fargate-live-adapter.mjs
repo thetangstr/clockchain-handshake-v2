@@ -273,6 +273,7 @@ export async function runFargateLiveMechanicsProof(optionsInput) {
     }
     reconcile.taskDefinitions = false;
     reconcile.tasks = true;
+    const publicEventStartTimeMs = Date.now();
     const runs = ROLES.map((role) => controlPlane.runTask({
         role,
         cluster: clusterArn,
@@ -307,6 +308,7 @@ export async function runFargateLiveMechanicsProof(optionsInput) {
     failureClass = "protocol";
     const events = terminalEvents(await controlPlane.pollPublicEvents({
       runId: plan.runId,
+      startTimeMs: publicEventStartTimeMs,
       logGroupNames: [outputs.InitiatorLogGroupName, outputs.ResponderLogGroupName],
       deadlineMs: pollingDeadline(plan),
     }), plan.runId);

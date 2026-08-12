@@ -400,7 +400,7 @@ test("live Fargate adapter returns failed-clean after protocol failure with conf
     executor: async (_file, argv) => {
       const role = argv.some((value) => value.includes("/responder")) ? "responder" : "initiator";
       return { stdout: JSON.stringify({ events: [{
-        timestamp: 1786565101000,
+        timestamp: Date.now(),
         message: `Mechanics proof party failed safely. stage=runtime-run.listener-listen-${role === "initiator" ? "eperm" : "eaddrinuse"}`,
       }] }), stderr: "", exitCode: 0 };
     },
@@ -430,7 +430,7 @@ test("live Fargate adapter reports only fixed cleanup step codes when cleanup is
     executor: async (_file, argv) => {
       const role = argv.some((value) => value.includes("/responder")) ? "responder" : "initiator";
       return { stdout: JSON.stringify({ events: [{
-        timestamp: 1786565101000,
+        timestamp: Date.now(),
         message: `Mechanics proof party failed safely. stage=runtime-run.listener-create`,
       }] }), stderr: "", exitCode: 0 };
     },
@@ -478,6 +478,8 @@ test("live Fargate adapter returns fixed party progress after a clean protocol t
   });
   controlPlane.pollPublicEvents = () => diagnostic.pollPublicEvents({
     logGroupNames: ["/clockchain/mechanics-proof/run/initiator", "/clockchain/mechanics-proof/run/responder"],
+    runId: RUN_ID,
+    startTimeMs: 0,
     deadlineMs: 1000,
   });
 
