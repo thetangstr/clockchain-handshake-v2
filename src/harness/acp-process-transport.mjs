@@ -581,6 +581,8 @@ export function createAcpProcessTransport(optionsInput = {}) {
   let session = null;
   let protocolSessionId = null;
   let acpSessionId = null;
+  let provisionalAcpSessionId = null;
+  let sessionEstablishing = false;
   let child = null;
   let childMonitor = null;
   let connection = null;
@@ -647,9 +649,14 @@ export function createAcpProcessTransport(optionsInput = {}) {
   async function sessionUpdate(params) {
     let failureStage = "envelope";
     try {
-      if (session === null || params?.sessionId !== acpSessionId) fail();
+      if (session === null || typeof params?.sessionId !== "string" || params.sessionId.length === 0) fail();
       const updateType = params?.update?.sessionUpdate;
       if (typeof updateType !== "string") fail();
+      if (acpSessionId === null) {
+        if (!sessionEstablishing || updateType === "tool_call" || updateType === "tool_call_update") fail();
+        if (provisionalAcpSessionId === null) provisionalAcpSessionId = params.sessionId;
+        else if (params.sessionId !== provisionalAcpSessionId) fail();
+      } else if (params.sessionId !== acpSessionId) fail();
       if (updateType === "usage_update") {
         failureStage = "usage";
         const used = params.update.used;
@@ -715,6 +722,9 @@ export function createAcpProcessTransport(optionsInput = {}) {
       }
       session = { sessionId: clean.sessionId, role: clean.role };
       protocolSessionId = null;
+      acpSessionId = null;
+      provisionalAcpSessionId = null;
+      sessionEstablishing = false;
       retainedByCommand.clear();
       for (const action of retainedActions) {
         if (partyBridge === null && action.sessionId === clean.sessionId && action.role === clean.role) registerRetainedAction(action);
@@ -753,11 +763,14 @@ export function createAcpProcessTransport(optionsInput = {}) {
         if (initialized?.protocolVersion !== PROTOCOL_VERSION) fail();
         event("acp.initialize", "negotiated ACP protocol", String(initialized.protocolVersion));
         launchStage = "session";
+        sessionEstablishing = true;
         const created = await connection.newSession({
           cwd: options.workspace,
           mcpServers: [mcpServer()],
         });
+        sessionEstablishing = false;
         if (typeof created?.sessionId !== "string" || created.sessionId.length === 0) fail();
+        if (provisionalAcpSessionId !== null && provisionalAcpSessionId !== created.sessionId) fail();
         acpSessionId = created.sessionId;
         if (harness === "codex") {
           launchStage = "model";

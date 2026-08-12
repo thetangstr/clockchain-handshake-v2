@@ -74,6 +74,9 @@ function acpFixtureSpawn({
   calls,
   closeState = null,
   helperAction = null,
+  newSessionUpdates = null,
+  newSessionUpdateSessionId = `acp-${SESSION}`,
+  newSessionId = `acp-${SESSION}`,
   sessionUpdates = null,
   closeOnSignal = "SIGTERM",
   failInitialize = false,
@@ -100,7 +103,12 @@ function acpFixtureSpawn({
       },
       async newSession(params) {
         calls.push(["newSession", params]);
-        return { sessionId: `acp-${SESSION}` };
+        if (newSessionUpdates !== null) {
+          for (const update of newSessionUpdates) {
+            await connection.sessionUpdate({ sessionId: newSessionUpdateSessionId, update });
+          }
+        }
+        return { sessionId: newSessionId };
       },
       async setSessionConfigOption(params) {
         calls.push(["setSessionConfigOption", params]);
@@ -703,6 +711,62 @@ test("ACP process transport performs real ACP lifecycle with unauthenticated ded
   assert.equal(evidence.usage.outputTokens, "4");
   assert.equal(evidence.teardown.completed, true);
   assert.doesNotMatch(JSON.stringify(evidence), /cc_secret|CLOCKCHAIN_MCP_BEARER|transcript|reasoning|\/workspace/i);
+});
+
+test("ACP process transport binds setup updates to the session id returned by newSession", async () => {
+  const action = retainedAction({ role: "initiator", requestDigest: "d".repeat(64), commandSha256: DIGEST });
+  const calls = [];
+  const transport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({
+      calls,
+      newSessionUpdates: [{ sessionUpdate: "available_commands_update", availableCommands: [] }],
+      skipPermission: true,
+    }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    nowMs: () => 1786337001000,
+    actionRecorder: actionRecorderFor([action], calls),
+    env: {},
+    retainedActions: [],
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  });
+  assert.equal((await transport.streamEvents({ sessionId: SESSION })).some((event) => event.type === "acp.available_commands_update"), true);
+
+  const mismatch = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({
+      calls: [],
+      newSessionUpdates: [{ sessionUpdate: "available_commands_update", availableCommands: [] }],
+      newSessionUpdateSessionId: "acp-provisional",
+      newSessionId: "acp-returned",
+      skipPermission: true,
+    }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    env: {},
+    retainedActions: [],
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+  await assert.rejects(() => mismatch.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  }), (error) => {
+    assert.equal(acpProcessTransportFailureStage(error), "session");
+    return true;
+  });
 });
 
 test("ACP process transport rejects stale or malformed production v2 mandates before prompt serialization", async () => {
