@@ -375,10 +375,10 @@ export function createAwsCliControlPlane(optionsInput = {}) {
     },
     async confirmAbsence({ stackName: name }) {
       stackName(name);
-      for (let attempt = 0; attempt < 5; attempt += 1) {
+      for (let attempt = 0; attempt < 30; attempt += 1) {
         const exists = await this.stackExists({ stackName: name });
         if (!exists) return Object.freeze({ absent: true });
-        if (attempt < 4) await sleepFn(1000);
+        if (attempt < 29) await sleepFn(1000);
       }
       return Object.freeze({ absent: false });
     },
