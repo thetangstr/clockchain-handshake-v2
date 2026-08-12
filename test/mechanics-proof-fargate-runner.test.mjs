@@ -1,10 +1,32 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, stat, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ReadableStream } from "node:stream/web";
 import test from "node:test";
 
 import { parseFargateRunnerArgs, checkProductionMcpGate, retainFargateSuccessEvidence } from "../scripts/run-mechanics-proof-fargate.mjs";
+
+function bodyResponse(body, { contentType = "application/json", contentLength = null } = {}) {
+  const bytes = new TextEncoder().encode(body);
+  return {
+    ok: true,
+    headers: {
+      get(name) {
+        if (name.toLowerCase() === "content-type") return contentType;
+        if (name.toLowerCase() === "content-length") return contentLength;
+        return null;
+      },
+    },
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    }),
+    text: async () => { throw new Error("unbounded text reader must not be used"); },
+  };
+}
 
 test("Fargate runner --run requires explicit live gate inputs", () => {
   const parsed = parseFargateRunnerArgs([
@@ -32,6 +54,11 @@ test("Fargate runner --run requires explicit live gate inputs", () => {
   assert.equal(parsed.accountId, "123456789012");
   assert.equal(parsed.maxConcurrency, 2);
   assert.equal(parsed.bedrockModelArn, "arn:aws:bedrock:us-west-2:123456789012:inference-profile/us.anthropic.claude-sonnet-4-6");
+});
+
+test("Fargate runner binds AWS control-plane StackId validation to the requested account", async () => {
+  const source = await readFile(new URL("../scripts/run-mechanics-proof-fargate.mjs", import.meta.url), "utf8");
+  assert.match(source, /createAwsCliControlPlane\(\{\s*region: parsed\.region,\s*accountId: parsed\.accountId\s*\}\)/);
 });
 
 test("Fargate runner rejects missing run gates and dry-run/run ambiguity", () => {
@@ -64,17 +91,13 @@ test("production MCP gate accepts bounded JSON or one SSE message with exact eig
       assert.equal("authorization" in Object.fromEntries(Object.entries(options.headers).map(([key, value]) => [key.toLowerCase(), value])), false);
       if (url === "https://mcp.clockchain.network/health") {
         assert.equal(options.method, "GET");
-        return { ok: true, headers: { get: () => "application/json" }, text: async () => JSON.stringify({ status: "ok" }) };
+        return bodyResponse(JSON.stringify({ status: "ok" }));
       }
       assert.equal(url, "https://mcp.clockchain.network/handshake/mcp");
       const body = JSON.parse(options.body);
-      return {
-        ok: true,
-        headers: { get: () => "application/json" },
-        text: async () => JSON.stringify(body.method === "initialize"
-          ? (assert.equal(body.params.protocolVersion, "2025-06-18"), { jsonrpc: "2.0", id: "clockchain-fargate-initialize", result: { serverInfo: { name: "clockchain-agent-handshake", version: "2.1.2" }, protocolVersion: "2025-06-18" } })
-          : { jsonrpc: "2.0", id: "clockchain-fargate-tools/list", result: { tools: tools.map((name) => ({ name })) } }),
-      };
+      return bodyResponse(JSON.stringify(body.method === "initialize"
+        ? (assert.equal(body.params.protocolVersion, "2025-06-18"), { jsonrpc: "2.0", id: "clockchain-fargate-initialize", result: { serverInfo: { name: "clockchain-agent-handshake", version: "2.1.2" }, protocolVersion: "2025-06-18" } })
+        : { jsonrpc: "2.0", id: "clockchain-fargate-tools/list", result: { tools: tools.map((name) => ({ name })) } }));
     },
   });
   assert.equal(jsonGate.healthy, true);
@@ -88,16 +111,12 @@ test("production MCP gate accepts bounded JSON or one SSE message with exact eig
     fetch: async (url, options) => {
       sseCalls += 1;
       if (url === "https://mcp.clockchain.network/health") {
-        return { ok: true, headers: { get: () => "application/json" }, text: async () => JSON.stringify({ status: "ok" }) };
+        return bodyResponse(JSON.stringify({ status: "ok" }));
       }
       const body = JSON.parse(options.body);
-      return {
-        ok: true,
-        headers: { get: () => "text/event-stream" },
-        text: async () => `event: message\ndata: ${JSON.stringify(body.method === "initialize"
-          ? { jsonrpc: "2.0", id: "clockchain-fargate-initialize", result: { serverInfo: { name: "clockchain-agent-handshake", version: "2.1.2" }, protocolVersion: "2025-06-18" } }
-          : { jsonrpc: "2.0", id: "clockchain-fargate-tools/list", result: { tools: tools.map((name) => ({ name })) } })}\n\n`,
-      };
+      return bodyResponse(`event: message\ndata: ${JSON.stringify(body.method === "initialize"
+        ? { jsonrpc: "2.0", id: "clockchain-fargate-initialize", result: { serverInfo: { name: "clockchain-agent-handshake", version: "2.1.2" }, protocolVersion: "2025-06-18" } }
+        : { jsonrpc: "2.0", id: "clockchain-fargate-tools/list", result: { tools: tools.map((name) => ({ name })) } })}\n\n`, { contentType: "text/event-stream" });
     },
   });
   assert.equal(sseGate.healthy, true);
@@ -119,14 +138,10 @@ test("production MCP gate rejects seven-tool deployment and unsafe response form
     url: "https://mcp.clockchain.network/handshake/mcp",
     fetch: async () => {
       call += 1;
-      if (call === 1) return { ok: true, headers: { get: () => "application/json" }, text: async () => JSON.stringify({ status: "ok" }) };
-      return {
-        ok: true,
-        headers: { get: () => "text/event-stream" },
-        text: async () => `event: message\ndata: ${JSON.stringify(call === 2
-          ? { jsonrpc: "2.0", id: "clockchain-fargate-initialize", result: { serverInfo: { name: "clockchain-agent-handshake", version: "2.1.2" }, protocolVersion: "2025-06-18" } }
-          : { jsonrpc: "2.0", id: "clockchain-fargate-tools/list", result: { tools: sevenTools.map((name) => ({ name })) } })}\n\n`,
-      };
+      if (call === 1) return bodyResponse(JSON.stringify({ status: "ok" }));
+      return bodyResponse(`event: message\ndata: ${JSON.stringify(call === 2
+        ? { jsonrpc: "2.0", id: "clockchain-fargate-initialize", result: { serverInfo: { name: "clockchain-agent-handshake", version: "2.1.2" }, protocolVersion: "2025-06-18" } }
+        : { jsonrpc: "2.0", id: "clockchain-fargate-tools/list", result: { tools: sevenTools.map((name) => ({ name })) } })}\n\n`, { contentType: "text/event-stream" });
     },
   }), /Fargate mechanics proof runner failed safely/);
 
@@ -137,18 +152,17 @@ test("production MCP gate rejects seven-tool deployment and unsafe response form
 });
 
 test("production MCP gate rejects oversized, ambiguous, timed out, and hostile responses", async () => {
-  const okHealth = { ok: true, headers: { get: () => "application/json" }, text: async () => JSON.stringify({ status: "ok" }) };
+  const okHealth = bodyResponse(JSON.stringify({ status: "ok" }));
   const init = { jsonrpc: "2.0", id: "clockchain-fargate-initialize", result: { serverInfo: { name: "clockchain-agent-handshake", version: "2.1.2" }, protocolVersion: "2025-06-18" } };
   const tools = { jsonrpc: "2.0", id: "clockchain-fargate-tools/list", result: { tools: [
     "agent_handshake_accept_invitation", "agent_handshake_get_certificate", "agent_handshake_invite", "agent_handshake_join",
     "agent_handshake_next", "agent_handshake_status", "agent_handshake_submit", "agent_handshake_submit_checkpoint",
   ].map((name) => ({ name })) } };
   for (const bad of [
-    { ok: true, headers: { get: () => "application/json", "content-length": "200000" }, text: async () => "{}" },
-    { ok: true, headers: { get: (name) => name === "content-length" ? "200000" : "application/json" }, text: async () => "{}" },
-    { ok: true, headers: { get: () => "application/json" }, text: async () => "x".repeat(140_000) },
-    { ok: true, headers: { get: () => "text/event-stream" }, text: async () => `event: message\ndata: ${JSON.stringify(init)}\n\nevent: message\ndata: ${JSON.stringify(init)}\n\n` },
-    { ok: true, headers: { get: () => "text/event-stream" }, text: async () => `event: message\ndata: ${JSON.stringify(init)}\ndata: ${JSON.stringify(init)}\n\n` },
+    bodyResponse("{}", { contentLength: "200000" }),
+    bodyResponse("x".repeat(140_000)),
+    bodyResponse(`event: message\ndata: ${JSON.stringify(init)}\n\nevent: message\ndata: ${JSON.stringify(init)}\n\n`, { contentType: "text/event-stream" }),
+    bodyResponse(`event: message\ndata: ${JSON.stringify(init)}\ndata: ${JSON.stringify(init)}\n\n`, { contentType: "text/event-stream" }),
   ]) {
     let call = 0;
     await assert.rejects(() => checkProductionMcpGate({
@@ -166,8 +180,8 @@ test("production MCP gate rejects oversized, ambiguous, timed out, and hostile r
       fetch: async () => {
         call += 1;
         if (call === 1) return okHealth;
-        if (call === 2) return { ok: true, headers: { get: () => "application/json" }, text: async () => JSON.stringify(init) };
-        return { ok: true, headers: { get: () => "application/json" }, text: async () => JSON.stringify({ ...tools, result: { tools: toolNames.map((name) => ({ name })) } }) };
+        if (call === 2) return bodyResponse(JSON.stringify(init));
+        return bodyResponse(JSON.stringify({ ...tools, result: { tools: toolNames.map((name) => ({ name })) } }));
       },
     }), /Fargate mechanics proof runner failed safely/);
   }
@@ -177,13 +191,42 @@ test("production MCP gate rejects oversized, ambiguous, timed out, and hostile r
     fetch: async () => {
       idCall += 1;
       if (idCall === 1) return okHealth;
-      if (idCall === 2) return { ok: true, headers: { get: () => "application/json" }, text: async () => JSON.stringify({ ...init, id: "wrong" }) };
-      return { ok: true, headers: { get: () => "application/json" }, text: async () => JSON.stringify(tools) };
+      if (idCall === 2) return bodyResponse(JSON.stringify({ ...init, id: "wrong" }));
+      return bodyResponse(JSON.stringify(tools));
     },
   }), /Fargate mechanics proof runner failed safely/);
   await assert.rejects(() => checkProductionMcpGate({
     url: "https://mcp.clockchain.network/handshake/mcp",
     fetch: async () => { throw new DOMException("timed out", "TimeoutError"); },
+  }), /Fargate mechanics proof runner failed safely/);
+});
+
+test("production MCP gate reads response bodies through a capped stream and rejects malformed lengths", async () => {
+  const init = { jsonrpc: "2.0", id: "clockchain-fargate-initialize", result: { serverInfo: { name: "clockchain-agent-handshake", version: "2.1.2" }, protocolVersion: "2025-06-18" } };
+  const tools = { jsonrpc: "2.0", id: "clockchain-fargate-tools/list", result: { tools: [
+    "agent_handshake_accept_invitation", "agent_handshake_get_certificate", "agent_handshake_invite", "agent_handshake_join",
+    "agent_handshake_next", "agent_handshake_status", "agent_handshake_submit", "agent_handshake_submit_checkpoint",
+  ].map((name) => ({ name })) } };
+  let call = 0;
+  const result = await checkProductionMcpGate({
+    url: "https://mcp.clockchain.network/handshake/mcp",
+    fetch: async () => {
+      call += 1;
+      if (call === 1) return bodyResponse(JSON.stringify({ status: "ok" }));
+      if (call === 2) return bodyResponse(JSON.stringify(init));
+      return bodyResponse(JSON.stringify(tools));
+    },
+  });
+  assert.equal(result.healthy, true);
+
+  await assert.rejects(() => checkProductionMcpGate({
+    url: "https://mcp.clockchain.network/handshake/mcp",
+    fetch: async () => bodyResponse(JSON.stringify({ status: "ok" }), { contentLength: "abc" }),
+  }), /Fargate mechanics proof runner failed safely/);
+
+  await assert.rejects(() => checkProductionMcpGate({
+    url: "https://mcp.clockchain.network/handshake/mcp",
+    fetch: async () => bodyResponse("x".repeat(131_073)),
   }), /Fargate mechanics proof runner failed safely/);
 });
 

@@ -75,12 +75,17 @@ function dependencies(calls, overrides = {}) {
     sessionId: PROTOCOL_SESSION_ID,
     role: "responder",
     cardDigests: { initiator: DIGEST, responder: OTHER_DIGEST },
+    cardSignerAddresses: {
+      initiator: "0x2222222222222222222222222222222222222222",
+      responder: "0x1111111111111111111111111111111111111111",
+    },
     invitations: [{ acknowledged: true, invitationDigest: DIGEST }],
     deliveries: [{ acknowledged: true, artifactDigest: DIGEST, artifactType: "acceptance", checkpointDigest: OTHER_DIGEST, messageDigests: [DIGEST, OTHER_DIGEST] }],
     certificate: {
       verified: true,
       proofDigest: DIGEST,
       certificateDigest: OTHER_DIGEST,
+      resultDigest: DIGEST,
       identity: {
         sessionKeyAddress: "0x1111111111111111111111111111111111111111",
         policyDigest: DIGEST,
@@ -159,6 +164,27 @@ function dependencies(calls, overrides = {}) {
   };
 }
 
+function initiatorBridgeEvidence() {
+  const base = dependencies([]).createBridge().publicEvidence();
+  return {
+    ...base,
+    role: "initiator",
+    deliveries: [{ acknowledged: true, artifactDigest: DIGEST, artifactType: "proposal", checkpointDigest: OTHER_DIGEST, messageDigests: [DIGEST, OTHER_DIGEST] }],
+    certificate: {
+      ...base.certificate,
+      identity: {
+        ...base.certificate.identity,
+        sessionKeyAddress: "0x2222222222222222222222222222222222222222",
+        erc8004: {
+          ...base.certificate.identity.erc8004,
+          agentId: "9452",
+          reference: "eip155:11155111:0x8004a818bfb912233c491871b3d84c89a494bd9e:9452",
+        },
+      },
+    },
+  };
+}
+
 async function usingTemporaryEnv(values, fn) {
   const previous = {};
   for (const key of Object.keys(values)) previous[key] = process.env[key];
@@ -206,7 +232,10 @@ test("one responder runtime listens before launch and returns only digest-bound 
   assert.equal(evidence.protocolSessionId, PROTOCOL_SESSION_ID);
   assert.equal(evidence.certificateProofDigest, DIGEST);
   assert.equal(evidence.certificateDigest, OTHER_DIGEST);
+  assert.equal(evidence.resultDigest, DIGEST);
+  assert.equal(evidence.certificateVerified, true);
   assert.equal(evidence.identity.erc8004.agentId, "9453");
+  assert.equal(evidence.a2aCardSignerAddress, evidence.identity.sessionKeyAddress);
   assert.deepEqual(evidence.anchors.map((anchor) => anchor.kind), ["proposal", "acceptance", "acknowledgment"]);
   assert.deepEqual(evidence.directDelivery, {
     acknowledged: true,
@@ -246,17 +275,7 @@ test("initiator runtime installs serialized Codex subscription auth into isolate
     AWS_SESSION_TOKEN: undefined,
   }, async () => {
     const calls = [];
-    const initiatorBridgeEvidence = {
-      ...dependencies([]).createBridge().publicEvidence(),
-      role: "initiator",
-      deliveries: [{
-        acknowledged: true,
-        artifactDigest: DIGEST,
-        artifactType: "proposal",
-        checkpointDigest: OTHER_DIGEST,
-        messageDigests: [DIGEST, OTHER_DIGEST],
-      }],
-    };
+    const bridgeEvidence = initiatorBridgeEvidence();
     let transportEnv;
     const runtime = await createMechanicsProofPartyRuntime(options(root, {
       harness: "codex",
@@ -265,7 +284,7 @@ test("initiator runtime installs serialized Codex subscription auth into isolate
       runtimeId: "runtime-initiator",
       taskId: "task-initiator",
     }), dependencies(calls, {
-      bridgeEvidence: initiatorBridgeEvidence,
+      bridgeEvidence,
       createProcessTransport(input) {
         calls.push("transport.create");
         transportEnv = input.env;
@@ -319,11 +338,7 @@ test("Codex runtime tolerates ECS task credential env but does not pass AWS cred
       runtimeId: "runtime-initiator",
       taskId: "task-initiator",
     }), dependencies(calls, {
-      bridgeEvidence: {
-        ...dependencies([]).createBridge().publicEvidence(),
-        role: "initiator",
-        deliveries: [{ acknowledged: true, artifactDigest: DIGEST, artifactType: "proposal", checkpointDigest: OTHER_DIGEST, messageDigests: [DIGEST, OTHER_DIGEST] }],
-      },
+      bridgeEvidence: initiatorBridgeEvidence(),
       createProcessTransport(input) { transportEnv = input.env; return {}; },
     }));
     await runtime.run({
@@ -449,6 +464,26 @@ test("party runtime rejects controller authority, stale state, peer drift, and s
     const calls = [];
     const runtime = await createMechanicsProofPartyRuntime(options(join(parent, name)), dependencies(calls));
     await assert.rejects(() => runtime.run({ peerDescriptor: peerDescriptor(mutation) }), /Mechanics proof party runtime failed safely/);
+  }
+});
+
+test("party runtime rejects terminal evidence with missing result digest or mismatched card signer", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-terminal-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const base = dependencies([]).createBridge().publicEvidence();
+  const cases = [
+    ["missing-result-digest", { ...base, certificate: { ...base.certificate, resultDigest: undefined } }],
+    ["missing-card-signer", { ...base, cardSignerAddresses: { initiator: "0x2222222222222222222222222222222222222222", responder: null } }],
+    ["mismatched-card-signer", { ...base, cardSignerAddresses: { initiator: "0x2222222222222222222222222222222222222222", responder: "0x3333333333333333333333333333333333333333" } }],
+    ["shared-card-signer", { ...base, cardSignerAddresses: { initiator: "0x1111111111111111111111111111111111111111", responder: "0x1111111111111111111111111111111111111111" } }],
+  ];
+  for (const [name, bridgeEvidence] of cases) {
+    const runtime = await createMechanicsProofPartyRuntime(options(join(parent, name)), dependencies([], { bridgeEvidence }));
+    await assert.rejects(
+      () => runtime.run({ peerDescriptor: peerDescriptor() }),
+      /Mechanics proof party runtime failed safely/,
+      name,
+    );
   }
 });
 

@@ -15,6 +15,7 @@ const DIGEST = /^[0-9a-f]{64}$/;
 const SECRET_REF = /^arn:aws:(?:secretsmanager|ssm):[a-z0-9-]+:[0-9]{12}:(?:secret|parameter)[:/].+/;
 const CODEX_AUTH_BASE64 = /^[A-Za-z0-9+/=]{4,98304}$/;
 const PRIVATE_DNS = /^(?:[a-z0-9-]+\.)*(?:task\.local|internal|local)$/i;
+const MANAGED_IDLE_MS = 300_000;
 
 function value(env, name) {
   const item = env[name];
@@ -184,6 +185,24 @@ function managedExchangeEnvironment(env) {
   });
 }
 
+function waitForManagedStop({ timeoutMs = MANAGED_IDLE_MS, signalSource = process } = {}) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signalSource.off?.("SIGTERM", done);
+      signalSource.off?.("SIGINT", done);
+      resolve();
+    };
+    timer = setTimeout(done, timeoutMs);
+    signalSource.once?.("SIGTERM", done);
+    signalSource.once?.("SIGINT", done);
+  });
+}
+
 export async function runMain({
   argv = process.argv,
   createBootstrapExchange = createStdinBootstrapExchange,
@@ -194,6 +213,7 @@ export async function runMain({
   stdin = process.stdin,
   stdout = process.stdout,
   resolveManagedRunOptions = resolveAwsEcsTaskBootstrap,
+  holdManagedRun = argv === process.argv ? waitForManagedStop : async () => {},
 } = {}) {
   let bootstrapExchange = null;
   let bootstrapExchangeDestroyed = false;
@@ -224,6 +244,7 @@ export async function runMain({
       onPublicEvent(event) { stdout.write(`${JSON.stringify(event)}\n`); },
     });
     stdout.write(`${JSON.stringify(evidence)}\n`);
+    if (argv[2] === "--run-managed") await holdManagedRun();
     return 0;
   } catch {
     if (bootstrapExchange !== null && !bootstrapExchangeDestroyed) {

@@ -508,10 +508,16 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
           });
           launched = true;
           const bridgeEvidence = publicData(bridge.publicEvidence());
+          const cardSignerAddresses = publicData(bridgeEvidence.cardSignerAddresses);
+          const ownCardSigner = cardSignerAddresses?.[options.role];
+          const peerCardSigner = cardSignerAddresses?.[opposite(options.role)];
+          const certificateIdentity = publicData(bridgeEvidence.certificate?.identity);
           if (
             bridgeEvidence.sessionId === null || !UUID.test(bridgeEvidence.sessionId) ||
             bridgeEvidence.certificate?.verified !== true || !DIGEST.test(bridgeEvidence.certificate?.proofDigest) ||
-            !DIGEST.test(bridgeEvidence.certificate?.certificateDigest) ||
+            !DIGEST.test(bridgeEvidence.certificate?.certificateDigest) || !DIGEST.test(bridgeEvidence.certificate?.resultDigest) ||
+            typeof ownCardSigner !== "string" || ownCardSigner !== certificateIdentity.sessionKeyAddress ||
+            typeof peerCardSigner !== "string" || peerCardSigner === ownCardSigner ||
             !Array.isArray(bridgeEvidence.certificate?.anchors) || bridgeEvidence.certificate.anchors.length !== 3 ||
             !Array.isArray(bridgeEvidence.deliveries) || bridgeEvidence.deliveries.length !== 1
           ) fail();
@@ -539,7 +545,10 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
             harnessEvidenceDigest: digestHex(harnessEvidence),
             certificateProofDigest: bridgeEvidence.certificate.proofDigest,
             certificateDigest: bridgeEvidence.certificate.certificateDigest,
-            identity: publicData(bridgeEvidence.certificate.identity),
+            resultDigest: bridgeEvidence.certificate.resultDigest,
+            certificateVerified: true,
+            identity: certificateIdentity,
+            a2aCardSignerAddress: ownCardSigner,
             anchors: publicData(bridgeEvidence.certificate.anchors),
             directDelivery,
             externalBusinessActionPerformed: false,

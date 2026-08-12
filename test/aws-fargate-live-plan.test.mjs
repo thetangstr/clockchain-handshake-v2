@@ -227,6 +227,8 @@ test("live task definitions use stack outputs and keep party authority inside is
   assert.equal(responder.containerDefinitions[0].image, IMAGE);
   assert.equal(initiator.containerDefinitions[0].readonlyRootFilesystem, true);
   assert.equal(responder.containerDefinitions[0].readonlyRootFilesystem, true);
+  assert.equal(initiator.containerDefinitions[0].stopTimeout, 30);
+  assert.equal(responder.containerDefinitions[0].stopTimeout, 30);
   assert.equal(initiator.containerDefinitions[0].user, "1000:1000");
   assert.deepEqual(initiator.containerDefinitions[0].command, ["--run-managed"]);
   assert.deepEqual(responder.containerDefinitions[0].command, ["--run-managed"]);

@@ -13,6 +13,8 @@ import {
   loadFargateDryRunPlan,
 } from "../src/runtime/aws-fargate-runtime-adapter.mjs";
 import { runFargateLiveMechanicsProof } from "../src/runtime/aws-fargate-live-adapter.mjs";
+import { buildFargateRuntimeProofPlan } from "../src/runtime/aws-fargate-evidence.mjs";
+import { buildMechanicsProofCloudEvidence } from "../src/testing/mechanics-proof-cloud-evidence.mjs";
 
 const PRODUCTION_MCP_URL = "https://mcp.clockchain.network/handshake/mcp";
 const REQUIRED_TOOLS = Object.freeze([
@@ -25,6 +27,7 @@ const REQUIRED_TOOLS = Object.freeze([
   "agent_handshake_submit",
   "agent_handshake_submit_checkpoint",
 ].sort());
+const MCP_BODY_LIMIT_BYTES = 131_072;
 
 function fail() {
   throw new Error("Fargate mechanics proof runner failed safely.");
@@ -88,7 +91,7 @@ export function parseFargateRunnerArgs(argv = process.argv) {
 }
 
 function parseMcpEnvelope(bytes, contentType) {
-  if (typeof bytes !== "string" || bytes.length === 0 || bytes.length > 131_072) fail();
+  if (typeof bytes !== "string" || bytes.length === 0 || bytes.length > MCP_BODY_LIMIT_BYTES) fail();
   if (/event-stream/i.test(contentType)) {
     const messages = bytes.trim().split(/\n\n+/).filter(Boolean);
     if (messages.length !== 1) fail();
@@ -99,6 +102,26 @@ function parseMcpEnvelope(bytes, contentType) {
     return JSON.parse(data.slice(6));
   }
   return JSON.parse(bytes);
+}
+
+async function readBoundedResponseBody(response) {
+  const contentLength = response.headers?.get?.("content-length");
+  if (contentLength !== null && contentLength !== undefined) {
+    if (!/^(?:0|[1-9][0-9]*)$/.test(contentLength) || Number(contentLength) > MCP_BODY_LIMIT_BYTES) fail();
+  }
+  if (!response.body?.getReader) fail();
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!(value instanceof Uint8Array)) fail();
+    total += value.byteLength;
+    if (total > MCP_BODY_LIMIT_BYTES) fail();
+    chunks.push(value);
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks));
 }
 
 async function rpc(fetchImpl, url, method) {
@@ -112,10 +135,8 @@ async function rpc(fetchImpl, url, method) {
   });
   if (response?.ok !== true) fail();
   const contentType = response.headers?.get?.("content-type") ?? "";
-  const contentLength = response.headers?.get?.("content-length");
-  if (contentLength !== null && contentLength !== undefined && Number(contentLength) > 131_072) fail();
   try {
-    const envelope = parseMcpEnvelope(await response.text(), contentType);
+    const envelope = parseMcpEnvelope(await readBoundedResponseBody(response), contentType);
     if (envelope.id !== id) fail();
     return envelope;
   } catch {
@@ -140,11 +161,9 @@ export async function checkProductionMcpGate(options = {}) {
     fail();
   }
   if (health?.ok !== true) fail();
-  const healthLength = health.headers?.get?.("content-length");
-  if (healthLength !== null && healthLength !== undefined && Number(healthLength) > 131_072) fail();
   let healthBody;
   try {
-    healthBody = JSON.parse(await health.text());
+    healthBody = JSON.parse(await readBoundedResponseBody(health));
   } catch {
     fail();
   }
@@ -175,6 +194,15 @@ async function retainEvidenceFile(evidenceDir, evidence) {
   }
 }
 
+async function retainPublicProofFile(evidenceDir, evidence) {
+  const handle = await open(join(evidenceDir, "public-proof.json"), "wx", 0o600);
+  try {
+    await handle.writeFile(`${JSON.stringify(evidence)}\n`, "utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function retainFargateSuccessEvidence(evidenceDir, evidence) {
   try {
     await reserveFargateEvidenceDir(evidenceDir);
@@ -185,6 +213,324 @@ export async function retainFargateSuccessEvidence(evidenceDir, evidence) {
     if (error?.message === "Fargate mechanics proof runner failed safely.") throw error;
     fail();
   }
+}
+
+export async function retainFargatePublicProofEvidence(evidenceDir, proofInput) {
+  try {
+    const proof = buildMechanicsProofCloudEvidence(proofInput);
+    await reserveFargateEvidenceDir(evidenceDir);
+    await retainPublicProofFile(evidenceDir, proof);
+    await chmod(join(evidenceDir, "public-proof.json"), 0o600);
+    if (((await stat(join(evidenceDir, "public-proof.json"))).mode & 0o777) !== 0o600) fail();
+    return proof;
+  } catch (error) {
+    if (error?.message === "Fargate mechanics proof runner failed safely.") throw error;
+    fail();
+  }
+}
+
+function roleValue(values, role) {
+  const value = values?.[role];
+  if (typeof value !== "string" || value.length === 0) fail();
+  return value;
+}
+
+function taskEniId(task) {
+  const details = task?.attachments?.find?.((attachment) => attachment?.type === "ElasticNetworkInterface")?.details;
+  const value = details?.find?.((entry) => entry?.name === "networkInterfaceId")?.value;
+  if (typeof value !== "string" || value.length === 0) fail();
+  return value;
+}
+
+function taskSubnetId(task) {
+  const details = task?.attachments?.find?.((attachment) => attachment?.type === "ElasticNetworkInterface")?.details;
+  const value = details?.find?.((entry) => entry?.name === "subnetId")?.value;
+  if (typeof value !== "string" || value.length === 0) fail();
+  return value;
+}
+
+function taskDefinitionFamily(taskDefinitionArn) {
+  const tail = taskDefinitionArn.split("/").at(-1);
+  const family = tail?.split(":").at(0);
+  if (typeof family !== "string" || family.length === 0) fail();
+  return family;
+}
+
+function logGroupFromTaskDefinition(taskDefinition, role) {
+  const container = taskDefinition?.containerDefinitions?.find?.((entry) => entry?.name === role);
+  const value = container?.logConfiguration?.options?.["awslogs-group"];
+  if (typeof value !== "string" || value.length === 0) fail();
+  return value;
+}
+
+function parsedCloudTrailEvent(event) {
+  if (typeof event?.CloudTrailEvent !== "string") fail();
+  try {
+    return JSON.parse(event.CloudTrailEvent);
+  } catch {
+    fail();
+  }
+}
+
+function eventTaskArn(event) {
+  if (event.eventName === "RunTask") return event.responseElements?.tasks?.[0]?.taskArn;
+  if (event.eventName === "StopTask") return event.responseElements?.task?.taskArn ?? event.requestParameters?.task;
+  return null;
+}
+
+function hasExactCloudTrailEvents(events, taskArns, runId) {
+  return ["RunTask", "StopTask"].every((eventName) => taskArns.every((taskArn) => events.some((event) => {
+    const parsed = parsedCloudTrailEvent(event);
+    return parsed.eventName === eventName &&
+      parsed.eventSource === "ecs.amazonaws.com" &&
+      eventTaskArn(parsed) === taskArn &&
+      (eventName === "RunTask"
+        ? parsed.requestParameters?.startedBy === runId
+        : String(parsed.requestParameters?.reason ?? "").includes("clockchain cleanup"));
+  })));
+}
+
+function cloudTrailWindow(tasks) {
+  const created = tasks.map((task) => Date.parse(task.createdAt));
+  const stopped = tasks.map((task) => Date.parse(task.stoppedAt));
+  if ([...created, ...stopped].some((value) => !Number.isSafeInteger(value))) fail();
+  return Object.freeze({
+    startTime: new Date(Math.min(...created) - 60_000).toISOString(),
+    endTime: new Date(Math.max(...stopped) + 60_000).toISOString(),
+  });
+}
+
+async function lookupEcsCloudTrailEvents({ controlPlane, region, taskArns, runId, startTime, endTime, sleep = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms)) }) {
+  const collected = [];
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const response = await controlPlane.callAws([
+      "cloudtrail", "lookup-events", "--lookup-attributes", "AttributeKey=EventSource,AttributeValue=ecs.amazonaws.com",
+      "--start-time", startTime, "--end-time", endTime, "--no-paginate", "--region", region, "--output", "json",
+    ]);
+    if (!Array.isArray(response?.Events)) fail();
+    collected.push(...response.Events);
+    if (hasExactCloudTrailEvents(collected, taskArns, runId)) return collected;
+    if (attempt < 119) await sleep(1000);
+  }
+  return collected;
+}
+
+async function collectRoleLiveInfraInput({ controlPlane, region, role, clusterArn, taskArn, taskDefinitionArn, securityGroupId }) {
+  const describeTasks = await controlPlane.callAws(["ecs", "describe-tasks", "--cluster", clusterArn, "--tasks", taskArn, "--region", region, "--output", "json"]);
+  const task = describeTasks.tasks?.[0];
+  if (task?.taskArn !== taskArn) fail();
+  const taskDefinition = await controlPlane.callAws(["ecs", "describe-task-definition", "--task-definition", taskDefinitionArn, "--region", region, "--output", "json"]);
+  const taskDefinitionBody = taskDefinition.taskDefinition;
+  if (taskDefinitionBody?.taskDefinitionArn !== taskDefinitionArn) fail();
+  const eniId = taskEniId(task);
+  const subnetId = taskSubnetId(task);
+  const eniResponse = await controlPlane.callAws(["ec2", "describe-network-interfaces", "--network-interface-ids", eniId, "--region", region, "--output", "json"]);
+  const networkInterface = eniResponse.NetworkInterfaces?.[0];
+  const describeSubnet = await controlPlane.callAws(["ec2", "describe-subnets", "--subnet-ids", subnetId, "--region", region, "--output", "json"]);
+  const securityGroupResponse = await controlPlane.callAws(["ec2", "describe-security-groups", "--group-ids", securityGroupId, "--region", region, "--output", "json"]);
+  return Object.freeze({
+    role,
+    taskDefinition: taskDefinitionBody,
+    securityGroupId,
+    aws: Object.freeze({
+      taskDefinition,
+      networkInterface,
+      describeSubnet: Object.freeze({ Subnet: describeSubnet.Subnets?.[0] }),
+      securityGroups: Object.freeze({ [securityGroupId]: securityGroupResponse.SecurityGroups?.[0] }),
+    }),
+  });
+}
+
+async function collectRoleRuntimeRaw({ controlPlane, runId, region, role, clusterArn, taskArn, taskDefinitionArn, securityGroupId, liveRoleInput = null, cloudTrailEvents }) {
+  const describeTasks = await controlPlane.callAws(["ecs", "describe-tasks", "--cluster", clusterArn, "--tasks", taskArn, "--region", region, "--output", "json"]);
+  const task = describeTasks.tasks?.[0];
+  if (task?.taskArn !== taskArn || task.lastStatus !== "STOPPED") fail();
+  const live = liveRoleInput ?? await collectRoleLiveInfraInput({ controlPlane, region, role, clusterArn, taskArn, taskDefinitionArn, securityGroupId });
+  if (live.role !== role || live.securityGroupId !== securityGroupId || live.taskDefinition?.taskDefinitionArn !== taskDefinitionArn) fail();
+  if (!Array.isArray(cloudTrailEvents) || cloudTrailEvents.length === 0) fail();
+  const logGroupName = logGroupFromTaskDefinition(live.taskDefinition, role);
+  const logs = await controlPlane.callAws(["logs", "filter-log-events", "--log-group-name", logGroupName, "--region", region, "--output", "json"]);
+  if (!Array.isArray(logs.events)) fail();
+  const logStreamName = logs.events.find((event) => typeof event?.logStreamName === "string")?.logStreamName ?? `${role}/${role}/${taskArn.split("/").at(-1)}`;
+  return {
+    role,
+    taskDefinition: live.taskDefinition,
+    securityGroupId,
+    aws: {
+      describeTasks,
+      taskDefinition: live.aws.taskDefinition,
+      networkInterface: live.aws.networkInterface,
+      describeSubnet: live.aws.describeSubnet,
+      securityGroups: live.aws.securityGroups,
+      cloudTrailEvents,
+      cloudWatchLogs: [{
+        logGroupName,
+        logStreamName,
+        events: logs.events ?? [],
+      }],
+    },
+  };
+}
+
+export async function collectFargateLiveInfraProofInputs(optionsInput) {
+  try {
+    const options = optionsInput;
+    if (options === null || typeof options !== "object" || Array.isArray(options)) fail();
+    const { stackOutputs, clusterArn, taskArns, taskDefinitionArns, controlPlane } = options;
+    if (controlPlane === null || typeof controlPlane !== "object" || typeof controlPlane.callAws !== "function") fail();
+    const runId = typeof options.runId === "string" ? options.runId : options.plan?.runId;
+    const region = typeof options.region === "string" ? options.region : options.plan?.region;
+    if (typeof runId !== "string" || typeof region !== "string") fail();
+    const roles = {};
+    for (const role of ["initiator", "responder"]) {
+      roles[role] = await collectRoleLiveInfraInput({
+        controlPlane,
+        region,
+        role,
+        clusterArn,
+        taskArn: roleValue(taskArns, role),
+        taskDefinitionArn: roleValue(taskDefinitionArns, role),
+        securityGroupId: role === "initiator" ? stackOutputs.InitiatorSecurityGroupId : stackOutputs.ResponderSecurityGroupId,
+      });
+    }
+    return Object.freeze({ runId, roles: Object.freeze(roles) });
+  } catch (error) {
+    if (error?.message === "Fargate mechanics proof runner failed safely.") throw error;
+    fail();
+  }
+}
+
+export async function collectFargateRuntimeProofInputs(optionsInput) {
+  try {
+    const options = optionsInput;
+    if (options === null || typeof options !== "object" || Array.isArray(options)) fail();
+    const { plan, stackOutputs, clusterArn, taskArns, taskDefinitionArns, controlPlane } = options;
+    if (controlPlane === null || typeof controlPlane !== "object" || typeof controlPlane.callAws !== "function") fail();
+    if (plan === null || typeof plan !== "object") fail();
+    const runId = typeof options.runId === "string" ? options.runId : plan.runId;
+    const region = typeof options.region === "string" ? options.region : plan.region;
+    if (typeof runId !== "string" || typeof region !== "string") fail();
+    const rawByRole = {};
+    const parties = {};
+    const rawControlPlaneEnvelopes = [];
+    const stoppedTasksForWindow = [];
+    for (const role of ["initiator", "responder"]) {
+      const described = await controlPlane.callAws([
+        "ecs", "describe-tasks", "--cluster", clusterArn, "--tasks", roleValue(taskArns, role), "--region", region, "--output", "json",
+      ]);
+      const task = described.tasks?.[0];
+      if (task?.taskArn !== roleValue(taskArns, role) || task.lastStatus !== "STOPPED") fail();
+      stoppedTasksForWindow.push(task);
+    }
+    const window = cloudTrailWindow(stoppedTasksForWindow);
+    const exactTaskArns = ["initiator", "responder"].map((role) => roleValue(taskArns, role));
+    const cloudTrailEvents = await lookupEcsCloudTrailEvents({ controlPlane, region, taskArns: exactTaskArns, runId, ...window });
+    for (const role of ["initiator", "responder"]) {
+      rawByRole[role] = await collectRoleRuntimeRaw({
+        controlPlane,
+        runId,
+        region,
+        role,
+        clusterArn,
+        taskArn: roleValue(taskArns, role),
+        taskDefinitionArn: roleValue(taskDefinitionArns, role),
+        securityGroupId: role === "initiator" ? stackOutputs.InitiatorSecurityGroupId : stackOutputs.ResponderSecurityGroupId,
+        liveRoleInput: options.liveRuntimeInfraInputs?.roles?.[role] ?? null,
+        cloudTrailEvents,
+      });
+      parties[role] = {
+        role,
+        taskDefinition: rawByRole[role].taskDefinition,
+        family: rawByRole[role].taskDefinition.family,
+        taskRoleArn: rawByRole[role].taskDefinition.taskRoleArn,
+        executionRoleArn: rawByRole[role].taskDefinition.executionRoleArn,
+        image: rawByRole[role].taskDefinition.containerDefinitions.find((entry) => entry.name === role).image,
+        imageDigest: rawByRole[role].taskDefinition.containerDefinitions.find((entry) => entry.name === role).image.split("@").at(-1),
+        user: rawByRole[role].taskDefinition.containerDefinitions.find((entry) => entry.name === role).user,
+        readonlyRootFilesystem: rawByRole[role].taskDefinition.containerDefinitions.find((entry) => entry.name === role).readonlyRootFilesystem,
+        privileged: rawByRole[role].taskDefinition.containerDefinitions.find((entry) => entry.name === role).privileged,
+        securityGroupId: rawByRole[role].securityGroupId,
+      };
+      rawControlPlaneEnvelopes.push(
+        rawByRole[role].aws.describeTasks,
+        rawByRole[role].aws.taskDefinition,
+        rawByRole[role].aws.networkInterface,
+        rawByRole[role].aws.describeSubnet,
+        rawByRole[role].aws.securityGroups,
+        rawByRole[role].aws.cloudTrailEvents,
+        rawByRole[role].aws.cloudWatchLogs,
+      );
+    }
+    const proofPlan = plan.parties === undefined ? buildFargateRuntimeProofPlan({ parties }) : plan;
+    const imageDigest = proofPlan.parties?.initiator?.imageDigest;
+    if (typeof imageDigest !== "string") fail();
+    const runtimeInputs = {};
+    for (const role of ["initiator", "responder"]) {
+      runtimeInputs[role] = {
+        plan: proofPlan,
+        sessionId: runId,
+        role,
+        aws: rawByRole[role].aws,
+      };
+    }
+    return Object.freeze({
+      runId,
+      imageDigest,
+      runtimeInputs,
+      rawControlPlaneEnvelopes,
+    });
+  } catch (error) {
+    if (error?.message === "Fargate mechanics proof runner failed safely.") throw error;
+    fail();
+  }
+}
+
+export async function collectFargateCleanupProofInputs(optionsInput) {
+  try {
+    const options = optionsInput;
+    if (options === null || typeof options !== "object" || Array.isArray(options)) fail();
+    const { stackOutputs, taskArns, taskDefinitionArns, controlPlane, runtimeProofInput } = options;
+    if (controlPlane === null || typeof controlPlane !== "object" || typeof controlPlane.callAws !== "function" || typeof controlPlane.confirmAbsence !== "function") fail();
+    const runId = typeof options.runId === "string" ? options.runId : runtimeProofInput?.runId;
+    const region = typeof options.region === "string" ? options.region : undefined;
+    if (typeof runId !== "string" || typeof region !== "string") fail();
+    const stackName = typeof options.stackName === "string" ? options.stackName : `clockchain-${runId}`;
+    const stoppedTasks = {};
+    for (const role of ["initiator", "responder"]) {
+      const task = runtimeProofInput?.runtimeInputs?.[role]?.aws?.describeTasks?.tasks?.[0];
+      if (task?.taskArn !== roleValue(taskArns, role) || task.lastStatus !== "STOPPED") fail();
+      stoppedTasks[role] = { taskArn: task.taskArn, lastStatus: task.lastStatus };
+    }
+    return Object.freeze({
+      targets: {
+        stackName,
+        queueUrls: { initiator: stackOutputs.InitiatorQueueUrl, responder: stackOutputs.ResponderQueueUrl },
+        taskDefinitionArns,
+        taskDefinitionFamilies: {
+          initiator: taskDefinitionFamily(roleValue(taskDefinitionArns, "initiator")),
+          responder: taskDefinitionFamily(roleValue(taskDefinitionArns, "responder")),
+        },
+        taskArns,
+      },
+      confirmAbsence: await controlPlane.confirmAbsence({ stackName }),
+      listQueues: await controlPlane.callAws(["sqs", "list-queues", "--queue-name-prefix", stackName, "--region", region, "--output", "json"]),
+      listActiveTaskDefinitions: await controlPlane.callAws(["ecs", "list-task-definitions", "--family-prefix", stackName, "--status", "ACTIVE", "--region", region, "--output", "json"]),
+      listInactiveTaskDefinitions: await controlPlane.callAws(["ecs", "list-task-definitions", "--family-prefix", stackName, "--status", "INACTIVE", "--region", region, "--output", "json"]),
+      stoppedTasks,
+    });
+  } catch (error) {
+    if (error?.message === "Fargate mechanics proof runner failed safely.") throw error;
+    fail();
+  }
+}
+
+export async function collectFargateCloudProofInputs(optionsInput) {
+  const runtimeProofInput = await collectFargateRuntimeProofInputs(optionsInput);
+  if (optionsInput?.cleanupPhase !== true) return runtimeProofInput;
+  return Object.freeze({
+    ...runtimeProofInput,
+    cleanupResponses: await collectFargateCleanupProofInputs({ ...optionsInput, runtimeProofInput }),
+  });
 }
 
 export async function reserveFargateEvidenceDir(evidenceDir) {
@@ -243,7 +589,7 @@ async function main() {
       return;
     }
     await reserveFargateEvidenceDir(parsed.evidenceDir);
-    const controlPlane = createAwsCliControlPlane({ region: parsed.region });
+    const controlPlane = createAwsCliControlPlane({ region: parsed.region, accountId: parsed.accountId });
     const startedAt = new Date().toISOString();
     const expiresAt = new Date(Date.parse(startedAt) + parsed.ttlSeconds * 1000).toISOString();
     const networkInspection = await controlPlane.inspectNetwork({
@@ -275,6 +621,43 @@ async function main() {
       plan,
       controlPlane,
       mcpGate: checkProductionMcpGate,
+      collectLiveRuntimeInfraInputs: (context) => collectFargateLiveInfraProofInputs({
+        plan,
+        runId: context.runId,
+        region: parsed.region,
+        stackOutputs: context.stackOutputs,
+        clusterArn: context.clusterArn,
+        taskArns: context.taskArns,
+        taskDefinitionArns: context.taskDefinitionArns,
+        controlPlane,
+      }),
+      collectRuntimeEvidenceInputs: (context) => collectFargateRuntimeProofInputs({
+        plan,
+        runId: context.runId,
+        region: parsed.region,
+        stackOutputs: context.stackOutputs,
+        clusterArn: context.clusterArn,
+        taskArns: context.taskArns,
+        taskDefinitionArns: context.taskDefinitionArns,
+        liveRuntimeInfraInputs: context.liveRuntimeInfraInputs,
+        controlPlane,
+      }),
+      finalizeVerifiedEvidence: async (context) => {
+        const cleanupResponses = await collectFargateCleanupProofInputs({
+          runId: context.runId,
+          region: parsed.region,
+          stackName: context.stackName,
+          stackOutputs: context.stackOutputs,
+          taskArns: context.taskArns,
+          taskDefinitionArns: context.taskDefinitionArns,
+          runtimeProofInput: context.runtimeEvidenceInputs,
+          controlPlane,
+        });
+        await retainFargatePublicProofEvidence(parsed.evidenceDir, {
+          ...context.runtimeEvidenceInputs,
+          cleanupResponses,
+        });
+      },
       retainEvidence: (evidence) => retainFargateSuccessEvidence(parsed.evidenceDir, evidence),
     });
     process.stdout.write(`${JSON.stringify(result)}\n`);

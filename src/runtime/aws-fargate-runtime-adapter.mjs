@@ -66,6 +66,7 @@ const LIVE_APP_CONTAINER_DEFINITION_KEYS = Object.freeze([
   ...CONTAINER_DEFINITION_KEYS,
   "command",
   "dependsOn",
+  "stopTimeout",
 ]);
 const WORKSPACE_INIT_CONTAINER_DEFINITION_KEYS = Object.freeze([
   "command",
@@ -439,6 +440,7 @@ export function normalizeFargateTaskDefinitionForProof(taskDefinition, role, { s
       container.essential !== true ||
       container.privileged !== false ||
       container.readonlyRootFilesystem !== true ||
+      container.stopTimeout !== 30 ||
       container.user !== "1000:1000" ||
       JSON.stringify(container.mountPoints) !== JSON.stringify([{ containerPath: "/workspace", readOnly: false, sourceVolume: "workspace" }]) ||
       workspaceInit.essential !== false ||
@@ -474,6 +476,7 @@ export function normalizeFargateTaskDefinitionForProof(taskDefinition, role, { s
       ...(containers.length === 2 ? {
         command: container.command,
         dependsOn: container.dependsOn,
+        stopTimeout: container.stopTimeout,
       } : {}),
       essential: container.essential,
       image: container.image,

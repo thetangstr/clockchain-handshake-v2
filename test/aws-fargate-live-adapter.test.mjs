@@ -115,19 +115,23 @@ function fakeControlPlane(plan, { failAt = null, absent = true, existingStack = 
     async getCallerIdentity() { maybe("identity"); return { accountId: ACCOUNT, arn: `arn:aws:iam::${ACCOUNT}:user/controller`, userId: "AIDA" }; },
     async validateTemplate() { maybe("validate-template"); return { ok: true }; },
     async stackExists() { maybe("stack-exists"); return existingStack; },
-    async createStack(input) { maybe("create-stack"); assert.equal(input.capabilities.includes("CAPABILITY_NAMED_IAM"), true); return { stackId: STACK_ID }; },
-    async waitStackCreateComplete() { maybe("wait-stack-create"); return { stackId: STACK_ID }; },
-    async describeStackOutputs() { maybe("describe-stack-outputs"); return outputs; },
-    async listStackResources() { maybe("list-stack-resources"); return resources; },
+    async createStack(input) { maybe("create-stack"); assert.equal(input.capabilities.includes("CAPABILITY_NAMED_IAM"), true); return { StackId: STACK_ID }; },
+    async waitStackCreateComplete({ stackId, stackName }) { maybe("wait-stack-create"); assert.equal(stackId, STACK_ID); assert.equal(stackName, STACK_NAME); return { StackId: STACK_ID }; },
+    async describeStackOutputs({ stackId, stackName }) { maybe("describe-stack-outputs"); assert.equal(stackId, STACK_ID); assert.equal(stackName, STACK_NAME); return outputs; },
+    async listStackResources({ stackId, stackName }) { maybe("list-stack-resources"); assert.equal(stackId, STACK_ID); assert.equal(stackName, STACK_NAME); return resources; },
     async registerTaskDefinition({ role }) { maybe(`register-${role}`); return { taskDefinition: { taskDefinitionArn: taskDefinitions[role] } }; },
-    async runTask({ role, networkConfiguration }) {
+    async runTask({ role, networkConfiguration, platformVersion }) {
       maybe(`run-${role}`);
       assert.equal(networkConfiguration.awsvpcConfiguration.assignPublicIp, "DISABLED");
+      assert.equal(platformVersion, "1.4.0");
       return { tasks: [{ taskArn: taskArns[role] }], failures: [] };
     },
+    async waitTasksRunning({ taskArns: arns }) { maybe(`wait-running-${arns.length}`); return { taskArns: arns }; },
     async waitTasksStopped({ taskArns: arns }) { maybe(`wait-stopped-${arns.length}`); return { taskArns: arns }; },
-    async pollPublicEvents() {
+    async pollPublicEvents({ deadlineMs }) {
       maybe("poll-events");
+      assert.ok(deadlineMs - Date.now() > 250_000);
+      assert.ok(deadlineMs - Date.now() <= 300_000);
       return [
         partyEvidence("initiator", "a".repeat(64)),
         partyEvidence("responder", "a".repeat(64)),
@@ -158,12 +162,15 @@ function partyEvidence(role, certificateDigest, overrides = {}) {
     harnessEvidenceDigest: role === "initiator" ? "5".repeat(64) : "6".repeat(64),
     certificateProofDigest: role === "initiator" ? "7".repeat(64) : "8".repeat(64),
     certificateDigest,
+    resultDigest: "b".repeat(64),
+    certificateVerified: true,
     identity: { address: role === "initiator" ? `0x${"1".repeat(40)}` : `0x${"2".repeat(40)}` },
     anchors: [],
     directDelivery: { acknowledged: true, artifactDigest: "9".repeat(64), checkpointDigest: "0".repeat(64), messageDigest: "b".repeat(64) },
     externalBusinessActionPerformed: false,
     terminalStatus: "completed",
     teardown: { completed: true },
+    timestamp: role === "initiator" ? "2026-08-12T20:05:01.000Z" : "2026-08-12T20:05:02.000Z",
     ...overrides,
   };
 }
@@ -183,13 +190,128 @@ test("live Fargate adapter runs exact lifecycle and starts both tasks before wai
   assert.deepEqual(controlPlane.calls, [
     "identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create",
     "describe-stack-outputs", "list-stack-resources", "register-initiator", "register-responder",
-    "run-initiator", "run-responder", "poll-events", "stop-initiator", "stop-responder",
+    "run-initiator", "run-responder", "wait-running-2", "poll-events", "stop-initiator", "stop-responder",
     "wait-stopped-2", "deregister-initiator", "deregister-responder", "delete-stack",
     "wait-stack-delete", "confirm-absence",
   ]);
   assert.equal(retained.length, 1);
   assert.equal(retained[0].stackResourceCount, 25);
   assert.equal(Object.keys(retained[0].stackOutputBindings).length, 13);
+  assert.deepEqual(retained[0].publicEvents, [
+    { runId: RUN_ID, role: "initiator", state: "completed", timestamp: "2026-08-12T20:05:01.000Z", digests: {
+      bridgeEvidenceDigest: "3".repeat(64),
+      certificateDigest: "a".repeat(64),
+      certificateProofDigest: "7".repeat(64),
+      harnessEvidenceDigest: "5".repeat(64),
+      workloadAttestationDigest: "1".repeat(64),
+    } },
+    { runId: RUN_ID, role: "responder", state: "completed", timestamp: "2026-08-12T20:05:02.000Z", digests: {
+      bridgeEvidenceDigest: "4".repeat(64),
+      certificateDigest: "a".repeat(64),
+      certificateProofDigest: "8".repeat(64),
+      harnessEvidenceDigest: "6".repeat(64),
+      workloadAttestationDigest: "2".repeat(64),
+    } },
+  ]);
+  assert.equal(JSON.stringify(retained[0]).includes("directDelivery"), false);
+  assert.equal(JSON.stringify(retained[0]).includes("identity"), false);
+});
+
+test("live Fargate adapter exposes full terminal evidence only to an in-memory finalizer after cleanup confirmation", async () => {
+  const plan = await livePlan();
+  const controlPlane = fakeControlPlane(plan);
+  const fullEvidence = [];
+  const retained = [];
+  const result = await runFargateLiveMechanicsProof({
+    plan,
+    controlPlane,
+    mcpGate: async () => { controlPlane.calls.push("mcp-gate"); return { healthy: true, checkpointTool: true, endpoint: "https://mcp.clockchain.network/handshake/mcp" }; },
+    finalizeVerifiedEvidence: async (evidence) => { controlPlane.calls.push("finalize-evidence"); fullEvidence.push(evidence); },
+    retainEvidence: async (evidence) => { retained.push(evidence); },
+  });
+  assert.equal(result.status, "SUCCEEDED");
+  assert.equal(fullEvidence.length, 1);
+  assert.equal(fullEvidence[0].terminalEvents[0].directDelivery.acknowledged, true);
+  assert.deepEqual(fullEvidence[0].cleanupAbsence, { absent: true });
+  assert.equal(controlPlane.calls.indexOf("confirm-absence") < controlPlane.calls.indexOf("finalize-evidence"), true);
+  assert.equal(JSON.stringify(retained[0].publicEvents).includes("directDelivery"), false);
+});
+
+test("live Fargate adapter collects runtime evidence after tasks stop and before destructive cleanup", async () => {
+  const plan = await livePlan();
+  const controlPlane = fakeControlPlane(plan);
+  const liveInfra = { eni: "captured-before-terminal" };
+  const collected = { cloudTrail: "run-and-stop", runtimeInputs: { initiator: {}, responder: {} } };
+  const finalized = [];
+  const result = await runFargateLiveMechanicsProof({
+    plan,
+    controlPlane,
+    mcpGate: async () => { controlPlane.calls.push("mcp-gate"); return { healthy: true, checkpointTool: true, endpoint: "https://mcp.clockchain.network/handshake/mcp" }; },
+    collectLiveRuntimeInfraInputs: async (input) => {
+      controlPlane.calls.push("collect-live-infra");
+      assert.equal(input.clusterArn, stackOutputs().ClusterArn);
+      assert.deepEqual(input.taskArns, {
+        initiator: `arn:aws:ecs:${REGION}:${ACCOUNT}:task/${STACK_NAME}/initiator`,
+        responder: `arn:aws:ecs:${REGION}:${ACCOUNT}:task/${STACK_NAME}/responder`,
+      });
+      return liveInfra;
+    },
+    collectRuntimeEvidenceInputs: async (input) => {
+      controlPlane.calls.push("collect-runtime-evidence");
+      assert.deepEqual(input.taskArns, {
+        initiator: `arn:aws:ecs:${REGION}:${ACCOUNT}:task/${STACK_NAME}/initiator`,
+        responder: `arn:aws:ecs:${REGION}:${ACCOUNT}:task/${STACK_NAME}/responder`,
+      });
+      assert.equal(input.stackId, STACK_ID);
+      assert.equal(input.stackName, STACK_NAME);
+      assert.equal(input.liveRuntimeInfraInputs, liveInfra);
+      assert.deepEqual(input.terminalEvents.map((event) => event.role), ["initiator", "responder"]);
+      return collected;
+    },
+    finalizeVerifiedEvidence: async (evidence) => {
+      controlPlane.calls.push("finalize-evidence");
+      finalized.push(evidence);
+    },
+    retainEvidence: async () => {},
+  });
+  assert.equal(result.status, "SUCCEEDED");
+  assert.equal(controlPlane.calls.indexOf("wait-running-2") < controlPlane.calls.indexOf("collect-live-infra"), true);
+  assert.equal(controlPlane.calls.indexOf("collect-live-infra") < controlPlane.calls.indexOf("poll-events"), true);
+  assert.equal(controlPlane.calls.indexOf("poll-events") < controlPlane.calls.indexOf("stop-initiator"), true);
+  assert.equal(controlPlane.calls.indexOf("wait-stopped-2") < controlPlane.calls.indexOf("collect-runtime-evidence"), true);
+  assert.equal(controlPlane.calls.indexOf("collect-runtime-evidence") < controlPlane.calls.indexOf("deregister-initiator"), true);
+  assert.equal(controlPlane.calls.indexOf("collect-runtime-evidence") < controlPlane.calls.indexOf("delete-stack"), true);
+  assert.equal(controlPlane.calls.indexOf("confirm-absence") < controlPlane.calls.indexOf("finalize-evidence"), true);
+  assert.equal(finalized[0].runtimeEvidenceInputs, collected);
+});
+
+test("live Fargate adapter cleans all resources when runtime evidence collection fails", async () => {
+  const plan = await livePlan();
+  const controlPlane = fakeControlPlane(plan);
+  const retained = [];
+  const finalized = [];
+  const result = await runFargateLiveMechanicsProof({
+    plan,
+    controlPlane,
+    mcpGate: async () => { controlPlane.calls.push("mcp-gate"); return { healthy: true, checkpointTool: true, endpoint: "https://mcp.clockchain.network/handshake/mcp" }; },
+    collectRuntimeEvidenceInputs: async () => {
+      controlPlane.calls.push("collect-runtime-evidence");
+      throw new Error("cloudtrail not ready");
+    },
+    finalizeVerifiedEvidence: async (evidence) => { finalized.push(evidence); },
+    retainEvidence: async (evidence) => { retained.push(evidence); },
+  });
+  assert.equal(result.status, PROTOCOL_FAILED_CLEAN);
+  assert.deepEqual(controlPlane.calls.slice(controlPlane.calls.indexOf("wait-stopped-2") + 1), [
+    "collect-runtime-evidence",
+    "deregister-initiator",
+    "deregister-responder",
+    "delete-stack",
+    "wait-stack-delete",
+    "confirm-absence",
+  ]);
+  assert.equal(retained.length, 0);
+  assert.equal(finalized.length, 0);
 });
 
 test("live Fargate adapter issues both RunTask calls before either is awaited", async () => {
@@ -225,9 +347,9 @@ test("live Fargate adapter enters resource-scoped cleanup after every mutation b
     ["register-responder", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create", "describe-stack-outputs", "list-stack-resources", "register-initiator", "register-responder", "reconcile-task-definitions", "deregister-initiator", "delete-stack", "wait-stack-delete", "confirm-absence"]],
     ["run-initiator", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create", "describe-stack-outputs", "list-stack-resources", "register-initiator", "register-responder", "run-initiator", "run-responder", "reconcile-tasks", "deregister-initiator", "deregister-responder", "delete-stack", "wait-stack-delete", "confirm-absence"]],
     ["run-responder", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create", "describe-stack-outputs", "list-stack-resources", "register-initiator", "register-responder", "run-initiator", "run-responder", "reconcile-tasks", "deregister-initiator", "deregister-responder", "delete-stack", "wait-stack-delete", "confirm-absence"]],
-    ["stop-initiator", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create", "describe-stack-outputs", "list-stack-resources", "register-initiator", "register-responder", "run-initiator", "run-responder", "poll-events", "stop-initiator", "stop-responder", "wait-stopped-2", "deregister-initiator", "deregister-responder", "delete-stack", "wait-stack-delete", "confirm-absence"]],
-    ["deregister-initiator", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create", "describe-stack-outputs", "list-stack-resources", "register-initiator", "register-responder", "run-initiator", "run-responder", "poll-events", "stop-initiator", "stop-responder", "wait-stopped-2", "deregister-initiator", "deregister-responder", "delete-stack", "wait-stack-delete", "confirm-absence"]],
-    ["delete-stack", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create", "describe-stack-outputs", "list-stack-resources", "register-initiator", "register-responder", "run-initiator", "run-responder", "poll-events", "stop-initiator", "stop-responder", "wait-stopped-2", "deregister-initiator", "deregister-responder", "delete-stack", "wait-stack-delete", "confirm-absence"]],
+    ["stop-initiator", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create", "describe-stack-outputs", "list-stack-resources", "register-initiator", "register-responder", "run-initiator", "run-responder", "wait-running-2", "poll-events", "stop-initiator", "stop-responder", "wait-stopped-2", "deregister-initiator", "deregister-responder", "delete-stack", "wait-stack-delete", "confirm-absence"]],
+    ["deregister-initiator", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create", "describe-stack-outputs", "list-stack-resources", "register-initiator", "register-responder", "run-initiator", "run-responder", "wait-running-2", "poll-events", "stop-initiator", "stop-responder", "wait-stopped-2", "deregister-initiator", "deregister-responder", "delete-stack", "wait-stack-delete", "confirm-absence"]],
+    ["delete-stack", ["identity", "mcp-gate", "stack-exists", "validate-template", "create-stack", "wait-stack-create", "describe-stack-outputs", "list-stack-resources", "register-initiator", "register-responder", "run-initiator", "run-responder", "wait-running-2", "poll-events", "stop-initiator", "stop-responder", "wait-stopped-2", "deregister-initiator", "deregister-responder", "delete-stack", "wait-stack-delete", "confirm-absence"]],
   ]);
 
   for (const [failAt, expectedCalls] of expectations) {
@@ -326,6 +448,40 @@ test("live Fargate adapter rejects terminal event prose, wrong run, duplicate ro
       retainEvidence: async () => { throw new Error("must not retain"); },
     });
     assert.equal(result.status, PROTOCOL_FAILED_CLEAN);
+  }
+});
+
+test("live Fargate adapter rejects mixed stack provenance and ambiguous RunTask results", async () => {
+  const plan = await livePlan();
+  const badResources = fakeControlPlane(plan);
+  badResources.listStackResources = async () => ({
+    ...stackResources(plan),
+    stackId: STACK_ID.replace("aaaaaaaa", "bbbbbbbb"),
+  });
+  assert.equal((await runFargateLiveMechanicsProof({
+    plan,
+    controlPlane: badResources,
+    mcpGate: async () => ({ healthy: true, checkpointTool: true, endpoint: "https://mcp.clockchain.network/handshake/mcp" }),
+    retainEvidence: async () => { throw new Error("must not retain"); },
+  })).status, CLEANUP_UNCONFIRMED);
+
+  for (const runResponse of [
+    { tasks: [], failures: [] },
+    { tasks: [{ taskArn: "a" }, { taskArn: "b" }], failures: [] },
+    { tasks: [{ taskArn: "a" }], failures: [{ arn: "failed" }] },
+  ]) {
+    const controlPlane = fakeControlPlane(plan);
+    controlPlane.runTask = async ({ role }) => {
+      controlPlane.calls.push(`run-${role}`);
+      return runResponse;
+    };
+    const result = await runFargateLiveMechanicsProof({
+      plan,
+      controlPlane,
+      mcpGate: async () => ({ healthy: true, checkpointTool: true, endpoint: "https://mcp.clockchain.network/handshake/mcp" }),
+      retainEvidence: async () => { throw new Error("must not retain"); },
+    });
+    assert.equal(result.status, CLEANUP_UNCONFIRMED);
   }
 });
 

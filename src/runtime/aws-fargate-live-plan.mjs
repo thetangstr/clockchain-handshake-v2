@@ -407,6 +407,7 @@ function taskDefinition(plan, outputs, role) {
       privileged: false,
       readonlyRootFilesystem: true,
       secrets: Object.freeze(initiator ? [{ name: "CLOCKCHAIN_CODEX_AUTH_JSON_BASE64", valueFrom: plan.codexSecretArn }] : []),
+      stopTimeout: 30,
       user: "1000:1000",
     }), Object.freeze({
       command: Object.freeze(["chown 1000:1000 /workspace"]),

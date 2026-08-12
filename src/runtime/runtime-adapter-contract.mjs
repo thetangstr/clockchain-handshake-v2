@@ -71,6 +71,12 @@ function digestList(value) {
   return Object.freeze([...value]);
 }
 
+function secretDigestList(value, role) {
+  if (!Array.isArray(value) || value.some((entry) => !SHA.test(entry))) fail();
+  if (role === "initiator" && value.length < 1) fail();
+  return Object.freeze([...value]);
+}
+
 function timestamp(value) {
   if (!Number.isSafeInteger(value) || value < 0) fail();
   return value;
@@ -132,7 +138,7 @@ export function validateRuntimeEvidence(value) {
     securityGroupIds: Object.freeze([...item.securityGroupIds].map(nonempty)),
     writableVolumeSummary: Object.freeze({ ...volume }),
     sharedEfsMounts: Object.freeze([]),
-    secretArnDigests: digestList(item.secretArnDigests),
+    secretArnDigests: secretDigestList(item.secretArnDigests, item.role),
     credentialRefDigest: digest(item.credentialRefDigest),
     workspaceRootDigest: digest(item.workspaceRootDigest),
     stateRootDigest: digest(item.stateRootDigest),

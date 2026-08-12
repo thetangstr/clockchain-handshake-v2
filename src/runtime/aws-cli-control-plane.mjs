@@ -22,7 +22,11 @@ const ALLOWED = new Set([
   "ec2 describe-vpcs",
   "ec2 describe-subnets",
   "ec2 describe-route-tables",
+  "ec2 describe-network-interfaces",
+  "ec2 describe-security-groups",
   "logs filter-log-events",
+  "cloudtrail lookup-events",
+  "sqs list-queues",
 ]);
 
 const STACK = /^clockchain-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -42,9 +46,35 @@ function string(value) {
   return value;
 }
 
+function templateJsonBody(value) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 1_048_576 || /[;&|`<>]/.test(value)) fail();
+  let parsed;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    fail();
+  }
+  if (JSON.stringify(canonical(parsed)) !== value) fail();
+  return value;
+}
+
 function stackName(value) {
   if (!STACK.test(string(value))) fail();
   return value;
+}
+
+function stackIdArn(value, { stackName: expectedName, region, accountId = null }) {
+  if (typeof value !== "string") fail();
+  const match = value.match(/^arn:aws(?:-us-gov)?:cloudformation:([a-z]{2}(?:-gov)?-[a-z]+-[0-9]):([0-9]{12}):stack\/(clockchain-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/);
+  if (!match || match[1] !== region || match[3] !== expectedName || (accountId !== null && match[2] !== accountId)) fail();
+  return value;
+}
+
+function canonical(value) {
+  if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) return value.map(canonical);
+  const item = plain(value);
+  return Object.fromEntries(Object.keys(item).sort().map((key) => [key, canonical(item[key])]));
 }
 
 function parse(stdout) {
@@ -57,12 +87,19 @@ function parse(stdout) {
 
 function commandKey(argv) {
   if (!Array.isArray(argv) || argv.length < 3) fail();
-  for (const arg of argv) string(arg);
   if (argv.at(-2) !== "--output" || argv.at(-1) !== "json") fail();
     const head = (argv[0] === "cloudformation" || argv[0] === "ecs") && argv[1] === "wait"
     ? argv.slice(0, 3).join(" ")
     : argv.slice(0, 2).join(" ");
   if (!ALLOWED.has(head)) fail();
+  const templateIndex = argv.indexOf("--template-body");
+  for (let index = 0; index < argv.length; index += 1) {
+    if ((head === "cloudformation validate-template" || head === "cloudformation create-stack") && index === templateIndex + 1) {
+      templateJsonBody(argv[index]);
+    } else {
+      string(argv[index]);
+    }
+  }
   return head;
 }
 
@@ -78,12 +115,32 @@ async function defaultExecutor(file, argv, options) {
   });
 }
 
-function output(value) {
+async function stdoutString(stdout) {
+  if (typeof stdout === "string") {
+    if (stdout.length > 1_048_576) fail();
+    return stdout;
+  }
+  if (stdout?.getReader === undefined) fail();
+  const reader = stdout.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > 1_048_576) fail();
+    chunks.push(value);
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks));
+}
+
+async function output(value) {
   const result = plain(value);
-  if (result.stderr !== "" || typeof result.stdout !== "string") fail();
+  if (result.stderr !== "") fail();
   if (result.exitCode !== 0) fail();
-  if (result.stdout === "") return {};
-  return parse(result.stdout);
+  const stdout = await stdoutString(result.stdout);
+  if (stdout === "") return {};
+  return parse(stdout);
 }
 
 function isMissingStack(error) {
@@ -96,10 +153,12 @@ function sleep(ms) {
 
 export function createAwsCliControlPlane(optionsInput = {}) {
   const options = plain(optionsInput);
-  if (Object.keys(options).some((key) => !["executor", "now", "region", "sleep", "timeoutMs"].includes(key))) fail();
+  if (Object.keys(options).some((key) => !["accountId", "executor", "now", "region", "sleep", "timeoutMs"].includes(key))) fail();
   const executor = options.executor ?? defaultExecutor;
   if (typeof executor !== "function") fail();
   const region = string(options.region);
+  const accountId = options.accountId ?? null;
+  if (accountId !== null && !/^[0-9]{12}$/.test(accountId)) fail();
   if (!/^[a-z]{2}(?:-gov)?-[a-z]+-[0-9]$/.test(region)) fail();
   const timeoutMs = options.timeoutMs ?? 30_000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300_000) fail();
@@ -118,7 +177,6 @@ export function createAwsCliControlPlane(optionsInput = {}) {
       if (options.allowMissingStack && isMissingStack(error)) throw error;
       fail();
     }
-    if (typeof response.stdout === "string" && response.stdout.length > 1_048_576) fail();
     return output(response);
   }
 
@@ -131,7 +189,7 @@ export function createAwsCliControlPlane(optionsInput = {}) {
       return Object.freeze({ accountId: identity.Account, arn: identity.Arn, userId: identity.UserId });
     },
     validateTemplate({ templateBody }) {
-      if (typeof templateBody !== "string" || templateBody.length === 0) fail();
+      templateJsonBody(templateBody);
       return callAws(["cloudformation", "validate-template", "--template-body", templateBody, "--region", region, "--output", "json"]);
     },
     async stackExists({ stackName: name }) {
@@ -146,54 +204,69 @@ export function createAwsCliControlPlane(optionsInput = {}) {
       if (!Array.isArray(response.Stacks)) fail();
       return response.Stacks.length > 0;
     },
-    createStack({ stackName: name, templateBody, parameters, capabilities }) {
+    async createStack({ stackName: name, templateBody, parameters, capabilities }) {
       stackName(name);
-      if (typeof templateBody !== "string" || !Array.isArray(parameters) || !Array.isArray(capabilities) || !capabilities.includes("CAPABILITY_NAMED_IAM")) fail();
-      return callAws([
+      templateJsonBody(templateBody);
+      if (!Array.isArray(parameters) || !Array.isArray(capabilities) || !capabilities.includes("CAPABILITY_NAMED_IAM")) fail();
+      const response = await callAws([
         "cloudformation", "create-stack", "--stack-name", name, "--template-body", templateBody,
         "--parameters", JSON.stringify(parameters), "--capabilities", ...capabilities, "--region", region, "--output", "json",
       ]);
+      if (JSON.stringify(Object.keys(response).sort()) !== JSON.stringify(["StackId"])) fail();
+      stackIdArn(response.StackId, { stackName: name, region, accountId });
+      return Object.freeze(response);
     },
-    waitStackCreateComplete({ stackName: name }) {
+    waitStackCreateComplete({ stackName: name, stackId = null }) {
       stackName(name);
-      return callAws(["cloudformation", "wait", "stack-create-complete", "--stack-name", name, "--region", region, "--output", "json"]);
+      const identifier = stackId === null ? name : stackIdArn(stackId, { stackName: name, region, accountId });
+      return callAws(["cloudformation", "wait", "stack-create-complete", "--stack-name", identifier, "--region", region, "--output", "json"]);
     },
-    async describeStackOutputs({ stackName: name }) {
+    async describeStackOutputs({ stackName: name, stackId = null }) {
       stackName(name);
-      const response = await callAws(["cloudformation", "describe-stacks", "--stack-name", name, "--region", region, "--output", "json"]);
+      const identifier = stackId === null ? name : stackIdArn(stackId, { stackName: name, region, accountId });
+      const response = await callAws(["cloudformation", "describe-stacks", "--stack-name", identifier, "--region", region, "--output", "json"]);
       const stack = response.Stacks?.[0];
-      if (!stack || !Array.isArray(stack.Outputs)) fail();
+      if (!stack || (stackId !== null && stack.StackId !== identifier) || (stack.StackName !== undefined && stack.StackName !== name) || !Array.isArray(stack.Outputs)) fail();
       return Object.freeze(Object.fromEntries(stack.Outputs.map((entry) => [entry.OutputKey, entry.OutputValue])));
     },
-    async listStackResources({ stackName: name }) {
+    async listStackResources({ stackName: name, stackId = null }) {
       stackName(name);
-      const response = await callAws(["cloudformation", "list-stack-resources", "--stack-name", name, "--region", region, "--output", "json"]);
+      const identifier = stackId === null ? name : stackIdArn(stackId, { stackName: name, region, accountId });
+      const response = await callAws(["cloudformation", "list-stack-resources", "--stack-name", identifier, "--region", region, "--output", "json"]);
       if (!Array.isArray(response.StackResourceSummaries) || response.StackResourceSummaries.length === 0 || response.NextToken !== undefined) fail();
       return Object.freeze({
-        stackId: response.StackResourceSummaries[0].StackId,
+        stackId: identifier,
         stackName: name,
-        resources: Object.freeze(response.StackResourceSummaries.map((entry) => Object.freeze({
-          logicalResourceId: entry.LogicalResourceId,
-          physicalResourceId: entry.PhysicalResourceId,
-          resourceType: entry.ResourceType,
-        }))),
+        resources: Object.freeze(response.StackResourceSummaries.map((entry) => {
+          if (entry.StackId !== undefined || entry.StackName !== undefined) fail();
+          return Object.freeze({
+            logicalResourceId: entry.LogicalResourceId,
+            physicalResourceId: entry.PhysicalResourceId,
+            resourceType: entry.ResourceType,
+          });
+        })),
       });
     },
     registerTaskDefinition({ taskDefinition }) {
       plain(taskDefinition);
       return callAws(["ecs", "register-task-definition", "--cli-input-json", JSON.stringify(taskDefinition), "--region", region, "--output", "json"]);
     },
-    runTask({ cluster, taskDefinitionArn, role, networkConfiguration, startedBy }) {
+    runTask({ cluster, taskDefinitionArn, role, networkConfiguration, startedBy, platformVersion = "1.4.0" }) {
       if (!["initiator", "responder"].includes(role) || typeof cluster !== "string" || typeof taskDefinitionArn !== "string") fail();
+      if (platformVersion !== "1.4.0") fail();
       return callAws([
         "ecs", "run-task", "--cluster", cluster, "--task-definition", taskDefinitionArn,
-        "--launch-type", "FARGATE", "--network-configuration", JSON.stringify(networkConfiguration),
+        "--launch-type", "FARGATE", "--platform-version", platformVersion, "--network-configuration", JSON.stringify(networkConfiguration),
         "--started-by", startedBy, "--region", region, "--output", "json",
       ]);
     },
     waitTasksStopped({ cluster, taskArns }) {
       if (typeof cluster !== "string" || !Array.isArray(taskArns) || taskArns.length > 2 || taskArns.length < 1) fail();
       return callAws(["ecs", "wait", "tasks-stopped", "--cluster", cluster, "--tasks", ...taskArns, "--region", region, "--output", "json"]);
+    },
+    waitTasksRunning({ cluster, taskArns }) {
+      if (typeof cluster !== "string" || !Array.isArray(taskArns) || taskArns.length !== 2) fail();
+      return callAws(["ecs", "wait", "tasks-running", "--cluster", cluster, "--tasks", ...taskArns, "--region", region, "--output", "json"]);
     },
     stopTask({ cluster, taskArn, role }) {
       if (!["initiator", "responder"].includes(role) || typeof cluster !== "string" || typeof taskArn !== "string") fail();
@@ -229,8 +302,10 @@ export function createAwsCliControlPlane(optionsInput = {}) {
           for (const event of response.events) {
             const record = parse(event.message);
             if (record.schema !== "clockchain.mechanics-proof-party-evidence/v1") continue;
+            if (!Number.isSafeInteger(event.timestamp)) fail();
             if (!["initiator", "responder"].includes(record.role)) fail();
             if (record.role !== groupRole) fail();
+            record.timestamp = new Date(event.timestamp).toISOString();
             const previous = byRole.get(record.role);
             const serialized = JSON.stringify(record);
             if (previous !== undefined && JSON.stringify(previous) !== serialized) fail();

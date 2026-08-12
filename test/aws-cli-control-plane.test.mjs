@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createAwsCliControlPlane } from "../src/runtime/aws-cli-control-plane.mjs";
+import { loadFargateLiveRuntimeTemplate } from "../src/runtime/aws-fargate-live-plan.mjs";
+import { stableJson } from "../src/runtime/aws-fargate-runtime-adapter.mjs";
 
 test("AWS CLI control plane uses only execFile aws argv and parses JSON responses", async () => {
   const calls = [];
@@ -73,20 +75,22 @@ test("AWS CLI control plane has exact allowlisted argv shapes for Task 4 actions
   const responseFor = (argv) => {
     const key = argv.slice(0, argv[0] === "cloudformation" && argv[1] === "wait" || argv[0] === "ecs" && argv[1] === "wait" ? 3 : 2).join(" ");
     if (key === "sts get-caller-identity") return { Account: "123456789012", Arn: "arn:aws:iam::123456789012:user/controller", UserId: "AIDA" };
-    if (key === "cloudformation describe-stacks") return { Stacks: [{ Outputs: [{ OutputKey: "ClusterArn", OutputValue: "arn:aws:ecs:us-west-2:123456789012:cluster/c" }] }] };
-    if (key === "cloudformation list-stack-resources") return { StackResourceSummaries: [{ StackId: "stack-id", LogicalResourceId: "Cluster", PhysicalResourceId: "cluster", ResourceType: "AWS::ECS::Cluster" }] };
+  if (key === "cloudformation describe-stacks") return { Stacks: [{ Outputs: [{ OutputKey: "ClusterArn", OutputValue: "arn:aws:ecs:us-west-2:123456789012:cluster/c" }] }] };
+    if (key === "cloudformation create-stack") return { StackId: "arn:aws:cloudformation:us-west-2:123456789012:stack/clockchain-11111111-2222-4333-8444-555555555555/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" };
+    if (key === "cloudformation list-stack-resources") return { StackResourceSummaries: [{ LogicalResourceId: "Cluster", PhysicalResourceId: "cluster", ResourceType: "AWS::ECS::Cluster" }] };
     if (key === "ecs register-task-definition") return { taskDefinition: { taskDefinitionArn: "arn:aws:ecs:us-west-2:123456789012:task-definition/x:1" } };
     if (key === "ecs run-task") return { tasks: [{ taskArn: "arn:aws:ecs:us-west-2:123456789012:task/c/t" }], failures: [] };
     if (key === "logs filter-log-events") {
       const role = argv.includes("/clockchain/mechanics-proof/run/responder") ? "responder" : "initiator";
       return { events: [
-        { message: JSON.stringify({ schema: "clockchain.mechanics-proof-party-evidence/v1", runId: "11111111-2222-4333-8444-555555555555", protocolSessionId: "protocol-session-1", role, harness: role === "initiator" ? "codex" : "claude", runtimeId: `runtime-${role}`, workloadAttestationDigest: "1".repeat(64), peerRuntimeId: role === "initiator" ? "runtime-responder" : "runtime-initiator", bridgeEvidenceDigest: "2".repeat(64), harnessEvidenceDigest: "3".repeat(64), certificateProofDigest: "4".repeat(64), certificateDigest: "a".repeat(64), identity: {}, anchors: [], directDelivery: { acknowledged: true }, externalBusinessActionPerformed: false, terminalStatus: "completed", teardown: { completed: true } }) },
+        { timestamp: 1786565101000, message: JSON.stringify({ schema: "clockchain.mechanics-proof-party-evidence/v1", runId: "11111111-2222-4333-8444-555555555555", protocolSessionId: "protocol-session-1", role, harness: role === "initiator" ? "codex" : "claude", runtimeId: `runtime-${role}`, workloadAttestationDigest: "1".repeat(64), peerRuntimeId: role === "initiator" ? "runtime-responder" : "runtime-initiator", bridgeEvidenceDigest: "2".repeat(64), harnessEvidenceDigest: "3".repeat(64), certificateProofDigest: "4".repeat(64), certificateDigest: "a".repeat(64), identity: {}, anchors: [], directDelivery: { acknowledged: true }, externalBusinessActionPerformed: false, terminalStatus: "completed", teardown: { completed: true } }) },
       ] };
     }
     return {};
   };
   const control = createAwsCliControlPlane({
     region: "us-west-2",
+    accountId: "123456789012",
     executor: async (file, argv) => {
       calls.push([file, argv]);
       return { stdout: JSON.stringify(responseFor(argv)), stderr: "", exitCode: 0 };
@@ -116,6 +120,86 @@ test("AWS CLI control plane has exact allowlisted argv shapes for Task 4 actions
     assert.equal(argv.at(-1), "json");
     assert.doesNotMatch(JSON.stringify(argv), /secret|cookie|authorization|;|&&|\|/i);
   }
+});
+
+test("AWS CLI control plane validates real create-stack StackId and binds later calls to that identifier", async () => {
+  const stackName = "clockchain-11111111-2222-4333-8444-555555555555";
+  const stackId = "arn:aws:cloudformation:us-west-2:123456789012:stack/clockchain-11111111-2222-4333-8444-555555555555/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const seen = [];
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    executor: async (_file, argv) => {
+      seen.push(argv);
+      const key = argv.slice(0, argv[0] === "cloudformation" && argv[1] === "wait" ? 3 : 2).join(" ");
+      if (key === "cloudformation create-stack") return { stdout: JSON.stringify({ StackId: stackId }), stderr: "", exitCode: 0 };
+      if (key === "cloudformation describe-stacks") return { stdout: JSON.stringify({ Stacks: [{ StackId: stackId, StackName: stackName, Outputs: [] }] }), stderr: "", exitCode: 0 };
+      return { stdout: JSON.stringify({ StackResourceSummaries: [{ LogicalResourceId: "Cluster", PhysicalResourceId: "cluster", ResourceType: "AWS::ECS::Cluster" }] }), stderr: "", exitCode: 0 };
+    },
+  });
+  assert.deepEqual(await control.createStack({ stackName, templateBody: "{}", parameters: [], capabilities: ["CAPABILITY_NAMED_IAM"] }), { StackId: stackId });
+  await control.waitStackCreateComplete({ stackName, stackId });
+  await control.describeStackOutputs({ stackName, stackId });
+  assert.deepEqual(await control.listStackResources({ stackName, stackId }), {
+    stackId,
+    stackName,
+    resources: [{ logicalResourceId: "Cluster", physicalResourceId: "cluster", resourceType: "AWS::ECS::Cluster" }],
+  });
+  assert.equal(seen.some((argv) => argv[0] === "cloudformation" && argv[1] === "wait" && argv.includes(stackId)), true);
+  assert.equal(seen.some((argv) => argv[0] === "cloudformation" && argv[1] === "describe-stacks" && argv.includes(stackId)), true);
+  assert.equal(seen.some((argv) => argv[0] === "cloudformation" && argv[1] === "list-stack-resources" && argv.includes(stackId)), true);
+
+  for (const StackId of [
+    "stack-id",
+    stackId.replace("us-west-2", "us-east-1"),
+    stackId.replace("123456789012", "210987654321"),
+    stackId.replace(stackName, "clockchain-99999999-2222-4333-8444-555555555555"),
+  ]) {
+    const bad = createAwsCliControlPlane({
+      region: "us-west-2",
+      accountId: "123456789012",
+      executor: async () => ({ stdout: JSON.stringify({ StackId }), stderr: "", exitCode: 0 }),
+    });
+    await assert.rejects(() => bad.createStack({ stackName, templateBody: "{}", parameters: [], capabilities: ["CAPABILITY_NAMED_IAM"] }), /AWS CLI control-plane validation failed safely/);
+  }
+});
+
+test("AWS CLI control plane accepts dollars only inside canonical template JSON argv data", async () => {
+  const template = await loadFargateLiveRuntimeTemplate();
+  const body = stableJson(template);
+  assert.match(body, /\$\{/);
+  const stackName = "clockchain-11111111-2222-4333-8444-555555555555";
+  const stackId = "arn:aws:cloudformation:us-west-2:123456789012:stack/clockchain-11111111-2222-4333-8444-555555555555/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const seen = [];
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    executor: async (_file, argv) => {
+      seen.push(argv);
+      return { stdout: JSON.stringify({ StackId: stackId }), stderr: "", exitCode: 0 };
+    },
+  });
+  await control.createStack({ stackName, templateBody: body, parameters: [], capabilities: ["CAPABILITY_NAMED_IAM"] });
+  assert.equal(seen[0].includes(body), true);
+
+  assert.throws(() => control.validateTemplate({ templateBody: "{\"z\":1,\"a\":2}" }), /AWS CLI control-plane validation failed safely/);
+  await assert.rejects(() => control.createStack({ stackName, templateBody: "{}", parameters: [{ ParameterKey: "Bad", ParameterValue: "${not-template}" }], capabilities: ["CAPABILITY_NAMED_IAM"] }), /AWS CLI control-plane validation failed safely/);
+  await assert.rejects(() => control.callAws(["cloudformation", "delete-stack", "--stack-name", `${stackName}$`, "--region", "us-west-2", "--output", "json"]), /AWS CLI control-plane validation failed safely/);
+});
+
+test("AWS CLI control plane preserves CloudWatch event timestamps with terminal records", async () => {
+  const timestamp = 1786565101000;
+  const terminal = (role) => ({ schema: "clockchain.mechanics-proof-party-evidence/v1", runId: "11111111-2222-4333-8444-555555555555", protocolSessionId: "protocol-session-1", role, harness: role === "initiator" ? "codex" : "claude", runtimeId: `runtime-${role}`, workloadAttestationDigest: "1".repeat(64), peerRuntimeId: role === "initiator" ? "runtime-responder" : "runtime-initiator", bridgeEvidenceDigest: "2".repeat(64), harnessEvidenceDigest: "3".repeat(64), certificateProofDigest: "4".repeat(64), certificateDigest: "a".repeat(64), identity: {}, anchors: [], directDelivery: { acknowledged: true }, externalBusinessActionPerformed: false, terminalStatus: "completed", teardown: { completed: true } });
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    executor: async (_file, argv) => {
+      const role = argv.includes("/clockchain/mechanics-proof/run/responder") ? "responder" : "initiator";
+      return { stdout: JSON.stringify({ events: [{ timestamp, message: JSON.stringify(terminal(role)) }] }), stderr: "", exitCode: 0 };
+    },
+  });
+  const events = await control.pollPublicEvents({
+    logGroupNames: ["/clockchain/mechanics-proof/run/initiator", "/clockchain/mechanics-proof/run/responder"],
+    deadlineMs: Date.now() + 1000,
+  });
+  assert.equal(events[0].timestamp, "2026-08-12T20:05:01.000Z");
 });
 
 test("AWS CLI control plane derives VPC inspection only from explicit subnet, route, and CIDR queries", async () => {
@@ -162,7 +246,7 @@ test("AWS CLI control plane reconciles run-scoped task definitions and tasks, th
       const role = argv.includes("/clockchain/mechanics-proof/run/responder") ? "responder" : "initiator";
       return { stdout: JSON.stringify({ events: [
         { message: JSON.stringify({ schema: "clockchain.fargate-runtime-attestation/v1", runId: "11111111-2222-4333-8444-555555555555" }) },
-        { message: JSON.stringify({ schema: "clockchain.mechanics-proof-party-evidence/v1", runId: "11111111-2222-4333-8444-555555555555", protocolSessionId: "protocol-session-1", role, harness: role === "initiator" ? "codex" : "claude", runtimeId: `runtime-${role}`, workloadAttestationDigest: "1".repeat(64), peerRuntimeId: role === "initiator" ? "runtime-responder" : "runtime-initiator", bridgeEvidenceDigest: "2".repeat(64), harnessEvidenceDigest: "3".repeat(64), certificateProofDigest: "4".repeat(64), certificateDigest: "a".repeat(64), identity: {}, anchors: [], directDelivery: { acknowledged: true }, externalBusinessActionPerformed: false, terminalStatus: "completed", teardown: { completed: true } }) },
+        { timestamp: 1786565101000, message: JSON.stringify({ schema: "clockchain.mechanics-proof-party-evidence/v1", runId: "11111111-2222-4333-8444-555555555555", protocolSessionId: "protocol-session-1", role, harness: role === "initiator" ? "codex" : "claude", runtimeId: `runtime-${role}`, workloadAttestationDigest: "1".repeat(64), peerRuntimeId: role === "initiator" ? "runtime-responder" : "runtime-initiator", bridgeEvidenceDigest: "2".repeat(64), harnessEvidenceDigest: "3".repeat(64), certificateProofDigest: "4".repeat(64), certificateDigest: "a".repeat(64), identity: {}, anchors: [], directDelivery: { acknowledged: true }, externalBusinessActionPerformed: false, terminalStatus: "completed", teardown: { completed: true } }) },
       ] }), stderr: "", exitCode: 0 };
     },
   });

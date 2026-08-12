@@ -273,6 +273,7 @@ function certificateSummary(value, expectedRole, expectedSessionId) {
   return Object.freeze({
     anchors: Object.freeze(anchors),
     certificateDigest: digestHex(envelope),
+    resultDigest: digestHex(result),
     identity: publicClone(identity),
   });
 }
@@ -600,6 +601,10 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
           cardDigests: Object.freeze({
             initiator: signedChannel === null ? null : a2aAgentCardDigest(signedChannel.cards.initiator),
             responder: signedChannel === null ? null : a2aAgentCardDigest(signedChannel.cards.responder),
+          }),
+          cardSignerAddresses: Object.freeze({
+            initiator: signedChannel === null ? null : signedChannel.cards.initiator.partySignerAddress,
+            responder: signedChannel === null ? null : signedChannel.cards.responder.partySignerAddress,
           }),
           invitations: Object.freeze(invitations.map((entry) => Object.freeze({ ...entry }))),
           deliveries: Object.freeze(deliveries.map((entry) => Object.freeze({ ...entry, messageDigests: Object.freeze([...entry.messageDigests]) }))),

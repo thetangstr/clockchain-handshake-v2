@@ -324,6 +324,60 @@ test("managed run mode emits ECS attestation before bootstrap descriptor", async
   assert.doesNotMatch(text, /sqs|amazonaws|credentials|169\.254/i);
 });
 
+test("managed run mode holds after terminal evidence until controller stop", async () => {
+  const output = new PassThrough();
+  let text = "";
+  output.on("data", (chunk) => { text += chunk.toString("utf8"); });
+  let holdObserved = false;
+  const peer = { schema: "clockchain.mechanics-proof-party-bootstrap/v1", peer: true };
+  const trustedOptions = {
+    harness: "claude",
+    listenHost: "0.0.0.0",
+    manifestDigest: "a".repeat(64),
+    mandate: { statement: "trusted" },
+    mcpEndpoint: "https://mcp.clockchain.network/handshake/mcp",
+    opensslPath: "/usr/bin/openssl",
+    port: 8443,
+    publicEndpoint: "https://10.0.0.11:8443",
+    role: "responder",
+    root: "/workspace/responder",
+    runId: SESSION,
+    runtimeId: "ecs-task-responder",
+    taskId: "task-responder",
+    workloadAttestationDigest: "b".repeat(64),
+  };
+  const code = await runMain({
+    argv: ["node", "bin/mechanics-proof-party.mjs", "--run-managed"],
+    createManagedBootstrapExchange() {
+      return {
+        async publishOwnDescriptor() { return { published: true }; },
+        async awaitPeerDescriptor() { return peer; },
+        async destroy() { return { destroyed: true }; },
+      };
+    },
+    createRuntime: async () => ({
+      bootstrapDescriptor() { return { schema: "clockchain.mechanics-proof-party-bootstrap/v1", local: true }; },
+      async destroy() {},
+      async run() { return { schema: "clockchain.mechanics-proof-party-evidence/v1", completed: true }; },
+    }),
+    env: runEnv({
+      AWS_REGION: "us-west-2",
+      CLOCKCHAIN_BOOTSTRAP_OWN_QUEUE_URL: `https://sqs.us-west-2.amazonaws.com/123456789012/own-${SESSION}`,
+      CLOCKCHAIN_BOOTSTRAP_PEER_QUEUE_URL: `https://sqs.us-west-2.amazonaws.com/123456789012/peer-${SESSION}`,
+    }),
+    stderr: new PassThrough(),
+    stdin: Readable.from([]),
+    stdout: output,
+    async resolveManagedRunOptions() { return trustedOptions; },
+    async holdManagedRun() {
+      holdObserved = true;
+      assert.equal(JSON.parse(text.trim().split("\n").at(-1)).schema, "clockchain.mechanics-proof-party-evidence/v1");
+    },
+  });
+  assert.equal(code, 0);
+  assert.equal(holdObserved, true);
+});
+
 test("managed run mode fails closed until ECS metadata supplies runtime identity", async () => {
   let runtimeCreated = false;
   const stderr = new PassThrough();

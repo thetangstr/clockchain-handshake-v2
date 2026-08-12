@@ -139,6 +139,20 @@ function rolePlan(plan, role) {
   return plan.parties[role];
 }
 
+function partyEvents(role) {
+  const types = role === "initiator"
+    ? ["a2a.listener.ready", "agent.starting", "certificate.verified"]
+    : ["a2a.listener.ready", "a2a.invitation.received", "agent.starting", "certificate.verified"];
+  return types.map((type, index) => ({
+    schema: "clockchain.mechanics-proof-party-event/v1",
+    runId: SESSION_ID,
+    role,
+    sequence: String(index + 1),
+    type,
+    evidenceDigest: sha256Hex({ role, type, index }),
+  }));
+}
+
 function gitExecutor({ status = "", revParse = `${SOURCE_COMMIT}\n` } = {}, calls = []) {
   return async (command) => {
     calls.push(command);
@@ -173,31 +187,67 @@ function fakeAwsResponses(plan, role) {
   const opposite = role === "initiator" ? "responder" : "initiator";
   const taskRoleName = party.taskRoleArn.split("/").at(-1);
   const taskArn = `arn:aws:ecs:us-west-2:${account}:task/clockchain-mechanics-proof/${role}`;
+  const attestationCore = {
+    schema: "clockchain.mechanics-proof-ecs-attestation-core/v1",
+    accountId: account,
+    availabilityZone: "us-west-2a",
+    containerArn: `arn:aws:ecs:us-west-2:${account}:container/clockchain-mechanics-proof/${role}/container-${role}`,
+    family: party.family,
+    imageId: party.imageDigest,
+    launchType: "FARGATE",
+    privateIp: role === "initiator" ? "10.44.16.10" : "10.44.17.10",
+    region: "us-west-2",
+    revision: "1",
+    role,
+    stsArn: `arn:aws:sts::${account}:assumed-role/${taskRoleName}/session`,
+    stsUserId: `ARO${role.toUpperCase()}:session`,
+    taskArn,
+    taskId: role,
+  };
   const publicLogRecords = [
     {
-      schema: "clockchain.fargate-runtime-attestation/v1",
-      sessionId: SESSION_ID,
-      role,
-      workspaceRootDigest: role === "initiator" ? "9".repeat(64) : "0".repeat(64),
-      stateRootDigest: role === "initiator" ? "c".repeat(64) : "d".repeat(64),
-      signerRootDigest: role === "initiator" ? "e".repeat(64) : "f".repeat(64),
+      ...attestationCore,
+      schema: "clockchain.mechanics-proof-ecs-attestation/v1",
+      workloadAttestationDigest: sha256Hex(attestationCore),
     },
+    ...partyEvents(role),
     {
-      schema: "clockchain.fargate-in-task-sts/v1",
-      sessionId: SESSION_ID,
+      schema: "clockchain.mechanics-proof-party-evidence/v1",
+      runId: SESSION_ID,
+      protocolSessionId: "22222222-3333-4444-8555-666666666666",
       role,
-      callerIdentity: {
-        account,
-        arn: `arn:aws:sts::${account}:assumed-role/${taskRoleName}/session`,
-        userId: `ARO${role.toUpperCase()}:session`,
+      harness: role === "initiator" ? "codex" : "claude",
+      runtimeId: `ecs-${role}`,
+      workloadAttestationDigest: sha256Hex(attestationCore),
+      peerRuntimeId: `ecs-${opposite}`,
+      bridgeEvidenceDigest: HEX_A,
+      harnessEvidenceDigest: HEX_B,
+      certificateProofDigest: HEX_A,
+      certificateDigest: HEX_B,
+      resultDigest: HEX_A,
+      certificateVerified: true,
+      identity: {
+        sessionKeyAddress: role === "initiator" ? "0x1111111111111111111111111111111111111111" : "0x2222222222222222222222222222222222222222",
+        policyDigest: role === "initiator" ? HEX_A : HEX_B,
+        erc8004: {
+          agentId: role === "initiator" ? "9452" : "9453",
+          chainId: "eip155:11155111",
+          registryAddress: "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+          reference: `eip155:11155111:0x8004a818bfb912233c491871b3d84c89a494bd9e:${role === "initiator" ? "9452" : "9453"}`,
+          registrationTx: "0x" + (role === "initiator" ? "4" : "5").repeat(64),
+          registrationBlock: role === "initiator" ? "7000" : "7001",
+        },
       },
-    },
-    {
-      schema: "clockchain.fargate-session-sanitization/v1",
-      sessionId: SESSION_ID,
-      role,
-      privatePathsRedacted: true,
-      secretCanariesAbsent: true,
+      a2aCardSignerAddress: role === "initiator" ? "0x1111111111111111111111111111111111111111" : "0x2222222222222222222222222222222222222222",
+      anchors: [
+        { blockHeight: "7010", digest: HEX_A, kind: "proposal", ledgerId: "33333333-4444-4555-8666-777777777770" },
+        { blockHeight: "7011", digest: HEX_B, kind: "acceptance", ledgerId: "33333333-4444-4555-8666-777777777771" },
+        { blockHeight: "7012", digest: "e".repeat(64), kind: "acknowledgment", ledgerId: "33333333-4444-4555-8666-777777777772" },
+      ],
+      directDelivery: { acknowledged: true, artifactDigest: HEX_A, artifactType: role === "initiator" ? "proposal" : "acceptance", checkpointAcknowledged: true, checkpointDigest: HEX_B, messageDigests: [HEX_A, HEX_B] },
+      externalBusinessActionPerformed: false,
+      terminalStatus: "completed",
+      teardown: { completed: true },
     },
   ];
   return {
@@ -208,12 +258,13 @@ function fakeAwsResponses(plan, role) {
         lastStatus: "STOPPED",
         createdAt: "2026-08-11T12:00:00.000Z",
         stoppedAt: "2026-08-11T12:05:00.000Z",
-        containers: [{ imageDigest: party.imageDigest }],
+        containers: [{ containerArn: attestationCore.containerArn, imageDigest: party.imageDigest }],
         attachments: [{
           type: "ElasticNetworkInterface",
           details: [
             { name: "networkInterfaceId", value: `eni-${role}` },
             { name: "subnetId", value: `subnet-private-${role}` },
+            { name: "privateIPv4Address", value: attestationCore.privateIp },
           ],
         }],
       }],
@@ -282,11 +333,11 @@ function fakeAwsResponses(plan, role) {
     },
     cloudTrailEvents: [
       { eventName: "RunTask", eventSource: "ecs.amazonaws.com", eventTime: "2026-08-11T11:59:59.000Z", account, taskArn, requestParameters: { startedBy: SESSION_ID } },
-      { eventName: "StopTask", eventSource: "ecs.amazonaws.com", eventTime: "2026-08-11T12:05:01.000Z", account, taskArn, requestParameters: { startedBy: SESSION_ID } },
+      { eventName: "StopTask", eventSource: "ecs.amazonaws.com", eventTime: "2026-08-11T12:04:59.000Z", account, taskArn, requestParameters: { reason: "clockchain cleanup" } },
     ],
     cloudWatchLogs: [{
       logGroupName: party.logConfiguration.options["awslogs-group"],
-      logStreamName: `${role}/session/${SESSION_ID}`,
+      logStreamName: `${role}/${role}/${role}`,
       events: publicLogRecords.map((record, index) => ({
         timestamp: `2026-08-11T12:0${index + 1}:00.000Z`,
         message: JSON.stringify(record),
@@ -441,13 +492,13 @@ test("Fargate runtime evidence rejects self-claims and missing required control-
     ["log local path", mutate(complete, (copy) => { copy.cloudWatchLogs[0].events[0].message = "/Users/alice/secret"; })],
     ["bad log timestamp", mutate(complete, (copy) => { copy.cloudWatchLogs[0].events[0].timestamp = "not-time"; })],
     ["not stopped", mutate(complete, (copy) => { copy.describeTasks.tasks[0].lastStatus = "RUNNING"; })],
-    ["sts mismatch", mutate(complete, (copy) => { const record = JSON.parse(copy.cloudWatchLogs[0].events[1].message); record.callerIdentity.arn = "arn:aws:sts::123456789012:assumed-role/other/session"; copy.cloudWatchLogs[0].events[1].message = JSON.stringify(record); })],
-    ["sts account mismatch", mutate(complete, (copy) => { const record = JSON.parse(copy.cloudWatchLogs[0].events[1].message); record.callerIdentity.account = "210987654321"; copy.cloudWatchLogs[0].events[1].message = JSON.stringify(record); })],
+    ["sts mismatch", mutate(complete, (copy) => { const record = JSON.parse(copy.cloudWatchLogs[0].events[0].message); record.stsArn = "arn:aws:sts::123456789012:assumed-role/other/session"; copy.cloudWatchLogs[0].events[0].message = JSON.stringify(record); })],
+    ["sts account mismatch", mutate(complete, (copy) => { const record = JSON.parse(copy.cloudWatchLogs[0].events[0].message); record.accountId = "210987654321"; copy.cloudWatchLogs[0].events[0].message = JSON.stringify(record); })],
     ["separate sts claim rejected", mutate(complete, (copy) => { copy.inTaskStsCallerIdentity = { account: "123456789012", arn: "arn:aws:sts::123456789012:assumed-role/clockchain-mechanics-proof-initiator-task/session", userId: "fake" }; })],
-    ["missing runtime attestation", mutate(complete, (copy) => { copy.cloudWatchLogs[0].events = copy.cloudWatchLogs[0].events.filter((event) => !event.message.includes("fargate-runtime-attestation")); })],
+    ["missing runtime attestation", mutate(complete, (copy) => { copy.cloudWatchLogs[0].events = copy.cloudWatchLogs[0].events.filter((event) => !event.message.includes("mechanics-proof-ecs-attestation")); })],
     ["attestation role mismatch", mutate(complete, (copy) => { const record = JSON.parse(copy.cloudWatchLogs[0].events[0].message); record.role = "responder"; copy.cloudWatchLogs[0].events[0].message = JSON.stringify(record); })],
     ["separate runtime attestation rejected", mutate(complete, (copy) => { copy.runtimeAttestation = { sessionId: SESSION_ID, role: "initiator", workspaceRootDigest: HEX_A, stateRootDigest: HEX_A, signerRootDigest: HEX_A }; })],
-    ["missing sanitization record", mutate(complete, (copy) => { copy.cloudWatchLogs[0].events = copy.cloudWatchLogs[0].events.filter((event) => !event.message.includes("fargate-session-sanitization")); })],
+    ["missing terminal record", mutate(complete, (copy) => { copy.cloudWatchLogs[0].events = copy.cloudWatchLogs[0].events.filter((event) => !event.message.includes("mechanics-proof-party-evidence")); })],
     ["secret canary in logs", mutate(complete, (copy) => { copy.cloudWatchLogs[0].events[0].message = "secret-canary"; })],
     ["described env mismatch", mutate(complete, (copy) => { copy.taskDefinition.taskDefinition.containerDefinitions[0].environment.push({ name: "EXTRA", value: "unsafe" }); })],
     ["described repository credentials", mutate(complete, (copy) => { copy.taskDefinition.taskDefinition.containerDefinitions[0].repositoryCredentials = { credentialsParameter: "arn:aws:secretsmanager:us-west-2:123456789012:secret:repo" }; })],
@@ -461,7 +512,8 @@ test("Fargate runtime evidence rejects self-claims and missing required control-
     ["security group egress peer missing", mutate(complete, (copy) => { copy.securityGroups[rolePlan(plan, "initiator").securityGroupId].IpPermissionsEgress = []; })],
     ["cloudtrail extra key", mutate(complete, (copy) => { copy.cloudTrailEvents[0].extra = "no"; })],
     ["runtask too late", mutate(complete, (copy) => { copy.cloudTrailEvents[0].eventTime = "2026-08-11T12:01:00.000Z"; })],
-    ["stoptask too early", mutate(complete, (copy) => { copy.cloudTrailEvents[1].eventTime = "2026-08-11T12:04:00.000Z"; })],
+    ["stoptask before task creation", mutate(complete, (copy) => { copy.cloudTrailEvents[1].eventTime = "2026-08-11T11:59:00.000Z"; })],
+    ["stoptask after stopped time", mutate(complete, (copy) => { copy.cloudTrailEvents[1].eventTime = "2026-08-11T12:05:01.000Z"; })],
     ["cross-account task arn", mutate(complete, (copy) => { copy.describeTasks.tasks[0].taskArn = copy.describeTasks.tasks[0].taskArn.replace(":123456789012:", ":210987654321:"); })],
     ["cross-account task definition", mutate(complete, (copy) => { copy.taskDefinition.taskDefinition.taskDefinitionArn = copy.taskDefinition.taskDefinition.taskDefinitionArn.replace(":123456789012:", ":210987654321:"); copy.describeTasks.tasks[0].taskDefinitionArn = copy.taskDefinition.taskDefinition.taskDefinitionArn; })],
     ["region mismatch task definition", mutate(complete, (copy) => { copy.taskDefinition.taskDefinition.taskDefinitionArn = copy.taskDefinition.taskDefinition.taskDefinitionArn.replace(":us-west-2:", ":us-east-1:"); copy.describeTasks.tasks[0].taskDefinitionArn = copy.taskDefinition.taskDefinition.taskDefinitionArn; })],
