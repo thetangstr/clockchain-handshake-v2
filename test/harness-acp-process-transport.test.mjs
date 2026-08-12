@@ -1261,6 +1261,7 @@ test("ACP process transport fails closed on ambiguous or malformed MCP helper ou
   const otherAction = retainedAction({ role: "initiator", actionId: "action-2", requestDigest: "e".repeat(64), commandSha256: "e".repeat(64) });
   const cases = [
     {
+      expectedProtocolStage: "retained",
       rawOutput: {
         result: {
           content: [
@@ -1272,18 +1273,21 @@ test("ACP process transport fails closed on ambiguous or malformed MCP helper ou
       },
     },
     {
+      expectedProtocolStage: "retained",
       rawOutput: {
         result: { content: [{ type: "image", text: JSON.stringify({ helperStep: helperStepForAction(action) }) }] },
         error: null,
       },
     },
     {
+      expectedProtocolStage: "retained",
       rawOutput: {
         result: { content: [{ type: "text", text: "{not-json" }] },
         error: null,
       },
     },
     {
+      expectedProtocolStage: "tool-result",
       rawOutput: {
         result: { structuredContent: { helperStep: helperStepForAction(action) } },
         error: { message: "tool failed secret-canary /Users/alice/secret" },
@@ -1324,7 +1328,7 @@ test("ACP process transport fails closed on ambiguous or malformed MCP helper ou
       mcpEndpoint: MCP_ENDPOINT,
       a2aConfig: a2aConfig("initiator"),
     }), (error) => {
-      assert.equal(acpProcessTransportFailureStage(error), "completion-protocol");
+      assert.equal(acpProcessTransportFailureStage(error), `completion-protocol-${item.expectedProtocolStage}`);
       return true;
     });
     const events = await transport.streamEvents({ sessionId: SESSION });

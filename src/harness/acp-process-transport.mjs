@@ -33,7 +33,9 @@ const CODEX_MODEL = "gpt-5.6-terra";
 const CLAUDE_BEDROCK_MODEL = "us.anthropic.claude-sonnet-4-6";
 const LAUNCH_FAILURE_STAGES = Object.freeze([
   "spawn", "stream", "initialize", "session", "model", "prompt", "completion",
-  "completion-protocol", "completion-permission", "completion-stop",
+  "completion-protocol", "completion-protocol-envelope", "completion-protocol-usage",
+  "completion-protocol-tool-result", "completion-protocol-bridge", "completion-protocol-retained",
+  "completion-protocol-event", "completion-permission", "completion-stop",
 ]);
 const LAUNCH_FAILURES = new WeakMap();
 
@@ -586,6 +588,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
   let terminated = false;
   let permissionDenied = false;
   let protocolFailure = false;
+  let protocolFailureStage = null;
   let usage = Object.freeze({ inputTokens: "0", outputTokens: "0" });
   const events = [];
   const retainedByCommand = new Map();
@@ -642,20 +645,24 @@ export function createAcpProcessTransport(optionsInput = {}) {
     }
   }
   async function sessionUpdate(params) {
+    let failureStage = "envelope";
     try {
       if (session === null || params?.sessionId !== acpSessionId) fail();
       const updateType = params?.update?.sessionUpdate;
       if (typeof updateType !== "string") fail();
       if (updateType === "usage_update") {
+        failureStage = "usage";
         const used = params.update.used;
         if (Number.isSafeInteger(used) && used >= 0) {
           usage = Object.freeze({ inputTokens: String(used), outputTokens: usage.outputTokens });
         }
       }
       if (updateType === "tool_call" || updateType === "tool_call_update") {
+        failureStage = "tool-result";
         const toolResult = authoritativeToolResult(params.update);
         if (toolResult !== null) {
           if (partyBridge !== null) {
+            failureStage = "bridge";
             const observed = exactObject(
               await partyBridge.observeToolResult({ toolName: toolResult.toolName, result: toolResult.result }),
               ["observed", "protocolSessionId", "toolResultDigest"],
@@ -673,11 +680,13 @@ export function createAcpProcessTransport(optionsInput = {}) {
               }
             }
           }
+          failureStage = "retained";
           for (const retained of retainedActionsFromToolResult(toolResult.result, actionRecorder)) {
             registerRetainedAction(retained);
           }
         }
       }
+      failureStage = "event";
       event(`acp.${updateType}`, `observed ACP ${updateType}`, digestJson({
         updateType,
         toolCallId: typeof params.update.toolCallId === "string" ? params.update.toolCallId : null,
@@ -687,6 +696,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
       }));
     } catch {
       protocolFailure = true;
+      protocolFailureStage ??= failureStage;
     }
   }
   return Object.freeze({
@@ -769,7 +779,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
         });
         launchStage = "completion";
         if (protocolFailure) {
-          launchStage = "completion-protocol";
+          launchStage = `completion-protocol-${protocolFailureStage ?? "envelope"}`;
           fail();
         }
         if (permissionDenied) {
