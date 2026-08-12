@@ -228,6 +228,10 @@ async function main() {
   const parent = process.env.CLOCKCHAIN_FRESH_AGENT_PARENT ?? await mkdtemp(join(tmpdir(), "clockchain-fresh-agent-"));
   try {
     const prompts = JSON.parse(await readFile(new URL("../test/fixtures/fresh-agent/prompts.json", import.meta.url), "utf8"));
+    for (const role of ["initiator", "responder"]) {
+      prompts[role] = `${prompts[role]}\n\n${prompts.actionDecision}`;
+    }
+    delete prompts.actionDecision;
     const clients = {
       initiator: process.env.CLOCKCHAIN_INITIATOR_CLIENT ?? "codex",
       responder: process.env.CLOCKCHAIN_RESPONDER_CLIENT ?? "claude",

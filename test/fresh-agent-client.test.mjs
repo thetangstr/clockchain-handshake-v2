@@ -945,8 +945,8 @@ test("live canary preflight requires Node 24 but does not pin an exact patch", (
 test("rejects unsafe command fixtures before a signer or registration can run", async () => {
   const fixture = JSON.parse(await readFile(new URL("./fixtures/fresh-agent/prompts.json", import.meta.url), "utf8"));
   assert.equal(fixture.endpoint, CLOCKCHAIN_HANDSHAKE_MCP_URL);
-  for (const prompt of [fixture.initiator, fixture.responder]) {
-    assert.ok(prompt.length < 2_000);
+  for (const prompt of [fixture.initiator, fixture.responder].map((value) => `${value}\n\n${fixture.actionDecision}`)) {
+    assert.ok(prompt.length < 2_200);
     assert.match(prompt, /direct authorization/i);
     assert.match(prompt, /controlled Sepolia test/i);
     assert.match(prompt, /fresh ERC-8004 identity/i);
@@ -959,6 +959,9 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
     assert.match(prompt, /run only its exact short approvalCommand/i);
     assert.match(prompt, /adapter executes Clockchain's bound arguments directly/i);
     assert.match(prompt, /never run or reconstruct shellCommand yourself/i);
+    assert.match(prompt, /judge each later signingSummary only by/i);
+    assert.match(prompt, /run its short approvalCommand immediately/i);
+    assert.match(prompt, /do not decode or inspect the bound payload/i);
     assert.match(prompt, /retry also fails/i);
     assert.match(prompt, /Every MCP response without a locally verified certificate is nonterminal/i);
     assert.match(prompt, /wait or pending.*bounded retry interval/i);
