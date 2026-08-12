@@ -1547,7 +1547,7 @@ test("ACP process transport fails closed on ambiguous or malformed MCP helper ou
   const otherAction = retainedAction({ role: "initiator", actionId: "action-2", requestDigest: "e".repeat(64), commandSha256: "e".repeat(64) });
   const cases = [
     {
-      expectedProtocolStage: "retained",
+      expectedProtocolStage: "retained-extract",
       rawOutput: {
         result: {
           content: [
@@ -1559,14 +1559,14 @@ test("ACP process transport fails closed on ambiguous or malformed MCP helper ou
       },
     },
     {
-      expectedProtocolStage: "retained",
+      expectedProtocolStage: "retained-extract",
       rawOutput: {
         result: { content: [{ type: "image", text: JSON.stringify({ helperStep: helperStepForAction(action) }) }] },
         error: null,
       },
     },
     {
-      expectedProtocolStage: "retained",
+      expectedProtocolStage: "retained-extract",
       rawOutput: {
         result: { content: [{ type: "text", text: "{not-json" }] },
         error: null,

@@ -38,6 +38,7 @@ const LAUNCH_FAILURE_STAGES = Object.freeze([
   "spawn", "stream", "initialize", "session", "model", "prompt", "completion",
   "completion-protocol", "completion-protocol-envelope", "completion-protocol-usage",
   "completion-protocol-tool-result", "completion-protocol-bridge", "completion-protocol-retained",
+  "completion-protocol-retained-extract", "completion-protocol-retained-record", "completion-protocol-retained-register",
   "completion-protocol-event", "completion-protocol-envelope-runtime", "completion-protocol-envelope-session-id",
   "completion-protocol-envelope-update-type", "completion-protocol-envelope-before-session",
   "completion-protocol-envelope-early-tool", "completion-protocol-envelope-provisional-session",
@@ -568,18 +569,12 @@ function mcpFailureResult(value) {
   return mcpFailureBlocks(descriptors.content?.value);
 }
 
-function retainedActionsFromToolResult(result, actionRecorder) {
+function helperStepsFromToolResult(result, actionRecorder) {
   const steps = [];
   appendHelperSteps(result, steps);
   if (steps.length === 0) return [];
   if (steps.length !== 1 || actionRecorder === null) fail();
-  const actions = [];
-  for (const step of steps) {
-    actions.push(validateRetainedLocalAction(actionRecorder.record(step)));
-  }
-  const unique = new Map(actions.map((action) => [action.commandSha256, action]));
-  if (unique.size !== actions.length) fail();
-  return actions;
+  return steps;
 }
 
 function wait(ms) {
@@ -790,8 +785,12 @@ export function createAcpProcessTransport(optionsInput = {}) {
               }
             }
           }
-          failureStage = "retained";
-          for (const retained of retainedActionsFromToolResult(toolResult.result, actionRecorder)) {
+          failureStage = "retained-extract";
+          const extractedHelperSteps = helperStepsFromToolResult(toolResult.result, actionRecorder);
+          failureStage = "retained-record";
+          const extractedRetainedActions = extractedHelperSteps.map((step) => validateRetainedLocalAction(actionRecorder.record(step)));
+          failureStage = "retained-register";
+          for (const retained of extractedRetainedActions) {
             registerRetainedAction(retained);
           }
         }

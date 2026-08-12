@@ -65,7 +65,9 @@ const RUNTIME_FAILURE_STAGES = Object.freeze([
   "agent-launch-model", "agent-launch-prompt", "agent-launch-completion", "agent-launch-completion-protocol",
   "agent-launch-completion-protocol-envelope", "agent-launch-completion-protocol-usage",
   "agent-launch-completion-protocol-tool-result", "agent-launch-completion-protocol-bridge",
-  "agent-launch-completion-protocol-retained", "agent-launch-completion-protocol-event",
+  "agent-launch-completion-protocol-retained", "agent-launch-completion-protocol-retained-extract",
+  "agent-launch-completion-protocol-retained-record", "agent-launch-completion-protocol-retained-register",
+  "agent-launch-completion-protocol-event",
   "agent-launch-completion-protocol-envelope-runtime", "agent-launch-completion-protocol-envelope-session-id",
   "agent-launch-completion-protocol-envelope-update-type", "agent-launch-completion-protocol-envelope-before-session",
   "agent-launch-completion-protocol-envelope-early-tool", "agent-launch-completion-protocol-envelope-provisional-session",
@@ -229,7 +231,7 @@ function createBootstrapSigner() {
 }
 
 async function waitForInvitation(transport) {
-  for (let count = 0; count < 6_000; count += 1) {
+  for (let count = 0; count < 18_000; count += 1) {
     const evidence = transport.publicEvidence();
     if (Array.isArray(evidence?.invitations) && evidence.invitations.some((entry) => entry?.direction === "inbound")) {
       return transport.takeInvitation();
