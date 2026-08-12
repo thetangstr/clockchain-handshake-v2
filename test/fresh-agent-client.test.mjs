@@ -1011,6 +1011,10 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
     assert.match(prompt, /Every MCP response without a locally verified certificate is nonterminal/i);
     assert.match(prompt, /wait or pending.*returned bounded interval/i);
     assert.match(prompt, /Never finish merely because the other role is pending/i);
+    assert.match(prompt, /Clockchain host.*funds.*registration gas/i);
+    assert.match(prompt, /never.*self-fund|do not.*self-fund/i);
+    assert.match(prompt, /funding_record.*funding_visibility.*normal.*wait/i);
+    assert.match(prompt, /do not.*faucet|never.*faucet/i);
     assert.doesNotMatch(prompt, /curl --location|retryAfterMs|localAction|mkdir -m|agent_handshake_next/);
   }
   assert.match(fixture.initiator, /First, create the one-time Responder invitation/);
