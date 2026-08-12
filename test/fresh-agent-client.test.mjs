@@ -768,6 +768,112 @@ test("attempt artifacts are private, exclusive, secret-free, and survive clean-r
   assert.deepEqual(await readdir(parent), []);
 });
 
+test("offline verifier accepts only success attempt artifacts and prints public evidence", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-verify-run-parent-"));
+  const artifacts = await mkdtemp(join(tmpdir(), "fresh-agent-verify-run-artifacts-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  t.after(() => rm(artifacts, { recursive: true, force: true }));
+  const evidence = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent));
+  const first = await writeFreshAgentAttemptArtifact({
+    attemptId: "verify-success-a",
+    directory: artifacts,
+    evidence,
+    outcome: "success",
+  });
+  const second = await writeFreshAgentAttemptArtifact({
+    attemptId: "verify-success-b",
+    directory: artifacts,
+    evidence,
+    outcome: "success",
+  });
+
+  const { stdout, stderr } = await execFileAsync(process.execPath, ["scripts/verify-run.mjs", first.path, second.path], {
+    cwd: new URL("..", import.meta.url).pathname,
+  });
+
+  assert.equal(stderr, "");
+  const lines = stdout.trimEnd().split("\n").map((line) => JSON.parse(line));
+  assert.equal(lines.length, 2);
+  for (const [index, summary] of lines.entries()) {
+    assert.deepEqual(Object.keys(summary).sort(), [
+      "attemptId", "certificateDigest", "certificateVerified", "cleanup", "distinctAddresses",
+      "distinctErc8004Ids", "externalBusinessActionPerformed", "receiptIds", "roles", "schema",
+    ].sort());
+    assert.equal(summary.schema, "clockchain.fresh-agent-canary-verification/v1");
+    assert.equal(summary.attemptId, index === 0 ? "verify-success-a" : "verify-success-b");
+    assert.equal(summary.certificateVerified, true);
+    assert.equal(summary.externalBusinessActionPerformed, false);
+    assert.equal(summary.cleanup, true);
+    assert.equal(summary.distinctAddresses, true);
+    assert.equal(summary.distinctErc8004Ids, true);
+    assert.equal(summary.certificateDigest, evidence.binding.certificateDigest);
+    assert.deepEqual(summary.receiptIds, evidence.roles.initiator.receiptIds);
+    assert.deepEqual(summary.roles, {
+      initiator: {
+        address: evidence.roles.initiator.address,
+        erc8004AgentId: evidence.roles.initiator.erc8004.agentId,
+        erc8004Reference: evidence.roles.initiator.erc8004.reference,
+      },
+      responder: {
+        address: evidence.roles.responder.address,
+        erc8004AgentId: evidence.roles.responder.erc8004.agentId,
+        erc8004Reference: evidence.roles.responder.erc8004.reference,
+      },
+    });
+    assert.equal(JSON.stringify(summary).includes(first.path), false);
+    assert.equal(JSON.stringify(summary).includes(parent), false);
+  }
+});
+
+test("offline verifier rejects failure, malformed, and private-shaped attempt artifacts safely", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-verify-run-reject-parent-"));
+  const artifacts = await mkdtemp(join(tmpdir(), "fresh-agent-verify-run-reject-artifacts-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  t.after(() => rm(artifacts, { recursive: true, force: true }));
+  const evidence = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent));
+  const success = await writeFreshAgentAttemptArtifact({
+    attemptId: "verify-reject-success",
+    directory: artifacts,
+    evidence,
+    outcome: "success",
+  });
+  const failure = await writeFreshAgentAttemptArtifact({
+    attemptId: "verify-reject-failure",
+    directory: artifacts,
+    error: new FreshAgentDiagnosticError({ phase: "agent-exit", category: "validation", code: "HELPER_COMMAND_MISMATCH" }),
+    outcome: "failure",
+  });
+  const successArtifact = JSON.parse(await readFile(success.path, "utf8"));
+  const cases = [
+    ["failure", failure.path, "HELPER_COMMAND_MISMATCH"],
+    ["tampered-certificate", join(artifacts, "tampered.json"), null],
+    ["transcript-extra", join(artifacts, "transcript.json"), "raw private reasoning secret"],
+    ["private-reasoning-extra", join(artifacts, "private-reasoning.json"), "0x" + "a".repeat(64)],
+    ["path-extra", join(artifacts, "path-extra.json"), parent],
+  ];
+  await writeFile(cases[1][1], JSON.stringify({ ...successArtifact, result: { ...successArtifact.result, certificateVerified: false } }));
+  await writeFile(cases[2][1], JSON.stringify({ ...successArtifact, transcript: "raw private reasoning secret" }));
+  await writeFile(cases[3][1], JSON.stringify({ ...successArtifact, privateReasoning: "0x" + "a".repeat(64) }));
+  await writeFile(cases[4][1], JSON.stringify({ ...successArtifact, path: parent }));
+
+  for (const [name, file, secret] of cases) {
+    await t.test(name, async () => {
+      await assert.rejects(async () => {
+        await execFileAsync(process.execPath, ["scripts/verify-run.mjs", file], {
+          cwd: new URL("..", import.meta.url).pathname,
+        });
+      }, (error) => {
+        assert.equal(error.code, 1);
+        assert.equal(error.stdout, "");
+        assert.equal(error.stderr, "Fresh agent run verification failed safely.\n");
+        assert.equal(error.stderr.includes(file), false);
+        if (secret !== null) assert.equal(error.stderr.includes(secret), false);
+        return true;
+      });
+    });
+  }
+});
+
 test("malformed success evidence is rejected before creating an attempt artifact", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "fresh-agent-malformed-evidence-parent-"));
   const artifacts = await mkdtemp(join(tmpdir(), "fresh-agent-malformed-evidence-"));

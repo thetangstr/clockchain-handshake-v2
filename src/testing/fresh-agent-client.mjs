@@ -2069,6 +2069,17 @@ function validateSuccessEvidence(value) {
   });
 }
 
+export function validateFreshAgentAttemptArtifact(value) {
+  const item = exactObject(value, ["attemptId", "outcome", "result", "schema"]);
+  if (item.schema !== ATTEMPT_ARTIFACT_SCHEMA || item.outcome !== "success") fail();
+  return Object.freeze({
+    schema: ATTEMPT_ARTIFACT_SCHEMA,
+    attemptId: attemptId(item.attemptId),
+    outcome: "success",
+    result: validateSuccessEvidence(item.result),
+  });
+}
+
 export async function writeFreshAgentAttemptArtifact({
   attemptId: rawAttemptId = randomUUID(),
   directory,
