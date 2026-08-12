@@ -24,6 +24,7 @@ import {
   RUNTIME_EVIDENCE_SCHEMA,
   validateRuntimePairEvidence,
 } from "../src/runtime/runtime-adapter-contract.mjs";
+import { buildFargateLiveStackPlan } from "../src/runtime/aws-fargate-live-plan.mjs";
 
 const execFileAsync = promisify(execFile);
 const HEX_A = "a".repeat(64);
@@ -31,6 +32,13 @@ const HEX_B = "b".repeat(64);
 const SESSION_ID = "11111111-2222-4333-8444-555555555555";
 const APP_IMAGE = `123456789012.dkr.ecr.us-west-2.amazonaws.com/clockchain-mechanics-proof@sha256:${"6".repeat(64)}`;
 const SOURCE_COMMIT = "1234567890abcdef1234567890abcdef12345678";
+
+test("runtime adapter exposes the live stack planning boundary without enabling mutation", async () => {
+  const adapter = createAwsFargateRuntimeAdapter({ plan: await checkedPlan() });
+  assert.equal(typeof adapter.inspectLiveStackPlan, "function");
+  assert.equal(typeof buildFargateLiveStackPlan, "function");
+  assert.equal(typeof adapter.provisionPartyRuntime, "function");
+});
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));

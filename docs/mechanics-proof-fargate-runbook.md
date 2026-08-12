@@ -1,4 +1,4 @@
-# Mechanics Proof Fargate Dry Run
+# Mechanics Proof Fargate Runtime
 
 Phase4 is dry-run only. The checked-in Fargate files are validation fixtures for the mechanics-proof runtime boundary; they are not an approval to register task definitions, run ECS tasks, deploy a stack, or claim a certificate.
 
@@ -23,7 +23,36 @@ node scripts/run-mechanics-proof-fargate.mjs \
 
 The evidence directory must be an explicit mechanics-proof-prefixed absolute path under repo-local `.tmp` or directly under `/private/tmp` or the platform temp root. The path is printed only as a digest. The app image must be shaped like a Clockchain mechanics-proof application image pinned by immutable digest. The pinned Docker Hub Node base fixture is rejected, but Phase6 preflight does not yet prove ECR/image provenance, so `deploymentReady` remains `false` and `imageProvenanceVerified` remains `false`.
 
-Runtime requirements for a future live phase:
+## Phase 6C2 live stack plan
+
+`infra/mechanics-proof/fargate-live-runtime.yaml` is the deployable, run-scoped infrastructure template. Merely loading or planning it remains read-only. Deployment belongs to the separately gated live controller and requires all of these explicit facts; none may be selected by inference:
+
+- allowed 12-digit AWS account and exact region;
+- selected VPC ID and every VPC CIDR;
+- one existing public subnet ID, its VPC, CIDR, Availability Zone, `MapPublicIpOnLaunch:true`, exact associated route-table ID, and an active `0.0.0.0/0` route to an Internet Gateway;
+- two unused private `/24` CIDRs inside that VPC, in two explicitly selected distinct Availability Zones, proven non-overlapping with every current VPC subnet immediately before mutation;
+- immutable Clockchain ECR image by `repository@sha256:<digest>` in the allowed account and region;
+- initiator-only Codex subscription-auth Secrets Manager ARN;
+- account-scoped Claude Sonnet cross-region Bedrock inference-profile ARN;
+- UUID run ID, exact start/expiry timestamps, TTL no more than 3600 seconds, concurrency exactly two, and budget no more than USD 25.
+
+The live stack creates two private subnets and one temporary NAT gateway in the supplied existing public subnet. Both tasks use `assignPublicIp: DISABLED`; TCP 8443 is allowed only between the two role security groups, while TCP 443 exits through the private route tables' run-scoped NAT route. The stack also creates two native SSE-SQS queues with 15-minute retention. Each task role may send only to its own queue and receive/delete only from the peer queue. SQS IAM and the message binding authenticate publication of the public bootstrap descriptor; the exchanged public key then verifies later signed A2A envelopes. Private handshake traffic remains direct peer HTTPS.
+
+The initiator and responder have distinct task roles, execution roles, security groups, log groups, subnets, and task-local writable volumes. The initiator execution role alone may retrieve the exact Codex secret. The responder task role alone may call both `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream`, scoped to the exact Sonnet inference profile and its three destination foundation-model ARNs. Neither role receives a signer, state, MCP-credential, Anthropic-key, EFS, host volume, or shared writable resource.
+
+Each task definition uses a short-lived nonessential `workspace-init` container to set ownership on the task-local ephemeral `/workspace` volume. The application starts only after that container exits successfully, runs as `1000:1000`, and keeps its root filesystem read-only. The init container receives no explicit environment, secret, port, or protocol payload. Runtime ID, task ID, private ENI endpoint, and workload-attestation digest are derived inside the task from ECS metadata rather than supplied by the controller.
+
+CloudFormation syntax can be checked without creating resources:
+
+```bash
+aws cloudformation validate-template \
+  --region <allowed-region> \
+  --template-body file://infra/mechanics-proof/fargate-live-runtime.yaml
+```
+
+Successful template validation is not a mechanics proof and does not authorize stack creation. Before deployment, the live controller must repeat the VPC, public-route, and CIDR non-overlap checks against current AWS control-plane data.
+
+Runtime requirements preserved from the historical dry fixture:
 
 - Two one-shot Fargate tasks, one initiator and one responder, with distinct task roles, execution roles, log groups, secret references, state roots, signer roots, and workspaces.
 - Immutable Node 24 image references must use `repository@sha256:<64 hex>`. The checked-in image is the official `docker.io/library/node:24.11.1-bookworm-slim` x86_64 base fixture pinned by digest for dry-run validation only. It cannot run the mechanics proof by itself; Phase6 must replace it with a Clockchain application image pinned by manifest digest.

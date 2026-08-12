@@ -4,15 +4,15 @@
 
 **Goal:** Run one Codex Initiator and one Claude/Bedrock Responder in two disposable Fargate tasks with distinct workload identities, no shared writable state, direct peer traffic, live ERC-8004 registration, one closing Clockchain certificate, and independently collected teardown evidence.
 
-**Architecture:** Preserve the existing portable `RuntimeAdapter` and harness adapters. Add one provider-neutral public bootstrap-exchange port. Local Docker keeps its stdin descriptor exchange; Fargate uses two run-scoped SQS queues only to exchange each task's signed public bootstrap descriptor. All invitations, Agent Cards, mandates, proposal/acceptance artifacts, commitment checkpoints, helper commands, private MCP access, and certificate verification stay inside the two runtimes or flow directly over peer-only HTTPS port 8443. A Clockchain-owned Fargate controller provisions and observes infrastructure but never signs, decides, or routes private protocol content.
+**Architecture:** Preserve the existing portable `RuntimeAdapter` and harness adapters. Add one provider-neutral public bootstrap-exchange port. Local Docker keeps its stdin descriptor exchange; Fargate uses two run-scoped SQS queues only to exchange each task's task-role-authenticated public bootstrap descriptor. SQS IAM and message binding authenticate publication; the exchanged public key verifies later signed A2A envelopes. All invitations, Agent Cards, mandates, proposal/acceptance artifacts, commitment checkpoints, helper commands, private MCP access, and certificate verification stay inside the two runtimes or flow directly over peer-only HTTPS port 8443. A Clockchain-owned Fargate controller provisions and observes infrastructure but never signs, decides, or routes private protocol content.
 
-**Tech Stack:** Node.js 24 ESM, `@aws-sdk/client-sqs` only inside the party image for task-role-authenticated bootstrap exchange, AWS CLI v2 through an injected exact-command executor for controller-side CloudFormation/ECR/ECS/EC2/Logs/CloudTrail inspection, ECS Fargate `awsvpc`, CloudWatch Logs, Secrets Manager, SQS, direct HTTPS/TLS-pinned A2A, existing ACP Codex/Claude adapters.
+**Tech Stack:** Node.js 24 ESM, exact-pinned `@aws-sdk/client-sqs` and `@aws-sdk/client-sts` inside the party image for task-role-authenticated bootstrap exchange and caller-identity proof, AWS CLI v2 through an injected exact-command executor for controller-side CloudFormation/ECR/ECS/EC2/Logs/CloudTrail inspection, ECS task metadata v4, ECS Fargate `awsvpc`, CloudWatch Logs, Secrets Manager, SQS, direct HTTPS/TLS-pinned A2A, existing ACP Codex/Claude adapters.
 
 **Repository:** `/private/tmp/clockchain-mechanics-proof`
 
 **Hard gates:**
 
-- No live AWS mutation until `--run`, an exact account/region allowlist, immutable ECR image digest, production MCP health/checkpoint-tool smoke, explicit private subnet/VPC inputs, a Codex auth secret ARN, TTL <= 3600 seconds, max concurrency 2, and budget <= USD 25 all pass.
+- No live AWS mutation until `--run`, an exact account/region allowlist, immutable ECR image digest, production MCP health/checkpoint-tool smoke, explicit VPC/public-subnet/private-CIDR inputs, a Codex auth secret ARN, TTL <= 3600 seconds, max concurrency 2, and budget <= USD 25 all pass.
 - The controller may create/delete queues and infrastructure and may retain public descriptor digests. It must not read or persist raw queue messages, invitations, terms, access capabilities, signatures, prompts, transcripts, party keys, or model reasoning.
 - Party signer, delegated A2A key, bootstrap Ed25519 key, and TLS private key are generated inside each task and destroyed with it. There are no signer/state secret references and no EFS/shared volume.
 - Initiator receives only its Codex auth secret. Responder receives no Anthropic secret and uses its distinct task role for Bedrock. MCP role capability remains runtime-private.
@@ -81,9 +81,9 @@ PATH=/opt/homebrew/opt/node@24/bin:$PATH node --test \
   test/mechanics-proof-container.test.mjs
 ```
 
-- [ ] **Step 3: Implement managed mode**
+- [ ] **Step 3: Implement managed exchange mode**
 
-Add `--run-managed` selecting `createAwsSqsBootstrapExchange` from exact nonsecret queue URLs and region. Let the AWS SDK default credential chain use the ECS task role; reject static AWS credentials and web-identity overrides from controller env. Emit only descriptor/event/evidence records already permitted by the party runtime. Pin `@aws-sdk/client-sqs` to one exact version; add no other SDK clients.
+Add the managed exchange selection used by `--run-managed`, consuming exact nonsecret queue URLs and region. Let the AWS SDK default credential chain use the ECS task role; reject static AWS credentials and controller-supplied web-identity overrides. Emit only descriptor/event/evidence records already permitted by the party runtime. Pin `@aws-sdk/client-sqs` to one exact version. Task runtime identity and endpoint derivation remain Task 2B; do not accept controller-invented values as a substitute.
 
 - [ ] **Step 4: Run GREEN, dependency audit, and image verification**
 
@@ -92,6 +92,40 @@ Run focused tests, `npm audit --omit=dev`, Dockerfile tests, and `npm run verify
 - [ ] **Step 5: Commit**
 
 Commit with Lore intent `Exchange only public peer bootstraps through workload identity`.
+
+### Task 2B: Derive runtime identity inside each Fargate task
+
+**Files:**
+- Create: `src/runtime/aws-ecs-task-bootstrap.mjs`
+- Modify: `bin/mechanics-proof-party.mjs`
+- Modify: `package.json`
+- Modify: `package-lock.json`
+- Test: `test/aws-ecs-task-bootstrap.test.mjs`
+- Test: `test/mechanics-proof-party-entrypoint.test.mjs`
+
+- [ ] **Step 1: Write RED ECS metadata and STS tests**
+
+With injected `fetch` and `STSClient`, require an exact ECS metadata v4 task envelope, one non-loopback private IPv4 address, task ARN, family, revision, availability zone, container ARN/name, and the task-role `GetCallerIdentity` response. Derive `publicEndpoint`, `runtimeId`, `taskId`, and `workloadAttestationDigest` inside the task. Reject missing/non-v4 metadata URI, link-local/public/loopback IP, multiple ambiguous task networks, wrong account/region, controller-supplied runtime/task/workload/public-endpoint fields, static AWS credentials, controller web-identity fields, metadata timeout/oversize, or STS identity that is not an assumed task role for the same account.
+
+- [ ] **Step 2: Run RED**
+
+```bash
+PATH=/opt/homebrew/opt/node@24/bin:$PATH node --test \
+  test/aws-ecs-task-bootstrap.test.mjs \
+  test/mechanics-proof-party-entrypoint.test.mjs
+```
+
+- [ ] **Step 3: Implement fail-closed managed entrypoint bootstrap**
+
+`mechanics-proof-party --run-managed` reads only the platform-injected `ECS_CONTAINER_METADATA_URI_V4`, fetches `${URI}/task` with a bounded response, calls STS through the ECS default credential chain, derives `https://<private-ip>:8443`, and constructs the existing party-runtime options plus SQS exchange. The resulting public task-attestation log record is exact-schema and may contain the STS caller identity for later corroboration; no credentials or metadata endpoint are retained. Pin `@aws-sdk/client-sts` to the same exact SDK release family as SQS.
+
+- [ ] **Step 4: Run GREEN and managed-mode regressions**
+
+Run focused tests, SQS tests, party runtime/entrypoint tests, `npm audit --omit=dev`, and `npm run verify`.
+
+- [ ] **Step 5: Commit**
+
+Commit with Lore intent `Derive cloud identity inside each party runtime`.
 
 ### Task 3: Replace dry fixtures with a live-safe run-scoped stack template
 
@@ -105,7 +139,7 @@ Commit with Lore intent `Exchange only public peer bootstraps through workload i
 
 - [ ] **Step 1: Write RED infrastructure contract tests**
 
-Require one run-scoped cluster, two queues with SSE-SQS and 15-minute retention, two peer-only security groups, two log groups, distinct task and execution roles, responder-only Bedrock permissions, initiator-only Codex secret retrieval, and task-role queue permissions limited to own-send/peer-receive-delete. Require `assignPublicIp: DISABLED`, private subnets, 8443 peer-group traffic, HTTPS egress, no EFS, no signer/state/MCP credential secrets, and mandatory run/phase/expiry/cost tags.
+Require one run-scoped cluster, two queues with SSE-SQS and 15-minute retention, two run-scoped private subnets in distinct AZs, one temporary NAT gateway in an explicitly supplied existing public subnet, private route tables, two peer-only security groups, two log groups, distinct task and execution roles, responder-only Bedrock permissions, initiator-only Codex secret retrieval, and task-role queue permissions limited to own-send/peer-receive-delete. Require `assignPublicIp: DISABLED`, 8443 peer-group traffic, HTTPS egress through the run-scoped NAT, no EFS, no signer/state/MCP credential secrets, and mandatory run/phase/expiry/cost tags. Reject overlapping CIDRs, a public subnet outside the selected VPC, `MapPublicIpOnLaunch` on either new subnet, or a preexisting route selected by inference.
 
 - [ ] **Step 2: Run RED**
 
@@ -117,7 +151,7 @@ PATH=/opt/homebrew/opt/node@24/bin:$PATH node --test \
 
 - [ ] **Step 3: Implement the live plan builder**
 
-Keep the existing dry fixture and validator for historical regression. Build the live stack/task definitions from validated inputs and CloudFormation outputs, not hard-coded account `123456789012` fixtures. Task definitions use one immutable ECR image, ephemeral `/workspace`, read-only root, nonroot user, exact managed-mode env, per-role log stream, and no shared writable resource. The Responder task role receives `bedrock:InvokeModel`; the Initiator execution role receives only its Codex secret. Both task roles receive only their role-scoped SQS actions.
+Keep the existing dry fixture and validator for historical regression. Build the live stack/task definitions from validated inputs and CloudFormation outputs, not hard-coded account `123456789012` fixtures. The stack creates `10.0.16.0/24` and `10.0.17.0/24` only when those explicit CIDRs are revalidated as unused inside the selected VPC at execution time; callers may supply different validated unused `/24` CIDRs. Task definitions use one immutable ECR image, ephemeral `/workspace`, read-only root, nonroot user, exact managed-mode env, per-role log stream, and no shared writable resource. The Responder task role receives `bedrock:InvokeModel`; the Initiator execution role receives only its Codex secret. Both task roles receive only their role-scoped SQS actions.
 
 - [ ] **Step 4: Validate templates without mutation**
 
@@ -154,7 +188,7 @@ PATH=/opt/homebrew/opt/node@24/bin:$PATH node --test \
 
 - [ ] **Step 3: Implement the exact AWS CLI boundary**
 
-Use `execFile("aws", argv)` only through an injected executor. Allowlist every service/action and require JSON output. Never use shell interpolation. Treat nonzero/timeout/parse/shape ambiguity as failure. Public controller events contain run ID, role, state, timestamp, and digests only. `--dry-run` prints the safe mutation plan; `--run` requires explicit account, region, VPC, private subnet IDs, Codex secret ARN, immutable image, evidence directory, TTL, budget, and production MCP URL.
+Use `execFile("aws", argv)` only through an injected executor. Allowlist every service/action and require JSON output. Never use shell interpolation. Treat nonzero/timeout/parse/shape ambiguity as failure. Public controller events contain run ID, role, state, timestamp, and digests only. `--dry-run` prints the safe mutation plan; `--run` requires explicit account, region, VPC, existing public subnet ID, two unused private CIDRs, Codex secret ARN, immutable image, evidence directory, TTL, budget, and production MCP URL. The preflight must prove the supplied public subnet has the selected VPC, an Internet Gateway route, and public-address capability; it must prove the private CIDRs are inside the VPC and do not overlap any existing subnet.
 
 - [ ] **Step 4: Run GREEN and failure-injection sweep**
 
@@ -187,7 +221,7 @@ PATH=/opt/homebrew/opt/node@24/bin:$PATH node --test \
 
 - [ ] **Step 3: Implement the evidence reducer**
 
-Collect exact AWS API responses and log records in memory, validate them, and persist only canonical public evidence plus SHA-256 digests of the raw control-plane envelopes. Include the task-role STS caller identity emitted inside each task, but corroborate it with the ECS task definition and task ARN. Public proof must state that SQS carried only signed public bootstrap descriptors and that private workflow content used peer HTTPS.
+Collect exact AWS API responses and log records in memory, validate them, and persist only canonical public evidence plus SHA-256 digests of the raw control-plane envelopes. Include the task-role STS caller identity emitted inside each task, but corroborate it with the ECS task definition and task ARN. Public proof must state that SQS carried only task-role-authenticated public bootstrap descriptors, with SQS IAM/message binding authenticating publication and the exchanged public key verifying later signed A2A envelopes, and that private workflow content used peer HTTPS.
 
 - [ ] **Step 4: Run GREEN and secret/path scans**
 

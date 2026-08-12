@@ -6,6 +6,7 @@ import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
 import { types } from "node:util";
 
 import { assertSecretFree } from "../core/redact.mjs";
+import { buildFargateLiveStackPlan } from "./aws-fargate-live-plan.mjs";
 
 export const FARGATE_DRY_RUN_PLAN_SCHEMA = "clockchain.fargate-dry-run-plan/v1";
 export const FARGATE_LIVE_PREFLIGHT_SCHEMA = "clockchain.fargate-live-preflight/v1";
@@ -911,6 +912,9 @@ export function createAwsFargateRuntimeAdapter(optionsInput = {}) {
         pair: liveOptions.pair,
         runId: liveOptions.runId,
       });
+    },
+    async inspectLiveStackPlan(options = {}) {
+      return buildFargateLiveStackPlan(options);
     },
     async provisionPartyRuntime() {
       fail();

@@ -1,0 +1,202 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Disposable Clockchain mechanics-proof Fargate network and identity boundary.",
+  "Parameters": {
+    "RunId": { "Type": "String" },
+    "VpcId": { "Type": "AWS::EC2::VPC::Id" },
+    "PublicSubnetId": { "Type": "AWS::EC2::Subnet::Id" },
+    "InitiatorPrivateSubnetCidr": { "Type": "String" },
+    "ResponderPrivateSubnetCidr": { "Type": "String" },
+    "InitiatorAvailabilityZone": { "Type": "AWS::EC2::AvailabilityZone::Name" },
+    "ResponderAvailabilityZone": { "Type": "AWS::EC2::AvailabilityZone::Name" },
+    "CodexSecretArn": { "Type": "String", "NoEcho": true },
+    "BedrockModelArn": { "Type": "String" },
+    "ExpiresAt": { "Type": "String" },
+    "CostCenter": { "Type": "String", "Default": "mechanics-proof" }
+  },
+  "Resources": {
+    "Cluster": {
+      "Type": "AWS::ECS::Cluster",
+      "Properties": {
+        "ClusterName": { "Fn::Sub": "clockchain-${RunId}" },
+        "Tags": [
+          { "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } },
+          { "Key": "ClockchainPhase", "Value": "Phase6C2" },
+          { "Key": "ClockchainExpiresAt", "Value": { "Ref": "ExpiresAt" } },
+          { "Key": "ClockchainCostCenter", "Value": { "Ref": "CostCenter" } }
+        ]
+      }
+    },
+    "NatEip": {
+      "Type": "AWS::EC2::EIP",
+      "Properties": {
+        "Domain": "vpc",
+        "Tags": [
+          { "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } },
+          { "Key": "ClockchainPhase", "Value": "Phase6C2" },
+          { "Key": "ClockchainExpiresAt", "Value": { "Ref": "ExpiresAt" } },
+          { "Key": "ClockchainCostCenter", "Value": { "Ref": "CostCenter" } }
+        ]
+      }
+    },
+    "NatGateway": {
+      "Type": "AWS::EC2::NatGateway",
+      "Properties": {
+        "AllocationId": { "Fn::GetAtt": ["NatEip", "AllocationId"] },
+        "ConnectivityType": "public",
+        "SubnetId": { "Ref": "PublicSubnetId" },
+        "Tags": [
+          { "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } },
+          { "Key": "ClockchainPhase", "Value": "Phase6C2" },
+          { "Key": "ClockchainExpiresAt", "Value": { "Ref": "ExpiresAt" } },
+          { "Key": "ClockchainCostCenter", "Value": { "Ref": "CostCenter" } }
+        ]
+      }
+    },
+    "InitiatorPrivateSubnet": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "AvailabilityZone": { "Ref": "InitiatorAvailabilityZone" },
+        "CidrBlock": { "Ref": "InitiatorPrivateSubnetCidr" },
+        "MapPublicIpOnLaunch": false,
+        "VpcId": { "Ref": "VpcId" },
+        "Tags": [
+          { "Key": "Name", "Value": { "Fn::Sub": "clockchain-${RunId}-initiator-private" } },
+          { "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } },
+          { "Key": "ClockchainPhase", "Value": "Phase6C2" },
+          { "Key": "ClockchainExpiresAt", "Value": { "Ref": "ExpiresAt" } },
+          { "Key": "ClockchainCostCenter", "Value": { "Ref": "CostCenter" } }
+        ]
+      }
+    },
+    "ResponderPrivateSubnet": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "AvailabilityZone": { "Ref": "ResponderAvailabilityZone" },
+        "CidrBlock": { "Ref": "ResponderPrivateSubnetCidr" },
+        "MapPublicIpOnLaunch": false,
+        "VpcId": { "Ref": "VpcId" },
+        "Tags": [
+          { "Key": "Name", "Value": { "Fn::Sub": "clockchain-${RunId}-responder-private" } },
+          { "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } },
+          { "Key": "ClockchainPhase", "Value": "Phase6C2" },
+          { "Key": "ClockchainExpiresAt", "Value": { "Ref": "ExpiresAt" } },
+          { "Key": "ClockchainCostCenter", "Value": { "Ref": "CostCenter" } }
+        ]
+      }
+    },
+    "InitiatorRouteTable": { "Type": "AWS::EC2::RouteTable", "Properties": { "VpcId": { "Ref": "VpcId" }, "Tags": [{ "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } }, { "Key": "ClockchainPhase", "Value": "Phase6C2" }, { "Key": "ClockchainExpiresAt", "Value": { "Ref": "ExpiresAt" } }, { "Key": "ClockchainCostCenter", "Value": { "Ref": "CostCenter" } }] } },
+    "ResponderRouteTable": { "Type": "AWS::EC2::RouteTable", "Properties": { "VpcId": { "Ref": "VpcId" }, "Tags": [{ "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } }, { "Key": "ClockchainPhase", "Value": "Phase6C2" }, { "Key": "ClockchainExpiresAt", "Value": { "Ref": "ExpiresAt" } }, { "Key": "ClockchainCostCenter", "Value": { "Ref": "CostCenter" } }] } },
+    "InitiatorDefaultRoute": { "Type": "AWS::EC2::Route", "DependsOn": "NatGateway", "Properties": { "DestinationCidrBlock": "0.0.0.0/0", "NatGatewayId": { "Ref": "NatGateway" }, "RouteTableId": { "Ref": "InitiatorRouteTable" } } },
+    "ResponderDefaultRoute": { "Type": "AWS::EC2::Route", "DependsOn": "NatGateway", "Properties": { "DestinationCidrBlock": "0.0.0.0/0", "NatGatewayId": { "Ref": "NatGateway" }, "RouteTableId": { "Ref": "ResponderRouteTable" } } },
+    "InitiatorRouteAssociation": { "Type": "AWS::EC2::SubnetRouteTableAssociation", "Properties": { "RouteTableId": { "Ref": "InitiatorRouteTable" }, "SubnetId": { "Ref": "InitiatorPrivateSubnet" } } },
+    "ResponderRouteAssociation": { "Type": "AWS::EC2::SubnetRouteTableAssociation", "Properties": { "RouteTableId": { "Ref": "ResponderRouteTable" }, "SubnetId": { "Ref": "ResponderPrivateSubnet" } } },
+    "InitiatorQueue": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "SqsManagedSseEnabled": true,
+        "MessageRetentionPeriod": 900,
+        "QueueName": { "Fn::Sub": "clockchain-${RunId}-initiator" },
+        "ReceiveMessageWaitTimeSeconds": 20,
+        "Tags": [{ "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } }, { "Key": "ClockchainPhase", "Value": "Phase6C2" }, { "Key": "ClockchainExpiresAt", "Value": { "Ref": "ExpiresAt" } }, { "Key": "ClockchainCostCenter", "Value": { "Ref": "CostCenter" } }]
+      }
+    },
+    "ResponderQueue": {
+      "Type": "AWS::SQS::Queue",
+      "Properties": {
+        "SqsManagedSseEnabled": true,
+        "MessageRetentionPeriod": 900,
+        "QueueName": { "Fn::Sub": "clockchain-${RunId}-responder" },
+        "ReceiveMessageWaitTimeSeconds": 20,
+        "Tags": [{ "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } }, { "Key": "ClockchainPhase", "Value": "Phase6C2" }, { "Key": "ClockchainExpiresAt", "Value": { "Ref": "ExpiresAt" } }, { "Key": "ClockchainCostCenter", "Value": { "Ref": "CostCenter" } }]
+      }
+    },
+    "InitiatorLogGroup": { "Type": "AWS::Logs::LogGroup", "Properties": { "LogGroupName": { "Fn::Sub": "/clockchain/mechanics-proof/${RunId}/initiator" }, "RetentionInDays": 1, "Tags": [{ "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } }, { "Key": "ClockchainPhase", "Value": "Phase6C2" }, { "Key": "ClockchainExpiresAt", "Value": { "Ref": "ExpiresAt" } }, { "Key": "ClockchainCostCenter", "Value": { "Ref": "CostCenter" } }] } },
+    "ResponderLogGroup": { "Type": "AWS::Logs::LogGroup", "Properties": { "LogGroupName": { "Fn::Sub": "/clockchain/mechanics-proof/${RunId}/responder" }, "RetentionInDays": 1, "Tags": [{ "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } }, { "Key": "ClockchainPhase", "Value": "Phase6C2" }, { "Key": "ClockchainExpiresAt", "Value": { "Ref": "ExpiresAt" } }, { "Key": "ClockchainCostCenter", "Value": { "Ref": "CostCenter" } }] } },
+    "InitiatorSecurityGroup": { "Type": "AWS::EC2::SecurityGroup", "Properties": { "GroupDescription": "Initiator direct peer A2A and NAT HTTPS only.", "VpcId": { "Ref": "VpcId" }, "SecurityGroupEgress": [{ "IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "CidrIp": "0.0.0.0/0", "Description": "HTTPS through the private subnet run-scoped NAT route." }], "Tags": [{ "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } }, { "Key": "ClockchainPhase", "Value": "Phase6C2" }, { "Key": "ClockchainExpiresAt", "Value": { "Ref": "ExpiresAt" } }, { "Key": "ClockchainCostCenter", "Value": { "Ref": "CostCenter" } }] } },
+    "ResponderSecurityGroup": { "Type": "AWS::EC2::SecurityGroup", "Properties": { "GroupDescription": "Responder direct peer A2A and NAT HTTPS only.", "VpcId": { "Ref": "VpcId" }, "SecurityGroupEgress": [{ "IpProtocol": "tcp", "FromPort": 443, "ToPort": 443, "CidrIp": "0.0.0.0/0", "Description": "HTTPS through the private subnet run-scoped NAT route." }], "Tags": [{ "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } }, { "Key": "ClockchainPhase", "Value": "Phase6C2" }, { "Key": "ClockchainExpiresAt", "Value": { "Ref": "ExpiresAt" } }, { "Key": "ClockchainCostCenter", "Value": { "Ref": "CostCenter" } }] } },
+    "InitiatorPeerIngress": { "Type": "AWS::EC2::SecurityGroupIngress", "Properties": { "GroupId": { "Ref": "InitiatorSecurityGroup" }, "IpProtocol": "tcp", "FromPort": 8443, "ToPort": 8443, "SourceSecurityGroupId": { "Ref": "ResponderSecurityGroup" } } },
+    "ResponderPeerIngress": { "Type": "AWS::EC2::SecurityGroupIngress", "Properties": { "GroupId": { "Ref": "ResponderSecurityGroup" }, "IpProtocol": "tcp", "FromPort": 8443, "ToPort": 8443, "SourceSecurityGroupId": { "Ref": "InitiatorSecurityGroup" } } },
+    "InitiatorPeerEgress": { "Type": "AWS::EC2::SecurityGroupEgress", "Properties": { "DestinationSecurityGroupId": { "Ref": "ResponderSecurityGroup" }, "FromPort": 8443, "GroupId": { "Ref": "InitiatorSecurityGroup" }, "IpProtocol": "tcp", "ToPort": 8443 } },
+    "ResponderPeerEgress": { "Type": "AWS::EC2::SecurityGroupEgress", "Properties": { "DestinationSecurityGroupId": { "Ref": "InitiatorSecurityGroup" }, "FromPort": 8443, "GroupId": { "Ref": "ResponderSecurityGroup" }, "IpProtocol": "tcp", "ToPort": 8443 } },
+    "InitiatorTaskRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": { "Version": "2012-10-17", "Statement": [{ "Effect": "Allow", "Principal": { "Service": "ecs-tasks.amazonaws.com" }, "Action": "sts:AssumeRole" }] },
+        "Policies": [{ "PolicyName": "bootstrap-exchange", "PolicyDocument": { "Version": "2012-10-17", "Statement": [
+          { "Effect": "Allow", "Action": ["sqs:SendMessage"], "Resource": { "Fn::GetAtt": ["InitiatorQueue", "Arn"] } },
+          { "Effect": "Allow", "Action": ["sqs:ReceiveMessage", "sqs:DeleteMessage"], "Resource": { "Fn::GetAtt": ["ResponderQueue", "Arn"] } }
+        ] } }],
+        "Tags": [{ "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } }, { "Key": "ClockchainPhase", "Value": "Phase6C2" }, { "Key": "ClockchainExpiresAt", "Value": { "Ref": "ExpiresAt" } }, { "Key": "ClockchainCostCenter", "Value": { "Ref": "CostCenter" } }]
+      }
+    },
+    "ResponderTaskRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": { "Version": "2012-10-17", "Statement": [{ "Effect": "Allow", "Principal": { "Service": "ecs-tasks.amazonaws.com" }, "Action": "sts:AssumeRole" }] },
+        "Policies": [
+          { "PolicyName": "bootstrap-exchange", "PolicyDocument": { "Version": "2012-10-17", "Statement": [
+            { "Effect": "Allow", "Action": ["sqs:SendMessage"], "Resource": { "Fn::GetAtt": ["ResponderQueue", "Arn"] } },
+            { "Effect": "Allow", "Action": ["sqs:ReceiveMessage", "sqs:DeleteMessage"], "Resource": { "Fn::GetAtt": ["InitiatorQueue", "Arn"] } }
+          ] } },
+          { "PolicyName": "bedrock-sonnet", "PolicyDocument": { "Version": "2012-10-17", "Statement": [{ "Effect": "Allow", "Action": ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"], "Resource": [
+            { "Ref": "BedrockModelArn" },
+            { "Fn::Sub": "arn:${AWS::Partition}:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6" },
+            { "Fn::Sub": "arn:${AWS::Partition}:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-4-6" },
+            { "Fn::Sub": "arn:${AWS::Partition}:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6" }
+          ] }] } }
+        ],
+        "Tags": [{ "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } }, { "Key": "ClockchainPhase", "Value": "Phase6C2" }, { "Key": "ClockchainExpiresAt", "Value": { "Ref": "ExpiresAt" } }, { "Key": "ClockchainCostCenter", "Value": { "Ref": "CostCenter" } }]
+      }
+    },
+    "InitiatorExecutionRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": { "Version": "2012-10-17", "Statement": [{ "Effect": "Allow", "Principal": { "Service": "ecs-tasks.amazonaws.com" }, "Action": "sts:AssumeRole" }] },
+        "Policies": [{ "PolicyName": "task-startup", "PolicyDocument": { "Version": "2012-10-17", "Statement": [
+          { "Effect": "Allow", "Action": ["ecr:GetAuthorizationToken"], "Resource": "*" },
+          { "Effect": "Allow", "Action": ["ecr:BatchCheckLayerAvailability", "ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage"], "Resource": { "Fn::Sub": "arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/clockchain-mechanics-proof" } },
+          { "Effect": "Allow", "Action": ["logs:CreateLogStream", "logs:PutLogEvents"], "Resource": { "Fn::Sub": "${InitiatorLogGroup.Arn}:*" } },
+          { "Effect": "Allow", "Action": ["secretsmanager:GetSecretValue"], "Resource": { "Ref": "CodexSecretArn" } }
+        ] } }],
+        "Tags": [{ "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } }, { "Key": "ClockchainPhase", "Value": "Phase6C2" }, { "Key": "ClockchainExpiresAt", "Value": { "Ref": "ExpiresAt" } }, { "Key": "ClockchainCostCenter", "Value": { "Ref": "CostCenter" } }]
+      }
+    },
+    "ResponderExecutionRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": { "Version": "2012-10-17", "Statement": [{ "Effect": "Allow", "Principal": { "Service": "ecs-tasks.amazonaws.com" }, "Action": "sts:AssumeRole" }] },
+        "Policies": [{ "PolicyName": "task-startup", "PolicyDocument": { "Version": "2012-10-17", "Statement": [
+          { "Effect": "Allow", "Action": ["ecr:GetAuthorizationToken"], "Resource": "*" },
+          { "Effect": "Allow", "Action": ["ecr:BatchCheckLayerAvailability", "ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage"], "Resource": { "Fn::Sub": "arn:${AWS::Partition}:ecr:${AWS::Region}:${AWS::AccountId}:repository/clockchain-mechanics-proof" } },
+          { "Effect": "Allow", "Action": ["logs:CreateLogStream", "logs:PutLogEvents"], "Resource": { "Fn::Sub": "${ResponderLogGroup.Arn}:*" } }
+        ] } }],
+        "Tags": [{ "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } }, { "Key": "ClockchainPhase", "Value": "Phase6C2" }, { "Key": "ClockchainExpiresAt", "Value": { "Ref": "ExpiresAt" } }, { "Key": "ClockchainCostCenter", "Value": { "Ref": "CostCenter" } }]
+      }
+    }
+  },
+  "Outputs": {
+    "ClusterArn": { "Value": { "Fn::GetAtt": ["Cluster", "Arn"] } },
+    "InitiatorPrivateSubnetId": { "Value": { "Ref": "InitiatorPrivateSubnet" } },
+    "ResponderPrivateSubnetId": { "Value": { "Ref": "ResponderPrivateSubnet" } },
+    "InitiatorSecurityGroupId": { "Value": { "Ref": "InitiatorSecurityGroup" } },
+    "ResponderSecurityGroupId": { "Value": { "Ref": "ResponderSecurityGroup" } },
+    "InitiatorQueueUrl": { "Value": { "Ref": "InitiatorQueue" } },
+    "ResponderQueueUrl": { "Value": { "Ref": "ResponderQueue" } },
+    "InitiatorTaskRoleArn": { "Value": { "Fn::GetAtt": ["InitiatorTaskRole", "Arn"] } },
+    "ResponderTaskRoleArn": { "Value": { "Fn::GetAtt": ["ResponderTaskRole", "Arn"] } },
+    "InitiatorExecutionRoleArn": { "Value": { "Fn::GetAtt": ["InitiatorExecutionRole", "Arn"] } },
+    "ResponderExecutionRoleArn": { "Value": { "Fn::GetAtt": ["ResponderExecutionRole", "Arn"] } },
+    "InitiatorLogGroupName": { "Value": { "Ref": "InitiatorLogGroup" } },
+    "ResponderLogGroupName": { "Value": { "Ref": "ResponderLogGroup" } }
+  },
+  "Metadata": {
+    "ClockchainMechanicsProof": {
+      "schema": "clockchain.fargate-live-runtime-template/v1",
+      "assignPublicIp": "DISABLED",
+      "controllerRoutesPrivateContent": false,
+      "sharedWritableStorage": false,
+      "temporaryNatGateway": true
+    }
+  }
+}
