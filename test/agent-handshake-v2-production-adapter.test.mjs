@@ -3,6 +3,7 @@ import test from "node:test";
 import { encodeEventTopics, parseAbiItem, zeroAddress } from "viem";
 
 import {
+  AGENT_HANDSHAKE_V2_FUNDING_AMOUNT_ETH,
   createAgentHandshakeV2HostPorts,
   loadAgentHandshakeV2Session,
 } from "../src/agent-handshake/v2/production-adapter.mjs";
@@ -12,6 +13,7 @@ import { agentHandshakeV2StatementDigest } from "../src/agent-handshake/v2/terms
 import { buildV2Fixture, ed25519, INITIATOR, REPOSITORY_SHA, SESSION_ID, TERMS } from "./support/agent-handshake-v2-fixture.mjs";
 
 test("production session fails closed without an immutable repository SHA", async () => {
+  assert.equal(AGENT_HANDSHAKE_V2_FUNDING_AMOUNT_ETH, "0.02");
   await assert.rejects(
     loadAgentHandshakeV2Session({ env: {} }),
     /HANDSHAKE_SHA_INVALID/,

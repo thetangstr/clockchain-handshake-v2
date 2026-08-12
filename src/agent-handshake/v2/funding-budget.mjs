@@ -1,8 +1,9 @@
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HOUR_MS = 60 * 60 * 1000;
-const SEAT_CENTS = 1;
-const SESSION_CENTS = 2;
+export const AGENT_HANDSHAKE_V2_SEAT_FUNDING_ETH = "0.02";
+const SEAT_CENTS = 2;
+const SESSION_CENTS = 4;
 const HOUR_CENTS = 20;
 const DAY_CENTS = 100;
 
@@ -20,8 +21,9 @@ function invalid() {
 }
 
 function amountCents(value) {
-  if (value !== "0.01") invalid();
-  return SEAT_CENTS;
+  if (value === "0.01") return 1;
+  if (value === AGENT_HANDSHAKE_V2_SEAT_FUNDING_ETH) return SEAT_CENTS;
+  invalid();
 }
 
 function record(value) {
@@ -126,7 +128,7 @@ export function createFundingBudget({
       ) invalid();
       const additions = addresses.map((address) => Object.freeze({
         address,
-        amountEth: "0.01",
+        amountEth: AGENT_HANDSHAKE_V2_SEAT_FUNDING_ETH,
         atMs,
         sessionId,
       }));
@@ -148,7 +150,7 @@ export function createFundingBudget({
       }
       return Object.freeze({
         addresses: Object.freeze([...addresses]),
-        totalEth: addresses.length === 1 ? "0.01" : "0.02",
+        totalEth: (addresses.length * SEAT_CENTS / 100).toFixed(2),
       });
     } finally {
       queued -= 1;

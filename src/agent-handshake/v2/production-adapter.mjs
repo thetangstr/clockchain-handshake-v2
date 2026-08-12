@@ -17,6 +17,7 @@ import { ERC8004_ABI } from "../../core/registration.mjs";
 import { awaitRoleMessages } from "../../roles/host.mjs";
 import { postNext } from "../../roles/session.mjs";
 import {
+  AGENT_HANDSHAKE_V2_SEAT_FUNDING_ETH,
   createFileFundingBudgetStore,
   createFundingBudget,
 } from "./funding-budget.mjs";
@@ -34,7 +35,8 @@ const DEFAULT_RELAY = "http://44.249.47.220:8080";
 const DEFAULT_REPOSITORY = "https://github.com/thetangstr/clockchain-handshake-v2.git";
 const SESSION_MILLISECONDS = 10 * 60_000;
 const INVITATION_MILLISECONDS = 120_000;
-const FUND = parseEther("0.01");
+export const AGENT_HANDSHAKE_V2_FUNDING_AMOUNT_ETH = AGENT_HANDSHAKE_V2_SEAT_FUNDING_ETH;
+const FUND = parseEther(AGENT_HANDSHAKE_V2_FUNDING_AMOUNT_ETH);
 const TRANSFER_EVENT = parseAbiItem(
   "event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)",
 );
@@ -245,7 +247,7 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
     });
     await postHostMessage("agent_v2_funding_record", {
       address,
-      amountEth: "0.01",
+      amountEth: AGENT_HANDSHAKE_V2_FUNDING_AMOUNT_ETH,
       blockNumber: String(receipt.blockNumber),
       externalBusinessActionPerformed: false,
       role,

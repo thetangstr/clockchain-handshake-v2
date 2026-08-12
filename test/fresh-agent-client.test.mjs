@@ -1106,6 +1106,8 @@ test("fresh-client runbook states current runtime, auth, and verification bounda
   const runbook = await readFile(new URL("../docs/agent-handshake-fresh-client-runbook.md", import.meta.url), "utf8");
   assert.match(runbook, /CLOCKCHAIN_FRESH_AGENT_RESULT_DIR/);
   assert.match(runbook, /Node(?:\.js)? 24 is enforced/i);
+  assert.match(runbook, /0\.02.*Sepolia ETH per seat.*gas-only/is);
+  assert.match(runbook, /never a stakeholder payment or external business action/i);
   assert.match(runbook, /macOS Keychain/i);
   assert.match(runbook, /CLOCKCHAIN_CLAUDE_EXISTING_LOGIN=1/);
   assert.match(runbook, /never extracted, printed, copied/i);
