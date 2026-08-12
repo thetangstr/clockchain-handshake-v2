@@ -28,6 +28,7 @@ const MAX_KEYS = 64;
 const MAX_ARRAY = 64;
 const MAX_STRING = 4096;
 const MAX_HELPER_COMMAND = 64 * 1024;
+const MAX_PROVISIONAL_TOOL_UPDATES = 16;
 const PROCESS_TERM_GRACE_MS = 50;
 const PROCESS_KILL_GRACE_MS = 50;
 const CODEX_MODEL = "gpt-5.6-terra";
@@ -592,6 +593,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
   let protocolSessionId = null;
   let acpSessionId = null;
   let provisionalAcpSessionId = null;
+  const provisionalToolUpdates = [];
   let sessionEstablishing = false;
   let child = null;
   let childMonitor = null;
@@ -668,11 +670,15 @@ export function createAcpProcessTransport(optionsInput = {}) {
       if (acpSessionId === null) {
         failureStage = "envelope-before-session";
         if (!sessionEstablishing) fail();
-        failureStage = "envelope-early-tool";
-        if (updateType === "tool_call" || updateType === "tool_call_update") fail();
         failureStage = "envelope-provisional-session";
         if (provisionalAcpSessionId === null) provisionalAcpSessionId = params.sessionId;
         else if (params.sessionId !== provisionalAcpSessionId) fail();
+        if (updateType === "tool_call" || updateType === "tool_call_update") {
+          failureStage = "envelope-early-tool";
+          if (provisionalToolUpdates.length >= MAX_PROVISIONAL_TOOL_UPDATES) fail();
+          provisionalToolUpdates.push(params);
+          return;
+        }
       } else {
         failureStage = "envelope-active-session";
         if (params.sessionId !== acpSessionId) fail();
@@ -749,6 +755,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
       protocolSessionId = null;
       acpSessionId = null;
       provisionalAcpSessionId = null;
+      provisionalToolUpdates.length = 0;
       sessionEstablishing = false;
       retainedByCommand.clear();
       for (const action of retainedActions) {
@@ -797,6 +804,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
         if (typeof created?.sessionId !== "string" || created.sessionId.length === 0) fail();
         if (provisionalAcpSessionId !== null && provisionalAcpSessionId !== created.sessionId) fail();
         acpSessionId = created.sessionId;
+        for (const update of provisionalToolUpdates.splice(0)) await sessionUpdate(update);
         if (harness === "codex") {
           launchStage = "model";
           await connection.setSessionConfigOption({

@@ -75,6 +75,7 @@ function acpFixtureSpawn({
   closeState = null,
   helperAction = null,
   newSessionUpdates = null,
+  newSessionResolvedMarker = false,
   newSessionUpdateSessionId = `acp-${SESSION}`,
   newSessionId = `acp-${SESSION}`,
   sessionUpdates = null,
@@ -109,6 +110,7 @@ function acpFixtureSpawn({
             await connection.sessionUpdate({ sessionId: newSessionUpdateSessionId, update });
           }
         }
+        if (newSessionResolvedMarker) calls.push(["newSessionResolved"]);
         return { sessionId: newSessionId };
       },
       async setSessionConfigOption(params) {
@@ -769,6 +771,83 @@ test("ACP process transport binds setup updates to the session id returned by ne
     assert.equal(acpProcessTransportFailureStage(error), "session");
     return true;
   });
+});
+
+test("ACP process transport defers setup-time MCP tool results until newSession confirms the exact session", async () => {
+  const action = retainedAction({ role: "initiator", requestDigest: "d".repeat(64), commandSha256: DIGEST });
+  const calls = [];
+  const transport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({
+      calls,
+      newSessionResolvedMarker: true,
+      newSessionUpdates: [{
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-early-invite",
+        kind: "other",
+        title: "agent_handshake_invite",
+        status: "completed",
+        rawInput: { server: "clockchain-handshake", tool: "agent_handshake_invite", arguments: {} },
+        rawOutput: { result: { responderInvitation: "opaque-invitation" }, error: null },
+      }],
+      skipPermission: true,
+    }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    nowMs: () => 1786337001000,
+    actionRecorder: actionRecorderFor([action], calls),
+    partyBridge: partyBridgeFor(calls),
+    env: {},
+    retainedActions: [],
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  });
+  assert.equal(calls.findIndex((entry) => entry[0] === "newSessionResolved") < calls.findIndex((entry) => entry[0] === "partyBridge"), true);
+
+  const mismatchCalls = [];
+  const mismatch = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({
+      calls: mismatchCalls,
+      newSessionUpdateSessionId: "acp-provisional",
+      newSessionId: "acp-returned",
+      newSessionUpdates: [{
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-early-invite",
+        kind: "other",
+        title: "agent_handshake_invite",
+        status: "completed",
+        rawInput: { server: "clockchain-handshake", tool: "agent_handshake_invite", arguments: {} },
+        rawOutput: { result: { responderInvitation: "opaque-invitation" }, error: null },
+      }],
+      skipPermission: true,
+    }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    partyBridge: partyBridgeFor(mismatchCalls),
+    env: {},
+    retainedActions: [],
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+  await assert.rejects(() => mismatch.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  }), (error) => {
+    assert.equal(acpProcessTransportFailureStage(error), "session");
+    return true;
+  });
+  assert.equal(mismatchCalls.some((entry) => entry[0] === "partyBridge"), false);
 });
 
 test("ACP process transport reports an active-session update mismatch without retaining either id", async () => {
