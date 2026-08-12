@@ -10,7 +10,7 @@ ENV NODE_ENV=production
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates openssl && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev && rm -rf node_modules/@anthropic-ai/claude-agent-sdk-linux-x64-musl
 
 COPY bin ./bin
 COPY src ./src
