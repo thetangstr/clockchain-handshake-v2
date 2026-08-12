@@ -1,6 +1,6 @@
 import { buildFargateLiveTaskDefinitions, FARGATE_LIVE_PLAN_SCHEMA } from "./aws-fargate-live-plan.mjs";
 import { sha256Hex, stableJson } from "./aws-fargate-runtime-adapter.mjs";
-import { publicPartyFailureStages } from "./aws-cli-control-plane.mjs";
+import { publicPartyFailureStages, publicPartyProgressStages } from "./aws-cli-control-plane.mjs";
 import {
   FARGATE_LIVE_RESULT_SCHEMA,
   FARGATE_LIVE_STATUS_CLEANUP_UNCONFIRMED,
@@ -370,6 +370,7 @@ export async function runFargateLiveMechanicsProof(optionsInput) {
     return Object.freeze({ schema: FARGATE_LIVE_RESULT_SCHEMA, status: FARGATE_LIVE_STATUS_SUCCEEDED, evidence });
   } catch (error) {
     const failureStages = publicPartyFailureStages(error);
+    const progressStages = publicPartyProgressStages(error);
     if (stackCreated || reconcile.stack) {
       const cleaned = await cleanup({ controlPlane, stackName, clusterArn, taskArns, taskDefinitions, reconcile, stackCreated: stackCreated || reconcile.stack });
       if (failureClass === "protocol" && cleaned.cleanupErrors.length === 0 && cleaned.absence?.absent === true) {
@@ -377,12 +378,14 @@ export async function runFargateLiveMechanicsProof(optionsInput) {
           schema: FARGATE_LIVE_RESULT_SCHEMA,
           status: PROTOCOL_FAILED_CLEAN,
           ...(failureStages === null ? {} : { failureStages }),
+          ...(progressStages === null ? {} : { progressStages }),
         });
       }
       return Object.freeze({
         schema: FARGATE_LIVE_RESULT_SCHEMA,
         status: CLEANUP_UNCONFIRMED,
         ...(failureStages === null ? {} : { failureStages }),
+        ...(progressStages === null ? {} : { progressStages }),
         cleanupFailedSteps: cleaned.cleanupFailedSteps,
       });
     }

@@ -453,6 +453,48 @@ test("live Fargate adapter reports only fixed cleanup step codes when cleanup is
   assert.equal(JSON.stringify(result).includes("fail stop-initiator"), false);
 });
 
+test("live Fargate adapter returns fixed party progress after a clean protocol timeout", async () => {
+  const plan = await livePlan();
+  const controlPlane = fakeControlPlane(plan);
+  let current = 0;
+  const diagnostic = createAwsCliControlPlane({
+    region: REGION,
+    now: () => current,
+    sleep: async () => { current = 2000; },
+    executor: async (_file, argv) => {
+      const role = argv.some((value) => value.includes("/responder")) ? "responder" : "initiator";
+      return { stdout: JSON.stringify({ events: [{
+        timestamp: 1786565101000,
+        message: JSON.stringify({
+          schema: "clockchain.mechanics-proof-party-event/v1",
+          runId: RUN_ID,
+          role,
+          sequence: "1",
+          type: "agent.starting",
+          evidenceDigest: "1".repeat(64),
+        }),
+      }] }), stderr: "", exitCode: 0 };
+    },
+  });
+  controlPlane.pollPublicEvents = () => diagnostic.pollPublicEvents({
+    logGroupNames: ["/clockchain/mechanics-proof/run/initiator", "/clockchain/mechanics-proof/run/responder"],
+    deadlineMs: 1000,
+  });
+
+  const result = await runFargateLiveMechanicsProof({
+    plan,
+    controlPlane,
+    mcpGate: async () => { controlPlane.calls.push("mcp-gate"); return { healthy: true, checkpointTool: true, endpoint: "https://mcp.clockchain.network/handshake/mcp" }; },
+    retainEvidence: async () => { throw new Error("must not retain"); },
+  });
+
+  assert.equal(result.status, PROTOCOL_FAILED_CLEAN);
+  assert.deepEqual(result.progressStages, {
+    initiator: "agent.starting",
+    responder: "agent.starting",
+  });
+});
+
 test("live Fargate adapter rejects unsafe live inputs before mutation", async () => {
   const cases = [
     livePlan({ maxConcurrency: 3 }),

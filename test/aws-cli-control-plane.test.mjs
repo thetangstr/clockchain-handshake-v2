@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   createAwsCliControlPlane,
   publicPartyFailureStages,
+  publicPartyProgressStages,
 } from "../src/runtime/aws-cli-control-plane.mjs";
 import { loadFargateLiveRuntimeTemplate } from "../src/runtime/aws-fargate-live-plan.mjs";
 import { stableJson } from "../src/runtime/aws-fargate-runtime-adapter.mjs";
@@ -274,6 +275,43 @@ test("AWS CLI control plane brands only exact allowlisted party failure stages",
       responder: "runtime-run.listener-listen-eaddrinuse",
     });
     assert.equal(publicPartyFailureStages(new Error(error.message)), null);
+    assert.doesNotMatch(JSON.stringify(error), /amazonaws|secret|certificate|private/i);
+    return true;
+  });
+});
+
+test("AWS CLI control plane retains only the latest exact public progress stage on timeout", async () => {
+  let current = 0;
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    now: () => current,
+    sleep: async () => { current = 2000; },
+    executor: async (_file, argv) => {
+      const role = argv.some((value) => value.includes("/responder")) ? "responder" : "initiator";
+      const types = role === "initiator" ? ["a2a.listener.ready", "agent.starting"] : ["a2a.listener.ready", "a2a.invitation.received", "agent.starting"];
+      return { stdout: JSON.stringify({ events: types.map((type, index) => ({
+        timestamp: 1786565101000 + index,
+        message: JSON.stringify({
+          schema: "clockchain.mechanics-proof-party-event/v1",
+          runId: "11111111-2222-4333-8444-555555555555",
+          role,
+          sequence: String(index + 1),
+          type,
+          evidenceDigest: String(index + 1).repeat(64),
+        }),
+      })) }), stderr: "", exitCode: 0 };
+    },
+  });
+
+  await assert.rejects(() => control.pollPublicEvents({
+    logGroupNames: ["/clockchain/mechanics-proof/run/initiator", "/clockchain/mechanics-proof/run/responder"],
+    deadlineMs: 1000,
+  }), (error) => {
+    assert.deepEqual(publicPartyProgressStages(error), {
+      initiator: "agent.starting",
+      responder: "agent.starting",
+    });
+    assert.equal(publicPartyProgressStages(new Error(error.message)), null);
     assert.doesNotMatch(JSON.stringify(error), /amazonaws|secret|certificate|private/i);
     return true;
   });
