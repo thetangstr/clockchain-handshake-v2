@@ -7,6 +7,8 @@ import {
   buildFargateDryRunSummary,
   createAwsFargateRuntimeAdapter,
   loadFargateDryRunPlan,
+  sha256Hex,
+  stableJson,
   validateFargateRuntimePlan,
 } from "../src/runtime/aws-fargate-runtime-adapter.mjs";
 import {
@@ -96,15 +98,20 @@ function fakeAwsResponses(plan, role) {
       taskDefinition: {
         taskDefinitionArn: `arn:aws:ecs:us-west-2:${account}:task-definition/${role}:1`,
         revision: 1,
+        family: party.family,
         taskRoleArn: party.taskRoleArn,
         executionRoleArn: party.executionRoleArn,
         networkMode: "awsvpc",
         requiresCompatibilities: ["FARGATE"],
         cpu: "512",
         memory: "1024",
+        runtimePlatform: party.runtimePlatform,
         containerDefinitions: [{
+          name: role,
           image: party.image,
+          essential: true,
           readonlyRootFilesystem: true,
+          privileged: false,
           user: party.user,
           logConfiguration: party.logConfiguration,
           mountPoints: party.mountPoints,
@@ -206,7 +213,19 @@ test("Fargate dry-run validation rejects unsafe task and network mutations", asy
   const cases = [
     ["same task role", (copy) => { copy.parties.responder.taskRoleArn = copy.parties.initiator.taskRoleArn; }],
     ["missing execution role", (copy) => { delete copy.parties.initiator.executionRoleArn; }],
+    ["task role equals execution role", (copy) => { copy.parties.initiator.executionRoleArn = copy.parties.initiator.taskRoleArn; }],
     ["identical secret refs", (copy) => { copy.parties.responder.secrets = clone(copy.parties.initiator.secrets); }],
+    ["duplicate secret ref inside party", (copy) => { copy.parties.initiator.secrets[1].valueFrom = copy.parties.initiator.secrets[0].valueFrom; }],
+    ["duplicate secret name inside party", (copy) => { copy.parties.initiator.secrets[1].name = copy.parties.initiator.secrets[0].name; }],
+    ["missing signer ref", (copy) => { copy.parties.initiator.secrets = copy.parties.initiator.secrets.filter((secret) => secret.name !== "CLOCKCHAIN_SIGNER_REF"); }],
+    ["wrong public role env", (copy) => { copy.parties.initiator.environment.find((entry) => entry.name === "CLOCKCHAIN_ROLE").value = "responder"; }],
+    ["wrong mcp env", (copy) => { copy.parties.initiator.environment.find((entry) => entry.name === "CLOCKCHAIN_MCP_URL").value = "https://mcp.clockchain.network/mcp"; }],
+    ["extra public env", (copy) => { copy.parties.initiator.environment.push({ name: "EXTRA_PUBLIC", value: "public" }); }],
+    ["extra mirrored public env", (copy) => {
+      const entry = { name: "EXTRA_PUBLIC", value: "public" };
+      copy.parties.initiator.environment.push(entry);
+      copy.parties.initiator.taskDefinition.containerDefinitions[0].environment.push(entry);
+    }],
     ["tag image", (copy) => { copy.parties.initiator.image = "example.test/clockchain:latest"; }],
     ["invalid cpu", (copy) => { copy.parties.initiator.cpu = "999"; }],
     ["invalid memory", (copy) => { copy.parties.initiator.memory = "512"; }],
@@ -216,6 +235,10 @@ test("Fargate dry-run validation rejects unsafe task and network mutations", asy
     ["privileged", (copy) => { copy.parties.initiator.privileged = true; }],
     ["root user", (copy) => { copy.parties.initiator.user = "0"; }],
     ["raw secret env", (copy) => { copy.parties.initiator.environment.push({ name: "SECRET_VALUE", value: "secret-canary" }); }],
+    ["sidecar", (copy) => { copy.parties.initiator.taskDefinition.containerDefinitions.push({ name: "sidecar", image: copy.parties.initiator.image }); }],
+    ["repository credentials", (copy) => { copy.parties.initiator.taskDefinition.containerDefinitions[0].repositoryCredentials = { credentialsParameter: "arn:aws:secretsmanager:us-west-2:123456789012:secret:repo" }; }],
+    ["environment file", (copy) => { copy.parties.initiator.taskDefinition.containerDefinitions[0].environmentFiles = [{ type: "s3", value: "arn:aws:s3:::bucket/env" }]; }],
+    ["extra task authority field", (copy) => { copy.parties.initiator.taskDefinition.proxyConfiguration = { type: "APPMESH" }; }],
     ["broad ingress", (copy) => { copy.network.securityGroups.initiator.ingress[0] = { protocol: "tcp", fromPort: 8443, toPort: 8443, cidrIp: "0.0.0.0/0" }; }],
     ["inline peer ingress circular dependency", (copy) => { copy.template.Resources.InitiatorSecurityGroup.Properties.SecurityGroupIngress = [{ IpProtocol: "tcp", FromPort: 8443, ToPort: 8443, SourceSecurityGroupId: { Ref: "ResponderSecurityGroup" } }]; }],
     ["missing peer rule", (copy) => { copy.network.securityGroups.responder.ingress = []; }],
@@ -303,12 +326,22 @@ test("Fargate runtime evidence rejects self-claims and missing required control-
     ["missing sanitization record", mutate(complete, (copy) => { copy.cloudWatchLogs[0].events = copy.cloudWatchLogs[0].events.filter((event) => !event.message.includes("fargate-session-sanitization")); })],
     ["secret canary in logs", mutate(complete, (copy) => { copy.cloudWatchLogs[0].events[0].message = "secret-canary"; })],
     ["described env mismatch", mutate(complete, (copy) => { copy.taskDefinition.taskDefinition.containerDefinitions[0].environment.push({ name: "EXTRA", value: "unsafe" }); })],
+    ["described repository credentials", mutate(complete, (copy) => { copy.taskDefinition.taskDefinition.containerDefinitions[0].repositoryCredentials = { credentialsParameter: "arn:aws:secretsmanager:us-west-2:123456789012:secret:repo" }; })],
+    ["described privileged true", mutate(complete, (copy) => { copy.taskDefinition.taskDefinition.containerDefinitions[0].privileged = true; })],
+    ["described sidecar", mutate(complete, (copy) => { copy.taskDefinition.taskDefinition.containerDefinitions.push({ image: rolePlan(plan, "initiator").image }); })],
+    ["described env file", mutate(complete, (copy) => { copy.taskDefinition.taskDefinition.containerDefinitions[0].environmentFiles = [{ type: "s3", value: "arn:aws:s3:::bucket/env" }]; })],
+    ["described extra secret", mutate(complete, (copy) => { copy.taskDefinition.taskDefinition.containerDefinitions[0].secrets.push({ name: "EXTRA", valueFrom: rolePlan(plan, "initiator").secrets[0].valueFrom }); })],
+    ["described extra volume", mutate(complete, (copy) => { copy.taskDefinition.taskDefinition.volumes.push({ name: "extra" }); })],
     ["described mount mismatch", mutate(complete, (copy) => { copy.taskDefinition.taskDefinition.containerDefinitions[0].mountPoints[0].readOnly = true; })],
     ["security group peer mismatch", mutate(complete, (copy) => { copy.securityGroups[rolePlan(plan, "initiator").securityGroupId].IpPermissions[0].UserIdGroupPairs[0].GroupId = "sg-other"; })],
     ["security group egress peer missing", mutate(complete, (copy) => { copy.securityGroups[rolePlan(plan, "initiator").securityGroupId].IpPermissionsEgress = []; })],
     ["cloudtrail extra key", mutate(complete, (copy) => { copy.cloudTrailEvents[0].extra = "no"; })],
     ["runtask too late", mutate(complete, (copy) => { copy.cloudTrailEvents[0].eventTime = "2026-08-11T12:01:00.000Z"; })],
     ["stoptask too early", mutate(complete, (copy) => { copy.cloudTrailEvents[1].eventTime = "2026-08-11T12:04:00.000Z"; })],
+    ["cross-account task arn", mutate(complete, (copy) => { copy.describeTasks.tasks[0].taskArn = copy.describeTasks.tasks[0].taskArn.replace(":123456789012:", ":210987654321:"); })],
+    ["cross-account task definition", mutate(complete, (copy) => { copy.taskDefinition.taskDefinition.taskDefinitionArn = copy.taskDefinition.taskDefinition.taskDefinitionArn.replace(":123456789012:", ":210987654321:"); copy.describeTasks.tasks[0].taskDefinitionArn = copy.taskDefinition.taskDefinition.taskDefinitionArn; })],
+    ["region mismatch task definition", mutate(complete, (copy) => { copy.taskDefinition.taskDefinition.taskDefinitionArn = copy.taskDefinition.taskDefinition.taskDefinitionArn.replace(":us-west-2:", ":us-east-1:"); copy.describeTasks.tasks[0].taskDefinitionArn = copy.taskDefinition.taskDefinition.taskDefinitionArn; })],
+    ["secret region mismatch", mutate(complete, (copy) => { copy.taskDefinition.taskDefinition.containerDefinitions[0].secrets[0].valueFrom = copy.taskDefinition.taskDefinition.containerDefinitions[0].secrets[0].valueFrom.replace(":us-west-2:", ":us-east-1:"); })],
     ["precomputed digests only", {
       describeTasks: complete.describeTasks,
       taskDefinition: complete.taskDefinition,
@@ -328,6 +361,57 @@ test("Fargate runtime evidence rejects self-claims and missing required control-
       /Fargate runtime evidence validation failed safely/,
       name,
     );
+  }
+});
+
+test("Fargate validators reject hostile inputs before invoking traps or leaking contents", async () => {
+  const plan = await checkedPlan();
+  let traps = 0;
+  const proxy = new Proxy({}, {
+    ownKeys() {
+      traps += 1;
+      return [];
+    },
+    get() {
+      traps += 1;
+      return "secret-canary /Users/alice/secret";
+    },
+  });
+  assert.throws(() => validateFargateRuntimePlan(proxy), /Fargate dry-run validation failed safely/);
+  assert.equal(traps, 0);
+  assert.throws(() => buildFargateDryRunSummary({ ...plan, template: { get Resources() { throw new Error("secret-canary /Users/alice/secret"); } } }), /Fargate dry-run validation failed safely/);
+  assert.throws(() => createAwsFargateRuntimeAdapter({ get plan() { throw new Error("secret-canary /Users/alice/secret"); } }), /Fargate dry-run validation failed safely/);
+
+  const aws = fakeAwsResponses(validateFargateRuntimePlan(plan), "initiator");
+  const nestedProxy = new Proxy({}, {
+    ownKeys() {
+      traps += 1;
+      return [];
+    },
+  });
+  assert.throws(() => collectFargateRuntimeEvidence({ plan, sessionId: SESSION_ID, role: "initiator", aws: nestedProxy }), /Fargate runtime evidence validation failed safely/);
+  assert.equal(traps, 0);
+  assert.throws(() => collectFargateRuntimeEvidence({
+    plan,
+    sessionId: SESSION_ID,
+    role: "initiator",
+    aws: { ...aws, cloudTrailEvents: [{ get eventName() { throw new Error("secret-canary /Users/alice/secret"); } }] },
+  }), /Fargate runtime evidence validation failed safely/);
+});
+
+test("Fargate canonical JSON rejects non-data values instead of normalizing them", () => {
+  assert.notEqual(sha256Hex([]), sha256Hex({}));
+  for (const value of [
+    [undefined],
+    { fn() {} },
+    { symbol: Symbol("x") },
+    { value: Number.NaN },
+    { value: Number.POSITIVE_INFINITY },
+    { get value() { return "secret-canary"; } },
+    new Proxy({}, {}),
+  ]) {
+    assert.throws(() => stableJson(value), /Fargate dry-run validation failed safely/);
+    assert.throws(() => sha256Hex(value), /Fargate dry-run validation failed safely/);
   }
 });
 

@@ -3,6 +3,8 @@ import {
   validateRuntimeEvidence,
 } from "./runtime-adapter-contract.mjs";
 import {
+  normalizeFargateTaskDefinitionForProof,
+  sanitizeFargateData,
   sha256Hex,
   stableJson,
   validateFargateRuntimePlan,
@@ -94,7 +96,7 @@ function parseLogRecords(logs, planLogGroupName, sessionId, role) {
     }
     let parsed;
     try {
-      parsed = JSON.parse(entry.message);
+      parsed = sanitizeFargateData(JSON.parse(entry.message), fail);
     } catch {
       fail();
     }
@@ -146,6 +148,17 @@ function arnAccount(arn) {
   return match[1];
 }
 
+function parseAwsArn(arn) {
+  const match = /^arn:aws:([^:]+):([^:]*):([0-9]{12}):(.+)$/.exec(arn);
+  if (!match) fail();
+  return {
+    service: match[1],
+    region: match[2],
+    account: match[3],
+    resource: match[4],
+  };
+}
+
 function assertSameJson(left, right) {
   if (stableJson(left) !== stableJson(right)) fail();
 }
@@ -169,11 +182,29 @@ function requireCloudTrail(events, eventName, taskArn, account, sessionId) {
   return found;
 }
 
-export function collectFargateRuntimeEvidence({ plan, sessionId, role, aws }) {
-  const verified = validateFargateRuntimePlan(plan);
+export function collectFargateRuntimeEvidence(inputOptions) {
+  try {
+    return collectFargateRuntimeEvidenceStrict(inputOptions);
+  } catch (error) {
+    if (error?.message === "Fargate runtime evidence validation failed safely.") throw error;
+    fail();
+  }
+}
+
+function collectFargateRuntimeEvidenceStrict(inputOptions) {
+  const options = sanitizeFargateData(inputOptions, fail);
+  const { plan, sessionId, role, aws } = object(options);
+  let verified;
+  let input;
+  try {
+    verified = validateFargateRuntimePlan(plan);
+    input = object(sanitizeFargateData(aws, fail));
+  } catch (error) {
+    if (error?.message === "Fargate runtime evidence validation failed safely.") throw error;
+    fail();
+  }
   if (!ROLES.includes(role) || typeof sessionId !== "string" || sessionId.length === 0) fail();
   const party = verified.parties[role];
-  const input = object(aws);
   if (
     Object.hasOwn(input, "cloudTrailEventDigests") ||
     Object.hasOwn(input, "logStreamDigests") ||
@@ -191,6 +222,14 @@ export function collectFargateRuntimeEvidence({ plan, sessionId, role, aws }) {
   if (task.lastStatus !== "STOPPED") fail();
   const definitionEnvelope = object(input.taskDefinition);
   const taskDefinition = object(definitionEnvelope.taskDefinition);
+  const expectedTaskDefinition = normalizeFargateTaskDefinitionForProof(party.taskDefinition, role);
+  const describedTaskDefinition = normalizeFargateTaskDefinitionForProof(taskDefinition, role, { server: true });
+  const describedWithoutServerMetadata = {
+    ...describedTaskDefinition,
+  };
+  delete describedWithoutServerMetadata.taskDefinitionArn;
+  delete describedWithoutServerMetadata.revision;
+  assertSameJson(describedWithoutServerMetadata, expectedTaskDefinition);
   if (
     task.taskDefinitionArn !== taskDefinition.taskDefinitionArn ||
     taskDefinition.taskRoleArn !== party.taskRoleArn ||
@@ -203,13 +242,36 @@ export function collectFargateRuntimeEvidence({ plan, sessionId, role, aws }) {
   ) fail();
   const container = object(taskDefinition.containerDefinitions?.[0]);
   if (container.image !== party.image || object(task.containers?.[0]).imageDigest !== party.imageDigest) fail();
-  if (container.readonlyRootFilesystem !== true || container.user !== party.user) fail();
+  if (container.readonlyRootFilesystem !== true || container.user !== party.user || container.privileged !== false) fail();
   assertSameJson(container.environment, party.environment);
   assertSameJson(container.secrets, party.secrets);
   assertSameJson(container.mountPoints, party.mountPoints);
   assertSameJson(container.logConfiguration, party.logConfiguration);
   assertSameJson(taskDefinition.volumes, party.volumes);
   if (taskDefinition.volumes?.some((volume) => Object.hasOwn(object(volume), "efsVolumeConfiguration"))) fail();
+
+  const taskRoleArn = parseAwsArn(party.taskRoleArn);
+  const executionRoleArn = parseAwsArn(party.executionRoleArn);
+  const taskArn = parseAwsArn(task.taskArn);
+  const taskDefinitionArn = parseAwsArn(task.taskDefinitionArn);
+  const responseTaskDefinitionArn = parseAwsArn(taskDefinition.taskDefinitionArn);
+  if (
+    taskRoleArn.service !== "iam" ||
+    executionRoleArn.service !== "iam" ||
+    taskArn.service !== "ecs" ||
+    taskDefinitionArn.service !== "ecs" ||
+    responseTaskDefinitionArn.service !== "ecs" ||
+    taskArn.account !== taskRoleArn.account ||
+    taskDefinitionArn.account !== taskRoleArn.account ||
+    responseTaskDefinitionArn.account !== taskRoleArn.account ||
+    executionRoleArn.account !== taskRoleArn.account ||
+    taskDefinitionArn.region !== taskArn.region ||
+    responseTaskDefinitionArn.region !== taskArn.region
+  ) fail();
+  for (const secret of party.secrets) {
+    const secretArn = parseAwsArn(secret.valueFrom);
+    if (secretArn.account !== taskRoleArn.account || secretArn.region !== taskArn.region) fail();
+  }
 
   const eniId = attachmentDetail(task, "networkInterfaceId");
   const subnetId = attachmentDetail(task, "subnetId");
@@ -263,7 +325,7 @@ export function collectFargateRuntimeEvidence({ plan, sessionId, role, aws }) {
     sessionSanitization.privatePathsRedacted !== true ||
     sessionSanitization.secretCanariesAbsent !== true
   ) fail();
-  if (sts.account !== arnAccount(party.taskRoleArn)) fail();
+  if (sts.account !== arnAccount(party.taskRoleArn) || sts.account !== taskRoleArn.account) fail();
   if (typeof sts.arn !== "string" || !sts.arn.includes(`assumed-role/${taskRoleName(party.taskRoleArn)}/`)) fail();
   const runTaskEvent = requireCloudTrail(input.cloudTrailEvents, "RunTask", task.taskArn, sts.account, sessionId);
   const stopTaskEvent = requireCloudTrail(input.cloudTrailEvents, "StopTask", task.taskArn, sts.account, sessionId);

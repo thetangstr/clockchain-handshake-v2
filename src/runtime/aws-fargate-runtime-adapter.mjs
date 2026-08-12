@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { types } from "node:util";
 
 import { assertSecretFree } from "../core/redact.mjs";
 
@@ -12,6 +13,52 @@ const LONG_SHA = /^sha256:[0-9a-f]{64}$/;
 const AWS_ARN = /^arn:aws:[a-z0-9-]+:[a-z0-9-]*:[0-9]{12}:.+/;
 const SECRET_REF_ARN = /^arn:aws:(?:secretsmanager|ssm):[a-z0-9-]+:[0-9]{12}:(?:secret|parameter)[:/].+/;
 const SENSITIVE_ENV = /(?:secret|token|password|private|key|credential)/i;
+const REQUIRED_ENV = Object.freeze({
+  CLOCKCHAIN_A2A_PORT: "8443",
+  CLOCKCHAIN_MCP_URL: "https://mcp.clockchain.network/handshake/mcp",
+  NODE_ENV: "production",
+});
+const REQUIRED_SECRET_NAMES = Object.freeze([
+  "CLOCKCHAIN_PROVIDER_REF",
+  "CLOCKCHAIN_MCP_CREDENTIAL_REF",
+  "CLOCKCHAIN_SIGNER_REF",
+  "CLOCKCHAIN_STATE_REF",
+]);
+const TASK_DEFINITION_KEYS = Object.freeze([
+  "containerDefinitions",
+  "cpu",
+  "executionRoleArn",
+  "family",
+  "memory",
+  "networkMode",
+  "requiresCompatibilities",
+  "runtimePlatform",
+  "taskRoleArn",
+  "volumes",
+]);
+const TASK_DEFINITION_SERVER_KEYS = Object.freeze([
+  ...TASK_DEFINITION_KEYS,
+  "revision",
+  "taskDefinitionArn",
+]);
+const CONTAINER_DEFINITION_KEYS = Object.freeze([
+  "environment",
+  "essential",
+  "image",
+  "logConfiguration",
+  "mountPoints",
+  "name",
+  "portMappings",
+  "privileged",
+  "readonlyRootFilesystem",
+  "secrets",
+  "user",
+]);
+const RUNTIME_PLATFORM_KEYS = Object.freeze(["cpuArchitecture", "operatingSystemFamily"]);
+const MAX_CANONICAL_DEPTH = 24;
+const MAX_CANONICAL_KEYS = 256;
+const MAX_CANONICAL_ARRAY_LENGTH = 1024;
+const MAX_CANONICAL_STRING_LENGTH = 65536;
 
 const RELATIVE_FILES = Object.freeze({
   template: "infra/mechanics-proof/fargate-runtime.yaml",
@@ -23,14 +70,74 @@ function fail() {
   throw new Error("Fargate dry-run validation failed safely.");
 }
 
+function strictData(value, failFn, seen = new WeakSet(), depth = 0) {
+  if (depth > MAX_CANONICAL_DEPTH) failFn();
+  if (value === null) return null;
+  const kind = typeof value;
+  if (kind === "string") {
+    if (value.length > MAX_CANONICAL_STRING_LENGTH) failFn();
+    return value;
+  }
+  if (kind === "boolean") return value;
+  if (kind === "number") {
+    if (!Number.isFinite(value)) failFn();
+    return value;
+  }
+  if (kind !== "object") failFn();
+  if (types.isProxy(value)) failFn();
+  if (seen.has(value)) failFn();
+  seen.add(value);
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors);
+  if (Array.isArray(value)) {
+    if (value.length > MAX_CANONICAL_ARRAY_LENGTH) failFn();
+    for (const key of keys) {
+      if (key === "length") continue;
+      if (typeof key !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(key)) failFn();
+      const index = Number(key);
+      if (!Number.isSafeInteger(index) || index < 0 || index >= value.length) failFn();
+      const descriptor = descriptors[key];
+      if (!descriptor.enumerable || !Object.hasOwn(descriptor, "value")) failFn();
+    }
+    const normalized = [];
+    for (let index = 0; index < value.length; index += 1) {
+      if (!Object.hasOwn(descriptors, String(index))) failFn();
+      normalized.push(strictData(descriptors[String(index)].value, failFn, seen, depth + 1));
+    }
+    seen.delete(value);
+    return normalized;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) failFn();
+  if (keys.length > MAX_CANONICAL_KEYS) failFn();
+  const normalized = {};
+  for (const key of keys.sort()) {
+    if (typeof key !== "string") failFn();
+    const descriptor = descriptors[key];
+    if (!descriptor.enumerable || !Object.hasOwn(descriptor, "value")) failFn();
+    normalized[key] = strictData(descriptor.value, failFn, seen, depth + 1);
+  }
+  seen.delete(value);
+  return normalized;
+}
+
+export function sanitizeFargateData(value, failFn = fail) {
+  try {
+    return strictData(value, failFn);
+  } catch (error) {
+    if (error?.message === "Fargate dry-run validation failed safely." || error?.message === "Fargate runtime evidence validation failed safely.") {
+      throw error;
+    }
+    failFn();
+  }
+}
+
 export function stableJson(value) {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(",")}}`;
+  return JSON.stringify(sanitizeFargateData(value));
 }
 
 export function sha256Hex(value) {
-  return createHash("sha256").update(typeof value === "string" ? value : stableJson(value)).digest("hex");
+  return createHash("sha256").update(typeof value === "string" ? sanitizeFargateData(value) : stableJson(value)).digest("hex");
 }
 
 function parseJsonFile(bytes) {
@@ -43,6 +150,12 @@ function parseJsonFile(bytes) {
 
 function object(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) fail();
+  return value;
+}
+
+function exactKeys(value, expected) {
+  const keys = Object.keys(object(value)).sort();
+  if (JSON.stringify(keys) !== JSON.stringify([...expected].sort())) fail();
   return value;
 }
 
@@ -135,24 +248,66 @@ function normalizeEgress(rules, peerRule, expectedGroupRef, expectedPeerRef) {
   ];
 }
 
-function normalizeTaskDefinition(taskDefinition, role) {
+export function normalizeFargateTaskDefinitionForProof(taskDefinition, role, { server = false } = {}) {
   const task = object(taskDefinition);
+  exactKeys(task, server ? TASK_DEFINITION_SERVER_KEYS : TASK_DEFINITION_KEYS);
   const containers = task.containerDefinitions;
   const volumes = task.volumes;
   if (!Array.isArray(containers) || containers.length !== 1) fail();
   if (!Array.isArray(volumes) || volumes.length !== 1) fail();
   const container = object(containers[0]);
-  return {
-    role,
-    taskDefinition,
+  exactKeys(container, CONTAINER_DEFINITION_KEYS);
+  exactKeys(task.runtimePlatform, RUNTIME_PLATFORM_KEYS);
+  if (server) {
+    awsArn(task.taskDefinitionArn);
+    if (!Number.isSafeInteger(task.revision) || task.revision < 1) fail();
+  }
+  if (container.essential !== true || container.privileged !== false) fail();
+  const normalized = {
     family: string(task.family),
     requiresCompatibilities: task.requiresCompatibilities,
     networkMode: task.networkMode,
-    cpu: task.cpu,
-    memory: task.memory,
+    cpu: String(task.cpu),
+    memory: String(task.memory),
     runtimePlatform: task.runtimePlatform,
     taskRoleArn: task.taskRoleArn,
     executionRoleArn: task.executionRoleArn,
+    containerDefinitions: [{
+      name: string(container.name),
+      essential: container.essential,
+      image: container.image,
+      readonlyRootFilesystem: container.readonlyRootFilesystem,
+      privileged: container.privileged,
+      user: container.user,
+      portMappings: container.portMappings,
+      environment: container.environment,
+      secrets: container.secrets,
+      mountPoints: container.mountPoints,
+      logConfiguration: container.logConfiguration,
+    }],
+    volumes,
+  };
+  if (server) {
+    normalized.taskDefinitionArn = task.taskDefinitionArn;
+    normalized.revision = task.revision;
+  }
+  return normalized;
+}
+
+function normalizeTaskDefinition(taskDefinition, role) {
+  const normalized = normalizeFargateTaskDefinitionForProof(taskDefinition, role);
+  const container = normalized.containerDefinitions[0];
+  return {
+    role,
+    taskDefinition: normalized,
+    family: normalized.family,
+    requiresCompatibilities: normalized.requiresCompatibilities,
+    networkMode: normalized.networkMode,
+    cpu: normalized.cpu,
+    memory: normalized.memory,
+    runtimePlatform: normalized.runtimePlatform,
+    taskRoleArn: normalized.taskRoleArn,
+    executionRoleArn: normalized.executionRoleArn,
     image: container.image,
     imageDigest: string(container.image).slice(container.image.indexOf("@") + 1),
     user: container.user,
@@ -163,13 +318,14 @@ function normalizeTaskDefinition(taskDefinition, role) {
     secrets: container.secrets,
     mountPoints: container.mountPoints,
     logConfiguration: container.logConfiguration,
-    volumes,
+    volumes: normalized.volumes,
     securityGroupId: `sg-${role}`,
   };
 }
 
 function validateTaskParty(party) {
   object(party);
+  assertSameTaskDefinition(party);
   if (
     !Array.isArray(party.requiresCompatibilities) ||
     party.requiresCompatibilities.length !== 1 ||
@@ -188,6 +344,7 @@ function validateTaskParty(party) {
   ) fail();
   awsArn(party.taskRoleArn);
   awsArn(party.executionRoleArn);
+  if (party.taskRoleArn === party.executionRoleArn) fail();
   const platform = object(party.runtimePlatform);
   if (platform.operatingSystemFamily !== "LINUX" || platform.cpuArchitecture !== "X86_64") fail();
   const portMappings = party.portMappings;
@@ -198,23 +355,35 @@ function validateTaskParty(party) {
     portMappings[0].protocol !== "tcp"
   ) fail();
   const env = party.environment;
-  if (!Array.isArray(env)) fail();
+  if (!Array.isArray(env) || env.length !== Object.keys(REQUIRED_ENV).length + 1) fail();
+  const envNames = new Set();
   for (const entry of env) {
     const item = object(entry);
     if (SENSITIVE_ENV.test(string(item.name))) fail();
     if (typeof item.value !== "string") fail();
+    if (envNames.has(item.name)) fail();
+    envNames.add(item.name);
     assertSecretFree(item.value, ["secret-canary"]);
   }
+  const roleEnv = env.find((entry) => entry.name === "CLOCKCHAIN_ROLE");
+  const mcpEnv = env.find((entry) => entry.name === "CLOCKCHAIN_MCP_URL");
+  if (roleEnv?.value !== party.role || mcpEnv?.value !== "https://mcp.clockchain.network/handshake/mcp") fail();
+  for (const [name, value] of Object.entries(REQUIRED_ENV)) {
+    if (env.find((entry) => entry.name === name)?.value !== value) fail();
+  }
   const secrets = party.secrets;
-  if (!Array.isArray(secrets) || secrets.length < 3) fail();
+  if (!Array.isArray(secrets) || secrets.length !== REQUIRED_SECRET_NAMES.length) fail();
   const secretNames = new Set();
+  const secretValues = new Set();
   for (const entry of secrets) {
     const item = object(entry);
     if (!SECRET_REF_ARN.test(string(item.valueFrom))) fail();
     if (typeof item.name !== "string" || item.name.length === 0) fail();
+    if (secretNames.has(item.name) || secretValues.has(item.valueFrom)) fail();
     secretNames.add(item.name);
+    secretValues.add(item.valueFrom);
   }
-  for (const required of ["CLOCKCHAIN_PROVIDER_REF", "CLOCKCHAIN_MCP_CREDENTIAL_REF", "CLOCKCHAIN_SIGNER_REF"]) {
+  for (const required of REQUIRED_SECRET_NAMES) {
     if (!secretNames.has(required)) fail();
   }
   const log = object(party.logConfiguration);
@@ -241,6 +410,35 @@ function validateTaskParty(party) {
     mount.readOnly !== false
   ) fail();
   return party;
+}
+
+function assertSameTaskDefinition(party) {
+  const container = {
+    name: party.role,
+    essential: true,
+    image: party.image,
+    readonlyRootFilesystem: party.readonlyRootFilesystem,
+    privileged: party.privileged,
+    user: party.user,
+    portMappings: party.portMappings,
+    environment: party.environment,
+    secrets: party.secrets,
+    mountPoints: party.mountPoints,
+    logConfiguration: party.logConfiguration,
+  };
+  const expected = {
+    family: party.family,
+    requiresCompatibilities: party.requiresCompatibilities,
+    networkMode: party.networkMode,
+    cpu: party.cpu,
+    memory: party.memory,
+    runtimePlatform: party.runtimePlatform,
+    taskRoleArn: party.taskRoleArn,
+    executionRoleArn: party.executionRoleArn,
+    containerDefinitions: [container],
+    volumes: party.volumes,
+  };
+  if (stableJson(party.taskDefinition) !== stableJson(expected)) fail();
 }
 
 function validateNetwork(network) {
@@ -365,14 +563,14 @@ export async function loadFargateDryRunPlan({ root = process.cwd() } = {}) {
     readFile(resolve(root, RELATIVE_FILES.initiator), "utf8"),
     readFile(resolve(root, RELATIVE_FILES.responder), "utf8"),
   ]);
-  const template = parseJsonFile(templateBytes);
+  const template = sanitizeFargateData(parseJsonFile(templateBytes));
   const metadata = object(object(template.Metadata).ClockchainMechanicsProof);
   return {
     schema: FARGATE_DRY_RUN_PLAN_SCHEMA,
     template,
     parties: {
-      initiator: normalizeTaskDefinition(parseJsonFile(initiatorBytes), "initiator"),
-      responder: normalizeTaskDefinition(parseJsonFile(responderBytes), "responder"),
+      initiator: normalizeTaskDefinition(sanitizeFargateData(parseJsonFile(initiatorBytes)), "initiator"),
+      responder: normalizeTaskDefinition(sanitizeFargateData(parseJsonFile(responderBytes)), "responder"),
     },
     network: {
       assignPublicIp: metadata.assignPublicIp,
@@ -393,7 +591,7 @@ export async function loadFargateDryRunPlan({ root = process.cwd() } = {}) {
 }
 
 export function validateFargateRuntimePlan(plan) {
-  const item = object(plan);
+  const item = object(sanitizeFargateData(plan));
   if (item.schema !== FARGATE_DRY_RUN_PLAN_SCHEMA) fail();
   validateTemplate(item.template);
   const parties = object(item.parties);
@@ -451,10 +649,13 @@ export function buildFargateDryRunSummary(plan) {
   return Object.freeze(summary);
 }
 
-export function createAwsFargateRuntimeAdapter({ plan = null } = {}) {
+export function createAwsFargateRuntimeAdapter(optionsInput = {}) {
+  const options = object(sanitizeFargateData(optionsInput));
+  if (Object.keys(options).some((key) => key !== "plan")) fail();
+  const configuredPlan = options.plan ?? null;
   return Object.freeze({
     async inspectRuntimePlan() {
-      const current = plan === null ? await loadFargateDryRunPlan() : plan;
+      const current = configuredPlan === null ? await loadFargateDryRunPlan() : configuredPlan;
       return buildFargateDryRunSummary(current);
     },
     async provisionPartyRuntime() {
