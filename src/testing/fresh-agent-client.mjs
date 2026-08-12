@@ -1811,6 +1811,9 @@ function childEnvironment(room, credentials, runtime, {
     XDG_CACHE_HOME: room.cache,
   };
   const mode = cleanAuthenticationMode(cleanClient(client), authenticationMode);
+  const claudeNodeProxyEnvironment = client === "claude"
+    ? { NODE_USE_ENV_PROXY: "1" }
+    : {};
   if (client === "claude" && mode === "existing_login_isolated") {
     const sessionEnvironment = {};
     for (const name of CLAUDE_EXISTING_LOGIN_SESSION_ENV) {
@@ -1820,6 +1823,7 @@ function childEnvironment(room, credentials, runtime, {
     return Object.freeze({
       ...common,
       ...sessionEnvironment,
+      ...claudeNodeProxyEnvironment,
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
       CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1",
       CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
@@ -1829,6 +1833,7 @@ function childEnvironment(room, credentials, runtime, {
   }
   return Object.freeze({
     ...common,
+    ...claudeNodeProxyEnvironment,
     CLAUDE_CONFIG_DIR: join(room.home, ".claude"),
     HOME: room.home,
   });

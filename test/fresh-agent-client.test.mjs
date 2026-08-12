@@ -458,6 +458,8 @@ function baseFreshAgentRunOptions(parent, overrides = {}) {
     secretCanaries: { initiator: ["canary-initiator-secret"], responder: ["canary-responder-secret"] },
     monitor: async () => monitorProjection(),
     hostEnvironment: {
+      HTTP_PROXY: "http://host-proxy-secret.invalid:8080",
+      HTTPS_PROXY: "http://host-secure-proxy-secret.invalid:8443",
       LOGNAME: "tester",
       PATH: "/usr/bin:/bin",
       SSH_AUTH_SOCK: "/tmp/test-ssh-agent.sock",
@@ -1483,8 +1485,13 @@ test("starts the Responder only after the Initiator emits its actual one-time in
     assert.equal(spawned.options.env.TMPDIR, join(spawned.options.cwd, ".tmp"));
     assert.equal(spawned.options.env.CLAUDE_CODE_TMPDIR, join(spawned.options.cwd, ".tmp"));
     assert.match(spawned.options.env.PATH, /^.+\/\.clockchain-adapter\/bin:\/opt\/homebrew\/opt\/node@24\/bin:/);
+    assert.equal(Object.hasOwn(spawned.options.env, "HTTP_PROXY"), false);
+    assert.equal(Object.hasOwn(spawned.options.env, "HTTPS_PROXY"), false);
   }
+  const initiatorSpawn = calls.find((entry) => entry.file === "codex");
+  assert.equal(Object.hasOwn(initiatorSpawn.options.env, "NODE_USE_ENV_PROXY"), false);
   const responderSpawn = calls.find((entry) => entry.file === "claude");
+  assert.equal(responderSpawn.options.env.NODE_USE_ENV_PROXY, "1");
   assert.equal(responderSpawn.options.env.HOME, "/Users/tester");
   assert.equal(Object.hasOwn(responderSpawn.options.env, "CLAUDE_CONFIG_DIR"), false);
   assert.equal(responderSpawn.options.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, "1");
@@ -1505,6 +1512,32 @@ test("starts the Responder only after the Initiator emits its actual one-time in
   assert.equal(result.roles.initiator.certificateDigest, result.roles.responder.certificateDigest);
   assert.equal(JSON.stringify(result).includes(secret), false);
   assert.equal((await readdir(parent)).length, 0);
+});
+
+test("disposable Claude child enables Node's environment proxy without inheriting host proxy secrets", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-claude-env-proxy-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const calls = [];
+
+  await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, {
+    clients: { initiator: "claude", responder: "codex" },
+    hostEnvironment: {
+      HTTP_PROXY: "http://host-proxy-secret.invalid:8080",
+      HTTPS_PROXY: "http://host-secure-proxy-secret.invalid:8443",
+      PATH: "/usr/bin:/bin",
+    },
+    spawnProcess: successfulFreshAgentSpawn(calls),
+  }));
+
+  const claudeSpawn = calls.find((entry) => entry.file === "claude");
+  const codexSpawn = calls.find((entry) => entry.file === "codex");
+  assert.equal(claudeSpawn.options.env.NODE_USE_ENV_PROXY, "1");
+  assert.equal(Object.hasOwn(claudeSpawn.options.env, "HTTP_PROXY"), false);
+  assert.equal(Object.hasOwn(claudeSpawn.options.env, "HTTPS_PROXY"), false);
+  assert.equal(Object.hasOwn(codexSpawn.options.env, "NODE_USE_ENV_PROXY"), false);
+  assert.equal(Object.hasOwn(codexSpawn.options.env, "HTTP_PROXY"), false);
+  assert.equal(Object.hasOwn(codexSpawn.options.env, "HTTPS_PROXY"), false);
+  assert.deepEqual(await readdir(parent), []);
 });
 
 test("fresh-agent injected failures produce distinct safe diagnostics", async (t) => {
