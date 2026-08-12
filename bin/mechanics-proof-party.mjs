@@ -219,6 +219,7 @@ export async function runMain({
   let bootstrapExchangeDestroyed = false;
   let runtime = null;
   let runInvoked = false;
+  let failureStage = null;
   try {
     if (!Array.isArray(argv) || argv.length !== 3) throw new Error("mode");
     if (argv[2] === "--capability-preflight") {
@@ -229,22 +230,33 @@ export async function runMain({
     const managedEnvironment = argv[2] === "--run-managed" ? managedExchangeEnvironment(env) : null;
     const resolved = argv[2] === "--run-managed" ? await resolveManagedRunOptions({ env }) : { runOptions: runOptions(env) };
     const options = resolved?.runOptions ?? resolved;
-    if (resolved?.attestation !== undefined) stdout.write(`${JSON.stringify(resolved.attestation)}\n`);
+    if (resolved?.attestation !== undefined) {
+      stdout.write(`${JSON.stringify(resolved.attestation)}\n`);
+      failureStage = "runtime-create";
+    }
     runtime = await createRuntime(options);
+    if (failureStage !== null) failureStage = "exchange-create";
     bootstrapExchange = argv[2] === "--run-managed"
       ? createManagedBootstrapExchange(Object.freeze({ ...managedEnvironment, role: options.role, runId: options.runId }))
       : createBootstrapExchange({ role: options.role, runId: options.runId, stdin, stdout });
+    if (failureStage !== null) failureStage = "bootstrap-publish";
     await bootstrapExchange.publishOwnDescriptor(runtime.bootstrapDescriptor());
+    if (failureStage !== null) failureStage = "bootstrap-await";
     const peerDescriptor = await bootstrapExchange.awaitPeerDescriptor();
+    if (failureStage !== null) failureStage = "exchange-destroy";
     await bootstrapExchange.destroy();
     bootstrapExchangeDestroyed = true;
     runInvoked = true;
+    if (failureStage !== null) failureStage = "runtime-run";
     const evidence = await runtime.run({
       peerDescriptor,
       onPublicEvent(event) { stdout.write(`${JSON.stringify(event)}\n`); },
     });
     stdout.write(`${JSON.stringify(evidence)}\n`);
-    if (argv[2] === "--run-managed") await holdManagedRun();
+    if (argv[2] === "--run-managed") {
+      failureStage = "managed-hold";
+      await holdManagedRun();
+    }
     return 0;
   } catch {
     if (bootstrapExchange !== null && !bootstrapExchangeDestroyed) {
@@ -253,7 +265,7 @@ export async function runMain({
     if (runtime !== null && !runInvoked) {
       try { await runtime.destroy(); } catch {}
     }
-    stderr.write("Mechanics proof party failed safely.\n");
+    stderr.write(`Mechanics proof party failed safely.${failureStage === null ? "" : ` stage=${failureStage}`}\n`);
     return 1;
   }
 }

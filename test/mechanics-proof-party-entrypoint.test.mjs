@@ -324,6 +324,61 @@ test("managed run mode emits ECS attestation before bootstrap descriptor", async
   assert.doesNotMatch(text, /sqs|amazonaws|credentials|169\.254/i);
 });
 
+test("managed run mode reports only an allowlisted post-attestation failure stage", async () => {
+  const stderr = new PassThrough();
+  let errorText = "";
+  stderr.on("data", (chunk) => { errorText += chunk.toString("utf8"); });
+  let runtimeDestroyed = false;
+  const code = await runMain({
+    argv: ["node", "bin/mechanics-proof-party.mjs", "--run-managed"],
+    createManagedBootstrapExchange() {
+      return {
+        async publishOwnDescriptor() { throw new Error("secret-canary queue-url credentials"); },
+        async awaitPeerDescriptor() { throw new Error("must not await"); },
+        async destroy() { return { destroyed: true }; },
+      };
+    },
+    createRuntime: async () => ({
+      bootstrapDescriptor() { return { schema: "clockchain.mechanics-proof-party-bootstrap/v1" }; },
+      async destroy() { runtimeDestroyed = true; },
+      async run() { throw new Error("must not run"); },
+    }),
+    env: runEnv({
+      AWS_REGION: "us-west-2",
+      CLOCKCHAIN_BOOTSTRAP_OWN_QUEUE_URL: `https://sqs.us-west-2.amazonaws.com/123456789012/own-${SESSION}`,
+      CLOCKCHAIN_BOOTSTRAP_PEER_QUEUE_URL: `https://sqs.us-west-2.amazonaws.com/123456789012/peer-${SESSION}`,
+    }),
+    stderr,
+    stdin: Readable.from([]),
+    stdout: new PassThrough(),
+    async resolveManagedRunOptions() {
+      return {
+        attestation: { schema: "clockchain.mechanics-proof-ecs-attestation/v1" },
+        runOptions: {
+          harness: "claude",
+          listenHost: "0.0.0.0",
+          manifestDigest: "a".repeat(64),
+          mandate: { statement: "trusted" },
+          mcpEndpoint: "https://mcp.clockchain.network/handshake/mcp",
+          opensslPath: "/usr/bin/openssl",
+          port: 8443,
+          publicEndpoint: "https://10.0.0.11:8443",
+          role: "responder",
+          root: "/workspace/responder",
+          runId: SESSION,
+          runtimeId: "ecs-task-responder",
+          taskId: "task-responder",
+          workloadAttestationDigest: "b".repeat(64),
+        },
+      };
+    },
+  });
+  assert.equal(code, 1);
+  assert.equal(runtimeDestroyed, true);
+  assert.equal(errorText, "Mechanics proof party failed safely. stage=bootstrap-publish\n");
+  assert.doesNotMatch(errorText, /secret|queue|credentials|amazonaws/i);
+});
+
 test("managed run mode holds after terminal evidence until controller stop", async () => {
   const output = new PassThrough();
   let text = "";
