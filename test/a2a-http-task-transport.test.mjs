@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { X509Certificate } from "node:crypto";
 import test from "node:test";
 
 import { privateKeyToAccount } from "viem/accounts";
@@ -14,55 +15,55 @@ const RESPONDER = privateKeyToAccount(`0x${"2".repeat(64)}`);
 const INITIATOR_CARD = privateKeyToAccount(`0x${"6".repeat(64)}`);
 const RESPONDER_CARD = privateKeyToAccount(`0x${"7".repeat(64)}`);
 const TLS_KEY = `-----BEGIN PRIVATE KEY-----
-MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCShQD6xrjOP/n3
-NelAxjnLxMGZUCMKzO2HWw7jdgG4VyiRiOhQS9ExxiakugFYlCx8NeE8R/e/ALqo
-e+xrAP37+3ywzScZEZ2zKrB9Ho+EyuS1xZ36J41aN8mgsOJZacboBREexLXSI05Y
-M4PUGchTMnMK+rEweBWkVzypFdzTU3J6N7y+7+UIcZA+6Lanm1Dr/mro7IafrsRl
-Jup9/Bby/5aFw86xDp3luEH+fdD3otm6YszXHSw71FzwXoldJbXMhJ8dSHvQ5hjq
-OvELlvrLIf5PAQ8e5+GY2ED8f4tMX8/RqyqaWjkOiou7KoEDQjnBS0o/sJInDNe6
-QPLX1nrxAgMBAAECggEAOz+wgTg5xCGHzclNrOVbusQyO3J18SikRq9ySlXOZUJN
-g+h2dP3rtrJ3rvYOlEi64nGRRqSdkO3VDUurcyvACRUNu5sCG/eNK0Xwf3ALvjmj
-mcOzWdSDqv9TN/k/VsPY7LsbzLLkCXlAdZdDUFIquUX10nNEkqKEseObAo72MLf5
-t0C7Bv64CNIJiv3z/VbMmGvubCHPfkVXy0hpFuBL50Z8hBNlua/WihabIhZcvqnZ
-r0SNoCJJP5UeEplb8/620h8n6++iV3a11dWJXwz2bj+FJh+q/eu//608oc2PvSSU
-+d3tEvix3JUqAK95Qr03uFJD0PvRFELQ8MGMyKJmBwKBgQDDbXget0ZXR5RiYN9L
-bP3EDd0dPv2+ciazFX6uE31xlPj96grqGJe//R4VktAF9nLqtjGMDNBZsWPzQpaj
-+0Lwz3KV/xajQ40q/Hd3LU7p+koDI2YvCIKiHq5zQwNX/pqGVnL2SvBCbuoaqWV0
-zFWNdm3d6CagK0BU71DQQ6X0xwKBgQC/7teZlsyfmrd0OrBolYzfigp/flD8xlx8
-llJaB7+JutVqRPzJ+17nR4N0zzzrY5OXPIHE0Gzeu5W1Oe0jlVtKydg3Xkq/C154
-pLyLCulZ6h59Pk7lE2/v9Ut9Qf2+P7Kw0puvybleaTF+LKc7sMiR3hrkaAqYIcXO
-FyT/hEhqhwKBgBQjFoqLtgrOTGLquneKLofiKdOWpwzVtFklsNz9EyL+B74aPK+s
-gw58ZXoxm4/RujunNGnK9DkZx0PMq7sP6/DmX1dHZqzCDCzOwPydxZDkgnXaUvAr
-v1I3OSCVWiXaDVAkXko0pJcj2KmQpOypFXOzLVT9U+WTL1jRJBGhttsHAoGAay5/
-699QidimlhuoI99P+g1ma2go5eAICfMQLgKhrdJOF7hKyqi7iMBg4rxQMss6wnwh
-o70Y7xEmOzwL95ESmCM7wT/A0gsRSKIGQEdppLKfMCW5fSdrnT8IVvyhLLr5mNEj
-6/jksZpg7ysUgLrqZrr3nZGUSPyjL8GxAZfnsMUCgYEAlu0LnLd491rUEVL1QaB5
-Tc632q5XWA6qeCmIMqZ61bk8R+rt6XtFWPA2QnquXKaZUHHF44S7PBKCUOvFrYX8
-hlGwMu71m3nzxi7z/kKCZgSdqG6aPhHFO0cZIo6liXX2myapVgnf49A1szHaux+Y
-wSJ9QoD7HHdqHT3fQvUqyLU=
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC2EOIie3N+z5se
+QQMDMZdpg9YFOeB95gJpJyFJgQNfg5GEhUYkdSLdMTykCfS88d0l+8AwL1kgt9Do
+x+J9fQMazb4POCIOO3lEim9nCgM3fAfHHKGCsVUhZRQGs39SaZ00s+cPgfbRJSys
+0U+siG7qEAUdvBUT0tn7wOFelVHTwvTaFAGzCkdAHGqzaktUSzzZzbKo5jqfnIpM
++jyZUU7iLRr/CBcAdBNYfXTQS3TRxivlu1MR0KFsa/hV8liAW4HFIjLASK7UNJAx
+4DcOt7lw8CQcGzBwhf6GA86Kd4Z/OUumgoBufIxnRJpAoJCN6pOFjZqw5FzL/SkP
+AxXewrkBAgMBAAECggEABnFqA0ThpTT1HRi5YdFNNa118zjlXic34h9BoQ+I/kYS
+bgFmZk9j5LaDmh2FFPOtOxUh68KdMZh3sukx9XVpWPc7eN/oap8Fr1yDzT5wNzQz
+NUNo3s5mQBiK4SLUiGbW6qDMNkMH6EZbwqDkpCsu26cl+zOm/kzZrHxarWV04BzI
+kwqrjTIlgsOHdeZtU2VpBuEmVdN7CNArtcnmJD5X7m7NTOBOZmZ0ZIfA38F6+8UR
+AY0ZfCx8zfv0SPJsgyzgd9VPlmehUHg3AdvZLM4iqzlH5GbFci5HMu7ANk5Vr5e6
+C9YDEE5PQALrKx2TYYDQ6gn2KJjMvnzlaj+LDOuVsQKBgQDdPF14kLPBd3CdvKO8
+CjIRsu6umEXAWjl49wtGvis6ELzmZFwtCVr+IIRhlTU5Z9aJ+WwWPX8brySZNCqA
+Xw/Yfla1JjD8/Bagg9OgEFsnxD7RmmJlVjJoxmZx/fmSteHnIHJDlWNdt8DxXe/7
+XgJYmy1Vf6XjOB4cNmefhh15eQKBgQDSrNX0zCoENQFSHkbTFSUSEEBR9/omS1Mr
+nFgbAs36djz9pILgiFHQULWruHCiiWqmE7QmJMLiteHf5teM5RFPLs+/wFC8u7fk
+W5VR5/KbSxEQiMSmBTEFg1o78+LCGH5sqEZj8V5UX2okV6N5uKWY1ndRaRnmvWLw
+IZnbPPPhyQKBgDTnkpKaR+Ij5dJSofT9myuQVnN6BnQRH11F9nRcVYn1JrcRmNlM
+O2456G5NeATaR/uGocpPum2sXFwmlWNNWES1MZbwIxbcUazg2WKVhrbjvwHwoUcK
+bdOQXj80NNJYnEThBXIT70ciAgm2JQU/XeBCe3zOoaTMbqbge7cyIypBAoGBAM1J
+l89LpuGkmN3hHNiRMSdR6Ks2/W2VVr0XQw9HA1m9H591UAblLvvTucNUHYV0bBTa
+/F9y0OjDnQ9lzMLBb8V98viBuOq/7Og7idxfLZu/YSiAbUbtpiAeJ65l75986KyO
+qNC4oVeMBkzVjTmOAOdWjLwqsw+RmjguNdNZqLhpAoGAT3FjJ88hxsSj2IMWFcEm
+xOMaugGWwbWzb5/ze1jcxKpJee6V4an0afsYM3/vip7beJqjmDRlKyk803r8mksG
+DlJAGG2+jY6nv+4ynbrOlhkhyBtlE2+L96VScbTZXTMjBA59SWDRWzUGB48JYUFr
+CGGsPGQzeuvnUkOkpyjG47U=
 -----END PRIVATE KEY-----`;
 const TLS_CERT = `-----BEGIN CERTIFICATE-----
-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
+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
 -----END CERTIFICATE-----`;
 
 function tls() {
-  return { key: TLS_KEY, cert: TLS_CERT, peerCa: TLS_CERT, peerCertificateSha256: "6e67c44febfdea21e6a716e5d8d0b9cbd2a563012165a1baa0a4305fba121606" };
+  return { key: TLS_KEY, cert: TLS_CERT, peerCa: TLS_CERT, peerCertificateSha256: "50db5af0e402b3ce734bca44f413dddd9e3884396124e229abf804da87986a2c" };
 }
 
 function unsignedCard(account, role, peerCardDigest = null) {
@@ -185,6 +186,12 @@ test("HTTP task transport exchanges A2A envelopes directly without controller co
   assert.match(sentAcceptance.messageDigest, /^[0-9a-f]{64}$/);
 });
 
+test("HTTP task transport test TLS fixture covers the fixed support window", () => {
+  const cert = new X509Certificate(TLS_CERT);
+  assert.ok(Date.parse(cert.validFrom) <= Date.parse("2026-08-13T00:00:00Z"));
+  assert.ok(Date.parse(cert.validTo) >= Date.parse("2036-08-12T00:00:00Z"));
+});
+
 test("HTTP task transport rejects wrong paths, replay, oversized bodies, and unsigned claims", async (t) => {
   const pair = await cards();
   const responder = await createHttpTaskTransport({
@@ -210,6 +217,116 @@ test("HTTP task transport rejects wrong paths, replay, oversized bodies, and uns
   const unsigned = await responder.postJsonForTests("/a2a/v1/envelopes", { transcript: "private", envelope: { ...proposal, signature: undefined } });
   assert.equal(unsigned.status, 400);
   assert.equal(responder.publicEvidence().messages.length, 1);
+});
+
+test("HTTP task transport validates nested envelopes locally before network disclosure", async (t) => {
+  const pair = await cards();
+  const initiator = await createHttpTaskTransport({
+    sessionId: SESSION_ID,
+    role: "initiator",
+    ownCard: pair.initiator,
+    peerCard: pair.responder,
+    listenHost: "127.0.0.1",
+    port: 0,
+    nowMs: () => 1500,
+    allowLoopbackForTests: true,
+    tls: tls(),
+  });
+  t.after(() => initiator.close());
+  const responder = await createHttpTaskTransport({
+    sessionId: SESSION_ID,
+    role: "responder",
+    ownCard: pair.responder,
+    peerCard: pair.initiator,
+    listenHost: "127.0.0.1",
+    port: 0,
+    nowMs: () => 1500,
+    allowLoopbackForTests: true,
+    tls: tls(),
+  });
+  t.after(() => responder.close());
+  initiator.setPeerUrl(responder.url);
+
+  let traps = 0;
+  const nestedProxy = new Proxy({}, {
+    get() {
+      traps += 1;
+      return "secret-canary /Users/alice/secret";
+    },
+    ownKeys() {
+      traps += 1;
+      return [];
+    },
+  });
+  await assert.rejects(
+    () => initiator.sendEnvelope({ envelope: nestedProxy }),
+    (error) => {
+      assert.match(error.message, /A2A HTTP task transport failed safely/);
+      assert.doesNotMatch(error.message, /secret-canary|\/Users\/alice\/secret/);
+      return true;
+    },
+  );
+  assert.equal(traps, 0);
+
+  const validEnvelope = await envelope({ fromAccount: INITIATOR, fromCard: pair.initiator, toCard: pair.responder, sequence: "1" });
+  const descriptorEnvelope = { ...validEnvelope, body: { ...validEnvelope.body } };
+  Object.defineProperty(descriptorEnvelope.body, "secret", {
+    enumerable: true,
+    get() {
+      traps += 1;
+      throw new Error("secret-canary /Users/alice/secret");
+    },
+  });
+  await assert.rejects(
+    () => initiator.sendEnvelope({ envelope: descriptorEnvelope }),
+    (error) => {
+      assert.match(error.message, /A2A HTTP task transport failed safely/);
+      assert.doesNotMatch(error.message, /secret-canary|\/Users\/alice\/secret/);
+      return true;
+    },
+  );
+  assert.equal(traps, 0);
+
+  const toJsonEnvelope = {
+    ...validEnvelope,
+    toJSON() {
+      traps += 1;
+      return { secret: "secret-canary /Users/alice/secret" };
+    },
+  };
+  await assert.rejects(
+    () => initiator.sendEnvelope({ envelope: toJsonEnvelope }),
+    (error) => {
+      assert.match(error.message, /A2A HTTP task transport failed safely/);
+      assert.doesNotMatch(error.message, /secret-canary|\/Users\/alice\/secret/);
+      return true;
+    },
+  );
+  assert.equal(traps, 0);
+  assert.equal(responder.publicEvidence().messages.length, 0);
+});
+
+test("HTTP task transport consumes local send before ambiguous network failure without public sent evidence", async (t) => {
+  const pair = await cards();
+  const initiator = await createHttpTaskTransport({
+    sessionId: SESSION_ID,
+    role: "initiator",
+    ownCard: pair.initiator,
+    peerCard: pair.responder,
+    listenHost: "127.0.0.1",
+    port: 0,
+    nowMs: () => 1500,
+    allowLoopbackForTests: true,
+    tls: tls(),
+  });
+  t.after(() => initiator.close());
+  initiator.setPeerUrl("https://127.0.0.1:65534");
+  const proposal = await envelope({ fromAccount: INITIATOR, fromCard: pair.initiator, toCard: pair.responder, sequence: "1" });
+
+  await assert.rejects(() => initiator.sendEnvelope({ envelope: proposal }));
+  assert.equal(initiator.publicEvidence().messages.length, 0);
+  await assert.rejects(() => initiator.sendEnvelope({ envelope: proposal }));
+  assert.equal(initiator.publicEvidence().messages.length, 0);
 });
 
 test("HTTP task transport uses private HTTPS peer endpoints in live mode and loopback only when explicit", async (t) => {

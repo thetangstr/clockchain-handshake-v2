@@ -4,6 +4,7 @@ import { isIP } from "node:net";
 import { types } from "node:util";
 
 import { a2aAgentCardDigest } from "./agent-card.mjs";
+import { a2aCanonicalBytes } from "./auth.mjs";
 import { createDirectTaskChannel } from "./direct-task-channel.mjs";
 const ROLES = Object.freeze(["initiator", "responder"]);
 const PATH = "/a2a/v1/envelopes";
@@ -240,16 +241,22 @@ export async function createHttpTaskTransport(optionsInput = {}) {
       currentPeerUrl = endpoint(value, { allowLoopbackForTests });
     },
     async sendEnvelope(input) {
-      const { envelope } = snapshot(input, ["envelope"]);
       if (typeof currentPeerUrl !== "string") fail();
+      let envelope;
+      let localResult;
+      try {
+        envelope = JSON.parse(a2aCanonicalBytes(snapshot(input, ["envelope"]).envelope).toString("utf8"));
+        localResult = await channel.send({ fromRole: role, toRole: peerRole, envelope, nowMs: nowMs() });
+      } catch {
+        fail();
+      }
       const response = await postJson(`${currentPeerUrl}${PATH}`, { envelope }, tls, maxBytes);
       if (response.status !== 202) fail();
       const body = response.body;
-      if (!body?.ok || typeof body.messageDigest !== "string") fail();
-      await channel.send({ fromRole: role, toRole: peerRole, envelope, nowMs: nowMs() });
+      if (!body?.ok || body.messageDigest !== localResult.messageDigest) fail();
       const message = channel.publicEvidence().messages.at(-1);
       sent.push(publicMessage(message, "outbound"));
-      return Object.freeze({ messageDigest: body.messageDigest });
+      return Object.freeze({ messageDigest: localResult.messageDigest });
     },
     receive() {
       return channel.receive({ role });
