@@ -22,6 +22,7 @@ test("mechanics proof Fargate app Dockerfile is pinned, nonroot, and entrypoint-
   assert.match(dockerfile, /^EXPOSE 8443$/m);
   assert.match(dockerfile, /^ENTRYPOINT \["node","bin\/mechanics-proof-party\.mjs"\]$/m);
   assert.doesNotMatch(dockerfile, /COPY .*keys|COPY .*\.env|ARG .*SECRET|ENV .*PRIVATE|USER root/);
+  assert.ok(dockerfile.indexOf("RUN npm ci") < dockerfile.indexOf("ARG SOURCE_COMMIT"));
 });
 
 test("mechanics proof image contains only the pinned AWS task dependencies", async () => {

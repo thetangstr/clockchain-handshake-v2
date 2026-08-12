@@ -1,9 +1,5 @@
 FROM docker.io/library/node:24.11.1-bookworm-slim@sha256:44b49d6e2d23f6754fb084ef9d34ff14590343ad1ee168f8acf8f7bc9fccde2f
 
-ARG SOURCE_COMMIT
-RUN case "$SOURCE_COMMIT" in (*[!0-9a-f]*|"") exit 1;; esac && test "${#SOURCE_COMMIT}" = "40"
-LABEL org.opencontainers.image.revision=$SOURCE_COMMIT
-
 WORKDIR /app
 ENV NODE_ENV=production
 
@@ -17,6 +13,11 @@ COPY src ./src
 COPY prompts ./prompts
 
 RUN mkdir -p /workspace && chown node:node /workspace
+
+ARG SOURCE_COMMIT
+RUN case "$SOURCE_COMMIT" in (*[!0-9a-f]*|"") exit 1;; esac && test "${#SOURCE_COMMIT}" = "40"
+LABEL org.opencontainers.image.revision=$SOURCE_COMMIT
+
 USER node
 
 EXPOSE 8443
