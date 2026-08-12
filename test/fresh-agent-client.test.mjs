@@ -960,6 +960,9 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
     assert.match(prompt, /adapter executes Clockchain's bound arguments directly/i);
     assert.match(prompt, /never run or reconstruct shellCommand yourself/i);
     assert.match(prompt, /retry also fails/i);
+    assert.match(prompt, /Every MCP response without a locally verified certificate is nonterminal/i);
+    assert.match(prompt, /wait or pending.*bounded retry interval/i);
+    assert.match(prompt, /Never finish merely because the other role is pending/i);
     assert.doesNotMatch(prompt, /curl --location|retryAfterMs|localAction|mkdir -m|agent_handshake_next/);
   }
   assert.match(fixture.initiator, /First and immediately, create the one-time Responder invitation/);
@@ -1074,12 +1077,12 @@ test("stakeholder prompts leave mechanics to MCP and use only preloaded verified
   for (const prompt of [fixture.initiator, fixture.responder]) {
     assert.match(prompt, /inspect the preloaded manifest and helper source/i);
     assert.match(prompt, /run only its exact short approvalCommand as the complete command/i);
-    assert.match(prompt, /Do not prefix it with cd, env, or another command/i);
+    assert.match(prompt, /with no prefix or suffix/i);
     assert.doesNotMatch(prompt, /inspect the public manifest/i);
     assert.doesNotMatch(prompt, /download(?:ing|ed)? .*helper/i);
   }
   assert.match(fixture.initiator, /copy it from the MCP result/i);
-  assert.match(fixture.initiator, /do not stop, return, or wait for another prompt/i);
+  assert.match(fixture.initiator, /do not stop or wait for another prompt/i);
 });
 
 test("unwraps Codex's canonical shell display before binding the exact helper command", () => {
@@ -1454,6 +1457,10 @@ test("rejects model-authored certificate claims without completed helper executi
       queueMicrotask(() => {
         if (role === "initiator") {
           child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+          child.stdout.emit("data", Buffer.from(streamEvent({
+            type: "item.completed",
+            item: { type: "mcp_tool_call", tool: "agent_handshake_next", status: "completed", result: { structuredContent: {} } },
+          })));
         } else {
           for (const [name, entry] of [["initiator", child.initiator], ["responder", child]]) {
             entry.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify(helperProof(name)) } })));
@@ -1467,7 +1474,7 @@ test("rejects model-authored certificate claims without completed helper executi
     child.initiator = spawnProcess.initiator;
     return child;
   };
-  await assert.rejects(() => runFreshAgentHandshake({
+  const error = await rejectsFreshAgentRun(parent, {
     clients: { initiator: "codex", responder: "claude" },
     configureClient: async () => {}, prepareClient: async () => true,
     modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
@@ -1475,7 +1482,17 @@ test("rejects model-authored certificate claims without completed helper executi
     prompts: { initiator: "init", responder: "respond <PASTE THE INITIATOR INVITATION>" },
     release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
     spawnProcess, timeoutMs: 2_000,
-  }), /failed safely/);
+  });
+  assert.deepEqual(error.diagnostic, {
+    phase: "agent-exit",
+    category: "agent",
+    code: "HELPER_PROOF_MISSING",
+    details: {
+      client: "codex",
+      lastMcpTool: "agent_handshake_next",
+      role: "initiator",
+    },
+  });
   assert.deepEqual(await readdir(parent), []);
 });
 

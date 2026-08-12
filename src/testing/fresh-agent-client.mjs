@@ -130,7 +130,7 @@ export class FreshAgentDiagnosticError extends Error {
     super("Fresh agent compatibility check failed safely.");
     this.name = "FreshAgentDiagnosticError";
     const cleanCode = cleanDiagnosticCode(code);
-    const cleanDetails = cleanHelperDiagnosticDetails(cleanCode, details);
+    const cleanDetails = cleanDiagnosticDetails(cleanCode, details);
     this.diagnostic = Object.freeze({
       phase: cleanDiagnosticPhase(phase),
       category: cleanDiagnosticCategory(category),
@@ -184,6 +184,23 @@ function cleanHelperDiagnosticDetails(code, value) {
   const expected = cleanCommandDiagnostic(value.expected);
   const actual = cleanCommandDiagnostic(value.actual, { allowUnknownOperation: true });
   return expected === null || actual === null ? null : Object.freeze({ expected, actual });
+}
+
+function cleanProofMissingDiagnosticDetails(value) {
+  if (
+    value === null || typeof value !== "object" || Array.isArray(value) ||
+    JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(["client", "lastMcpTool", "role"])
+  ) return null;
+  if (
+    !FRESH_AGENT_CLIENTS.includes(value.client) || !ROLES.includes(value.role) ||
+    !(value.lastMcpTool === null || CLOCKCHAIN_HANDSHAKE_TOOLS.includes(value.lastMcpTool))
+  ) return null;
+  return Object.freeze({ client: value.client, lastMcpTool: value.lastMcpTool, role: value.role });
+}
+
+function cleanDiagnosticDetails(code, value) {
+  if (code === "HELPER_PROOF_MISSING") return cleanProofMissingDiagnosticDetails(value);
+  return cleanHelperDiagnosticDetails(code, value);
 }
 
 function diagnostic(phase, category, code, details) {
@@ -1278,8 +1295,27 @@ function recordClaudeMcpToolCalls(event, calls) {
     if (
       block?.type === "tool_use" && typeof block.id === "string" && block.id.length > 0 &&
       isClockchainMcpToolName(block.name)
-    ) calls.add(block.id);
+    ) calls.set(block.id, CLOCKCHAIN_HANDSHAKE_TOOLS.find((name) => (
+      block.name === name || block.name.endsWith(`__${name}`)
+    )));
   }
+}
+
+function completedClockchainMcpTool(event, claudeMcpToolCalls) {
+  if (
+    event?.type === "item.completed" && event?.item?.type === "mcp_tool_call" &&
+    event.item.status === "completed" && isClockchainMcpToolName(event.item.tool)
+  ) return CLOCKCHAIN_HANDSHAKE_TOOLS.find((name) => (
+    event.item.tool === name || event.item.tool.endsWith(`__${name}`)
+  ));
+  if (event?.type !== "user" || !Array.isArray(event?.message?.content)) return null;
+  for (const block of event.message.content) {
+    if (
+      block?.type === "tool_result" && block.is_error !== true &&
+      typeof block.tool_use_id === "string" && claudeMcpToolCalls.has(block.tool_use_id)
+    ) return claudeMcpToolCalls.get(block.tool_use_id);
+  }
+  return null;
 }
 
 function isTrustedMcpResultEvent(event, claudeMcpToolCalls) {
@@ -1536,8 +1572,9 @@ function killProcessGroup(child) {
   } catch { child.kill?.("SIGTERM"); }
 }
 
-function observeChild(child, role, all, canaries, { adapter, expectedInvitation, manifestDigest, requireInvitation = false } = {}) {
+function observeChild(child, role, all, canaries, { adapter, client, expectedInvitation, manifestDigest, requireInvitation = false } = {}) {
   if (!SHA256.test(manifestDigest)) fail();
+  if (!FRESH_AGENT_CLIENTS.includes(client)) fail();
   if (
     adapter === null || typeof adapter !== "object" ||
     typeof adapter.authorize !== "function" || typeof adapter.record !== "function"
@@ -1555,15 +1592,18 @@ function observeChild(child, role, all, canaries, { adapter, expectedInvitation,
     let rejectedEvent = null;
     let observed = {};
     const claudeBashCommands = new Map();
-    const claudeMcpToolCalls = new Set();
+    const claudeMcpToolCalls = new Map();
     const expectedHelperCommands = [];
     const helperExecutionState = { failed: false, details: null };
+    let lastMcpTool = null;
     let settled = false;
     function processLine(line) {
       if (line.trim().length === 0) return;
       let event;
       try { event = JSON.parse(line); } catch { fail(); }
       recordClaudeMcpToolCalls(event, claudeMcpToolCalls);
+      const completedMcpTool = completedClockchainMcpTool(event, claudeMcpToolCalls);
+      if (completedMcpTool !== null) lastMcpTool = completedMcpTool;
       const discoveredHelperCommands = collectExpectedHelperCommands(event);
       reconcileRecoveredHelperExecution(
         discoveredHelperCommands,
@@ -1753,7 +1793,9 @@ function observeChild(child, role, all, canaries, { adapter, expectedInvitation,
             "agent-exit",
             "agent",
             helperExecutionState.failed ? "HELPER_EXECUTION_FAILED" : "HELPER_PROOF_MISSING",
-            helperExecutionState.details,
+            helperExecutionState.failed
+              ? helperExecutionState.details
+              : { client, lastMcpTool, role },
           );
         }
         resolvePromise(observed.helperProof);
@@ -2303,6 +2345,7 @@ export async function runFreshAgentHandshake({
     traceLifecycle({ phase: "spawn", role: "initiator" });
     const initiatorObserved = observeChild(initiatorChild, "initiator", children, canaries, {
       adapter: prepared.initiator.adapter,
+      client: prepared.initiator.client,
       manifestDigest: pin.manifestDigest,
       requireInvitation: true,
     });
@@ -2331,6 +2374,7 @@ export async function runFreshAgentHandshake({
     traceLifecycle({ phase: "spawn", role: "responder" });
     const responderObserved = observeChild(responderChild, "responder", children, canaries, {
       adapter: prepared.responder.adapter,
+      client: prepared.responder.client,
       expectedInvitation: actualInvitation,
       manifestDigest: pin.manifestDigest,
     });
