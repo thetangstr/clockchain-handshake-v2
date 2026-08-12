@@ -1,6 +1,7 @@
 import { createHash, X509Certificate } from "node:crypto";
 import { execFile as nodeExecFile } from "node:child_process";
 import { chmod, lstat, mkdir, readFile, rm } from "node:fs/promises";
+import { isIP } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 
@@ -15,6 +16,18 @@ function cleanPath(value) {
   const clean = resolve(value);
   if (clean === "/" || clean.length < 8) fail();
   return clean;
+}
+
+function subjectAlternativeName(hostname) {
+  if (HOSTNAME.test(hostname)) return Object.freeze({ openssl: `DNS:${hostname}`, x509: `DNS:${hostname}` });
+  if (isIP(hostname) !== 4) fail();
+  const octets = hostname.split(".").map(Number);
+  const privateAddress =
+    octets[0] === 10 ||
+    (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
+    (octets[0] === 192 && octets[1] === 168);
+  if (!privateAddress) fail();
+  return Object.freeze({ openssl: `IP:${hostname}`, x509: `IP Address:${hostname}` });
 }
 
 function digestCertificate(certificate) {
@@ -35,7 +48,8 @@ export async function createEphemeralTlsIdentity(options = {}) {
     const opensslPath = cleanPath(descriptors.opensslPath.value);
     const root = cleanPath(descriptors.root.value);
     const execFileImpl = descriptors.execFileImpl?.value ?? promisify(nodeExecFile);
-    if (typeof hostname !== "string" || !HOSTNAME.test(hostname) || typeof execFileImpl !== "function") fail();
+    if (typeof hostname !== "string" || typeof execFileImpl !== "function") fail();
+    const san = subjectAlternativeName(hostname);
 
     await mkdir(root, { mode: 0o700, recursive: false });
     await chmod(root, 0o700);
@@ -47,7 +61,7 @@ export async function createEphemeralTlsIdentity(options = {}) {
       await execFileImpl(opensslPath, [
         "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-sha256", "-nodes",
         "-keyout", keyPath, "-out", certificatePath, "-days", "1", "-subj", `/CN=${hostname}`,
-        "-addext", `subjectAltName=DNS:${hostname}`,
+        "-addext", `subjectAltName=${san.openssl}`,
       ], { windowsHide: true });
     } catch { fail(); }
     await chmod(keyPath, 0o600);
@@ -60,7 +74,7 @@ export async function createEphemeralTlsIdentity(options = {}) {
     if (
       !privateKey.includes("-----BEGIN PRIVATE KEY-----") || cert.publicKey.asymmetricKeyType !== "ec" ||
       cert.publicKey.asymmetricKeyDetails?.namedCurve !== "prime256v1" ||
-      !cert.subjectAltName?.split(", ").includes(`DNS:${hostname}`)
+      !cert.subjectAltName?.split(", ").includes(san.x509)
     ) fail();
     const certificateSha256 = digestCertificate(certificate);
     let destroyed = false;

@@ -31,11 +31,29 @@ test("ephemeral TLS identity creates a private P-256 certificate and destroys ev
   await assert.rejects(() => identity.destroy(), /Ephemeral TLS identity failed safely/);
 });
 
+test("ephemeral TLS identity binds a Fargate private IPv4 endpoint with an IP SAN", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "clockchain-ephemeral-tls-ip-"));
+  const root = join(parent, "party");
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const identity = await createEphemeralTlsIdentity({
+    hostname: "10.0.2.39",
+    opensslPath: "/opt/homebrew/bin/openssl",
+    root,
+  });
+  const cert = new X509Certificate(identity.certificate);
+  assert.match(cert.subjectAltName, /IP Address:10\.0\.2\.39/);
+  await identity.destroy();
+});
+
 test("ephemeral TLS identity rejects preexisting roots and unsafe hostnames", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "clockchain-ephemeral-tls-reject-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
   await assert.rejects(
     () => createEphemeralTlsIdentity({ hostname: "example.com;touch /tmp/pwned", opensslPath: "/opt/homebrew/bin/openssl", root: join(parent, "bad") }),
+    /Ephemeral TLS identity failed safely/,
+  );
+  await assert.rejects(
+    () => createEphemeralTlsIdentity({ hostname: "8.8.8.8", opensslPath: "/opt/homebrew/bin/openssl", root: join(parent, "public-ip") }),
     /Ephemeral TLS identity failed safely/,
   );
   const existing = join(parent, "existing");
