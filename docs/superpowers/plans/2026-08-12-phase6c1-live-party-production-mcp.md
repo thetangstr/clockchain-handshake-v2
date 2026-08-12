@@ -26,11 +26,11 @@
 - Test: `/private/tmp/clockchain-mcp-checkpoint-binding/packages/mcp-server/test/agent-handshake-v2-coordinator.test.mjs`
 - Test: `/private/tmp/clockchain-mcp-checkpoint-binding/packages/mcp-server/test/agent-handshake-v2-public-server.test.mjs`
 
-- [ ] **Step 1: Write RED protocol and coordinator tests**
+- [x] **Step 1: Write RED protocol and coordinator tests**
 
-Prove the new exact tool name is `agent_handshake_submit_checkpoint` with input `{access, checkpoint}`. A proposal checkpoint must be role `initiator`, sequence `"1"`, previous digest `null`, signed by the joined Initiator address, and bind the eventual exact proposal-envelope digest. An acceptance checkpoint must be role `responder`, sequence `"2"`, point to the stored proposal-checkpoint digest, and bind the eventual exact acceptance-envelope digest. Reject missing, replayed, expired, foreign, wrong-role, wrong-session, wrong-artifact, wrong-sequence, and wrong-predecessor checkpoints. Prove ordinary `agent_handshake_submit` cannot publish proposal or acceptance without its matching checkpoint.
+Prove the new exact tool name is `agent_handshake_submit_checkpoint` with input `{access, artifactSignatureHex, checkpoint}`. A proposal checkpoint must be role `initiator`, sequence `"1"`, previous digest `null`, signed by the joined Initiator address, and bind the exact signed proposal envelope. An acceptance checkpoint must be role `responder`, sequence `"2"`, point to the stored proposal-checkpoint digest, and bind the exact signed acceptance envelope. Reject missing, replayed, expired, foreign, wrong-role, wrong-session, wrong-artifact, wrong-signature, wrong-sequence, and wrong-predecessor checkpoints. Prove ordinary `agent_handshake_submit` cannot publish proposal or acceptance without its matching checkpoint.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 PATH=/opt/homebrew/opt/node@24/bin:$PATH npm test -- \
@@ -41,11 +41,11 @@ PATH=/opt/homebrew/opt/node@24/bin:$PATH npm test -- \
 
 Expected: missing-module/tool and checkpoint-gate failures.
 
-- [ ] **Step 3: Port the frozen checkpoint verifier and add the bounded tool**
+- [x] **Step 3: Port the frozen checkpoint verifier and add the bounded tool**
 
-Port the mechanics-proof checkpoint schema byte-for-byte except TypeScript import suffixes. Add `submitCheckpoint({access, checkpoint})` to the coordinator. It authorizes only `agent_handshake_submit_checkpoint`, verifies against the currently pending proposal/acceptance, stores/posts `agent_v2_commitment_checkpoint`, rejects a second value, and returns only `{role, sessionId, stage, checkpointDigest}`. In `submit`, construct the signed proposal/acceptance envelope first, require `checkpoint.artifactDigest === digestHex(envelope)`, then publish the existing artifact. Do not modify identity/evidence submission, proposal/acceptance wire schemas, acknowledgment authority, helper `2.1.2`, or certificate shape.
+Port the mechanics-proof checkpoint schema byte-for-byte except TypeScript import suffixes. Add `submitCheckpoint({access, artifactSignatureHex, checkpoint})` to the coordinator. It authorizes only `agent_handshake_submit_checkpoint`, verifies the exact pending proposal/acceptance envelope and its party signature, stores/posts `agent_v2_commitment_checkpoint`, rejects a second value, and returns only `{role, sessionId, stage, checkpointDigest}`. The later ordinary submit requires the stored checkpoint to match that exact signed envelope before it publishes the existing artifact. Do not modify identity/evidence submission, proposal/acceptance wire schemas, acknowledgment authority, helper `2.1.2`, or certificate shape.
 
-- [ ] **Step 4: Run GREEN and package verification**
+- [x] **Step 4: Run GREEN and package verification**
 
 ```bash
 PATH=/opt/homebrew/opt/node@24/bin:$PATH npm test -- \
@@ -57,7 +57,7 @@ PATH=/opt/homebrew/opt/node@24/bin:$PATH npm test
 
 Expected: focused tests and the complete MCP package pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit with Lore intent `Bind direct-party checkpoints before accepting stakeholder artifacts`.
 
@@ -69,11 +69,11 @@ Commit with Lore intent `Bind direct-party checkpoints before accepting stakehol
 - Test: `test/harness-agent-handshake-mcp-client.test.mjs`
 - Test: `test/harness-direct-a2a-party-bridge.test.mjs`
 
-- [ ] **Step 1: Write RED private-submission tests**
+- [x] **Step 1: Write RED private-submission tests**
 
-Add a stateless MCP client test for an exact JSON-RPC `tools/call` to `agent_handshake_submit_checkpoint`, bounded response bytes/time, JSON and SSE response parsing, no retry after an ambiguous write, and generic errors without access/checkpoint leakage. Extend bridge tests so it retains one authoritative `roleAccess` privately, sends artifact then checkpoint directly, calls `submitCheckpoint({access, checkpoint})` only after both peer acknowledgments, and releases the helper completion only after MCP returns the matching digest. Public bridge evidence must contain neither access nor checkpoint bytes/signature.
+Add a stateless MCP client test for an exact JSON-RPC `tools/call` to `agent_handshake_submit_checkpoint`, bounded response bytes/time, JSON and SSE response parsing, no retry after an ambiguous write, and generic errors without access/checkpoint leakage. Extend bridge tests so it retains one authoritative `roleAccess` privately, sends artifact then checkpoint directly, calls `submitCheckpoint({access, artifactSignatureHex, checkpoint})` only after both peer acknowledgments, and releases the helper completion only after MCP returns the matching digest. Public bridge evidence must contain neither access nor checkpoint bytes/signature.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 PATH=/opt/homebrew/opt/node@24/bin:$PATH node --test \
@@ -83,9 +83,9 @@ PATH=/opt/homebrew/opt/node@24/bin:$PATH node --test \
 
 Expected: missing client and missing bridge callback failures.
 
-- [ ] **Step 3: Implement the private client and causal bridge order**
+- [x] **Step 3: Implement the private client and causal bridge order**
 
-Export `createAgentHandshakeCheckpointClient({endpoint, fetchImpl, timeoutMs})` with one method `submitCheckpoint({access, checkpoint})`. Add exact bridge option `submitCheckpoint`. Capture exactly one stable `roleAccess` from authoritative role-scoped results. The business completion order is fixed:
+Export `createAgentHandshakeCheckpointClient({endpoint, fetchImpl, timeoutMs})` with one method `submitCheckpoint({access, artifactSignatureHex, checkpoint})`. Add exact bridge option `submitCheckpoint`. Capture exactly one stable `roleAccess` from authoritative role-scoped results. The business completion order is fixed:
 
 ```text
 verify helper result -> sign checkpoint -> direct artifact ack -> direct checkpoint ack
@@ -94,7 +94,7 @@ verify helper result -> sign checkpoint -> direct artifact ack -> direct checkpo
 
 Any failure leaves the retained action unreleased and records no completed delivery.
 
-- [ ] **Step 4: Run GREEN and regressions**
+- [x] **Step 4: Run GREEN and regressions**
 
 ```bash
 PATH=/opt/homebrew/opt/node@24/bin:$PATH node --test \
@@ -106,7 +106,7 @@ PATH=/opt/homebrew/opt/node@24/bin:$PATH node --test \
 
 Expected: all pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit with Lore intent `Submit direct-party checkpoints before releasing model-visible signatures`.
 
@@ -118,11 +118,11 @@ Commit with Lore intent `Submit direct-party checkpoints before releasing model-
 - Test: `test/harness-direct-a2a-party-bridge.test.mjs`
 - Test: `test/harness-acp-process-transport.test.mjs`
 
-- [ ] **Step 1: Write RED dynamic-binding tests**
+- [x] **Step 1: Write RED dynamic-binding tests**
 
 Start each transport with a controller run UUID but no protocol session. Prove the Initiator binds from the exact `agent_handshake_invite` result; the Responder first binds its invitation transport from the direct request, then requires `agent_handshake_accept_invitation` to return the same session. Prove retained helper actions are accepted only after this binding and only for that protocol session. Reject a second session, a mismatched accepted session, helper action before binding, and any attempt to expose role access or raw invitation in events.
 
-- [ ] **Step 2: Run RED**
+- [x] **Step 2: Run RED**
 
 ```bash
 PATH=/opt/homebrew/opt/node@24/bin:$PATH node --test \
@@ -132,15 +132,15 @@ PATH=/opt/homebrew/opt/node@24/bin:$PATH node --test \
 
 Expected: current construction-time session requirement fails the new cases.
 
-- [ ] **Step 3: Implement one-use protocol-session binding**
+- [x] **Step 3: Implement one-use protocol-session binding**
 
 Allow bridge construction with `sessionId: null`; internally expose only the actual bound session in `publicEvidence()`. Return `{observed:true, protocolSessionId}` from authoritative observations. ACP keeps the existing controller UUID for process/event correlation but validates every retained action against the one bridge-returned protocol session. It never trusts session text from the model, title, raw terminal output, or controller.
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 Run the two focused files above, followed by the Phase 6C0 120-test gate. Expected: all pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit with Lore intent `Bind live Clockchain sessions inside each party runtime`.
 
