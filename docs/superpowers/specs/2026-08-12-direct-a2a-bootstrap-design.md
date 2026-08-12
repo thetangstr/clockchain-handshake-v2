@@ -2,7 +2,7 @@
 
 ## Status
 
-Approved amendment to the supervised fresh-agent mechanics proof. This design corrects a bootstrap contradiction discovered after Phase 6B without weakening the locked authority boundary.
+Implemented and independently approved through Phase 6C0 at mechanics-proof commit `1dee6c1`. The local direct-A2A gate passes 120/120 and full repository verification passes 1436/1436 plus every structural invariant. Phase 6C1 remains blocked until production MCP accepts and binds the additive checkpoints and the real party entrypoint proves the path in two isolated runtimes.
 
 ## Problem
 
