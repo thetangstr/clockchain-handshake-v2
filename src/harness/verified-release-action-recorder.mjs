@@ -16,7 +16,7 @@ const ROLES = Object.freeze(["initiator", "responder"]);
 const OPERATIONS = Object.freeze(["init", "policy", "inspect", "register", "sign", "verify-certificate"]);
 const MAX_RESULT_BYTES = 64 * 1024;
 const MAX_SOCKET_PATH_BYTES = 96;
-const DEFAULT_DEADLINE_MS = 5_000;
+const COMPLETION_SOCKET_DEADLINE_MS = 5_000;
 const EMPTY_DIGEST = createHash("sha256").update("").digest("hex");
 
 export const VERIFIED_RELEASE_HELPER_BOOTSTRAP = 'const fs=require("node:fs");const crypto=require("node:crypto");const Module=require("node:module");const argv=process.argv.slice(1);const expected=argv.shift();const manifestPath=argv.shift();const helperPath=argv.shift();const manifestBytes=fs.readFileSync(manifestPath);const manifestDigest=crypto.createHash("sha256").update(manifestBytes).digest("hex");if(manifestDigest!==expected)process.exit(86);const manifest=JSON.parse(manifestBytes);if(manifest.schema!=="clockchain.agent-handshake-release-manifest/v1"||manifest.version!=="2.1.2"||!/^24\\./.test(manifest.nodeRuntime)||!/^24\\./.test(process.versions.node)||!Array.isArray(manifest.assets)||manifest.assets.length!==1)process.exit(86);const asset=manifest.assets[0];if(asset.filename!=="clockchain-agent-handshake.cjs"||asset.url!=="https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/clockchain-agent-handshake.cjs"||typeof asset.sha256!=="string"||!/^[0-9a-f]{64}$/.test(asset.sha256))process.exit(86);const helperBytes=fs.readFileSync(helperPath);const helperDigest=crypto.createHash("sha256").update(helperBytes).digest("hex");if(helperDigest!==asset.sha256)process.exit(86);process.argv=[process.execPath].concat(helperPath).concat(argv);const loaded=new Module(helperPath);loaded.filename=helperPath;loaded.paths=[];const compile=loaded._compile.bind(loaded);compile(...[helperBytes.toString("utf8")].concat(helperPath));';
@@ -370,7 +370,7 @@ export async function createVerifiedReleaseActionRecorder(input = {}) {
     "room", "runtimeExecPath", "socketRoot",
   ], ["manifestDigest", "room", "socketRoot"]);
   const actionTtlMs = options.actionTtlMs ?? 5 * 60_000;
-  const completionDeadlineMs = options.completionDeadlineMs ?? DEFAULT_DEADLINE_MS;
+  const completionDeadlineMs = options.completionDeadlineMs ?? COMPLETION_SOCKET_DEADLINE_MS;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const manifestDigest = options.manifestDigest;
   const platform = options.platform ?? process.platform;
