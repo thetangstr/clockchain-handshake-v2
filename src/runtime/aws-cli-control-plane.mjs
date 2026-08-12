@@ -29,6 +29,19 @@ const ALLOWED = new Set([
   "cloudtrail lookup-events",
   "sqs list-queues",
 ]);
+const PARTY_FAILURE_PREFIX = "Mechanics proof party failed safely. stage=";
+const PARTY_FAILURE_STAGE = /^(?:runtime-create|exchange-create|bootstrap-publish|bootstrap-await|exchange-destroy|managed-hold|runtime-run(?:\.(?:peer-validate|listener-create|listener-ready|invitation-await|recorder-create|bridge-create|provider-auth|transport-create|adapter-create|agent-starting|agent-launch|evidence-validate|certificate-event|agent-terminate|evidence-collect|teardown|listener-listen-(?:eacces|eaddrinuse|eaddrnotavail|eperm|other)))?)$/;
+const PUBLIC_PARTY_FAILURES = new WeakMap();
+
+function partyFailureError(failures) {
+  const error = new Error("AWS CLI control-plane observed a safe party failure.");
+  PUBLIC_PARTY_FAILURES.set(error, Object.freeze(Object.fromEntries([...failures].sort(([left], [right]) => left.localeCompare(right)))));
+  return error;
+}
+
+export function publicPartyFailureStages(error) {
+  return PUBLIC_PARTY_FAILURES.get(error) ?? null;
+}
 
 const STACK = /^clockchain-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ROLES = Object.freeze(["initiator", "responder"]);
@@ -352,6 +365,7 @@ export function createAwsCliControlPlane(optionsInput = {}) {
       if (!Array.isArray(logGroupNames) || logGroupNames.length !== 2) fail();
       if (!Number.isSafeInteger(deadlineMs) || deadlineMs <= now() || deadlineMs - now() > 300_000) fail();
       const byRole = new Map();
+      const failures = new Map();
       while (now() <= deadlineMs && byRole.size < 2) {
         for (const group of logGroupNames) {
           const groupRole = group.includes("/initiator") ? "initiator" : group.includes("/responder") ? "responder" : null;
@@ -359,6 +373,15 @@ export function createAwsCliControlPlane(optionsInput = {}) {
           const response = await callAws(["logs", "filter-log-events", "--log-group-name", group, "--region", region, "--output", "json"]);
           if (!Array.isArray(response.events) || response.nextToken !== undefined) fail();
           for (const event of response.events) {
+            if (typeof event.message !== "string") fail();
+            if (event.message.startsWith(PARTY_FAILURE_PREFIX)) {
+              const stage = event.message.slice(PARTY_FAILURE_PREFIX.length);
+              if (!PARTY_FAILURE_STAGE.test(stage)) fail();
+              const previousFailure = failures.get(groupRole);
+              if (previousFailure !== undefined && previousFailure !== stage) fail();
+              failures.set(groupRole, stage);
+              continue;
+            }
             const record = parse(event.message);
             if (record.schema !== "clockchain.mechanics-proof-party-evidence/v1") continue;
             if (!Number.isSafeInteger(event.timestamp)) fail();
@@ -371,9 +394,11 @@ export function createAwsCliControlPlane(optionsInput = {}) {
             byRole.set(record.role, record);
           }
         }
+        if (failures.size === 2) throw partyFailureError(failures);
         if (byRole.size >= 2) break;
         await sleepFn(1000);
       }
+      if (failures.size > 0) throw partyFailureError(failures);
       if (byRole.size !== 2) fail();
       return Object.freeze(ROLES.map((role) => byRole.get(role)));
     },

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createAwsCliControlPlane } from "../src/runtime/aws-cli-control-plane.mjs";
+import {
+  createAwsCliControlPlane,
+  publicPartyFailureStages,
+} from "../src/runtime/aws-cli-control-plane.mjs";
 import { loadFargateLiveRuntimeTemplate } from "../src/runtime/aws-fargate-live-plan.mjs";
 import { stableJson } from "../src/runtime/aws-fargate-runtime-adapter.mjs";
 
@@ -228,6 +231,31 @@ test("AWS CLI control plane preserves CloudWatch event timestamps with terminal 
     deadlineMs: Date.now() + 1000,
   });
   assert.equal(events[0].timestamp, "2026-08-12T20:05:01.000Z");
+});
+
+test("AWS CLI control plane brands only exact allowlisted party failure stages", async () => {
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    executor: async (_file, argv) => {
+      const role = argv.some((value) => value.includes("/responder")) ? "responder" : "initiator";
+      return { stdout: JSON.stringify({ events: [{
+        timestamp: 1786565101000,
+        message: `Mechanics proof party failed safely. stage=runtime-run.listener-listen-${role === "initiator" ? "eperm" : "eaddrinuse"}`,
+      }] }), stderr: "", exitCode: 0 };
+    },
+  });
+  await assert.rejects(() => control.pollPublicEvents({
+    logGroupNames: ["/clockchain/mechanics-proof/run/initiator", "/clockchain/mechanics-proof/run/responder"],
+    deadlineMs: Date.now() + 1000,
+  }), (error) => {
+    assert.deepEqual(publicPartyFailureStages(error), {
+      initiator: "runtime-run.listener-listen-eperm",
+      responder: "runtime-run.listener-listen-eaddrinuse",
+    });
+    assert.equal(publicPartyFailureStages(new Error(error.message)), null);
+    assert.doesNotMatch(JSON.stringify(error), /amazonaws|secret|certificate|private/i);
+    return true;
+  });
 });
 
 test("AWS CLI control plane derives VPC inspection only from explicit subnet, route, and CIDR queries", async () => {

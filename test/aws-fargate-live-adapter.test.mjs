@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { buildFargateLiveStackPlan } from "../src/runtime/aws-fargate-live-plan.mjs";
 import { runFargateLiveMechanicsProof, CLEANUP_UNCONFIRMED, PROTOCOL_FAILED_CLEAN } from "../src/runtime/aws-fargate-live-adapter.mjs";
+import { createAwsCliControlPlane } from "../src/runtime/aws-cli-control-plane.mjs";
 
 const RUN_ID = "11111111-2222-4333-8444-555555555555";
 const ACCOUNT = "123456789012";
@@ -393,7 +394,18 @@ test("live Fargate adapter enters resource-scoped cleanup after every mutation b
 
 test("live Fargate adapter returns failed-clean after protocol failure with confirmed cleanup", async () => {
   const plan = await livePlan();
-  const controlPlane = fakeControlPlane(plan, { failAt: "poll-events" });
+  const controlPlane = fakeControlPlane(plan);
+  const diagnostic = createAwsCliControlPlane({
+    region: REGION,
+    executor: async (_file, argv) => {
+      const role = argv.some((value) => value.includes("/responder")) ? "responder" : "initiator";
+      return { stdout: JSON.stringify({ events: [{
+        timestamp: 1786565101000,
+        message: `Mechanics proof party failed safely. stage=runtime-run.listener-listen-${role === "initiator" ? "eperm" : "eaddrinuse"}`,
+      }] }), stderr: "", exitCode: 0 };
+    },
+  });
+  controlPlane.pollPublicEvents = (input) => diagnostic.pollPublicEvents(input);
   const retained = [];
   const result = await runFargateLiveMechanicsProof({
     plan,
@@ -403,6 +415,10 @@ test("live Fargate adapter returns failed-clean after protocol failure with conf
   });
 
   assert.equal(result.status, PROTOCOL_FAILED_CLEAN);
+  assert.deepEqual(result.failureStages, {
+    initiator: "runtime-run.listener-listen-eperm",
+    responder: "runtime-run.listener-listen-eaddrinuse",
+  });
   assert.equal(retained.length, 0);
 });
 
