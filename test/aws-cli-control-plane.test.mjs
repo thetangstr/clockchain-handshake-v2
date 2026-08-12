@@ -299,7 +299,7 @@ test("AWS CLI control plane brands only exact allowlisted party failure stages",
         timestamp: 1786565101000,
         message: role === "initiator"
           ? "Mechanics proof party failed safely. stage=runtime-run.agent-launch-completion-protocol-retained"
-          : "Mechanics proof party failed safely. stage=runtime-run.recorder-construction-paths",
+          : "Mechanics proof party failed safely. stage=runtime-run.evidence-validate-session",
       }] }), stderr: "", exitCode: 0 };
     },
   });
@@ -311,7 +311,7 @@ test("AWS CLI control plane brands only exact allowlisted party failure stages",
   }), (error) => {
     assert.deepEqual(publicPartyFailureStages(error), {
       initiator: "runtime-run.agent-launch-completion-protocol-retained",
-      responder: "runtime-run.recorder-construction-paths",
+      responder: "runtime-run.evidence-validate-session",
     });
     assert.equal(publicPartyFailureStages(new Error(error.message)), null);
     assert.doesNotMatch(JSON.stringify(error), /amazonaws|secret|certificate|private/i);

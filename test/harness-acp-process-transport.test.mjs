@@ -60,8 +60,9 @@ function actionRecorderFor(actions, calls = []) {
   });
 }
 
-function partyBridgeFor(calls, { reject = false } = {}) {
+function partyBridgeFor(calls, { reject = false, completionStatus = () => ({ complete: true, protocolSessionId: SESSION }) } = {}) {
   return Object.freeze({
+    completionStatus,
     async observeToolResult(input) {
       calls.push(["partyBridge", input]);
       if (reject) throw new Error("party bridge rejected secret-canary /Users/alice/secret");
@@ -699,6 +700,8 @@ test("ACP process transport performs real ACP lifecycle with unauthenticated ded
   assert.match(prompt, /four mandate fields as the tool arguments themselves/);
   assert.match(prompt, /do not nest them under mandate or terms/);
   assert.match(prompt, /error field is not an invitation/);
+  assert.match(prompt, /continue until .*certificate.*verified/i);
+  assert.match(prompt, /Do not end your turn/i);
   assert.doesNotMatch(prompt, /privateKey|secret|CLOCKCHAIN_MCP_BEARER|cc_secret|controller authority/i);
   assert.deepEqual(calls.find((entry) => entry[0] === "permission")[1], {
     outcome: { outcome: "selected", optionId: "allow_once" },
@@ -718,6 +721,46 @@ test("ACP process transport performs real ACP lifecycle with unauthenticated ded
   assert.equal(evidence.usage.outputTokens, "4");
   assert.equal(evidence.teardown.completed, true);
   assert.doesNotMatch(JSON.stringify(evidence), /cc_secret|CLOCKCHAIN_MCP_BEARER|transcript|reasoning|\/workspace/i);
+});
+
+test("ACP process transport re-prompts an end-turning agent until the Clockchain bridge is complete", async () => {
+  const calls = [];
+  let completionChecks = 0;
+  const statusUpdate = {
+    sessionUpdate: "tool_call_update",
+    toolCallId: "tool-handshake-status",
+    kind: "other",
+    title: "agent_handshake_status",
+    status: "completed",
+    rawInput: { server: "clockchain-handshake", tool: "agent_handshake_status", arguments: {} },
+    rawOutput: { result: { sessionId: SESSION }, error: null },
+  };
+  const transport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({ calls, sessionUpdates: [statusUpdate], skipPermission: true }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    partyBridge: partyBridgeFor(calls, {
+      completionStatus() {
+        completionChecks += 1;
+        return { complete: completionChecks >= 2, protocolSessionId: SESSION };
+      },
+    }),
+    env: {},
+    trustedAdapterPublicKeys: [retainedAction({ role: "initiator" }).adapterPublicKey],
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  });
+  const prompts = calls.filter((entry) => entry[0] === "prompt");
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[1][1].prompt[0].text, /Continue the existing Clockchain handshake/i);
+  assert.equal(completionChecks, 2);
 });
 
 test("ACP process transport binds setup updates to the session id returned by newSession", async () => {

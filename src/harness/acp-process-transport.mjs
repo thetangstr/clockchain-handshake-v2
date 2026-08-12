@@ -29,6 +29,7 @@ const MAX_ARRAY = 64;
 const MAX_STRING = 4096;
 const MAX_HELPER_COMMAND = 64 * 1024;
 const MAX_PROVISIONAL_TOOL_UPDATES = 16;
+const MAX_COMPLETION_PROMPTS = 16;
 const PROCESS_TERM_GRACE_MS = 50;
 const PROCESS_KILL_GRACE_MS = 50;
 const CODEX_MODEL = "gpt-5.6-terra";
@@ -46,6 +47,7 @@ const LAUNCH_FAILURE_STAGES = Object.freeze([
   "completion-protocol-bridge-invite-shape", "completion-protocol-bridge-invite-send",
   "completion-protocol-bridge-accept", "completion-protocol-bridge-join",
   "completion-protocol-bridge-helper", "completion-protocol-bridge-digest",
+  "completion-protocol-bridge-incomplete",
   "completion-permission", "completion-stop",
 ]);
 const LAUNCH_FAILURES = new WeakMap();
@@ -338,7 +340,17 @@ function promptText({ role, sessionId, mandate, a2aConfig }) {
       "First call agent_handshake_invite with the four mandate fields as the tool arguments themselves; do not nest them under mandate or terms.",
       "A result whose public body has an error field is not an invitation and must never be copied or used as role access.",
     ] : []),
+    "Continue until Clockchain returns a certificate and the retained local verification reports that the certificate is verified.",
+    "Follow each MCP result's next action, including waits or retries. Do not end your turn before the verified certificate unless a non-retryable tool error makes completion impossible.",
     "Use the dedicated clockchain-handshake MCP server and retained local-action approvals only.",
+  ].join("\n");
+}
+
+function continuationPromptText() {
+  return [
+    "Continue the existing Clockchain handshake from its current MCP state.",
+    "Follow the next action returned by the dedicated clockchain-handshake MCP server and use retained local-action approvals only.",
+    "Do not end your turn until the local certificate verification is complete, unless a non-retryable tool error makes completion impossible.",
   ].join("\n");
 }
 
@@ -350,6 +362,13 @@ function safeUsage(value) {
   const output = descriptors.outputTokens?.value ?? 0;
   if (!Number.isSafeInteger(input) || input < 0 || !Number.isSafeInteger(output) || output < 0) fail();
   return Object.freeze({ inputTokens: String(input), outputTokens: String(output) });
+}
+
+function addUsage(left, right) {
+  return Object.freeze({
+    inputTokens: String(BigInt(left.inputTokens) + BigInt(right.inputTokens)),
+    outputTokens: String(BigInt(left.outputTokens) + BigInt(right.outputTokens)),
+  });
 }
 
 function retainedCommand(value) {
@@ -391,9 +410,9 @@ function cleanActionRecorder(value) {
 
 function cleanPartyBridge(value) {
   if (value === undefined) return null;
-  const item = exactObject(value, ["observeToolResult"]);
-  if (typeof item.observeToolResult !== "function") fail();
-  return Object.freeze({ observeToolResult: item.observeToolResult });
+  const item = exactObject(value, ["completionStatus", "observeToolResult"]);
+  if (typeof item.completionStatus !== "function" || typeof item.observeToolResult !== "function") fail();
+  return Object.freeze({ completionStatus: item.completionStatus, observeToolResult: item.observeToolResult });
 }
 
 function parseToolName(update) {
@@ -868,28 +887,55 @@ export function createAcpProcessTransport(optionsInput = {}) {
           event("acp.model.pinned", "pinned Codex ACP model", "model:gpt-5.6-terra");
         }
         event("acp.session.new", "created ACP session", digest(created.sessionId));
-        launchStage = "prompt";
-        const prompted = await connection.prompt({
-          sessionId: acpSessionId,
-          prompt: [{
-            type: "text",
-            text: promptText({ role: clean.role, sessionId: clean.sessionId, mandate: cleanMandateValue, a2aConfig: cleanPeer }),
-          }],
-        });
-        launchStage = "completion";
-        if (protocolFailure) {
-          launchStage = `completion-protocol-${protocolFailureStage ?? "envelope"}`;
+        let promptUsage = Object.freeze({ inputTokens: "0", outputTokens: "0" });
+        let bridgeComplete = false;
+        for (let promptAttempt = 0; promptAttempt < MAX_COMPLETION_PROMPTS && !bridgeComplete; promptAttempt += 1) {
+          launchStage = "prompt";
+          const prompted = await connection.prompt({
+            sessionId: acpSessionId,
+            prompt: [{
+              type: "text",
+              text: promptAttempt === 0
+                ? promptText({ role: clean.role, sessionId: clean.sessionId, mandate: cleanMandateValue, a2aConfig: cleanPeer })
+                : continuationPromptText(),
+            }],
+          });
+          launchStage = "completion";
+          if (protocolFailure) {
+            launchStage = `completion-protocol-${protocolFailureStage ?? "envelope"}`;
+            fail();
+          }
+          if (permissionDenied) {
+            launchStage = "completion-permission";
+            fail();
+          }
+          if (prompted?.stopReason !== "end_turn") {
+            launchStage = "completion-stop";
+            fail();
+          }
+          promptUsage = addUsage(promptUsage, safeUsage(prompted.usage));
+          if (partyBridge === null) {
+            bridgeComplete = true;
+          } else {
+            launchStage = "completion-protocol-bridge-incomplete";
+            const status = exactObject(partyBridge.completionStatus(), ["complete", "protocolSessionId"]);
+            if (
+              typeof status.complete !== "boolean" ||
+              !(status.protocolSessionId === null || typeof status.protocolSessionId === "string" && status.protocolSessionId.length > 0) ||
+              (protocolSessionId !== null && status.protocolSessionId !== protocolSessionId)
+            ) fail();
+            if (status.protocolSessionId !== null) protocolSessionId = status.protocolSessionId;
+            bridgeComplete = status.complete;
+          }
+          if (!bridgeComplete && promptAttempt + 1 < MAX_COMPLETION_PROMPTS) {
+            event("acp.handshake.continue", "continued incomplete Clockchain handshake", String(promptAttempt + 1));
+          }
+        }
+        if (!bridgeComplete) {
+          launchStage = "completion-protocol-bridge-incomplete";
           fail();
         }
-        if (permissionDenied) {
-          launchStage = "completion-permission";
-          fail();
-        }
-        if (prompted?.stopReason !== "end_turn") {
-          launchStage = "completion-stop";
-          fail();
-        }
-        usage = safeUsage(prompted.usage);
+        usage = promptUsage;
         completed = true;
         event("acp.prompt.end_turn", "ACP prompt completed end_turn", digestJson(usage));
         return Object.freeze({ sessionId: clean.sessionId, role: clean.role, harness });

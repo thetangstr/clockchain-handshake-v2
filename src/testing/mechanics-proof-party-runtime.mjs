@@ -75,8 +75,10 @@ const RUNTIME_FAILURE_STAGES = Object.freeze([
   "agent-launch-completion-protocol-bridge-session", "agent-launch-completion-protocol-bridge-invite-shape",
   "agent-launch-completion-protocol-bridge-invite-send", "agent-launch-completion-protocol-bridge-accept",
   "agent-launch-completion-protocol-bridge-join", "agent-launch-completion-protocol-bridge-helper",
-  "agent-launch-completion-protocol-bridge-digest",
-  "agent-launch-completion-permission", "agent-launch-completion-stop", "evidence-validate", "certificate-event",
+  "agent-launch-completion-protocol-bridge-digest", "agent-launch-completion-protocol-bridge-incomplete",
+  "agent-launch-completion-permission", "agent-launch-completion-stop", "evidence-validate",
+  "evidence-validate-session", "evidence-validate-certificate", "evidence-validate-signers",
+  "evidence-validate-anchors", "evidence-validate-deliveries", "evidence-validate-delivery", "certificate-event",
   "agent-terminate", "evidence-collect", "teardown",
   "listener-listen-eacces", "listener-listen-eaddrinuse", "listener-listen-eaddrnotavail",
   "listener-listen-eperm", "listener-listen-other",
@@ -551,6 +553,7 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
             home: paths.home,
             pin: ACP_VERSION_PINS[options.harness],
             partyBridge: Object.freeze({
+              completionStatus() { return bridge.completionStatus(); },
               observeToolResult(input) { return bridge.observeToolResult(input); },
             }),
             trustedAdapterPublicKeys: [actionRecorder.trustedAdapterPublicKey],
@@ -591,16 +594,24 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
           const ownCardSigner = cardSignerAddresses?.[options.role];
           const peerCardSigner = cardSignerAddresses?.[opposite(options.role)];
           const certificateIdentity = publicData(bridgeEvidence.certificate?.identity);
+          runStage = "evidence-validate-session";
+          if (bridgeEvidence.sessionId === null || !UUID.test(bridgeEvidence.sessionId)) fail();
+          runStage = "evidence-validate-certificate";
           if (
-            bridgeEvidence.sessionId === null || !UUID.test(bridgeEvidence.sessionId) ||
             bridgeEvidence.certificate?.verified !== true || !DIGEST.test(bridgeEvidence.certificate?.proofDigest) ||
-            !DIGEST.test(bridgeEvidence.certificate?.certificateDigest) || !DIGEST.test(bridgeEvidence.certificate?.resultDigest) ||
-            typeof ownCardSigner !== "string" || ownCardSigner !== certificateIdentity.sessionKeyAddress ||
-            typeof peerCardSigner !== "string" || peerCardSigner === ownCardSigner ||
-            !Array.isArray(bridgeEvidence.certificate?.anchors) || bridgeEvidence.certificate.anchors.length !== 3 ||
-            !Array.isArray(bridgeEvidence.deliveries) || bridgeEvidence.deliveries.length !== 1
+            !DIGEST.test(bridgeEvidence.certificate?.certificateDigest) || !DIGEST.test(bridgeEvidence.certificate?.resultDigest)
           ) fail();
+          runStage = "evidence-validate-signers";
+          if (
+            typeof ownCardSigner !== "string" || ownCardSigner !== certificateIdentity.sessionKeyAddress ||
+            typeof peerCardSigner !== "string" || peerCardSigner === ownCardSigner
+          ) fail();
+          runStage = "evidence-validate-anchors";
+          if (!Array.isArray(bridgeEvidence.certificate?.anchors) || bridgeEvidence.certificate.anchors.length !== 3) fail();
+          runStage = "evidence-validate-deliveries";
+          if (!Array.isArray(bridgeEvidence.deliveries) || bridgeEvidence.deliveries.length !== 1) fail();
           const directDelivery = publicData(bridgeEvidence.deliveries[0]);
+          runStage = "evidence-validate-delivery";
           if (
             directDelivery.acknowledged !== true || !["proposal", "acceptance"].includes(directDelivery.artifactType) ||
             !DIGEST.test(directDelivery.artifactDigest) || !DIGEST.test(directDelivery.checkpointDigest) ||

@@ -616,7 +616,8 @@ test("party runtime narrows the direct bridge to the transport capability", asyn
     },
   }));
   await runtime.run({ peerDescriptor: peerDescriptor() });
-  assert.deepEqual(Object.keys(observedBridge), ["observeToolResult"]);
+  assert.deepEqual(Object.keys(observedBridge), ["completionStatus", "observeToolResult"]);
+  assert.equal(typeof observedBridge.completionStatus, "function");
   assert.equal(typeof observedBridge.observeToolResult, "function");
 });
 
@@ -631,21 +632,30 @@ test("party runtime constructs the actual ACP transport across its production bo
   assert.equal(evidence.terminalStatus, "completed");
 });
 
-test("party runtime rejects terminal evidence with missing result digest or mismatched card signer", async (t) => {
+test("party runtime reports the exact missing terminal-evidence invariant without exposing evidence", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-terminal-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
   const base = dependencies([]).createBridge().publicEvidence();
   const cases = [
-    ["missing-result-digest", { ...base, certificate: { ...base.certificate, resultDigest: undefined } }],
-    ["missing-card-signer", { ...base, cardSignerAddresses: { initiator: "0x2222222222222222222222222222222222222222", responder: null } }],
-    ["mismatched-card-signer", { ...base, cardSignerAddresses: { initiator: "0x2222222222222222222222222222222222222222", responder: "0x3333333333333333333333333333333333333333" } }],
-    ["shared-card-signer", { ...base, cardSignerAddresses: { initiator: "0x1111111111111111111111111111111111111111", responder: "0x1111111111111111111111111111111111111111" } }],
+    ["missing-session", { ...base, sessionId: null }, "evidence-validate-session"],
+    ["missing-result-digest", { ...base, certificate: { ...base.certificate, resultDigest: null } }, "evidence-validate-certificate"],
+    ["missing-card-signer", { ...base, cardSignerAddresses: { initiator: "0x2222222222222222222222222222222222222222", responder: null } }, "evidence-validate-signers"],
+    ["mismatched-card-signer", { ...base, cardSignerAddresses: { initiator: "0x2222222222222222222222222222222222222222", responder: "0x3333333333333333333333333333333333333333" } }, "evidence-validate-signers"],
+    ["shared-card-signer", { ...base, cardSignerAddresses: { initiator: "0x1111111111111111111111111111111111111111", responder: "0x1111111111111111111111111111111111111111" } }, "evidence-validate-signers"],
+    ["missing-anchor", { ...base, certificate: { ...base.certificate, anchors: base.certificate.anchors.slice(0, 2) } }, "evidence-validate-anchors"],
+    ["missing-delivery", { ...base, deliveries: [] }, "evidence-validate-deliveries"],
+    ["invalid-delivery", { ...base, deliveries: [{ ...base.deliveries[0], acknowledged: false }] }, "evidence-validate-delivery"],
   ];
-  for (const [name, bridgeEvidence] of cases) {
+  for (const [name, bridgeEvidence, expectedStage] of cases) {
     const runtime = await createMechanicsProofPartyRuntime(options(join(parent, name)), dependencies([], { bridgeEvidence }));
     await assert.rejects(
       () => runtime.run({ peerDescriptor: peerDescriptor() }),
-      /Mechanics proof party runtime failed safely/,
+      (error) => {
+        assert.equal(error.message, "Mechanics proof party runtime failed safely.");
+        assert.equal(mechanicsProofPartyRuntimeFailureStage(error), expectedStage);
+        assert.doesNotMatch(JSON.stringify(error), /certificate|delivery|signer|session/i);
+        return true;
+      },
       name,
     );
   }

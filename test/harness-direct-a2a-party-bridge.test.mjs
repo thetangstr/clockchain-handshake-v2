@@ -282,6 +282,7 @@ test("party-local bridges activate only from authoritative join context, then de
     toolName: "agent_handshake_invite",
     result: { responderInvitation: invitation, roleAccess: ROLE_ACCESS.initiator, sessionId: SESSION_ID },
   });
+  assert.deepEqual(bridges.initiator.completionStatus(), { complete: false, protocolSessionId: SESSION_ID });
   assert.equal(invitationCalls.length, 1);
   assert.equal(invitationCalls[0].invitation, invitation);
   assert.deepEqual(bridges.initiator.publicEvidence().cardDigests, { initiator: null, responder: null });
@@ -586,6 +587,7 @@ test("bridge records public certificate summary only after exact terminal certif
     statementDigest: "b".repeat(64),
   })), { accepted: true });
   const evidence = bridges.initiator.publicEvidence();
+  assert.deepEqual(bridges.initiator.completionStatus(), { complete: false, protocolSessionId: SESSION_ID });
   assert.equal(evidence.certificate.verified, true);
   assert.match(evidence.certificate.proofDigest, /^[0-9a-f]{64}$/);
   assert.equal(evidence.certificate.certificateDigest, certificateDigest);

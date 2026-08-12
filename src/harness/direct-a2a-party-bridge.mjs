@@ -530,6 +530,13 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
     }
 
     const bridge = Object.freeze({
+      completionStatus() {
+        active();
+        return Object.freeze({
+          complete: boundSessionId !== null && certificate !== null && deliveries.length === 1,
+          protocolSessionId: boundSessionId,
+        });
+      },
       async observeToolResult(input) {
         let failureStage = "input";
         try {
