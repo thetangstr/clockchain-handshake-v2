@@ -557,12 +557,23 @@ function validateControls(controls) {
   return item;
 }
 
-export async function loadFargateDryRunPlan({ root = process.cwd() } = {}) {
-  const [templateBytes, initiatorBytes, responderBytes] = await Promise.all([
-    readFile(resolve(root, RELATIVE_FILES.template), "utf8"),
-    readFile(resolve(root, RELATIVE_FILES.initiator), "utf8"),
-    readFile(resolve(root, RELATIVE_FILES.responder), "utf8"),
-  ]);
+export async function loadFargateDryRunPlan(optionsInput = {}) {
+  const options = object(sanitizeFargateData(optionsInput));
+  if (Object.keys(options).some((key) => key !== "root")) fail();
+  const root = options.root ?? process.cwd();
+  if (typeof root !== "string" || root.length === 0) fail();
+  let templateBytes;
+  let initiatorBytes;
+  let responderBytes;
+  try {
+    [templateBytes, initiatorBytes, responderBytes] = await Promise.all([
+      readFile(resolve(root, RELATIVE_FILES.template), "utf8"),
+      readFile(resolve(root, RELATIVE_FILES.initiator), "utf8"),
+      readFile(resolve(root, RELATIVE_FILES.responder), "utf8"),
+    ]);
+  } catch {
+    fail();
+  }
   const template = sanitizeFargateData(parseJsonFile(templateBytes));
   const metadata = object(object(template.Metadata).ClockchainMechanicsProof);
   return {

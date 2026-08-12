@@ -381,6 +381,16 @@ test("Fargate validators reject hostile inputs before invoking traps or leaking 
   assert.equal(traps, 0);
   assert.throws(() => buildFargateDryRunSummary({ ...plan, template: { get Resources() { throw new Error("secret-canary /Users/alice/secret"); } } }), /Fargate dry-run validation failed safely/);
   assert.throws(() => createAwsFargateRuntimeAdapter({ get plan() { throw new Error("secret-canary /Users/alice/secret"); } }), /Fargate dry-run validation failed safely/);
+  await assert.rejects(() => loadFargateDryRunPlan(proxy), /Fargate dry-run validation failed safely/);
+  assert.equal(traps, 0);
+  await assert.rejects(
+    () => loadFargateDryRunPlan({ get root() { throw new Error("secret-canary /Users/alice/secret"); } }),
+    (error) => {
+      assert.match(error.message, /Fargate dry-run validation failed safely/);
+      assert.doesNotMatch(error.message, /secret-canary|\/Users\/alice\/secret/);
+      return true;
+    },
+  );
 
   const aws = fakeAwsResponses(validateFargateRuntimePlan(plan), "initiator");
   const nestedProxy = new Proxy({}, {
