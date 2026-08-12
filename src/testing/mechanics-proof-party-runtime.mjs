@@ -525,7 +525,9 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
             harness: options.harness,
             home: paths.home,
             pin: ACP_VERSION_PINS[options.harness],
-            partyBridge: bridge,
+            partyBridge: Object.freeze({
+              observeToolResult(input) { return bridge.observeToolResult(input); },
+            }),
             trustedAdapterPublicKeys: [actionRecorder.trustedAdapterPublicKey],
             workspace: paths.workspace,
           });

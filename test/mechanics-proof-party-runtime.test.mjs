@@ -11,6 +11,7 @@ import {
   mechanicsProofPartyRuntimeFailureStage,
 } from "../src/testing/mechanics-proof-party-runtime.mjs";
 import { createVerifiedReleaseActionRecorder } from "../src/harness/verified-release-action-recorder.mjs";
+import { createAcpProcessTransport } from "../src/harness/acp-process-transport.mjs";
 
 const RUN_ID = "11111111-2222-4333-8444-555555555555";
 const PROTOCOL_SESSION_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
@@ -557,6 +558,33 @@ test("party runtime gives checkpoint construction its own failure stage", async 
     assert.doesNotMatch(JSON.stringify(error), /private|checkpoint detail/i);
     return true;
   });
+});
+
+test("party runtime narrows the direct bridge to the transport capability", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-transport-bridge-"));
+  const root = join(parent, "responder");
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  let observedBridge;
+  const runtime = await createMechanicsProofPartyRuntime(options(root), dependencies([], {
+    createProcessTransport(input) {
+      observedBridge = input.partyBridge;
+      return {};
+    },
+  }));
+  await runtime.run({ peerDescriptor: peerDescriptor() });
+  assert.deepEqual(Object.keys(observedBridge), ["observeToolResult"]);
+  assert.equal(typeof observedBridge.observeToolResult, "function");
+});
+
+test("party runtime constructs the actual ACP transport across its production boundary", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-real-transport-"));
+  const root = join(parent, "responder");
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const runtime = await createMechanicsProofPartyRuntime(options(root), dependencies([], {
+    createProcessTransport: createAcpProcessTransport,
+  }));
+  const evidence = await runtime.run({ peerDescriptor: peerDescriptor() });
+  assert.equal(evidence.terminalStatus, "completed");
 });
 
 test("party runtime rejects terminal evidence with missing result digest or mismatched card signer", async (t) => {
