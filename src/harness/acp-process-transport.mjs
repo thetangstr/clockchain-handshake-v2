@@ -469,7 +469,7 @@ function appendHelperSteps(value, found) {
     try {
       parsed = JSON.parse(value);
     } catch {
-      fail();
+      return;
     }
     appendHelperSteps(parsed, found);
     return;

@@ -1051,6 +1051,49 @@ test("ACP process transport registers retained helper actions dynamically from M
   assert.doesNotMatch(JSON.stringify(events), /role-access-secret|invite-secret|helperStep|command|\/Users\/alice\/secret/);
 });
 
+test("ACP process transport ignores explanatory MCP text beside one authoritative structured helper", async () => {
+  const action = retainedAction({ role: "initiator", requestDigest: "d".repeat(64), commandSha256: DIGEST });
+  const calls = [];
+  const transport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({
+      calls,
+      sessionUpdates: [{
+        sessionUpdate: "tool_call_update",
+        toolCallId: "mcp-call-explanatory",
+        status: "completed",
+        rawInput: { server: "clockchain-handshake", tool: "agent_handshake_next", arguments: {} },
+        rawOutput: {
+          result: {
+            content: [{ type: "text", text: "Continue with the retained local action shown in structured content." }],
+            structuredContent: { helperStep: helperStepForAction(action) },
+          },
+          error: null,
+        },
+      }],
+    }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    nowMs: () => 1786337001000,
+    actionRecorder: actionRecorderFor([action], calls),
+    env: {},
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+  try {
+    await transport.launch({
+      acp: ACP_VERSION_PINS.codex,
+      runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+      mandate: VALID_MANDATE,
+      mcpEndpoint: MCP_ENDPOINT,
+      a2aConfig: a2aConfig("initiator"),
+    });
+  } catch (error) {
+    assert.fail(`unexpected stage ${acpProcessTransportFailureStage(error)}`);
+  }
+  assert.equal((await transport.executeRetainedAction({ sessionId: SESSION, role: "initiator", actionId: action.actionId })).executed, true);
+});
+
 test("ACP process transport forwards only authoritative completed Codex and Claude MCP results to the party bridge", async () => {
   const action = retainedAction({ role: "initiator", requestDigest: "d".repeat(64), commandSha256: DIGEST });
   const cases = [
@@ -1562,13 +1605,6 @@ test("ACP process transport fails closed on ambiguous or malformed MCP helper ou
       expectedProtocolStage: "retained-extract",
       rawOutput: {
         result: { content: [{ type: "image", text: JSON.stringify({ helperStep: helperStepForAction(action) }) }] },
-        error: null,
-      },
-    },
-    {
-      expectedProtocolStage: "retained-extract",
-      rawOutput: {
-        result: { content: [{ type: "text", text: "{not-json" }] },
         error: null,
       },
     },
