@@ -162,6 +162,21 @@ test("run mode emits bootstrap first, consumes one peer descriptor, then emits t
   const calls = [];
   const code = await runMain({
     argv: ["node", "bin/mechanics-proof-party.mjs", "--run"],
+    createBootstrapExchange: ({ role, runId, stdin, stdout }) => {
+      assert.equal(role, "responder");
+      assert.equal(runId, SESSION);
+      assert.ok(stdin);
+      assert.equal(stdout, output);
+      return {
+        async publishOwnDescriptor(descriptor) {
+          calls.push("exchange.publish");
+          assert.deepEqual(descriptor, { schema: "clockchain.mechanics-proof-party-bootstrap/v1", local: true });
+          stdout.write(`${JSON.stringify(descriptor)}\n`);
+        },
+        async awaitPeerDescriptor() { calls.push("exchange.await"); return peer; },
+        async destroy() { calls.push("exchange.destroy"); return { destroyed: true }; },
+      };
+    },
     createRuntime: async () => ({
       bootstrapDescriptor() { calls.push("bootstrap"); return { schema: "clockchain.mechanics-proof-party-bootstrap/v1", local: true }; },
       async destroy() { calls.push("destroy"); },
@@ -173,7 +188,7 @@ test("run mode emits bootstrap first, consumes one peer descriptor, then emits t
     stdout: output,
   });
   assert.equal(code, 0);
-  assert.deepEqual(calls, ["bootstrap", "run"]);
+  assert.deepEqual(calls, ["bootstrap", "exchange.publish", "exchange.await", "exchange.destroy", "run"]);
   assert.deepEqual(text.trim().split("\n").map(JSON.parse), [
     { schema: "clockchain.mechanics-proof-party-bootstrap/v1", local: true },
     { schema: "clockchain.mechanics-proof-party-evidence/v1", completed: true },

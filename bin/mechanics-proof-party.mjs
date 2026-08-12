@@ -4,6 +4,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { isIP } from "node:net";
 import { pathToFileURL } from "node:url";
 
+import { createStdinBootstrapExchange } from "../src/runtime/stdin-bootstrap-exchange.mjs";
 import { createMechanicsProofPartyRuntime } from "../src/testing/mechanics-proof-party-runtime.mjs";
 
 const MCP_ENDPOINT = "https://mcp.clockchain.network/handshake/mcp";
@@ -12,7 +13,6 @@ const DIGEST = /^[0-9a-f]{64}$/;
 const SECRET_REF = /^arn:aws:(?:secretsmanager|ssm):[a-z0-9-]+:[0-9]{12}:(?:secret|parameter)[:/].+/;
 const CODEX_AUTH_BASE64 = /^[A-Za-z0-9+/=]{4,98304}$/;
 const PRIVATE_DNS = /^(?:[a-z0-9-]+\.)*(?:task\.local|internal|local)$/i;
-const MAX_STDIN_BYTES = 256 * 1024;
 
 function value(env, name) {
   const item = env[name];
@@ -159,27 +159,17 @@ function runOptions(env) {
   });
 }
 
-async function oneJsonLine(stdin) {
-  let body = "";
-  for await (const chunk of stdin) {
-    body += Buffer.from(chunk).toString("utf8");
-    if (Buffer.byteLength(body) > MAX_STDIN_BYTES) throw new Error("too large");
-  }
-  const lines = body.split(/\r?\n/).filter((line) => line.length > 0);
-  if (lines.length !== 1) throw new Error("lines");
-  const parsed = JSON.parse(lines[0]);
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("json");
-  return parsed;
-}
-
 export async function runMain({
   argv = process.argv,
+  createBootstrapExchange = createStdinBootstrapExchange,
   createRuntime = createMechanicsProofPartyRuntime,
   env = process.env,
   stderr = process.stderr,
   stdin = process.stdin,
   stdout = process.stdout,
 } = {}) {
+  let bootstrapExchange = null;
+  let bootstrapExchangeDestroyed = false;
   let runtime = null;
   let runInvoked = false;
   try {
@@ -189,9 +179,13 @@ export async function runMain({
       return 0;
     }
     if (argv[2] !== "--run") throw new Error("mode");
-    runtime = await createRuntime(runOptions(env));
-    stdout.write(`${JSON.stringify(runtime.bootstrapDescriptor())}\n`);
-    const peerDescriptor = await oneJsonLine(stdin);
+    const options = runOptions(env);
+    runtime = await createRuntime(options);
+    bootstrapExchange = createBootstrapExchange({ role: options.role, runId: options.runId, stdin, stdout });
+    await bootstrapExchange.publishOwnDescriptor(runtime.bootstrapDescriptor());
+    const peerDescriptor = await bootstrapExchange.awaitPeerDescriptor();
+    await bootstrapExchange.destroy();
+    bootstrapExchangeDestroyed = true;
     runInvoked = true;
     const evidence = await runtime.run({
       peerDescriptor,
@@ -200,6 +194,9 @@ export async function runMain({
     stdout.write(`${JSON.stringify(evidence)}\n`);
     return 0;
   } catch {
+    if (bootstrapExchange !== null && !bootstrapExchangeDestroyed) {
+      try { await bootstrapExchange.destroy(); } catch {}
+    }
     if (runtime !== null && !runInvoked) {
       try { await runtime.destroy(); } catch {}
     }
