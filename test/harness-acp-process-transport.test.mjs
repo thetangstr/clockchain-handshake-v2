@@ -5,7 +5,7 @@ import { AgentSideConnection, PROTOCOL_VERSION, ndJsonStream } from "@agentclien
 
 import { createAcpProcessTransport } from "../src/harness/acp-process-transport.mjs";
 import { ACP_VERSION_PINS } from "../src/harness/version-pins.mjs";
-import { DIGEST, MCP_ENDPOINT, SESSION, a2aConfig, retainedAction } from "./harness-acp-fixtures.mjs";
+import { DIGEST, MCP_ENDPOINT, OTHER_SESSION, SESSION, a2aConfig, retainedAction } from "./harness-acp-fixtures.mjs";
 
 const VALID_MANDATE = Object.freeze({
   reference: "NS-1847",
@@ -65,7 +65,7 @@ function partyBridgeFor(calls, { reject = false } = {}) {
     async observeToolResult(input) {
       calls.push(["partyBridge", input]);
       if (reject) throw new Error("party bridge rejected secret-canary /Users/alice/secret");
-      return { observed: true };
+      return { observed: true, protocolSessionId: SESSION, toolResultDigest: "f".repeat(64) };
     },
   });
 }
@@ -750,13 +750,13 @@ test("ACP process transport never forwards spoofed titles and fails closed when 
     retainedActions: [action],
     trustedAdapterPublicKeys: [action.adapterPublicKey],
   });
-  await spoofTransport.launch({
+  await assert.rejects(() => spoofTransport.launch({
     acp: ACP_VERSION_PINS.codex,
     runtime: { runtimeId: "runtime-spoof", sessionId: SESSION, role: "initiator", harness: "codex" },
     mandate: VALID_MANDATE,
     mcpEndpoint: MCP_ENDPOINT,
     a2aConfig: a2aConfig("initiator"),
-  });
+  }), /ACP process transport validation failed safely/);
   assert.equal(spoofCalls.some((entry) => Array.isArray(entry) && entry[0] === "partyBridge"), false);
 
   const rejectCalls = [];
@@ -833,6 +833,36 @@ test("ACP process transport registers retained actions from installed Codex ACP 
     a2aConfig: a2aConfig("initiator"),
   });
   assert.equal((await transport.executeRetainedAction({ sessionId: SESSION, role: "initiator", actionId: "action-1" })).executed, true);
+});
+
+test("ACP keeps controller correlation separate from the bridge-bound protocol session", async () => {
+  const action = retainedAction({ role: "initiator", requestDigest: "d".repeat(64), commandSha256: DIGEST });
+  const calls = [];
+  const transport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({ calls, helperAction: action, permissionCommand: `clockchain-agent-authorize ${action.commandSha256}` }),
+    workspace: "/workspace/controller-run",
+    home: "/workspace/controller-run/home",
+    nowMs: () => 1786337001000,
+    actionRecorder: actionRecorderFor([action], calls),
+    env: {},
+    partyBridge: partyBridgeFor(calls),
+    retainedActions: [],
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+  const launched = await transport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-controller", sessionId: OTHER_SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  });
+  assert.equal(launched.sessionId, OTHER_SESSION);
+  assert.equal((await transport.executeRetainedAction({ sessionId: OTHER_SESSION, role: "initiator", actionId: action.actionId })).executed, true);
+  const events = await transport.streamEvents({ sessionId: OTHER_SESSION });
+  assert.ok(events.every((event) => event.sessionId === OTHER_SESSION));
+  assert.doesNotMatch(JSON.stringify(events), new RegExp(SESSION));
 });
 
 test("ACP process transport records production-length helper shell commands without public leakage", async () => {

@@ -24,6 +24,7 @@ import {
 
 const KEYS = Object.freeze({ initiator: `0x${"4".repeat(64)}`, responder: `0x${"5".repeat(64)}` });
 const ROLE_ACCESS = Object.freeze({ initiator: `ccra_${"I".repeat(22)}`, responder: `ccra_${"R".repeat(22)}` });
+const OTHER_SESSION_ID = "33333333-4444-4555-8666-777777777777";
 const RUNTIME = Object.freeze({
   initiator: Object.freeze({
     endpoint: "https://initiator.task.local:8443",
@@ -42,6 +43,7 @@ const RUNTIME = Object.freeze({
 });
 
 async function setup(t, {
+  initialSessionId = SESSION_ID,
   transformAuthority = (authority) => authority,
   transformCheckpointSubmission = async (input, role) => ({
     role,
@@ -116,6 +118,7 @@ async function setup(t, {
       },
       completionRecorder,
       invitationTransport: Object.freeze({
+        publicEvidence() { return { sessionId: SESSION_ID }; },
         async sendInvitation(input) {
           invitationCalls.push(input);
           return { acknowledged: true, invitationDigest: createHash("sha256").update(input.invitation).digest("hex") };
@@ -123,7 +126,7 @@ async function setup(t, {
       }),
       nowMs: () => NOW_MS,
       role,
-      sessionId: SESSION_ID,
+      sessionId: initialSessionId,
       submitCheckpoint: async (input) => {
         checkpointCalls.push({ ...input, observedMessages: channel.publicEvidence().messages.length });
         return transformCheckpointSubmission(input, role);
@@ -223,7 +226,7 @@ test("party-local bridges deliver invitation before signer readiness, then propo
   const invitation = "opaque.responder.invitation";
   await bridges.initiator.observeToolResult({
     toolName: "agent_handshake_invite",
-    result: { responderInvitation: invitation, roleAccess: ROLE_ACCESS.initiator },
+    result: { responderInvitation: invitation, roleAccess: ROLE_ACCESS.initiator, sessionId: SESSION_ID },
   });
   assert.equal(invitationCalls.length, 1);
   assert.equal(invitationCalls[0].invitation, invitation);
@@ -306,6 +309,50 @@ test("bridge rejects spoofed provenance, arbitrary completion, and replay withou
   );
   assert.equal(bridges.initiator.publicEvidence().deliveries.length, 0);
   assert.doesNotMatch(JSON.stringify(bridges.initiator.publicEvidence()), /helperStep|shellCommand|payload|signature/i);
+});
+
+test("bridges bind the protocol session once from authoritative invite and accept results", async (t) => {
+  const { bridges } = await setup(t, { initialSessionId: null });
+  const invitation = "opaque.responder.invitation";
+  const initiated = await bridges.initiator.observeToolResult({
+    toolName: "agent_handshake_invite",
+    result: { responderInvitation: invitation, roleAccess: ROLE_ACCESS.initiator, sessionId: SESSION_ID },
+  });
+  assert.equal(initiated.protocolSessionId, SESSION_ID);
+  assert.equal(bridges.initiator.publicEvidence().sessionId, SESSION_ID);
+  const accepted = await bridges.responder.observeToolResult({
+    toolName: "agent_handshake_accept_invitation",
+    result: { roleAccess: ROLE_ACCESS.responder, sessionId: SESSION_ID },
+  });
+  assert.equal(accepted.protocolSessionId, SESSION_ID);
+  assert.equal(bridges.responder.publicEvidence().sessionId, SESSION_ID);
+  await assert.rejects(
+    bridges.initiator.observeToolResult({
+      toolName: "agent_handshake_invite",
+      result: { responderInvitation: invitation, roleAccess: ROLE_ACCESS.initiator, sessionId: OTHER_SESSION_ID },
+    }),
+    /Direct A2A party bridge failed safely/,
+  );
+  await assert.rejects(
+    bridges.responder.observeToolResult({
+      toolName: "agent_handshake_accept_invitation",
+      result: { roleAccess: ROLE_ACCESS.responder, sessionId: OTHER_SESSION_ID },
+    }),
+    /Direct A2A party bridge failed safely/,
+  );
+});
+
+test("dynamic bridge rejects retained helper action before authoritative session binding", async (t) => {
+  const { bridges } = await setup(t, { initialSessionId: null });
+  const step = lifecycleStep("initiator");
+  await assert.rejects(
+    bridges.initiator.observeToolResult({
+      toolName: "agent_handshake_next",
+      result: { structuredContent: { localAction: { helperStep: step }, roleAccess: ROLE_ACCESS.initiator } },
+    }),
+    /Direct A2A party bridge failed safely/,
+  );
+  assert.equal(bridges.initiator.publicEvidence().sessionId, null);
 });
 
 test("checkpoint rejection sends no direct business artifact and releases no completion", async (t) => {

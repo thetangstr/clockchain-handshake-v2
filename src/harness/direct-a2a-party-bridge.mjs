@@ -148,6 +148,7 @@ function signingRequestFromStep(step) {
       direct: false,
       operation: item.operation,
       requestDigest: null,
+      sessionId: item.sessionId,
     });
   }
   const match = item.shellCommand.match(/--payload-base64url\s+([A-Za-z0-9_-]+)(?:\s|$)/);
@@ -169,6 +170,7 @@ function signingRequestFromStep(step) {
       direct: false,
       operation: item.operation,
       requestDigest: createHash("sha256").update(raw).digest("hex"),
+      sessionId: item.sessionId,
     });
   }
   return Object.freeze({
@@ -177,6 +179,7 @@ function signingRequestFromStep(step) {
     operation: item.operation,
     request,
     requestDigest: createHash("sha256").update(raw).digest("hex"),
+    sessionId: item.sessionId,
   });
 }
 
@@ -257,23 +260,31 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
       "activateSignedChannel", "completionRecorder", "invitationTransport", "nowMs", "role", "sessionId", "submitCheckpoint",
     ]);
     if (
-      !ROLES.includes(options.role) || !UUID.test(options.sessionId) || typeof options.nowMs !== "function" ||
+      !ROLES.includes(options.role) || !(options.sessionId === null || UUID.test(options.sessionId)) || typeof options.nowMs !== "function" ||
       typeof options.activateSignedChannel !== "function" || typeof options.submitCheckpoint !== "function"
     ) fail();
     const completionRecorder = projectMethods(options.completionRecorder, ["setCompletionHandler"]);
-    const invitationTransport = projectMethods(options.invitationTransport, ["sendInvitation"]);
+    const invitationTransport = projectMethods(options.invitationTransport, ["publicEvidence", "sendInvitation"]);
     const retained = new Map();
     const deliveries = [];
     const invitations = [];
     let signedChannel = null;
     let signedChannelPromise = null;
     let roleAccess = null;
+    let boundSessionId = options.sessionId;
     let destroyed = false;
 
     function active() { if (destroyed) fail(); }
+    function bindSession(value) {
+      if (!UUID.test(value)) fail();
+      if (boundSessionId !== null && boundSessionId !== value) fail();
+      boundSessionId = value;
+      return value;
+    }
 
     async function activate() {
       active();
+      if (boundSessionId === null) fail();
       if (signedChannelPromise === null) {
         signedChannelPromise = (async () => {
           const activated = snapshot(await options.activateSignedChannel(), ["authority", "cards", "taskTransport"]);
@@ -285,7 +296,7 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
           const cardsInput = snapshot(activated.cards, ["initiator", "responder"]);
           const cards = Object.freeze({ initiator: publicClone(cardsInput.initiator), responder: publicClone(cardsInput.responder) });
           const binding = authority.publicBinding();
-          if (binding.sessionId !== options.sessionId || binding.role !== options.role) fail();
+          if (binding.sessionId !== boundSessionId || binding.role !== options.role) fail();
           signedChannel = Object.freeze({ authority, cards, signCapability, taskTransport });
           return signedChannel;
         })();
@@ -311,7 +322,7 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
         previousMessageDigest,
         role: options.role,
         sequence,
-        sessionId: options.sessionId,
+        sessionId: boundSessionId,
       });
       const envelope = await signCapability.signEnvelope({
         envelope: input,
@@ -342,7 +353,7 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
         ]);
         if (
           typeof completion.operation !== "string" || completion.operation.length === 0 ||
-          completion.role !== options.role || completion.sessionId !== options.sessionId ||
+          completion.role !== options.role || boundSessionId === null || completion.sessionId !== boundSessionId ||
           !DIGEST.test(completion.commandSha256) || !DIGEST.test(completion.requestDigest)
         ) fail();
         const expected = retained.get(completion.commandSha256);
@@ -393,7 +404,7 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
         }), ["checkpointDigest", "role", "sessionId", "stage"]);
         if (
           submitted.checkpointDigest !== checkpointDigest || submitted.role !== options.role ||
-          submitted.sessionId !== options.sessionId || submitted.stage !== `${artifactType}_checkpoint_submitted`
+          submitted.sessionId !== boundSessionId || submitted.stage !== `${artifactType}_checkpoint_submitted`
         ) fail();
         expected.state = "consumed";
         deliveries.push(Object.freeze({
@@ -421,22 +432,38 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
             if (roleAccess !== null && roleAccess !== unique[0]) fail();
             roleAccess = unique[0];
           }
+          const observedSessionIds = [...new Set(findValues(result, "sessionId").filter((value) => typeof value === "string" && UUID.test(value)))];
+          if (boundSessionId !== null && observedSessionIds.some((value) => value !== boundSessionId)) fail();
           if (item.toolName === "agent_handshake_invite") {
             if (options.role !== "initiator") fail();
             const invitation = oneValue(result, "responderInvitation", (value) => typeof value === "string" && value.length > 0);
+            const sessionId = bindSession(oneValue(result, "sessionId", (value) => typeof value === "string" && UUID.test(value)));
             const sent = await invitationTransport.sendInvitation({
               invitation,
-              sessionId: options.sessionId,
+              sessionId,
               expiresAtMs: options.nowMs() + 30_000,
             });
             if (sent?.acknowledged !== true || !DIGEST.test(sent.invitationDigest)) fail();
             invitations.push(Object.freeze({ acknowledged: true, invitationDigest: sent.invitationDigest }));
           }
+          if (item.toolName === "agent_handshake_accept_invitation") {
+            if (options.role !== "responder") fail();
+            const transportEvidence = snapshot(invitationTransport.publicEvidence(), ["sessionId"], [
+              "schema", "runId", "role", "peerRole", "localRuntimeId", "peerRuntimeId",
+              "localWorkloadAttestationDigest", "peerWorkloadAttestationDigest",
+              "localBootstrapPublicKeySha256", "peerBootstrapPublicKeySha256",
+              "localCertificateSha256", "peerCertificateSha256", "invitations",
+            ]);
+            const acceptedSessionId = oneValue(result, "sessionId", (value) => typeof value === "string" && UUID.test(value));
+            if (transportEvidence.sessionId !== acceptedSessionId) fail();
+            bindSession(acceptedSessionId);
+          }
           const steps = findValues(result, "helperStep").filter((value) => value !== null && typeof value === "object");
           if (steps.length > 1) fail();
           if (steps.length === 1) {
             const expected = signingRequestFromStep(steps[0]);
-            if (expected.direct === true && (expected.request.sessionId !== options.sessionId || expected.request.role !== options.role)) fail();
+            if (boundSessionId === null || expected.sessionId !== boundSessionId) fail();
+            if (expected.direct === true && (expected.request.sessionId !== boundSessionId || expected.request.role !== options.role)) fail();
             const prior = retained.get(expected.commandSha256);
             if (
               prior !== undefined &&
@@ -444,14 +471,14 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
             ) fail();
             retained.set(expected.commandSha256, { ...expected, state: prior?.state ?? "pending" });
           }
-          return Object.freeze({ observed: true, toolResultDigest: createHash("sha256").update(a2aCanonicalBytes(result)).digest("hex") });
+          return Object.freeze({ observed: true, protocolSessionId: boundSessionId, toolResultDigest: createHash("sha256").update(a2aCanonicalBytes(result)).digest("hex") });
         } catch (error) { sanitize(error); }
       },
       publicEvidence() {
         active();
         return Object.freeze({
           schema: "clockchain.direct-a2a-party-bridge-evidence/v1",
-          sessionId: options.sessionId,
+          sessionId: boundSessionId,
           role: options.role,
           cardDigests: Object.freeze({
             initiator: signedChannel === null ? null : a2aAgentCardDigest(signedChannel.cards.initiator),

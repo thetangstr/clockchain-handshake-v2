@@ -500,6 +500,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
     return value;
   }
   let session = null;
+  let protocolSessionId = null;
   let acpSessionId = null;
   let child = null;
   let childMonitor = null;
@@ -532,7 +533,8 @@ export function createAcpProcessTransport(optionsInput = {}) {
   }
   function registerRetainedAction(candidate) {
     const action = validateRetainedLocalAction(candidate);
-    if (session === null || action.sessionId !== session.sessionId || action.role !== session.role) fail();
+    const expectedSessionId = partyBridge === null ? session?.sessionId : protocolSessionId;
+    if (session === null || expectedSessionId === null || action.sessionId !== expectedSessionId || action.role !== session.role) fail();
     if (!trustedKeys.has(action.adapterPublicKey)) fail();
     if (now() > action.expiresAtMs) fail();
     if (retainedByCommand.has(action.commandSha256)) fail();
@@ -577,7 +579,22 @@ export function createAcpProcessTransport(optionsInput = {}) {
         const toolResult = authoritativeToolResult(params.update);
         if (toolResult !== null) {
           if (partyBridge !== null) {
-            await partyBridge.observeToolResult({ toolName: toolResult.toolName, result: toolResult.result });
+            const observed = exactObject(
+              await partyBridge.observeToolResult({ toolName: toolResult.toolName, result: toolResult.result }),
+              ["observed", "protocolSessionId", "toolResultDigest"],
+            );
+            if (observed.observed !== true || typeof observed.toolResultDigest !== "string" || !/^[0-9a-f]{64}$/.test(observed.toolResultDigest)) fail();
+            if (!(observed.protocolSessionId === null || typeof observed.protocolSessionId === "string" && observed.protocolSessionId.length > 0)) fail();
+            if (observed.protocolSessionId !== null) {
+              if (protocolSessionId !== null && protocolSessionId !== observed.protocolSessionId) fail();
+              protocolSessionId = observed.protocolSessionId;
+              for (const action of retainedActions) {
+                if (
+                  action.sessionId === protocolSessionId && action.role === session.role &&
+                  !retainedByCommand.has(action.commandSha256)
+                ) registerRetainedAction(action);
+              }
+            }
           }
           for (const retained of retainedActionsFromToolResult(toolResult.result, actionRecorder)) {
             registerRetainedAction(retained);
@@ -605,9 +622,10 @@ export function createAcpProcessTransport(optionsInput = {}) {
       const clean = cleanRuntime(runtime, harness);
       const cleanPeer = cleanA2A(a2aConfig);
       session = { sessionId: clean.sessionId, role: clean.role };
+      protocolSessionId = null;
       retainedByCommand.clear();
       for (const action of retainedActions) {
-        if (action.sessionId === clean.sessionId && action.role === clean.role) registerRetainedAction(action);
+        if (partyBridge === null && action.sessionId === clean.sessionId && action.role === clean.role) registerRetainedAction(action);
       }
       const env = {
         NODE_ENV: "production",
