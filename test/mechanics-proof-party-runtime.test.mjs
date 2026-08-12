@@ -122,7 +122,12 @@ function dependencies(calls, overrides = {}) {
       calls.push("bootstrap.create");
       return { publicKey: publicKey(), signCanonicalBytes() {}, destroy() { calls.push("bootstrap.destroy"); } };
     },
-    async createInvitationTransport() { calls.push("invitation.listen"); return invitation; },
+    async createInvitationTransport(input) {
+      calls.push("invitation.listen");
+      assert.deepEqual(Object.keys(input.bootstrapSigner).sort(), ["publicKey", "signCanonicalBytes"]);
+      assert.equal("destroy" in input.bootstrapSigner, false);
+      return invitation;
+    },
     async waitForInvitation() { calls.push("invitation.wait"); return invitation.takeInvitation(); },
     async createActionRecorder() {
       calls.push("recorder.create");

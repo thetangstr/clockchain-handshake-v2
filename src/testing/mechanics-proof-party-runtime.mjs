@@ -411,7 +411,10 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
           ) fail();
           runStage = "listener-create";
           invitationTransport = await deps.createInvitationTransport({
-            bootstrapSigner,
+            bootstrapSigner: Object.freeze({
+              publicKey: bootstrapSigner.publicKey,
+              signCanonicalBytes: bootstrapSigner.signCanonicalBytes,
+            }),
             initialSessionId: null,
             listenHost: options.listenHost,
             localRuntime: { runtimeId: localRuntime.runtimeId, workloadAttestationDigest: localRuntime.workloadAttestationDigest },
