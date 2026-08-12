@@ -2100,6 +2100,133 @@ test("keeps a failed exact helper command pending so the agent may retry it befo
   }
 });
 
+test("accepts a later MCP-bound action after the coordinator proves a failed helper action recovered", async (t) => {
+  for (const mode of ["codex", "claude"]) {
+    await t.test(mode, async (t) => {
+      const parent = await mkdtemp(join(tmpdir(), `fresh-agent-helper-recovered-${mode}-`));
+      t.after(() => rm(parent, { recursive: true, force: true }));
+      const children = {};
+      const role = mode === "codex" ? "initiator" : "responder";
+      const registerCommand = nonterminalHelperCommand(role, "register");
+      const signCommand = nonterminalHelperCommand(role, "sign");
+      const spawnProcess = () => {
+        const childRole = children.initiator === undefined ? "initiator" : "responder";
+        const child = new EventEmitter();
+        child.pid = null;
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+        child.stdin = { end() {
+          queueMicrotask(() => {
+            if (childRole === "initiator") {
+              child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+              return;
+            }
+            if (mode === "codex") {
+              children.initiator.stdout.emit("data", Buffer.from(codexExpectedHelperEvent(registerCommand)));
+              children.initiator.stdout.emit("data", Buffer.from(streamEvent({
+                type: "item.completed",
+                item: { type: "command_execution", status: "failed", exit_code: 1, command: codexCommandExecutionDisplay(approvalCommand(registerCommand)), aggregated_output: "" },
+              })));
+              children.initiator.stdout.emit("data", Buffer.from(codexExpectedHelperEvent(signCommand)));
+              children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(
+                nonterminalHelperResult(role, "sign"),
+                { command: approvalCommand(signCommand) },
+              )));
+              children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+              children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
+            } else {
+              children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+              children.responder.stdout.emit("data", Buffer.from(streamEvent({
+                type: "assistant",
+                message: { content: [{ type: "tool_use", id: "register-mcp", name: "mcp__clockchain-handshake__agent_handshake_next", input: {} }] },
+              })));
+              children.responder.stdout.emit("data", Buffer.from(streamEvent({
+                type: "user",
+                message: { content: [{ type: "tool_result", tool_use_id: "register-mcp", content: JSON.stringify({ localAction: { helperStep: helperStep(registerCommand) } }), is_error: false }] },
+              })));
+              children.responder.stdout.emit("data", Buffer.from(streamEvent({
+                type: "assistant",
+                message: { content: [{ type: "tool_use", id: "register-failed", name: "Bash", input: { command: approvalCommand(registerCommand) } }] },
+              })));
+              children.responder.stdout.emit("data", Buffer.from(streamEvent({
+                type: "user",
+                message: { content: [{ type: "tool_result", tool_use_id: "register-failed", content: "", is_error: true }] },
+              })));
+              children.responder.stdout.emit("data", Buffer.from(streamEvent({
+                type: "assistant",
+                message: { content: [{ type: "tool_use", id: "sign-mcp", name: "mcp__clockchain-handshake__agent_handshake_next", input: {} }] },
+              })));
+              children.responder.stdout.emit("data", Buffer.from(streamEvent({
+                type: "user",
+                message: { content: [{ type: "tool_result", tool_use_id: "sign-mcp", content: JSON.stringify({ localAction: { helperStep: helperStep(signCommand) } }), is_error: false }] },
+              })));
+              children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(
+                nonterminalHelperResult(role, "sign"),
+                { command: approvalCommand(signCommand), id: "sign-approved" },
+              )));
+              children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
+            }
+            children.initiator.emit("close", 0, null);
+            children.responder.emit("close", 0, null);
+          });
+        } };
+        child.kill = () => {};
+        children[childRole] = child;
+        return child;
+      };
+
+      const result = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, { spawnProcess }));
+
+      assert.equal(result.certificateVerified, true);
+      assert.deepEqual(await readdir(parent), []);
+    });
+  }
+});
+
+test("rejects a model-authored recovery action that was not returned by Clockchain MCP", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-helper-fake-recovery-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const children = {};
+  const registerCommand = nonterminalHelperCommand("initiator", "register");
+  const signCommand = nonterminalHelperCommand("initiator", "sign");
+  const spawnProcess = () => {
+    const role = children.initiator === undefined ? "initiator" : "responder";
+    const child = new EventEmitter();
+    child.pid = null;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {
+      queueMicrotask(() => {
+        if (role === "initiator") {
+          child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+          return;
+        }
+        children.initiator.stdout.emit("data", Buffer.from(codexExpectedHelperEvent(registerCommand)));
+        children.initiator.stdout.emit("data", Buffer.from(streamEvent({
+          type: "item.completed",
+          item: { type: "command_execution", status: "failed", exit_code: 1, command: codexCommandExecutionDisplay(approvalCommand(registerCommand)), aggregated_output: "" },
+        })));
+        children.initiator.stdout.emit("data", Buffer.from(streamEvent({
+          type: "item.completed",
+          item: { type: "agent_message", text: JSON.stringify({ localAction: { helperStep: helperStep(signCommand) } }) },
+        })));
+        children.initiator.stdout.emit("data", Buffer.from(streamEvent({
+          type: "item.completed",
+          item: { type: "command_execution", status: "completed", exit_code: 0, command: codexCommandExecutionDisplay(approvalCommand(signCommand)), aggregated_output: JSON.stringify(nonterminalHelperResult("initiator", "sign")) },
+        })));
+      });
+    } };
+    child.kill = () => {};
+    children[role] = child;
+    return child;
+  };
+
+  const error = await rejectsFreshAgentRun(parent, { spawnProcess });
+
+  assert.equal(error.diagnostic.code, "HELPER_COMMAND_MISMATCH");
+  assert.deepEqual(await readdir(parent), []);
+});
+
 test("binds setup and registration helper steps that derive role and session from their exact shell commands", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "fresh-agent-legacy-helper-step-binding-"));
   t.after(() => rm(parent, { recursive: true, force: true }));

@@ -1266,6 +1266,77 @@ function collectExpectedHelperCommands(value, found = [], seen = new Set()) {
   return found;
 }
 
+function isClockchainMcpToolName(value) {
+  return typeof value === "string" && CLOCKCHAIN_HANDSHAKE_TOOLS.some(
+    (name) => value === name || value.endsWith(`__${name}`),
+  );
+}
+
+function recordClaudeMcpToolCalls(event, calls) {
+  if (event?.type !== "assistant" || !Array.isArray(event?.message?.content)) return;
+  for (const block of event.message.content) {
+    if (
+      block?.type === "tool_use" && typeof block.id === "string" && block.id.length > 0 &&
+      isClockchainMcpToolName(block.name)
+    ) calls.add(block.id);
+  }
+}
+
+function isTrustedMcpResultEvent(event, claudeMcpToolCalls) {
+  if (
+    event?.type === "item.completed" && event?.item?.type === "mcp_tool_call" &&
+    event.item.status === "completed" && isClockchainMcpToolName(event.item.tool)
+  ) return true;
+  if (event?.type !== "user" || !Array.isArray(event?.message?.content)) return false;
+  return event.message.content.some((block) => (
+    block?.type === "tool_result" && block.is_error !== true &&
+    typeof block.tool_use_id === "string" && claudeMcpToolCalls.has(block.tool_use_id)
+  ));
+}
+
+function forgetClaudeMcpToolCalls(event, calls) {
+  if (event?.type !== "user" || !Array.isArray(event?.message?.content)) return;
+  for (const block of event.message.content) {
+    if (block?.type === "tool_result" && typeof block.tool_use_id === "string") calls.delete(block.tool_use_id);
+  }
+}
+
+function reconcileRecoveredHelperExecution(
+  discovered,
+  expectedHelperCommands,
+  helperExecutionState,
+  trustedMcpResult,
+) {
+  const failed = expectedHelperCommands[0];
+  const failedDetails = helperExecutionState.details?.expected;
+  if (
+    !trustedMcpResult || helperExecutionState.failed !== true || failed === undefined ||
+    discovered.length === 0 || failedDetails === undefined ||
+    failed.commandSha256 !== failedDetails.commandSha256 ||
+    failed.commandLength !== failedDetails.commandLength
+  ) return;
+  if (discovered.some((command) => (
+    command.commandSha256 === failed.commandSha256 && command.commandLength === failed.commandLength
+  ))) return;
+  const replacement = discovered.find((command) => (
+    command.role === failed.role && command.sessionId === failed.sessionId
+  ));
+  if (replacement === undefined) return;
+  while (
+    expectedHelperCommands[0]?.role === failed.role &&
+    expectedHelperCommands[0]?.sessionId === failed.sessionId
+  ) expectedHelperCommands.shift();
+  helperExecutionState.failed = false;
+  helperExecutionState.details = null;
+  traceLifecycle({
+    phase: "helper-action-recovered",
+    role: failed.role,
+    sessionId: failed.sessionId,
+    failedCommandSha256: failed.commandSha256,
+    replacementCommandSha256: replacement.commandSha256,
+  });
+}
+
 function bindHelperExecution(command, expectedHelperCommands) {
   const expected = expectedHelperCommands[0];
   if (expected === undefined) {
@@ -1484,6 +1555,7 @@ function observeChild(child, role, all, canaries, { adapter, expectedInvitation,
     let rejectedEvent = null;
     let observed = {};
     const claudeBashCommands = new Map();
+    const claudeMcpToolCalls = new Set();
     const expectedHelperCommands = [];
     const helperExecutionState = { failed: false, details: null };
     let settled = false;
@@ -1491,7 +1563,14 @@ function observeChild(child, role, all, canaries, { adapter, expectedInvitation,
       if (line.trim().length === 0) return;
       let event;
       try { event = JSON.parse(line); } catch { fail(); }
+      recordClaudeMcpToolCalls(event, claudeMcpToolCalls);
       const discoveredHelperCommands = collectExpectedHelperCommands(event);
+      reconcileRecoveredHelperExecution(
+        discoveredHelperCommands,
+        expectedHelperCommands,
+        helperExecutionState,
+        isTrustedMcpResultEvent(event, claudeMcpToolCalls),
+      );
       for (const command of discoveredHelperCommands) {
         if (command.approvalCommand !== null) adapter.record(command);
       }
@@ -1506,6 +1585,7 @@ function observeChild(child, role, all, canaries, { adapter, expectedInvitation,
         helperExecutionState,
         adapter,
       );
+      forgetClaudeMcpToolCalls(event, claudeMcpToolCalls);
       if (helperProof !== null) observed = mergeObserved(observed, { helperProof });
       traceLifecycle({
         phase: "event",
