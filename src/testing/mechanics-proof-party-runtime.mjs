@@ -37,11 +37,14 @@ const DEPENDENCY_KEYS = Object.freeze([
 ]);
 const CODEX_PROVIDER_ENV = Object.freeze(["CODEX_API_KEY", "OPENAI_API_KEY", "CLOCKCHAIN_CODEX_MODEL"]);
 const CODEX_AUTH_JSON_BASE64 = "CLOCKCHAIN_CODEX_AUTH_JSON_BASE64";
-const CLAUDE_PROVIDER_ENV = Object.freeze([
+const CLAUDE_BEDROCK_PROVIDER_ENV = Object.freeze([
   "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_MODEL", "AWS_REGION", "AWS_DEFAULT_REGION",
-  "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI",
-  "AWS_CONTAINER_AUTHORIZATION_TOKEN", "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+  "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+]);
+const AWS_CREDENTIAL_OVERRIDE_ENV = Object.freeze([
+  "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_AUTHORIZATION_TOKEN", "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
   "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+  "AWS_PROFILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_SQS",
 ]);
 
 function fail() { throw new Error(ERROR); }
@@ -238,7 +241,10 @@ async function installCodexSerializedAuth(value, home) {
 async function providerEnvFor(harness, home, env = process.env) {
   const result = {};
   if (harness === "codex") {
-    if (CLAUDE_PROVIDER_ENV.some((key) => hasEnv(env, key)) || hasEnv(env, "ANTHROPIC_API_KEY")) fail();
+    if (
+      ["CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_MODEL", "ANTHROPIC_API_KEY"].some((key) => hasEnv(env, key)) ||
+      AWS_CREDENTIAL_OVERRIDE_ENV.some((key) => hasEnv(env, key))
+    ) fail();
     const authJson = env[CODEX_AUTH_JSON_BASE64];
     const hasSerializedAuth = typeof authJson === "string" && authJson.length > 0;
     const apiKeys = ["CODEX_API_KEY", "OPENAI_API_KEY"].filter((key) => hasEnv(env, key));
@@ -252,9 +258,9 @@ async function providerEnvFor(harness, home, env = process.env) {
     if (
       hasEnv(env, CODEX_AUTH_JSON_BASE64) || hasEnv(env, "CODEX_API_KEY") ||
       hasEnv(env, "OPENAI_API_KEY") || hasEnv(env, "CLOCKCHAIN_CODEX_MODEL") ||
-      hasEnv(env, "ANTHROPIC_API_KEY")
+      hasEnv(env, "ANTHROPIC_API_KEY") || AWS_CREDENTIAL_OVERRIDE_ENV.some((key) => hasEnv(env, key))
     ) fail();
-    for (const key of CLAUDE_PROVIDER_ENV) {
+    for (const key of CLAUDE_BEDROCK_PROVIDER_ENV) {
       const value = env[key];
       if (typeof value === "string" && value.length > 0) result[key] = value;
     }

@@ -296,6 +296,83 @@ test("initiator runtime installs serialized Codex subscription auth into isolate
   });
 });
 
+test("Codex runtime tolerates ECS task credential env but does not pass AWS creds to the harness", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-codex-ecs-"));
+  const root = join(parent, "initiator");
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const serialized = codexSerializedAuth();
+  await usingTemporaryEnv({
+    AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: "/v2/credentials/12345678-1234-4234-9234-123456789abc",
+    AWS_DEFAULT_REGION: "us-west-2",
+    AWS_REGION: "us-west-2",
+    CLOCKCHAIN_CODEX_AUTH_JSON_BASE64: Buffer.from(serialized, "utf8").toString("base64"),
+    CLOCKCHAIN_CODEX_MODEL: "gpt-5.6-terra",
+    CODEX_API_KEY: undefined,
+    OPENAI_API_KEY: undefined,
+  }, async () => {
+    let transportEnv;
+    const calls = [];
+    const runtime = await createMechanicsProofPartyRuntime(options(root, {
+      harness: "codex",
+      publicEndpoint: "https://initiator.task.local:8443",
+      role: "initiator",
+      runtimeId: "runtime-initiator",
+      taskId: "task-initiator",
+    }), dependencies(calls, {
+      bridgeEvidence: {
+        ...dependencies([]).createBridge().publicEvidence(),
+        role: "initiator",
+        deliveries: [{ acknowledged: true, artifactDigest: DIGEST, artifactType: "proposal", checkpointDigest: OTHER_DIGEST, messageDigests: [DIGEST, OTHER_DIGEST] }],
+      },
+      createProcessTransport(input) { transportEnv = input.env; return {}; },
+    }));
+    await runtime.run({
+      peerDescriptor: peerDescriptor({
+        harness: "claude",
+        role: "responder",
+        runtime: {
+          endpoint: "https://responder.task.local:8443",
+          runtimeId: "runtime-responder",
+          taskId: "task-responder",
+          tlsCertificateSha256: OTHER_DIGEST,
+          workloadAttestationDigest: OTHER_DIGEST,
+        },
+      }),
+    });
+    assert.equal(transportEnv.CLOCKCHAIN_CODEX_MODEL, "gpt-5.6-terra");
+    for (const key of ["AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"]) {
+      assert.equal(key in transportEnv, false, key);
+    }
+  });
+});
+
+test("Claude Bedrock runtime passes only platform relative credentials and regions", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-claude-ecs-"));
+  const root = join(parent, "responder");
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  await usingTemporaryEnv({
+    AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: "/v2/credentials/12345678-1234-4234-9234-123456789abc",
+    AWS_DEFAULT_REGION: "us-west-2",
+    AWS_REGION: "us-west-2",
+    CLAUDE_CODE_USE_BEDROCK: "1",
+    ANTHROPIC_MODEL: "us.anthropic.claude-sonnet-4-6",
+  }, async () => {
+    let transportEnv;
+    const runtime = await createMechanicsProofPartyRuntime(options(root), dependencies([], {
+      createProcessTransport(input) { transportEnv = input.env; return {}; },
+    }));
+    await runtime.run({ peerDescriptor: peerDescriptor() });
+    assert.equal(transportEnv.CLAUDE_CODE_USE_BEDROCK, "1");
+    assert.equal(transportEnv.ANTHROPIC_MODEL, "us.anthropic.claude-sonnet-4-6");
+    assert.equal(transportEnv.AWS_REGION, "us-west-2");
+    assert.equal(transportEnv.AWS_DEFAULT_REGION, "us-west-2");
+    assert.equal(transportEnv.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI, "/v2/credentials/12345678-1234-4234-9234-123456789abc");
+    for (const key of ["AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_AUTHORIZATION_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "ANTHROPIC_API_KEY"]) {
+      assert.equal(key in transportEnv, false, key);
+    }
+  });
+});
+
 test("party runtime rejects mixed and cross-role provider authentication", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-auth-reject-"));
   t.after(() => rm(parent, { recursive: true, force: true }));

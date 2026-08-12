@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 
 import { createStdinBootstrapExchange } from "../src/runtime/stdin-bootstrap-exchange.mjs";
 import { createTaskRoleAwsSqsBootstrapExchange } from "../src/runtime/aws-sqs-bootstrap-exchange.mjs";
+import { resolveAwsEcsTaskBootstrap } from "../src/runtime/aws-ecs-task-bootstrap.mjs";
 import { createMechanicsProofPartyRuntime } from "../src/testing/mechanics-proof-party-runtime.mjs";
 
 const MCP_ENDPOINT = "https://mcp.clockchain.network/handshake/mcp";
@@ -183,10 +184,6 @@ function managedExchangeEnvironment(env) {
   });
 }
 
-async function resolveManagedRunOptionsUnavailable() {
-  throw new Error("managed-runtime-attestation-unavailable");
-}
-
 export async function runMain({
   argv = process.argv,
   createBootstrapExchange = createStdinBootstrapExchange,
@@ -196,7 +193,7 @@ export async function runMain({
   stderr = process.stderr,
   stdin = process.stdin,
   stdout = process.stdout,
-  resolveManagedRunOptions = resolveManagedRunOptionsUnavailable,
+  resolveManagedRunOptions = resolveAwsEcsTaskBootstrap,
 } = {}) {
   let bootstrapExchange = null;
   let bootstrapExchangeDestroyed = false;
@@ -210,7 +207,9 @@ export async function runMain({
     }
     if (!["--run", "--run-managed"].includes(argv[2])) throw new Error("mode");
     const managedEnvironment = argv[2] === "--run-managed" ? managedExchangeEnvironment(env) : null;
-    const options = argv[2] === "--run-managed" ? await resolveManagedRunOptions({ env }) : runOptions(env);
+    const resolved = argv[2] === "--run-managed" ? await resolveManagedRunOptions({ env }) : { runOptions: runOptions(env) };
+    const options = resolved?.runOptions ?? resolved;
+    if (resolved?.attestation !== undefined) stdout.write(`${JSON.stringify(resolved.attestation)}\n`);
     runtime = await createRuntime(options);
     bootstrapExchange = argv[2] === "--run-managed"
       ? createManagedBootstrapExchange(Object.freeze({ ...managedEnvironment, role: options.role, runId: options.runId }))

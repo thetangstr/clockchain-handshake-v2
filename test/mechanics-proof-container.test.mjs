@@ -22,12 +22,13 @@ test("mechanics proof Fargate app Dockerfile is pinned, nonroot, and entrypoint-
   assert.doesNotMatch(dockerfile, /COPY .*keys|COPY .*\.env|ARG .*SECRET|ENV .*PRIVATE|USER root/);
 });
 
-test("mechanics proof image contains only the pinned SQS task dependency", async () => {
+test("mechanics proof image contains only the pinned AWS task dependencies", async () => {
   const packageJson = JSON.parse(await text("package.json"));
-  assert.match(packageJson.dependencies["@aws-sdk/client-sqs"], /^\d+\.\d+\.\d+$/);
-  for (const name of Object.keys(packageJson.dependencies)) {
-    if (name.startsWith("@aws-sdk/")) assert.equal(name, "@aws-sdk/client-sqs");
-  }
+  const awsDependencies = Object.fromEntries(Object.entries(packageJson.dependencies).filter(([name]) => name.startsWith("@aws-sdk/")));
+  assert.deepEqual(awsDependencies, {
+    "@aws-sdk/client-sqs": "3.1097.0",
+    "@aws-sdk/client-sts": "3.1097.0",
+  });
 });
 
 test("mechanics proof build context excludes credentials, local auth, and private outputs", async () => {

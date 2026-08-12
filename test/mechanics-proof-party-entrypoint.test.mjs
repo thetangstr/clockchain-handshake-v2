@@ -261,6 +261,69 @@ test("managed run mode selects SQS exchange without publishing queue URLs", asyn
   assert.doesNotMatch(text, /sqs|amazonaws|queue/i);
 });
 
+test("managed run mode emits ECS attestation before bootstrap descriptor", async () => {
+  const output = new PassThrough();
+  let text = "";
+  output.on("data", (chunk) => { text += chunk.toString("utf8"); });
+  const peer = { schema: "clockchain.mechanics-proof-party-bootstrap/v1", peer: true };
+  const trustedOptions = {
+    harness: "claude",
+    listenHost: "0.0.0.0",
+    manifestDigest: "a".repeat(64),
+    mandate: { statement: "trusted" },
+    mcpEndpoint: "https://mcp.clockchain.network/handshake/mcp",
+    opensslPath: "/usr/bin/openssl",
+    port: 8443,
+    publicEndpoint: "https://10.0.0.11:8443",
+    role: "responder",
+    root: "/workspace/responder",
+    runId: SESSION,
+    runtimeId: "ecs-task-responder",
+    taskId: "task-responder",
+    workloadAttestationDigest: "b".repeat(64),
+  };
+  const code = await runMain({
+    argv: ["node", "bin/mechanics-proof-party.mjs", "--run-managed"],
+    createManagedBootstrapExchange() {
+      return {
+        async publishOwnDescriptor(descriptor) { output.write(`${JSON.stringify(descriptor)}\n`); return { published: true }; },
+        async awaitPeerDescriptor() { return peer; },
+        async destroy() { return { destroyed: true }; },
+      };
+    },
+    createRuntime: async () => ({
+      bootstrapDescriptor() { return { schema: "clockchain.mechanics-proof-party-bootstrap/v1", local: true }; },
+      async destroy() {},
+      async run() { return { schema: "clockchain.mechanics-proof-party-evidence/v1", completed: true }; },
+    }),
+    env: runEnv({
+      AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: "/v2/credentials/12345678-1234-4234-9234-123456789abc",
+      AWS_REGION: "us-west-2",
+      CLOCKCHAIN_BOOTSTRAP_OWN_QUEUE_URL: `https://sqs.us-west-2.amazonaws.com/123456789012/own-${SESSION}`,
+      CLOCKCHAIN_BOOTSTRAP_PEER_QUEUE_URL: `https://sqs.us-west-2.amazonaws.com/123456789012/peer-${SESSION}`,
+    }),
+    stderr: new PassThrough(),
+    stdin: Readable.from([]),
+    stdout: output,
+    async resolveManagedRunOptions() {
+      return {
+        attestation: {
+          schema: "clockchain.mechanics-proof-ecs-attestation/v1",
+          workloadAttestationDigest: trustedOptions.workloadAttestationDigest,
+          accountId: "123456789012",
+        },
+        runOptions: trustedOptions,
+      };
+    },
+  });
+  assert.equal(code, 0);
+  const lines = text.trim().split("\n").map(JSON.parse);
+  assert.equal(lines[0].schema, "clockchain.mechanics-proof-ecs-attestation/v1");
+  assert.equal(lines[1].schema, "clockchain.mechanics-proof-party-bootstrap/v1");
+  assert.equal(lines[2].schema, "clockchain.mechanics-proof-party-evidence/v1");
+  assert.doesNotMatch(text, /sqs|amazonaws|credentials|169\.254/i);
+});
+
 test("managed run mode fails closed until ECS metadata supplies runtime identity", async () => {
   let runtimeCreated = false;
   const stderr = new PassThrough();
@@ -298,6 +361,7 @@ test("managed run mode rejects controller-supplied AWS credential overrides", as
     { AWS_PROFILE: "controller-profile" },
     { AWS_SHARED_CREDENTIALS_FILE: "/tmp/credentials" },
     { AWS_CONTAINER_CREDENTIALS_FULL_URI: "http://controller.invalid/credentials" },
+    { AWS_CONFIG_FILE: "/tmp/config" },
     { AWS_CONTAINER_AUTHORIZATION_TOKEN: "controller-token" },
     { AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: "/tmp/controller-token" },
     { AWS_ENDPOINT_URL: "https://controller.invalid" },
