@@ -13,6 +13,7 @@ const HERMES_TOOLS = Object.freeze([
   "agent_handshake_submit",
   "agent_handshake_get_certificate",
 ]);
+const KIT_COMMIT = "0123456789abcdef0123456789abcdef01234567";
 
 function hermesTransport({ role, calls }) {
   return {
@@ -67,6 +68,7 @@ for (const role of ["initiator", "responder"]) {
         assert.equal(candidate.actionId, action.actionId);
         return { decision: "authorize" };
       },
+      kitCommit: KIT_COMMIT,
       nowMs: () => 1786337001000,
       retainedActions: [action],
       transport: hermesTransport({ role, calls }),
@@ -120,12 +122,14 @@ for (const role of ["initiator", "responder"]) {
 test("Hermes native adapter rejects generic MCP endpoints, raw events, and authority options", async () => {
   const action = retainedAction({ role: "initiator" });
   assert.throws(() => createHermesNativeHarnessAdapter({
+    kitCommit: KIT_COMMIT,
     privateKey: "secret",
     retainedActions: [],
     transport: {},
     trustedAdapterPublicKeys: [action.adapterPublicKey],
   }));
   const adapter = createHermesNativeHarnessAdapter({
+    kitCommit: KIT_COMMIT,
     retainedActions: [],
     transport: {
       async launch() {},
@@ -151,4 +155,115 @@ test("Hermes native adapter rejects generic MCP endpoints, raw events, and autho
   await assert.rejects(() => adapter.launchSession({ runtime, mandate: { reference: "NS-1847" }, mcpEndpoint: "https://mcp.clockchain.network/mcp", a2aConfig: a2aConfig("initiator") }));
   await adapter.launchSession({ runtime, mandate: { reference: "NS-1847" }, mcpEndpoint: MCP_ENDPOINT, a2aConfig: a2aConfig("initiator") });
   await assert.rejects(() => adapter.streamEvents({ sessionId: SESSION }));
+});
+
+test("Hermes native adapter requires an explicit nonzero lowercase kit commit before transport", async () => {
+  const action = retainedAction({ role: "initiator" });
+  for (const badKitCommit of [undefined, "0".repeat(40), "A".repeat(40), "abc"]) {
+    const calls = [];
+    const options = {
+      retainedActions: [],
+      transport: hermesTransport({ role: "initiator", calls }),
+      trustedAdapterPublicKeys: [action.adapterPublicKey],
+    };
+    if (badKitCommit !== undefined) options.kitCommit = badKitCommit;
+    assert.throws(() => createHermesNativeHarnessAdapter(options));
+    assert.deepEqual(calls, []);
+  }
+});
+
+test("Hermes native adapter rejects mandate smuggling before transport while allowing public URLs", async () => {
+  const action = retainedAction({ role: "initiator" });
+  for (const mandate of [
+    { reference: "NS-1847", transcript: "hidden" },
+    { reference: "NS-1847", reasoning: "hidden" },
+    { reference: "NS-1847", nested: { filePath: "/private/tmp/secret" } },
+    { reference: "NS-1847", nested: { cwd: "/workspace" } },
+    { reference: "NS-1847", nested: { home: "~/state" } },
+    { reference: "NS-1847", nested: { publicStatement: "C:\\Users\\secret\\file" } },
+  ]) {
+    const calls = [];
+    const adapter = createHermesNativeHarnessAdapter({
+      kitCommit: KIT_COMMIT,
+      retainedActions: [],
+      transport: hermesTransport({ role: "initiator", calls }),
+      trustedAdapterPublicKeys: [action.adapterPublicKey],
+    });
+    await assert.rejects(() => adapter.launchSession({
+      runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "hermes" },
+      mandate,
+      mcpEndpoint: MCP_ENDPOINT,
+      a2aConfig: a2aConfig("initiator"),
+    }));
+    assert.deepEqual(calls, []);
+  }
+
+  const calls = [];
+  const adapter = createHermesNativeHarnessAdapter({
+    kitCommit: KIT_COMMIT,
+    retainedActions: [],
+    transport: hermesTransport({ role: "initiator", calls }),
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+  await adapter.launchSession({
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "hermes" },
+    mandate: {
+      reference: "NS-1847",
+      terms: {
+        statement: "Verify the Clockchain mechanics proof.",
+        evidenceUrl: "https://example.test/public",
+      },
+    },
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  });
+  assert.equal(calls.length, 1);
+});
+
+test("Hermes native adapter rejects Proxy inputs before traps execute", async () => {
+  const action = retainedAction({ role: "initiator" });
+  const counts = { options: 0, runtime: 0, mandate: 0, a2a: 0 };
+  const proxy = (key, value) => new Proxy(value, {
+    ownKeys(target) {
+      counts[key] += 1;
+      return Reflect.ownKeys(target);
+    },
+    getOwnPropertyDescriptor(target, property) {
+      counts[key] += 1;
+      return Reflect.getOwnPropertyDescriptor(target, property);
+    },
+  });
+  assert.throws(() => createHermesNativeHarnessAdapter(proxy("options", {
+    kitCommit: KIT_COMMIT,
+    retainedActions: [],
+    transport: {},
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  })));
+  assert.equal(counts.options, 0);
+
+  const adapter = createHermesNativeHarnessAdapter({
+    kitCommit: KIT_COMMIT,
+    retainedActions: [],
+    transport: {},
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+  await assert.rejects(() => adapter.launchSession({
+    runtime: proxy("runtime", { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "hermes" }),
+    mandate: { reference: "NS-1847" },
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  }));
+  await assert.rejects(() => adapter.launchSession({
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "hermes" },
+    mandate: proxy("mandate", { reference: "NS-1847" }),
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  }));
+  await assert.rejects(() => adapter.launchSession({
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "hermes" },
+    mandate: { reference: "NS-1847" },
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: proxy("a2a", a2aConfig("initiator")),
+  }));
+  assert.deepEqual(counts, { options: 0, runtime: 0, mandate: 0, a2a: 0 });
 });

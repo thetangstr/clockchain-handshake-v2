@@ -11,6 +11,8 @@ import { runMechanicsProofController } from "../src/testing/mechanics-proof-cont
 import { ACP_VERSION_PINS, assertAcpPackageLockPins } from "../src/harness/version-pins.mjs";
 import { DIGEST, MCP_ENDPOINT, SESSION, a2aConfig, retainedAction, transportHarness } from "./harness-acp-fixtures.mjs";
 
+const HERMES_KIT_COMMIT = "0123456789abcdef0123456789abcdef01234567";
+
 test("official ACP package versions and lockfile integrity are exact", async () => {
   assert.deepEqual(Object.keys(ACP_VERSION_PINS).sort(), ["claude", "codex"]);
   assert.equal(ACP_VERSION_PINS.codex.version, "1.1.14");
@@ -228,8 +230,8 @@ test("Hermes native adapter remains compatible with the Phase 2 controller inspe
     sessionId: SESSION,
     runtimeAdapter,
     harnessAdapters: {
-      initiator: createHermesNativeHarnessAdapter({ retainedActions: [], transport: {}, trustedAdapterPublicKeys: [retainedAction({ role: "initiator" }).adapterPublicKey] }),
-      responder: createHermesNativeHarnessAdapter({ retainedActions: [], transport: {}, trustedAdapterPublicKeys: [retainedAction({ role: "responder" }).adapterPublicKey] }),
+      initiator: createHermesNativeHarnessAdapter({ kitCommit: HERMES_KIT_COMMIT, retainedActions: [], transport: {}, trustedAdapterPublicKeys: [retainedAction({ role: "initiator" }).adapterPublicKey] }),
+      responder: createHermesNativeHarnessAdapter({ kitCommit: HERMES_KIT_COMMIT, retainedActions: [], transport: {}, trustedAdapterPublicKeys: [retainedAction({ role: "responder" }).adapterPublicKey] }),
     },
     executePair: async (payload) => {
       observed = payload;

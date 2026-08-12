@@ -1,3 +1,5 @@
+import { types } from "node:util";
+
 import {
   createLocalHarnessAdapter,
   validateHarnessEvent,
@@ -6,7 +8,6 @@ import { buildHermesPrompt } from "../core/hermes-launcher.mjs";
 
 const MCP_ENDPOINT = "https://mcp.clockchain.network/handshake/mcp";
 const KIT_URL = "https://github.com/thetangstr/clockchain-handshake-v2.git";
-const DEFAULT_KIT_COMMIT = "0".repeat(40);
 const ROLES = Object.freeze(["initiator", "responder"]);
 const TOOLS = Object.freeze([
   "agent_handshake_invite",
@@ -34,8 +35,44 @@ function fail() {
   throw new Error("Hermes native harness adapter validation failed safely.");
 }
 
+function assertNotProxy(value) {
+  if (value !== null && (typeof value === "object" || typeof value === "function") && types.isProxy(value)) fail();
+}
+
+function smuggledKey(key) {
+  const lower = key.toLowerCase();
+  return (
+    lower === "transcript" ||
+    lower === "reasoning" ||
+    lower === "path" ||
+    lower === "filepath" ||
+    lower === "file" ||
+    lower === "filename" ||
+    lower === "home" ||
+    lower === "homedir" ||
+    lower === "cwd" ||
+    lower.endsWith("path") ||
+    lower.endsWith("file") ||
+    lower.endsWith("home") ||
+    lower.endsWith("cwd") ||
+    lower.includes("_path") ||
+    lower.includes("_file") ||
+    lower.includes("_home") ||
+    lower.includes("_cwd") ||
+    lower.includes("-path") ||
+    lower.includes("-file") ||
+    lower.includes("-home") ||
+    lower.includes("-cwd")
+  );
+}
+
+function localPathString(value) {
+  return /^(?:\/|~\/|[A-Za-z]:[\\/])/.test(value);
+}
+
 function rejectAuthorityFields(value) {
   if (value === null || value === undefined) return;
+  assertNotProxy(value);
   if (Array.isArray(value)) {
     const descriptors = Object.getOwnPropertyDescriptors(value);
     for (let index = 0; index < value.length; index += 1) {
@@ -51,12 +88,14 @@ function rejectAuthorityFields(value) {
     if (!descriptor.enumerable) continue;
     if (!Object.hasOwn(descriptor, "value")) fail();
     if (/(?:private.?key|secret.?key|controller.?private.?key|signer|override|control|token|credential)/i.test(key)) fail();
+    if (smuggledKey(key)) fail();
     rejectAuthorityFields(descriptor.value);
   }
 }
 
 function exactObject(value, keys) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) fail();
+  assertNotProxy(value);
   const descriptors = Object.getOwnPropertyDescriptors(value);
   const objectKeys = Object.keys(descriptors);
   if (JSON.stringify(objectKeys.sort()) !== JSON.stringify([...keys].sort())) fail();
@@ -82,15 +121,18 @@ function legacyRole(value) {
 }
 
 function isPlainDataObject(value) {
+  assertNotProxy(value);
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 }
 
 function freezeData(value, depth = 0) {
+  assertNotProxy(value);
   if (depth > MAX_DATA_DEPTH) fail();
   if (typeof value === "string") {
     if (value.length > MAX_STRING_LENGTH) fail();
+    if (localPathString(value)) fail();
     return value;
   }
   if (typeof value === "boolean" || value === null) return value;
@@ -181,6 +223,7 @@ function validateEvidence(value, sessionId, sessionRole) {
 
 function snapshotTransport(transport) {
   if (transport === null || typeof transport !== "object" || Array.isArray(transport)) fail();
+  assertNotProxy(transport);
   const descriptors = Object.getOwnPropertyDescriptors(transport);
   const result = {};
   for (const name of TRANSPORT_METHODS) {
@@ -193,6 +236,7 @@ function snapshotTransport(transport) {
 }
 
 export function createHermesNativeHarnessAdapter(options = {}) {
+  assertNotProxy(options);
   const descriptors = Object.getOwnPropertyDescriptors(options);
   const optionKeys = Object.keys(descriptors);
   for (const key of optionKeys) {
@@ -207,7 +251,8 @@ export function createHermesNativeHarnessAdapter(options = {}) {
   const trustedAdapterPublicKeys = descriptors.trustedAdapterPublicKeys?.value;
   const cleanTransport = snapshotTransport(descriptors.transport?.value ?? {});
   const kitUrl = descriptors.kitUrl?.value ?? KIT_URL;
-  const kitCommit = descriptors.kitCommit?.value ?? DEFAULT_KIT_COMMIT;
+  const kitCommit = descriptors.kitCommit?.value;
+  if (typeof kitCommit !== "string" || !/^[0-9a-f]{40}$/.test(kitCommit) || /^0{40}$/.test(kitCommit)) fail();
   const configuredInvitationId = descriptors.invitationId?.value;
   const local = createLocalHarnessAdapter({
     decisionCallback,
