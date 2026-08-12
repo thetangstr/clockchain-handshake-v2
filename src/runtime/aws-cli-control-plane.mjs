@@ -30,7 +30,7 @@ const ALLOWED = new Set([
   "sqs list-queues",
 ]);
 const PARTY_FAILURE_PREFIX = "Mechanics proof party failed safely. stage=";
-const PARTY_FAILURE_STAGE = /^(?:runtime-create|exchange-create|bootstrap-publish|bootstrap-await|exchange-destroy|managed-hold|runtime-run(?:\.(?:peer-validate|listener-create|listener-ready|invitation-await|recorder-create|recorder-(?:construction-(?:options|room|paths|platform)|release-(?:manifest|helper)-fetch|release-assets|adapter-layout|completion-socket)|bridge-create|provider-auth|transport-create|adapter-create|agent-starting|agent-launch|evidence-validate|certificate-event|agent-terminate|evidence-collect|teardown|listener-listen-(?:eacces|eaddrinuse|eaddrnotavail|eperm|other)))?)$/;
+const PARTY_FAILURE_STAGE = /^(?:runtime-create|exchange-create|bootstrap-publish|bootstrap-await|exchange-destroy|managed-hold|runtime-run(?:\.(?:peer-validate|listener-create|listener-ready|invitation-await|recorder-create|recorder-(?:construction-(?:options|room|paths|platform)|release-(?:manifest|helper)-fetch|release-assets|adapter-layout|completion-socket)|checkpoint-client-create|bridge-create|provider-auth|transport-create|adapter-create|agent-starting|agent-launch|evidence-validate|certificate-event|agent-terminate|evidence-collect|teardown|listener-listen-(?:eacces|eaddrinuse|eaddrnotavail|eperm|other)))?)$/;
 const PARTY_PROGRESS_TYPES = Object.freeze(["a2a.listener.ready", "a2a.invitation.received", "agent.starting", "certificate.verified"]);
 const ECS_ATTESTATION_KEYS = Object.freeze([
   "accountId", "availabilityZone", "containerArn", "family", "imageId", "launchType", "privateIp", "region",

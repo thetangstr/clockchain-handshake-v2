@@ -58,6 +58,7 @@ const RUNTIME_FAILURE_STAGES = Object.freeze([
   "recorder-construction-platform",
   "recorder-release-manifest-fetch", "recorder-release-helper-fetch", "recorder-release-assets",
   "recorder-adapter-layout", "recorder-completion-socket",
+  "checkpoint-client-create",
   "bridge-create", "provider-auth", "transport-create", "adapter-create", "agent-starting",
   "agent-launch", "evidence-validate", "certificate-event", "agent-terminate", "evidence-collect", "teardown",
   "listener-listen-eacces", "listener-listen-eaddrinuse", "listener-listen-eaddrnotavail",
@@ -454,7 +455,12 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
             room: { cache: paths.home, home: paths.home, root: options.root, state: paths.state, tmp: paths.tmp, workspace: paths.workspace },
             socketRoot: paths.socket,
           });
-          const checkpointClient = deps.createCheckpointClient({ endpoint: options.mcpEndpoint });
+          runStage = "checkpoint-client-create";
+          const checkpointClient = deps.createCheckpointClient({
+            endpoint: options.mcpEndpoint,
+            fetchImpl: globalThis.fetch,
+            timeoutMs: 15_000,
+          });
           runStage = "bridge-create";
           bridge = deps.createBridge({
             activateSignedChannel: async (context) => activatePartySignedChannel({

@@ -527,6 +527,38 @@ test("party runtime preserves a branded recorder construction substage", async (
   });
 });
 
+test("party runtime constructs the strict production checkpoint client explicitly", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-checkpoint-client-"));
+  const root = join(parent, "responder");
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  let observed;
+  const runtime = await createMechanicsProofPartyRuntime(options(root), dependencies([], {
+    createCheckpointClient(input) {
+      observed = input;
+      return { submitCheckpoint() {} };
+    },
+  }));
+  await runtime.run({ peerDescriptor: peerDescriptor() });
+  assert.deepEqual(Object.keys(observed).sort(), ["endpoint", "fetchImpl", "timeoutMs"]);
+  assert.equal(observed.endpoint, "https://mcp.clockchain.network/handshake/mcp");
+  assert.equal(observed.fetchImpl, globalThis.fetch);
+  assert.equal(observed.timeoutMs, 15_000);
+});
+
+test("party runtime gives checkpoint construction its own failure stage", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-checkpoint-stage-"));
+  const root = join(parent, "responder");
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const runtime = await createMechanicsProofPartyRuntime(options(root), dependencies([], {
+    createCheckpointClient() { throw new Error("private checkpoint detail"); },
+  }));
+  await assert.rejects(() => runtime.run({ peerDescriptor: peerDescriptor() }), (error) => {
+    assert.equal(mechanicsProofPartyRuntimeFailureStage(error), "checkpoint-client-create");
+    assert.doesNotMatch(JSON.stringify(error), /private|checkpoint detail/i);
+    return true;
+  });
+});
+
 test("party runtime rejects terminal evidence with missing result digest or mismatched card signer", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-terminal-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
