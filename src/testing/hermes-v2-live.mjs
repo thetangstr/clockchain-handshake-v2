@@ -338,7 +338,7 @@ export async function createCommitmentCheckpoint({
   };
   const unsigned = {
     schema: "clockchain.agent-handshake-commitment-checkpoint/v1",
-    version: 1,
+    version: "1",
     protocol: "clockchain.agent-handshake/v2",
     sessionId,
     role,

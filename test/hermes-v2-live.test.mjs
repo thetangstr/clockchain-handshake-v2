@@ -154,7 +154,7 @@ test("proposal checkpoint binds the exact signed envelope to the same role key",
 test("acceptance checkpoint chains to the proposal checkpoint", async () => {
   const proposal = Object.freeze({
     schema: "clockchain.agent-handshake-commitment-checkpoint/v1",
-    version: 1,
+    version: "1",
     protocol: "clockchain.agent-handshake/v2",
     sessionId: SESSION,
     role: "initiator",
