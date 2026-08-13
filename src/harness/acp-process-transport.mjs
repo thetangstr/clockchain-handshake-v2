@@ -61,6 +61,9 @@ const LAUNCH_FAILURE_STAGES = Object.freeze([
   "completion-protocol-bridge-accept", "completion-protocol-bridge-join",
   "completion-protocol-bridge-helper", "completion-protocol-bridge-digest",
   "completion-protocol-bridge-incomplete",
+  "completion-protocol-bridge-incomplete-no-tool-result",
+  "completion-protocol-bridge-incomplete-mcp-failure",
+  "completion-protocol-bridge-incomplete-open-session",
   ...PERMISSION_FAILURE_STAGES.map((stage) => `completion-permission-${stage}`),
   ...ACP_STOP_REASONS.map((reason) => `completion-stop-${reason}`), "completion-stop-unknown",
 ]);
@@ -753,6 +756,8 @@ export function createAcpProcessTransport(optionsInput = {}) {
   let fatalPermissionDenied = false;
   let permissionFailureStage = null;
   let permissionDenials = 0;
+  let completedClockchainToolResults = 0;
+  let authoritativeClockchainToolResults = 0;
   let protocolFailure = false;
   let protocolFailureStage = null;
   let sessionUpdateBarrier = Promise.resolve();
@@ -944,8 +949,11 @@ export function createAcpProcessTransport(optionsInput = {}) {
       }
       if (updateType === "tool_call" || updateType === "tool_call_update") {
         failureStage = "tool-result";
+        const completedClockchainToolResult = parseToolName(params.update) !== null && params.update.status === "completed";
+        if (completedClockchainToolResult) completedClockchainToolResults += 1;
         const toolResult = authoritativeToolResult(params.update);
         if (toolResult !== null) {
+          authoritativeClockchainToolResults += 1;
           if (partyBridge !== null) {
             failureStage = "bridge";
             let bridgeResult;
@@ -1028,6 +1036,8 @@ export function createAcpProcessTransport(optionsInput = {}) {
       fatalPermissionDenied = false;
       permissionFailureStage = null;
       permissionDenials = 0;
+      completedClockchainToolResults = 0;
+      authoritativeClockchainToolResults = 0;
       sessionUpdateBarrier = Promise.resolve();
       cancelRetainedRegistrationWaiters();
       retainedByCommand.clear();
@@ -1135,7 +1145,11 @@ export function createAcpProcessTransport(optionsInput = {}) {
           }
         }
         if (!bridgeComplete) {
-          launchStage = "completion-protocol-bridge-incomplete";
+          launchStage = completedClockchainToolResults === 0
+            ? "completion-protocol-bridge-incomplete-no-tool-result"
+            : authoritativeClockchainToolResults === 0
+              ? "completion-protocol-bridge-incomplete-mcp-failure"
+              : "completion-protocol-bridge-incomplete-open-session";
           fail();
         }
         usage = promptUsage;
