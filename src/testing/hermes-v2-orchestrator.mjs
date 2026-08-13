@@ -228,7 +228,10 @@ async function signPending({ agent, checkpoints, client, response }) {
     !SIGNATURE.test(executed.result.signatureHex ?? "")
   ) fail("SIGNATURE_RESULT_INVALID");
   if (["proposal", "acceptance"].includes(request.operation)) {
-    const walletPath = join(executed.expected.argv[9], "wallet.json");
+    if (typeof executed.expected.stateDir !== "string" || !executed.expected.stateDir.startsWith(`${agent.room.tmp}/`)) {
+      fail("ROLE_WALLET_PATH_INVALID");
+    }
+    const walletPath = join(executed.expected.stateDir, "wallet.json");
     let wallet;
     try { wallet = JSON.parse(await readPrivateText({ path: walletPath })); } catch { fail("ROLE_WALLET_INVALID"); }
     const account = privateKeyToAccount(wallet.privateKey);

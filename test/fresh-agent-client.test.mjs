@@ -1076,7 +1076,8 @@ test("harness adapter executes the exact MCP-bound argv after only a short diges
     return { ok: true, status: 200, arrayBuffer: async () => bytes };
   };
   const adapter = await prepareAgentHarnessAdapter({ fetchImpl, manifestDigest, room, runtimeExecPath: process.execPath });
-  adapter.record(step);
+  const recorded = adapter.record(step);
+  assert.equal(recorded.stateDir, join(room.tmp, ".clockchain", "handshakes", SESSION, "initiator"));
 
   await assert.rejects(
     execFileAsync(join(adapter.bin, "clockchain-agent-authorize"), ["f".repeat(64)], {

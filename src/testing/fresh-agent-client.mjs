@@ -915,7 +915,7 @@ export async function prepareAgentHarnessAdapter({
     } catch (error) {
       if (error?.code !== "EEXIST" || readFileSync(target, "utf8") !== bytes) fail();
     }
-    return expected;
+    return Object.freeze({ ...expected, stateDir: argv[9] });
   }
 
   async function authorize(value) {
