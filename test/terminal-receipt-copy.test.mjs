@@ -68,6 +68,9 @@ function evidenceFixture() {
 
 test("formats separate party identities with one shared certificate and receipt chain", () => {
   const evidence = evidenceFixture();
+  evidence.roles.initiator.privateKey = "PRIVATE_KEY_CANARY";
+  evidence.roles.initiator.roleAccess = "ROLE_ACCESS_CANARY";
+  evidence.roles.initiator.statePath = "/private/tmp/party-state";
   const payer = formatTerminalReceiptCopy(evidence, "initiator");
   const requestor = formatTerminalReceiptCopy(evidence, "responder");
 
@@ -99,6 +102,13 @@ test("formats separate party identities with one shared certificate and receipt 
   }
   assert.match(payer, /No external business action occurred\./);
   assert.match(requestor, /No external business action occurred\./);
+  for (const forbidden of [
+    "PRIVATE_KEY_CANARY",
+    "ROLE_ACCESS_CANARY",
+    "/private/tmp/party-state",
+  ]) {
+    assert.doesNotMatch(payer, new RegExp(forbidden.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")));
+  }
   assert.ok(payer.endsWith("\n"));
   assert.ok(requestor.endsWith("\n"));
 });

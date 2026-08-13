@@ -65,6 +65,13 @@ successful only after both panes say that the closing certificate was verified
 and the runner saves a redacted public evidence artifact under
 `docs/evidence/live-tmux/`.
 
+At completion, each stable terminal also prints a detailed stakeholder receipt
+copy. The Codex pane shows the Payer's ERC-8004 registration proof; the Claude
+pane shows the Requestor's. Both copies show the same signed certificate and
+the proposal, acceptance, and acknowledgment ledger references. These copies
+come from the verified public evidence object and never include private keys,
+role access, provider credentials, or local state paths.
+
 ## If the run stops
 
 Do not reuse an invitation or a disposed identity. The runner saves a typed,
