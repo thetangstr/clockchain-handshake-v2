@@ -10,10 +10,10 @@ async function readRootFile(path) {
   return readFile(join(ROOT, path), "utf8");
 }
 
-test("host container runs on Node 22 as a non-root production install", async () => {
+test("host container runs on Node 24 as a non-root production install", async () => {
   const dockerfile = await readRootFile("Dockerfile");
 
-  assert.match(dockerfile, /^FROM node:22(?:\b|[-:])/m);
+  assert.match(dockerfile, /^FROM node:24(?:\b|[-:])/m);
   assert.match(dockerfile, /^WORKDIR \/app$/m);
   assert.match(dockerfile, /^ENV NODE_ENV=production$/m);
   assert.match(
