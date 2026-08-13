@@ -235,22 +235,22 @@ export async function runMain({
     const options = resolved?.runOptions ?? resolved;
     if (resolved?.attestation !== undefined) {
       stdout.write(`${JSON.stringify(resolved.attestation)}\n`);
-      failureStage = "runtime-create";
     }
+    failureStage = "runtime-create";
     runtime = await createRuntime(options);
-    if (failureStage !== null) failureStage = "exchange-create";
+    failureStage = "exchange-create";
     bootstrapExchange = argv[2] === "--run-managed"
       ? createManagedBootstrapExchange(Object.freeze({ ...managedEnvironment, role: options.role, runId: options.runId }))
       : createBootstrapExchange({ role: options.role, runId: options.runId, stdin, stdout });
-    if (failureStage !== null) failureStage = "bootstrap-publish";
+    failureStage = "bootstrap-publish";
     await bootstrapExchange.publishOwnDescriptor(runtime.bootstrapDescriptor());
-    if (failureStage !== null) failureStage = "bootstrap-await";
+    failureStage = "bootstrap-await";
     const peerDescriptor = await bootstrapExchange.awaitPeerDescriptor();
-    if (failureStage !== null) failureStage = "exchange-destroy";
+    failureStage = "exchange-destroy";
     await bootstrapExchange.destroy();
     bootstrapExchangeDestroyed = true;
     runInvoked = true;
-    if (failureStage !== null) failureStage = "runtime-run";
+    failureStage = "runtime-run";
     const evidence = await runtime.run({
       peerDescriptor,
       onPublicEvent(event) { stdout.write(`${JSON.stringify(event)}\n`); },

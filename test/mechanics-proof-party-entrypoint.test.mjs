@@ -195,6 +195,32 @@ test("run mode emits bootstrap first, consumes one peer descriptor, then emits t
   ]);
 });
 
+test("local run mode reports the exact public lifecycle boundary after private input validation", async () => {
+  const stderr = new PassThrough();
+  let errorText = "";
+  stderr.on("data", (chunk) => { errorText += chunk.toString("utf8"); });
+  const code = await runMain({
+    argv: ["node", "bin/mechanics-proof-party.mjs", "--run"],
+    createBootstrapExchange: () => ({
+      async publishOwnDescriptor() {},
+      async awaitPeerDescriptor() { return { peer: true }; },
+      async destroy() {},
+    }),
+    createRuntime: async () => ({
+      bootstrapDescriptor() { return { local: true }; },
+      async destroy() {},
+      async run() { throw new Error("private runtime detail"); },
+    }),
+    env: runEnv(),
+    stderr,
+    stdin: Readable.from([]),
+    stdout: new PassThrough(),
+  });
+  assert.equal(code, 1);
+  assert.equal(errorText, "Mechanics proof party failed safely. stage=runtime-run\n");
+  assert.doesNotMatch(errorText, /private runtime detail/i);
+});
+
 test("managed run mode selects SQS exchange without publishing queue URLs", async () => {
   const output = new PassThrough();
   let text = "";

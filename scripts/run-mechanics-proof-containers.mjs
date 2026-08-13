@@ -437,7 +437,10 @@ export function createDockerCliDriver({ spawnImpl = spawn } = {}) {
     async removeNetwork(network) { await run(["network", "rm", network.name ?? network.id]); },
     async assertContainerAbsent(container) {
       const name = container.name;
-      await assertAbsent(["container", "inspect", name], [`Error: No such container: ${name}`]);
+      await assertAbsent(["container", "inspect", name], [
+        `Error: No such container: ${name}`,
+        `Error response from daemon: No such container: ${name}`,
+      ]);
     },
     async assertNetworkAbsent(network) {
       const name = network.name ?? network.id;

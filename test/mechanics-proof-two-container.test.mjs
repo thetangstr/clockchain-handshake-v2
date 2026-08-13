@@ -419,6 +419,9 @@ test("real Docker driver accepts only an exact not-found inspect as teardown pro
     spawnImpl: spawnWith({ code: 1, stderr: "Error: No such container: gone\n", stdout: "[]\n" }),
   }).assertContainerAbsent({ name: "gone" });
   await createDockerCliDriver({
+    spawnImpl: spawnWith({ code: 1, stderr: "Error response from daemon: No such container: gone\n", stdout: "[]\n" }),
+  }).assertContainerAbsent({ name: "gone" });
+  await createDockerCliDriver({
     spawnImpl: spawnWith({ code: 1, stderr: "Error response from daemon: network gone not found\n", stdout: "[]\n" }),
   }).assertNetworkAbsent({ name: "gone" });
   await assert.rejects(
