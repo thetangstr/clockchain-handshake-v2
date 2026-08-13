@@ -117,6 +117,7 @@ function acpFixtureSpawn({
   newSessionResolvedMarker = false,
   newSessionUpdateSessionId = `acp-${SESSION}`,
   newSessionId = `acp-${SESSION}`,
+  newSessionIds = null,
   sessionUpdates = null,
   closeOnSignal = "SIGTERM",
   failInitialize = false,
@@ -139,6 +140,7 @@ function acpFixtureSpawn({
   duplicatePermissionOptions = null,
 }) {
   let promptCount = 0;
+  let newSessionCount = 0;
   return (command, args, options) => {
     calls.push({ command, args, options });
     const clientToAgent = new TransformStream();
@@ -161,7 +163,9 @@ function acpFixtureSpawn({
           }
         }
         if (newSessionResolvedMarker) calls.push(["newSessionResolved"]);
-        return { sessionId: newSessionId };
+        const sessionId = newSessionIds === null ? newSessionId : newSessionIds[newSessionCount];
+        newSessionCount += 1;
+        return { sessionId };
       },
       async setSessionConfigOption(params) {
         calls.push(["setSessionConfigOption", params]);
@@ -490,6 +494,16 @@ test("ACP process transport forwards only role-specific provider auth and pins t
   assert.deepEqual(claudeCalls.find((call) => Array.isArray(call) && call[0] === "newSession")?.[1]._meta, {
     claudeCode: {
       options: {
+        tools: [
+          "Bash",
+          "mcp__clockchain-handshake__agent_handshake_accept_invitation",
+          "mcp__clockchain-handshake__agent_handshake_get_certificate",
+          "mcp__clockchain-handshake__agent_handshake_invite",
+          "mcp__clockchain-handshake__agent_handshake_join",
+          "mcp__clockchain-handshake__agent_handshake_next",
+          "mcp__clockchain-handshake__agent_handshake_status",
+          "mcp__clockchain-handshake__agent_handshake_submit",
+        ],
         toolAliases: {
           agent_handshake_accept_invitation: "mcp__clockchain-handshake__agent_handshake_accept_invitation",
           agent_handshake_get_certificate: "mcp__clockchain-handshake__agent_handshake_get_certificate",
@@ -1587,7 +1601,11 @@ test("ACP continuation advances a joined party with one exact next call", async 
   const transport = createAcpProcessTransport({
     harness: "codex",
     pin: ACP_VERSION_PINS.codex,
-    spawn: acpFixtureSpawn({ calls, sessionUpdates: [joinUpdate], skipPermission: true }),
+    spawn: acpFixtureSpawn({
+      calls,
+      sessionUpdates: [joinUpdate],
+      skipPermission: true,
+    }),
     workspace: "/workspace/initiator",
     home: "/workspace/initiator/home",
     partyBridge: partyBridgeFor(calls, {
@@ -1628,7 +1646,12 @@ test("Claude continuation resolves the exact native next tool after joining", as
   const transport = createAcpProcessTransport({
     harness: "claude",
     pin: ACP_VERSION_PINS.claude,
-    spawn: acpFixtureSpawn({ calls, sessionUpdates: [joinUpdate], skipPermission: true }),
+    spawn: acpFixtureSpawn({
+      calls,
+      newSessionIds: ["acp-claude-turn-1", "acp-claude-turn-2"],
+      sessionUpdates: [joinUpdate],
+      skipPermission: true,
+    }),
     workspace: "/workspace/responder",
     home: "/workspace/responder/home",
     partyBridge: partyBridgeFor(calls, {
@@ -1648,8 +1671,45 @@ test("Claude continuation resolves the exact native next tool after joining", as
     a2aConfig: a2aConfig("responder"),
   });
   const continuation = calls.filter((entry) => entry[0] === "prompt")[1][1].prompt[0].text;
+  assert.equal(calls.filter((entry) => entry[0] === "newSession").length, 2);
+  assert.deepEqual(calls.filter((entry) => entry[0] === "prompt").map((entry) => entry[1].sessionId), [
+    "acp-claude-turn-1",
+    "acp-claude-turn-2",
+  ]);
   assert.match(continuation, /mcp__clockchain-handshake__agent_handshake_next/);
-  assert.match(continuation, /ToolSearch/);
+  assert.match(continuation, /preloaded in this session/);
+  assert.doesNotMatch(continuation, /ToolSearch/);
+});
+
+test("Claude session exposes Bash plus exactly seven Clockchain MCP tools without deferred search", async () => {
+  const calls = [];
+  const transport = createAcpProcessTransport({
+    harness: "claude",
+    pin: ACP_VERSION_PINS.claude,
+    spawn: acpFixtureSpawn({ calls, skipPermission: true }),
+    workspace: "/workspace/responder",
+    home: "/workspace/responder/home",
+    env: {},
+    trustedAdapterPublicKeys: [retainedAction({ role: "responder" }).adapterPublicKey],
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.claude,
+    runtime: { runtimeId: "runtime-responder", sessionId: SESSION, role: "responder", harness: "claude" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("responder"),
+  });
+  const options = calls.find((entry) => entry[0] === "newSession")[1]._meta.claudeCode.options;
+  assert.deepEqual(options.tools, [
+    "Bash",
+    "mcp__clockchain-handshake__agent_handshake_accept_invitation",
+    "mcp__clockchain-handshake__agent_handshake_get_certificate",
+    "mcp__clockchain-handshake__agent_handshake_invite",
+    "mcp__clockchain-handshake__agent_handshake_join",
+    "mcp__clockchain-handshake__agent_handshake_next",
+    "mcp__clockchain-handshake__agent_handshake_status",
+    "mcp__clockchain-handshake__agent_handshake_submit",
+  ]);
 });
 
 test("ACP continuation submits the exact result of a completed signing helper", async () => {
@@ -1887,7 +1947,8 @@ test("ACP responder continuation repeats the exact private invitation while no p
   assert.match(prompts[1][1].prompt[0].text, new RegExp(INVITATION.replace(".", "\\.")));
   assert.match(prompts[1][1].prompt[0].text, /agent_handshake_accept_invitation/);
   assert.match(prompts[1][1].prompt[0].text, /mcp__clockchain-handshake__agent_handshake_accept_invitation/);
-  assert.match(prompts[1][1].prompt[0].text, /ToolSearch/);
+  assert.match(prompts[1][1].prompt[0].text, /preloaded in this session/);
+  assert.doesNotMatch(prompts[1][1].prompt[0].text, /ToolSearch/);
   assert.doesNotMatch(prompts[1][1].prompt[0].text, /read.*(?:file|path)|responder-invitation/i);
 });
 

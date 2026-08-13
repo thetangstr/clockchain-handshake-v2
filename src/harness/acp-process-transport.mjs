@@ -29,6 +29,7 @@ const CLAUDE_CLOCKCHAIN_PERMISSION_TOOLS = Object.freeze(new Set([
 const CLAUDE_CLOCKCHAIN_TOOL_ALIASES = Object.freeze(Object.fromEntries(
   [...CLAUDE_CLOCKCHAIN_PERMISSION_TOOLS].map((tool) => [tool, `mcp__${TOOL_SERVER}__${tool}`]),
 ));
+const CLAUDE_CLOCKCHAIN_TOOLS = Object.freeze(["Bash", ...Object.values(CLAUDE_CLOCKCHAIN_TOOL_ALIASES)]);
 const ROLES = Object.freeze(["initiator", "responder"]);
 const HELPER_OPERATIONS = Object.freeze(["init", "policy", "inspect", "register", "sign", "verify-certificate"]);
 const MAX_DEPTH = 12;
@@ -374,7 +375,7 @@ function promptToolName(harness, tool) {
 
 function deferredToolInstructions(harness, tool) {
   return harness === "claude"
-    ? [`Use ToolSearch to load the exact native tool ${promptToolName(harness, tool)} before calling it.`]
+    ? [`The exact native tool ${promptToolName(harness, tool)} is preloaded in this session; call it directly.`]
     : [];
 }
 
@@ -1429,7 +1430,10 @@ export function createAcpProcessTransport(optionsInput = {}) {
           ...(harness === "claude" ? {
             _meta: Object.freeze({
               claudeCode: Object.freeze({
-                options: Object.freeze({ toolAliases: CLAUDE_CLOCKCHAIN_TOOL_ALIASES }),
+                options: Object.freeze({
+                  tools: CLAUDE_CLOCKCHAIN_TOOLS,
+                  toolAliases: CLAUDE_CLOCKCHAIN_TOOL_ALIASES,
+                }),
               }),
             }),
           } : {}),
@@ -1455,6 +1459,30 @@ export function createAcpProcessTransport(optionsInput = {}) {
         let bridgeComplete = false;
         let bridgeProgress = null;
         for (let promptAttempt = 0; promptAttempt < MAX_COMPLETION_PROMPTS && !bridgeComplete; promptAttempt += 1) {
+          if (harness === "claude" && promptAttempt > 0) {
+            launchStage = "session";
+            sessionEstablishing = true;
+            provisionalAcpSessionId = null;
+            acpSessionId = null;
+            const continuationSession = await connection.newSession({
+              cwd: options.workspace,
+              mcpServers: [mcpServer()],
+              _meta: Object.freeze({
+                claudeCode: Object.freeze({
+                  options: Object.freeze({
+                    tools: CLAUDE_CLOCKCHAIN_TOOLS,
+                    toolAliases: CLAUDE_CLOCKCHAIN_TOOL_ALIASES,
+                  }),
+                }),
+              }),
+            });
+            sessionEstablishing = false;
+            if (typeof continuationSession?.sessionId !== "string" || continuationSession.sessionId.length === 0) fail();
+            if (provisionalAcpSessionId !== null && provisionalAcpSessionId !== continuationSession.sessionId) fail();
+            acpSessionId = continuationSession.sessionId;
+            for (const update of provisionalToolUpdates.splice(0)) await sessionUpdate(update);
+            event("acp.session.new", "created Claude continuation ACP session", digest(continuationSession.sessionId));
+          }
           recoverablePermissionCancellation = false;
           launchStage = "prompt";
           const prompted = await connection.prompt({
