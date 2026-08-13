@@ -15,6 +15,11 @@ command -v tmux >/dev/null
 command -v codex >/dev/null
 command -v claude >/dev/null
 
+if tmux -L "$TMUX_SERVER" has-session -t "$CONTROLLER_SESSION" 2>/dev/null; then
+  print -u2 'A Clockchain live run is already active. Wait for it to finish before starting another.'
+  exit 73
+fi
+
 print 'Codex / Payer — Terra' >| "$CODEX_LOG"
 print 'READY. Waiting for the controller to start the production run.' >> "$CODEX_LOG"
 print 'Claude Code / Requestor — Sonnet' >| "$CLAUDE_LOG"
@@ -31,11 +36,7 @@ if tmux -L "$TMUX_SERVER" has-session -t "$CLAUDE_SESSION" 2>/dev/null; then
 else
   tmux -L "$TMUX_SERVER" new-session -d -s "$CLAUDE_SESSION" "tail -n +1 -F '$CLAUDE_LOG'"
 fi
-if tmux -L "$TMUX_SERVER" has-session -t "$CONTROLLER_SESSION" 2>/dev/null; then
-  tmux -L "$TMUX_SERVER" respawn-pane -k -t "$CONTROLLER_SESSION:0.0" "$SCRIPT_DIR/wait-for-live-demo-funding.zsh"
-else
-  tmux -L "$TMUX_SERVER" new-session -d -s "$CONTROLLER_SESSION" "$SCRIPT_DIR/wait-for-live-demo-funding.zsh"
-fi
+tmux -L "$TMUX_SERVER" new-session -d -s "$CONTROLLER_SESSION" "$SCRIPT_DIR/wait-for-live-demo-funding.zsh"
 tmux -L "$TMUX_SERVER" clear-history -t "$CODEX_SESSION:0.0"
 tmux -L "$TMUX_SERVER" clear-history -t "$CLAUDE_SESSION:0.0"
 tmux -L "$TMUX_SERVER" clear-history -t "$CONTROLLER_SESSION:0.0"

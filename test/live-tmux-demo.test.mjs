@@ -23,7 +23,8 @@ test("live tmux launcher keeps stable human-readable Codex and Claude panes", as
   assert.match(source, /tmux -L \"\$TMUX_SERVER\" new-session/);
   assert.match(source, /tmux -L \"\$TMUX_SERVER\" respawn-pane -k -t \"\$CODEX_SESSION:0\.0\"/);
   assert.match(source, /tmux -L \"\$TMUX_SERVER\" respawn-pane -k -t \"\$CLAUDE_SESSION:0\.0\"/);
-  assert.match(source, /tmux -L \"\$TMUX_SERVER\" respawn-pane -k -t \"\$CONTROLLER_SESSION:0\.0\"/);
+  assert.match(source, /tmux -L \"\$TMUX_SERVER\" new-session -d -s \"\$CONTROLLER_SESSION\"/);
+  assert.doesNotMatch(source, /respawn-pane -k -t \"\$CONTROLLER_SESSION/);
   assert.match(source, /tmux -L \"\$TMUX_SERVER\" clear-history -t \"\$CODEX_SESSION:0\.0\"/);
   assert.match(source, /tmux -L \"\$TMUX_SERVER\" clear-history -t \"\$CLAUDE_SESSION:0\.0\"/);
   assert.match(source, /wait-for-live-demo-funding\.zsh/);

@@ -52,6 +52,13 @@ second start command and no stale invitation to paste. If the panes do not yet
 exist on a newly prepared machine, click Start first, then attach to them as
 soon as the button reports **Demo started**.
 
+While a controller run is active, the button stays locked across page reloads.
+If a local run stops while its server session is still open, the page says
+**Previous run stopped** and **Waiting for session to close** instead of
+pretending the run is live. The button unlocks automatically after that
+time-bounded session closes. Never click around the lock or restart the tmux
+controller manually; doing so would replace the evidence-producing process.
+
 ## What the audience should see
 
 1. Codex opens the handshake and creates the one-time invitation.

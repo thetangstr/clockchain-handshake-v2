@@ -29,13 +29,16 @@ async function readEmptyObject(request) {
   }
 }
 
-export function createFacilitatorDemoControlHandler({ allowedOrigins, launchDemo }) {
+export function createFacilitatorDemoControlHandler({ allowedOrigins, getDemoState, launchDemo }) {
   if (!Array.isArray(allowedOrigins) || allowedOrigins.length === 0 ||
       allowedOrigins.some((origin) => typeof origin !== "string" || origin.length === 0)) {
     throw new TypeError("allowedOrigins must contain at least one origin.");
   }
   if (typeof launchDemo !== "function") {
     throw new TypeError("launchDemo must be a function.");
+  }
+  if (typeof getDemoState !== "function") {
+    throw new TypeError("getDemoState must be a function.");
   }
 
   const trustedOrigins = new Set(allowedOrigins);
@@ -69,10 +72,11 @@ export function createFacilitatorDemoControlHandler({ allowedOrigins, launchDemo
     }
 
     if (request.method === "GET" && url.pathname === "/control/status") {
+      const demoState = starting ? "starting" : await getDemoState();
       sendJson(response, 200, {
         ok: true,
-        ready: !starting,
-        state: starting ? "starting" : "ready",
+        ready: demoState === "ready",
+        state: demoState,
       }, origin);
       return;
     }
@@ -95,6 +99,15 @@ export function createFacilitatorDemoControlHandler({ allowedOrigins, launchDemo
         code: "DEMO_START_IN_PROGRESS",
         ok: false,
         state: "starting",
+      }, origin);
+      return;
+    }
+    const demoState = await getDemoState();
+    if (demoState !== "ready") {
+      sendJson(response, 409, {
+        code: demoState === "blocked" ? "DEMO_SESSION_OPEN" : "DEMO_ALREADY_ACTIVE",
+        ok: false,
+        state: demoState,
       }, origin);
       return;
     }

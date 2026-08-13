@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import { createFacilitatorDemoControlHandler } from "../src/testing/facilitator-demo-control.mjs";
 
 const DEFAULT_PORT = 43181;
+const tmuxServer = process.env.CLOCKCHAIN_TMUX_SERVER ?? "clockchain-demo";
+const controllerSession = process.env.CLOCKCHAIN_CONTROLLER_TMUX_SESSION ?? "clockchain-controller";
 const launcherPath = fileURLToPath(new URL("../scripts/start-live-tmux-demo.zsh", import.meta.url));
 const configuredPort = Number.parseInt(process.env.CLOCKCHAIN_FACILITATOR_CONTROL_PORT ?? "", 10);
 const port = Number.isSafeInteger(configuredPort) && configuredPort > 0 && configuredPort <= 65535
@@ -29,6 +31,38 @@ function launchDemo() {
   });
 }
 
+function tmuxRunIsActive() {
+  return new Promise((resolve) => {
+    const child = spawn("tmux", ["-L", tmuxServer, "has-session", "-t", controllerSession], {
+      shell: false,
+      stdio: "ignore",
+    });
+    child.once("error", () => resolve(false));
+    child.once("exit", (code) => resolve(code === 0));
+  });
+}
+
+async function getDemoState() {
+  if (await tmuxRunIsActive()) return "active";
+  try {
+    const response = await fetch("https://clockchain-research.vercel.app/api/handshake/monitor", {
+      cache: "no-store",
+      signal: AbortSignal.timeout(2500),
+    });
+    if (!response.ok) return "ready";
+    const snapshot = await response.json();
+    const currentSessionOpen =
+      snapshot?.schema === "clockchain.agent-handshake-snapshot/v2" &&
+      snapshot?.certificate === null &&
+      snapshot?.failure === null &&
+      Number.isFinite(snapshot?.timing?.sessionDeadlineMs) &&
+      snapshot.timing.sessionDeadlineMs > Date.now();
+    return currentSessionOpen ? "blocked" : "ready";
+  } catch {
+    return "ready";
+  }
+}
+
 const handler = createFacilitatorDemoControlHandler({
   allowedOrigins: [
     "https://clockchain-research.vercel.app",
@@ -37,6 +71,7 @@ const handler = createFacilitatorDemoControlHandler({
     "http://localhost:3101",
     "http://127.0.0.1:3101",
   ],
+  getDemoState,
   launchDemo,
 });
 const server = http.createServer(handler);

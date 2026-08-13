@@ -7,9 +7,10 @@ import { createFacilitatorDemoControlHandler } from "../src/testing/facilitator-
 
 const PRODUCTION_ORIGIN = "https://clockchain-research.vercel.app";
 
-async function withServer(launchDemo, run) {
+async function withServer(launchDemo, run, getDemoState = async () => "ready") {
   const handler = createFacilitatorDemoControlHandler({
     allowedOrigins: [PRODUCTION_ORIGIN, "http://localhost:3000"],
+    getDemoState,
     launchDemo,
   });
   const server = http.createServer(handler);
@@ -36,6 +37,67 @@ test("reports a ready loopback controller to the production monitor", async () =
       state: "ready",
     });
   });
+});
+
+test("reports and preserves an active run across page reloads", async () => {
+  let calls = 0;
+  await withServer(async () => { calls += 1; }, async (base) => {
+    const status = await fetch(`${base}/control/status`, {
+      headers: { origin: PRODUCTION_ORIGIN },
+    });
+    assert.deepEqual(await status.json(), {
+      ok: true,
+      ready: false,
+      state: "active",
+    });
+
+    const duplicate = await fetch(`${base}/control/start`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: PRODUCTION_ORIGIN,
+        "x-clockchain-facilitator": "start-fresh-demo",
+      },
+      body: "{}",
+    });
+    assert.equal(duplicate.status, 409);
+    assert.deepEqual(await duplicate.json(), {
+      code: "DEMO_ALREADY_ACTIVE",
+      ok: false,
+      state: "active",
+    });
+    assert.equal(calls, 0);
+  }, async () => "active");
+});
+
+test("reports an orphaned server session as blocked and refuses a replacement run", async () => {
+  let calls = 0;
+  await withServer(async () => { calls += 1; }, async (base) => {
+    const status = await fetch(`${base}/control/status`, {
+      headers: { origin: PRODUCTION_ORIGIN },
+    });
+    assert.deepEqual(await status.json(), {
+      ok: true,
+      ready: false,
+      state: "blocked",
+    });
+    const replacement = await fetch(`${base}/control/start`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: PRODUCTION_ORIGIN,
+        "x-clockchain-facilitator": "start-fresh-demo",
+      },
+      body: "{}",
+    });
+    assert.equal(replacement.status, 409);
+    assert.deepEqual(await replacement.json(), {
+      code: "DEMO_SESSION_OPEN",
+      ok: false,
+      state: "blocked",
+    });
+    assert.equal(calls, 0);
+  }, async () => "blocked");
 });
 
 test("preflights only the exact monitor origin and facilitator header", async () => {
@@ -154,6 +216,8 @@ test("the executable controller stays loopback-only and launches the existing tm
   assert.match(source, /shell:\s*false/);
   assert.match(source, /start-live-tmux-demo\.zsh/);
   assert.match(source, /http:\/\/localhost:3101/);
+  assert.match(source, /getDemoState/);
+  assert.match(source, /clockchain-controller/);
   assert.doesNotMatch(source, /0\.0\.0\.0|exec\(|execSync\(|shell:\s*true/);
 });
 
@@ -163,4 +227,11 @@ test("the facilitator launcher keeps one stable tmux controller session", async 
   assert.match(source, /facilitator-demo-control\.mjs/);
   assert.match(source, /respawn-pane -k/);
   assert.match(source, /127\.0\.0\.1/);
+});
+
+test("the live launcher refuses to kill an already active controller run", async () => {
+  const source = await readFile(new URL("../scripts/start-live-tmux-demo.zsh", import.meta.url), "utf8");
+  assert.match(source, /A Clockchain live run is already active/);
+  assert.match(source, /has-session -t "\$CONTROLLER_SESSION"/);
+  assert.doesNotMatch(source, /respawn-pane -k -t "\$CONTROLLER_SESSION/);
 });
