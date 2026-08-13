@@ -1006,6 +1006,45 @@ test("ACP process transport rejects a non-command permission without poisoning t
   await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
 });
 
+test("ACP process transport cancels a non-command permission without a reject option and continues Clockchain", async () => {
+  const action = retainedAction({ role: "responder", requestDigest: "d".repeat(64), commandSha256: DIGEST });
+  const calls = [];
+  const transport = createAcpProcessTransport({
+    harness: "claude",
+    pin: ACP_VERSION_PINS.claude,
+    spawn: acpFixtureSpawn({
+      calls,
+      helperAction: action,
+      permissionCwd: "/workspace/responder",
+      unrelatedPermissionBeforeHelper: true,
+      unrelatedPermissionOptions: [{ optionId: "allow_once", name: "Allow once", kind: "allow_once" }],
+      unrelatedPermissionRawInput: { path: "/workspace/responder" },
+    }),
+    workspace: "/workspace/responder",
+    home: "/workspace/responder/home",
+    nowMs: () => 1786337001000,
+    actionRecorder: actionRecorderFor([action], calls),
+    env: {},
+    retainedActions: [],
+    partyBridge: partyBridgeFor(calls),
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.claude,
+    runtime: { runtimeId: "runtime-responder", sessionId: SESSION, role: "responder", harness: "claude" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("responder"),
+  });
+  assert.deepEqual(calls.find((entry) => entry[0] === "unrelatedPermission")[1], {
+    outcome: { outcome: "cancelled" },
+  });
+  assert.deepEqual(calls.find((entry) => entry[0] === "permission")[1], {
+    outcome: { outcome: "selected", optionId: "allow_once" },
+  });
+  await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
+});
+
 test("ACP process transport fails closed when an unrelated command lacks one exact rejection option", async () => {
   const action = retainedAction({ role: "initiator", requestDigest: "d".repeat(64), commandSha256: DIGEST });
   const invalidOptionLists = [

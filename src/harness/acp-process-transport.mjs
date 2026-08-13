@@ -806,7 +806,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
   let terminated = false;
   let permissionAuthorized = false;
   let fatalPermissionDenied = false;
-  let recoverableReplayCancellation = false;
+  let recoverablePermissionCancellation = false;
   let permissionFailureStage = null;
   let permissionDenials = 0;
   let completedClockchainToolResults = 0;
@@ -955,8 +955,11 @@ export function createAcpProcessTransport(optionsInput = {}) {
       if (["approval", "input", "tool"].includes(commandStage) || retainedReplay) {
         try { unrelatedRejection = rejectOnceOption(params); } catch {}
       }
-      if (retainedReplay && unrelatedRejection === null) {
-        recoverableReplayCancellation = true;
+      const recoverableCancellation = unrelatedRejection === null && (
+        retainedReplay || (["input", "tool"].includes(commandStage) && permissionDenials <= MAX_PERMISSION_DENIALS)
+      );
+      if (recoverableCancellation) {
+        recoverablePermissionCancellation = true;
         event("acp.permission.denied", `denied ACP permission at ${publicStage}`, publicStage);
         return Object.freeze({ outcome: Object.freeze({ outcome: "cancelled" }) });
       }
@@ -1157,7 +1160,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
         let bridgeComplete = false;
         let bridgeProgress = null;
         for (let promptAttempt = 0; promptAttempt < MAX_COMPLETION_PROMPTS && !bridgeComplete; promptAttempt += 1) {
-          recoverableReplayCancellation = false;
+          recoverablePermissionCancellation = false;
           launchStage = "prompt";
           const prompted = await connection.prompt({
             sessionId: acpSessionId,
@@ -1183,7 +1186,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
             launchStage = `completion-permission-${permissionFailureStage ?? "unknown"}`;
             fail();
           }
-          if (prompted?.stopReason !== "end_turn" && !(prompted?.stopReason === "cancelled" && recoverableReplayCancellation)) {
+          if (prompted?.stopReason !== "end_turn" && !(prompted?.stopReason === "cancelled" && recoverablePermissionCancellation)) {
             launchStage = ACP_STOP_REASONS.includes(prompted?.stopReason)
               ? `completion-stop-${prompted.stopReason}`
               : "completion-stop-unknown";
