@@ -1166,6 +1166,13 @@ export function createAcpProcessTransport(optionsInput = {}) {
             configId: "model",
             value: provider.model,
           });
+          if (harness === "codex") {
+            await connection.setSessionConfigOption({
+              sessionId: acpSessionId,
+              configId: "reasoning_effort",
+              value: "low",
+            });
+          }
           event("acp.model.pinned", `pinned ${harness} ACP model`, `model:${provider.model}`);
         }
         event("acp.session.new", "created ACP session", digest(created.sessionId));

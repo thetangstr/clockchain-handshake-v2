@@ -812,7 +812,9 @@ test("ACP process transport performs real ACP lifecycle with unauthenticated ded
   });
 
   assert.equal(launched.sessionId, SESSION);
-  assert.deepEqual(calls.filter(Array.isArray).map((entry) => entry[0]), ["initialize", "newSession", "setSessionConfigOption", "prompt", "record", "permission"]);
+  assert.deepEqual(calls.filter(Array.isArray).map((entry) => entry[0]), [
+    "initialize", "newSession", "setSessionConfigOption", "setSessionConfigOption", "prompt", "record", "permission",
+  ]);
   assert.equal(calls[0].options.env.CLOCKCHAIN_MCP_BEARER, undefined);
   assert.equal(calls[0].options.env.CLOCKCHAIN_MCP_AUTH_HEADER, undefined);
   const initialize = calls.find((entry) => entry[0] === "initialize")[1];
@@ -828,6 +830,11 @@ test("ACP process transport performs real ACP lifecycle with unauthenticated ded
     url: MCP_ENDPOINT,
     headers: [],
   }]);
+  const configOptions = calls.filter((entry) => entry[0] === "setSessionConfigOption").map((entry) => entry[1]);
+  assert.deepEqual(configOptions, [
+    { sessionId: `acp-${SESSION}`, configId: "model", value: "gpt-5.6-terra" },
+    { sessionId: `acp-${SESSION}`, configId: "reasoning_effort", value: "low" },
+  ]);
   const prompt = calls.find((entry) => entry[0] === "prompt")[1].prompt[0].text;
   assert.match(prompt, /role: initiator/);
   assert.match(prompt, /NS-1847/);
