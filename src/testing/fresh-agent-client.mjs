@@ -1702,6 +1702,12 @@ function approvalMarkerWords(command) {
   return parseLiteralShellWords(marker);
 }
 
+function stripInertLeadingShellComments(command) {
+  const lines = command.split("\n");
+  while (lines.length > 0 && (lines[0].trim() === "" || lines[0].trimStart().startsWith("#"))) lines.shift();
+  return lines.join("\n");
+}
+
 function isolatedWorkspaceApprovalDigest(command, approvalExecutable) {
   const segments = command.split(" && ");
   if (segments.length !== 2) return null;
@@ -1720,13 +1726,14 @@ function isolatedWorkspaceApprovalDigest(command, approvalExecutable) {
 }
 
 function approvalMarkerDigest(command, approvalExecutable) {
+  const approvalCommand = stripInertLeadingShellComments(command);
   let words = [];
-  try { words = approvalMarkerWords(command); } catch {}
+  try { words = approvalMarkerWords(approvalCommand); } catch {}
   if (
     words.length === 2 && [approvalExecutable, basename(approvalExecutable)].includes(words[0]) &&
     SHA256.test(words[1])
   ) return words[1];
-  return isolatedWorkspaceApprovalDigest(command, approvalExecutable);
+  return isolatedWorkspaceApprovalDigest(approvalCommand, approvalExecutable);
 }
 
 function bindHelperExecution(command, expectedHelperCommands, approvalExecutable, allowOutOfOrder = true) {

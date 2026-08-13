@@ -2461,6 +2461,46 @@ test("accepts Claude's one approval marker with stderr merged into captured outp
   assert.deepEqual(await readdir(parent), []);
 });
 
+test("accepts inert leading narration comments before one exact Claude approval marker", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-claude-commented-approval-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const children = {};
+  const command = nonterminalHelperCommand("responder", "init");
+  const commentedApproval = `# Initialize the fresh Responder identity using the bound action\n${approvalCommand(command)}`;
+  const spawnProcess = () => {
+    const role = children.initiator === undefined ? "initiator" : "responder";
+    const child = new EventEmitter();
+    child.pid = null;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {
+      queueMicrotask(() => {
+        if (role === "initiator") {
+          child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+          return;
+        }
+        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+        children.responder.stdout.emit("data", Buffer.from(claudeExpectedHelperEvent(command)));
+        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(
+          nonterminalHelperResult("responder", "init"),
+          { command: commentedApproval, id: "commented-approval" },
+        )));
+        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
+        children.initiator.emit("close", 0, null);
+        children.responder.emit("close", 0, null);
+      });
+    } };
+    child.kill = () => {};
+    children[role] = child;
+    return child;
+  };
+
+  const result = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, { spawnProcess }));
+
+  assert.equal(result.certificateVerified, true);
+  assert.deepEqual(await readdir(parent), []);
+});
+
 test("accepts the exact isolated adapter executable as the short Claude approval marker", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "fresh-agent-claude-absolute-approval-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
