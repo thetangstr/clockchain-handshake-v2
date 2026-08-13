@@ -11,7 +11,11 @@ import {
   invitationBootstrapFailureStage,
 } from "../a2a/invitation-bootstrap-transport.mjs";
 import { createPartyA2AAuthority } from "../harness/party-a2a-authority.mjs";
-import { activatePartySignedChannel, defaultPartySignedChannelSleep } from "../harness/party-signed-channel-bootstrap.mjs";
+import {
+  activatePartySignedChannel,
+  defaultPartySignedChannelSleep,
+  partySignedChannelBootstrapFailureStage,
+} from "../harness/party-signed-channel-bootstrap.mjs";
 import { createAgentHandshakeCheckpointClient } from "../harness/agent-handshake-mcp-client.mjs";
 import { createAcpClaudeHarnessAdapter } from "../harness/acp-claude-adapter.mjs";
 import { createAcpCodexHarnessAdapter } from "../harness/acp-codex-adapter.mjs";
@@ -664,6 +668,10 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
               role: options.role,
               sessionId: context.sessionId,
               sleep: defaultPartySignedChannelSleep,
+            }).catch((error) => {
+              const clockchainSafeStage = partySignedChannelBootstrapFailureStage(error);
+              if (clockchainSafeStage !== null) Object.defineProperty(error, "clockchainSafeStage", { value: clockchainSafeStage });
+              throw error;
             }),
             completionRecorder: actionRecorder,
             invitationTransport,

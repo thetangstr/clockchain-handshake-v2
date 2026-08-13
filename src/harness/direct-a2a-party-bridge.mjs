@@ -25,9 +25,16 @@ const MAX_DEPTH = 12;
 const MAX_KEYS = 96;
 const MAX_ARRAY = 96;
 const MAX_STRING = 128 * 1024;
+const ACTIVATION_FAILURE_STAGES = Object.freeze([
+  "input", "clock", "authority-create", "authority-methods", "authority-binding",
+  "card-bootstrap-create", "responder-card-sign", "responder-card-publish", "initiator-card-wait",
+  "responder-card-wait", "initiator-card-sign", "initiator-card-publish", "verified-pair", "task-transport",
+]);
 const BRIDGE_FAILURE_STAGES = Object.freeze([
   "input", "tool-name", "clone", "role-access", "session", "invite-shape", "invite-send",
-  "accept", "join", "helper", "digest",
+  "accept", "join-role", "join-session", "join-repository", "join-policy", "join-terms", "join-activation",
+  ...ACTIVATION_FAILURE_STAGES.map((stage) => `join-activation-${stage}`),
+  "helper", "digest",
 ]);
 const BRIDGE_FAILURES = new WeakMap();
 
@@ -623,16 +630,27 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
             bindSession(acceptedSessionId);
           }
           if (item.toolName === "agent_handshake_join") {
-            failureStage = "join";
+            failureStage = "join-role";
             const joinedRole = oneValue(result, "role", (value) => value === options.role);
+            failureStage = "join-session";
             const sessionId = bindSession(oneValue(result, "sessionId", (value) => typeof value === "string" && UUID.test(value)));
+            failureStage = "join-repository";
             const repositorySha = oneValue(result, "repositorySha", (value) => typeof value === "string" && SHA.test(value));
+            failureStage = "join-policy";
             const policyDigest = oneValue(result, "policyDigest", (value) => typeof value === "string" && DIGEST.test(value));
+            failureStage = "join-terms";
             const termsInput = oneValue(result, "terms", (value) => value !== null && typeof value === "object" && !Array.isArray(value));
             const terms = validateAgentHandshakeV2Terms(publicClone(termsInput));
             if (activationContext !== null) fail();
             activationContext = Object.freeze({ policyDigest, repositorySha, role: joinedRole, sessionId, terms });
-            await activate();
+            failureStage = "join-activation";
+            try {
+              await activate();
+            } catch (error) {
+              const stage = typeof error?.clockchainSafeStage === "string" ? error.clockchainSafeStage : null;
+              if (ACTIVATION_FAILURE_STAGES.includes(stage)) failureStage = `join-activation-${stage}`;
+              throw error;
+            }
           }
           failureStage = "helper";
           const singularSteps = findValues(result, "helperStep").filter((value) => value !== null && typeof value === "object");

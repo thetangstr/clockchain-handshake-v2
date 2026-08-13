@@ -47,6 +47,7 @@ const RUNTIME = Object.freeze({
 });
 
 async function setup(t, {
+  activationFailureStage = null,
   initialSessionId = SESSION_ID,
   transformAuthority = (authority) => authority,
   transformCheckpointSubmission = async (input, role) => ({
@@ -122,6 +123,11 @@ async function setup(t, {
       activateSignedChannel: async (context) => {
         activationCalls.push(role);
         activationContexts.push(context);
+        if (activationFailureStage !== null) {
+          const error = new Error("safe activation failure");
+          Object.defineProperty(error, "clockchainSafeStage", { value: activationFailureStage });
+          throw error;
+        }
         return {
           authority: transformAuthority(authorities[role], role),
           cards,
@@ -227,6 +233,46 @@ function joinResult(role, fixture) {
       role,
       sessionId: SESSION_ID,
       terms: TERMS,
+    }),
+  });
+}
+
+function productionJoinResult(role, fixture) {
+  const party = fixture.parties[role];
+  return Object.freeze({
+    role,
+    sessionId: SESSION_ID,
+    hostSessionKeyCertificate: Object.freeze({}),
+    repositorySha: REPOSITORY_SHA,
+    sessionDeadlineMs: String(NOW_MS + 30_000),
+    signingRequest: Object.freeze({
+      schema: "clockchain.agent-handshake-signing-request/v1",
+      helperVersion: "2.1.3",
+      operation: "identity_claim",
+      role,
+      sessionId: SESSION_ID,
+      repositorySha: REPOSITORY_SHA,
+      sessionDeadlineMs: String(NOW_MS + 30_000),
+      hostSessionKeyCertificate: Object.freeze({}),
+      terms: TERMS,
+      policyDigest: party.policyDigest,
+      bytesGzipBase64Url: "H4sIAAAAAAAA_6tWykxRsjI0M7QwMDA0MDA0MDA0MDA0MDQyNDQxNDIyNTM3MjG0BQAA__8BAAD__w",
+      bytesSha256: "f".repeat(64),
+      externalBusinessActionPerformed: false,
+    }),
+    localAction: Object.freeze({
+      executor: "pinned_helper",
+      operation: "sign",
+      payloadEncoding: "base64url_utf8_json",
+      payload: Object.freeze({
+        repositorySha: REPOSITORY_SHA,
+        role,
+        sessionId: SESSION_ID,
+        terms: TERMS,
+        policyDigest: party.policyDigest,
+      }),
+      stateDir: "reuse_exact_absolute_state_dir",
+      afterSuccess: "call_agent_handshake_submit_with_helper_output_and_unchanged_policy_digest",
     }),
   });
 }
@@ -376,6 +422,38 @@ test("party-local bridges activate only from authoritative join context, then de
     assert.equal(evidence.schema, "clockchain.direct-a2a-party-bridge-evidence/v1");
     assert.doesNotMatch(JSON.stringify(evidence), /opaque\.responder|helperStep|shellCommand|signatureHex|bytesGzip|body|payload|private/i);
   }
+});
+
+test("party-local bridge binds the exact nested production join response without requiring duplicate top-level policy or terms", async (t) => {
+  const { activationContexts, bridges, fixture } = await setup(t);
+  const observed = await bridges.initiator.observeToolResult({
+    toolName: "agent_handshake_join",
+    result: productionJoinResult("initiator", fixture),
+  });
+  assert.equal(observed.observed, true);
+  assert.equal(observed.protocolSessionId, SESSION_ID);
+  assert.deepEqual(activationContexts, [{
+    policyDigest: fixture.parties.initiator.policyDigest,
+    repositorySha: REPOSITORY_SHA,
+    role: "initiator",
+    sessionId: SESSION_ID,
+    terms: TERMS,
+  }]);
+});
+
+test("party-local bridge preserves an allowlisted privacy-safe signed-channel activation stage", async (t) => {
+  const { bridges, fixture } = await setup(t, { activationFailureStage: "responder-card-wait" });
+  await assert.rejects(
+    bridges.initiator.observeToolResult({
+      toolName: "agent_handshake_join",
+      result: productionJoinResult("initiator", fixture),
+    }),
+    (error) => {
+      assert.equal(error.message, "Direct A2A party bridge failed safely.");
+      assert.equal(directA2APartyBridgeFailureStage(error), "join-activation-responder-card-wait");
+      return true;
+    },
+  );
 });
 
 test("party-local bridge accepts the exact production init-policy-inspect helper batch", async (t) => {

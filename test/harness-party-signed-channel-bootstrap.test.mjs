@@ -99,3 +99,63 @@ test("party signed channel activation performs responder-first card exchange aft
   assert.equal(initiator.authority, authorities.initiator);
   assert.equal(responder.authority, authorities.responder);
 });
+
+test("party rendezvous outlives short credential windows and issues cards only when the peer is ready", async (t) => {
+  const fixture = await buildV2Fixture();
+  const root = await mkdtemp(join(tmpdir(), "party-signed-channel-delayed-peer-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const events = [];
+  const cardTransports = connectedCardTransports(events);
+  const authorities = {};
+  let nowMs = NOW_MS;
+  for (const role of ["initiator", "responder"]) {
+    const statePath = join(root, role, "wallet.json");
+    await initializeWallet({ statePath, platform: "darwin", generatePrivateKey: () => KEYS[role] });
+    authorities[role] = await createPartyA2AAuthority({
+      nowMs: () => nowMs,
+      peerRuntime: RUNTIME[role === "initiator" ? "responder" : "initiator"],
+      platform: "darwin",
+      policyDigest: fixture.parties[role].policyDigest,
+      repositorySha: REPOSITORY_SHA,
+      role,
+      runtime: RUNTIME[role],
+      sessionId: SESSION_ID,
+      statePath,
+      terms: TERMS,
+    });
+  }
+  const activate = (role, sleep) => activatePartySignedChannel({
+    createAuthority: async () => authorities[role],
+    createCardBootstrap: async ({ authorityBinding }) => createA2ACardBootstrap({
+      role,
+      sessionId: SESSION_ID,
+      nowMs: () => nowMs,
+      ownBinding: cardBinding(authorityBinding),
+      peerBinding: cardBinding(authorities[role === "initiator" ? "responder" : "initiator"].publicBinding()),
+      transport: cardTransports[role],
+    }),
+    createTaskTransport: async () => Object.freeze({
+      async close() {},
+      publicEvidence() { return { messages: [] }; },
+      async receive() { return null; },
+      async sendEnvelope() { throw new Error("not used"); },
+    }),
+    nowMs: () => nowMs,
+    role,
+    sessionId: SESSION_ID,
+    sleep,
+  });
+  let responderActivation = null;
+  const initiatorActivation = activate("initiator", async () => {
+    nowMs += 100;
+    if (nowMs === NOW_MS + 60_000) {
+      responderActivation = activate("responder", async () => new Promise((resolve) => setImmediate(resolve)));
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+  const initiator = await initiatorActivation;
+  const responder = await responderActivation;
+  assert.deepEqual(events, ["responder_card", "initiator_card"]);
+  assert.equal(a2aAgentCardDigest(initiator.cards.initiator), a2aAgentCardDigest(responder.cards.initiator));
+  assert.equal(a2aAgentCardDigest(initiator.cards.responder), a2aAgentCardDigest(responder.cards.responder));
+});

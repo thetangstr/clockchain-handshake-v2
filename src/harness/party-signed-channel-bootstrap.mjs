@@ -5,11 +5,22 @@ const ERROR = "Party signed channel bootstrap failed safely.";
 const ROLES = Object.freeze(["initiator", "responder"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
-const MAX_CARD_POLLS = 6_000;
 const CARD_POLL_DELAY = 5;
+const CARD_RENDEZVOUS_TIMEOUT_MS = 5 * 60_000;
+const CARD_CREDENTIAL_LIFETIME_MS = 25_000;
+const FAILURES = new WeakMap();
 
 function fail() { throw new Error(ERROR); }
 function sanitize(error) { if (error?.message === ERROR) throw error; fail(); }
+function stagedFailure(stage) {
+  const error = new Error(ERROR);
+  FAILURES.set(error, stage);
+  return error;
+}
+
+export function partySignedChannelBootstrapFailureStage(error) {
+  return FAILURES.get(error) ?? null;
+}
 
 function exact(value, keys) {
   try {
@@ -61,6 +72,7 @@ function cardEvidence(value, sessionId, role) {
 }
 
 export async function activatePartySignedChannel(optionsInput = {}) {
+  let failureStage = "input";
   try {
     const options = exact(optionsInput, [
       "createAuthority", "createCardBootstrap", "createTaskTransport", "nowMs", "role", "sessionId", "sleep",
@@ -71,55 +83,77 @@ export async function activatePartySignedChannel(optionsInput = {}) {
       typeof options.createTaskTransport !== "function" || typeof options.nowMs !== "function" ||
       typeof options.sleep !== "function"
     ) fail();
-    const now = options.nowMs();
-    if (!Number.isSafeInteger(now)) fail();
+    failureStage = "clock";
+    const startedAtMs = options.nowMs();
+    if (!Number.isSafeInteger(startedAtMs)) fail();
+    const rendezvousDeadlineMs = startedAtMs + CARD_RENDEZVOUS_TIMEOUT_MS;
+    failureStage = "authority-create";
     const authorityInput = await options.createAuthority();
+    failureStage = "authority-methods";
     const authority = methods(authorityInput, [
       "destroy", "publicBinding", "signAcceptanceCheckpoint", "signInitiatorCard", "signProposalCheckpoint", "signResponderCard",
     ]);
+    failureStage = "authority-binding";
     const authorityBinding = authority.publicBinding();
     if (authorityBinding?.sessionId !== options.sessionId || authorityBinding?.role !== options.role) fail();
+    failureStage = "card-bootstrap-create";
     const bootstrap = methods(await options.createCardBootstrap({ authorityBinding }), [
       "publicEvidence", "publishInitiatorCard", "publishResponderCard", "takeInitiatorCard", "takeResponderCard", "verifiedPair",
     ]);
-    const expiresAtMs = now + 25_000;
+
+    function credentialExpiry() {
+      const now = options.nowMs();
+      if (!Number.isSafeInteger(now) || now >= rendezvousDeadlineMs) fail();
+      return now + CARD_CREDENTIAL_LIFETIME_MS;
+    }
 
     async function takePeerCard(peerRole) {
-      for (let attempt = 0; attempt < MAX_CARD_POLLS; attempt += 1) {
+      while (true) {
         const evidence = cardEvidence(bootstrap.publicEvidence(), options.sessionId, options.role);
         if (evidence.cardDigests[peerRole] !== null) {
           return peerRole === "initiator" ? bootstrap.takeInitiatorCard() : bootstrap.takeResponderCard();
         }
+        const now = options.nowMs();
+        if (!Number.isSafeInteger(now) || now >= rendezvousDeadlineMs) fail();
         await options.sleep();
       }
-      fail();
     }
 
     if (options.role === "responder") {
+      failureStage = "responder-card-sign";
+      const expiresAtMs = credentialExpiry();
       const responderCard = await authority.signResponderCard({
         expiresAtMs: String(expiresAtMs),
         jti: `card-${randomUUID()}`,
         nonce: `card-${randomUUID()}`,
       });
+      failureStage = "responder-card-publish";
       await bootstrap.publishResponderCard({ card: responderCard, expiresAtMs });
+      failureStage = "initiator-card-wait";
       await takePeerCard("initiator");
     } else {
+      failureStage = "responder-card-wait";
       const responderCard = await takePeerCard("responder");
+      failureStage = "initiator-card-sign";
+      const expiresAtMs = credentialExpiry();
       const initiatorCard = await authority.signInitiatorCard({
         expiresAtMs: String(expiresAtMs),
         jti: `card-${randomUUID()}`,
         nonce: `card-${randomUUID()}`,
         responderCard,
       });
+      failureStage = "initiator-card-publish";
       await bootstrap.publishInitiatorCard({ card: initiatorCard, expiresAtMs });
     }
+    failureStage = "verified-pair";
     const pair = exact(await bootstrap.verifiedPair(), ["initiatorCard", "responderCard"]);
     const cards = Object.freeze({ initiator: pair.initiatorCard, responder: pair.responderCard });
+    failureStage = "task-transport";
     const taskTransport = methods(await options.createTaskTransport({ cards, role: options.role }), [
       "close", "publicEvidence", "receive", "sendEnvelope",
     ]);
     return Object.freeze({ authority: authorityInput, cards, taskTransport });
-  } catch (error) { sanitize(error); }
+  } catch { throw stagedFailure(failureStage); }
 }
 
 export function defaultPartySignedChannelSleep() {
