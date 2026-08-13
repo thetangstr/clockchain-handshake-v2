@@ -396,9 +396,8 @@ function continuationPromptText({ role, protocolSessionId, mandate, a2aConfig, b
   if (approvals.length > 0) {
     return [
       "Complete the already-registered Clockchain helper actions before another MCP call.",
-      "Request these exact retained approval commands one at a time, in this order:",
+      "Execute these exact local commands now with the Bash tool, one at a time, in this order:",
       ...approvals.map((approval, index) => `${index + 1}. ${approval}`),
-      "Use the Bash tool exactly once for each command. The adapter authorizes the exact retained command automatically; do not ask a person or use AskUserQuestion.",
       "Run every command in the foreground: run_in_background must be false.",
       "Do not alter, wrap, quote, or replace any command. Do not call another MCP tool until every command above completes.",
     ].join("\n");
