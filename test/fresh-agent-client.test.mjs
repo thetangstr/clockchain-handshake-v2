@@ -1496,7 +1496,12 @@ test("fresh-agent injected failures produce distinct safe diagnostics", async (t
         child.kill = () => {};
         return child;
       },
-      expected: { phase: "invitation", category: "agent", code: "INVITATION_MISSING" },
+      expected: {
+        phase: "invitation",
+        category: "agent",
+        code: "INVITATION_MISSING",
+        details: { client: "codex", lastMcpTool: null, role: "initiator" },
+      },
     }],
     ["monitor", {
       monitor: async () => { throw new Error("monitor raw secret canary-initiator-secret"); },

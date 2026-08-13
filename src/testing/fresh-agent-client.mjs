@@ -199,7 +199,7 @@ function cleanProofMissingDiagnosticDetails(value) {
 }
 
 function cleanDiagnosticDetails(code, value) {
-  if (code === "HELPER_PROOF_MISSING") return cleanProofMissingDiagnosticDetails(value);
+  if (["HELPER_PROOF_MISSING", "INVITATION_MISSING"].includes(code)) return cleanProofMissingDiagnosticDetails(value);
   return cleanHelperDiagnosticDetails(code, value);
 }
 
@@ -1803,7 +1803,9 @@ function observeChild(child, role, all, canaries, { adapter, client, expectedInv
         if (lineBuffer.trim().length > 0) processLine(lineBuffer);
         assertSecretFree(lineBuffer, canaries);
         assertSecretFree(stderr, canaries);
-        if (requireInvitation && observed.invitation === undefined) fail("invitation", "agent", "INVITATION_MISSING");
+        if (requireInvitation && observed.invitation === undefined) {
+          fail("invitation", "agent", "INVITATION_MISSING", { client, lastMcpTool, role });
+        }
         if (observed.helperProof === undefined) {
           fail(
             "agent-exit",
