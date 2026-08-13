@@ -155,7 +155,9 @@ async function prepareClient({ authentication, command, env, room }) {
 }
 
 export async function monitor({ sessionId, retryDelayMs = 1_000, timeoutMs = 120_000 } = {}) {
-  const endpoint = value("CLOCKCHAIN_RESEARCH_MONITOR_URL").replace("{sessionId}", encodeURIComponent(sessionId));
+  const endpointTemplate = value("CLOCKCHAIN_RESEARCH_MONITOR_URL");
+  const exactSessionEndpoint = endpointTemplate.includes("{sessionId}");
+  const endpoint = endpointTemplate.replace("{sessionId}", encodeURIComponent(sessionId));
   if (!Number.isSafeInteger(retryDelayMs) || retryDelayMs < 1 || retryDelayMs > 60_000) throw safeMonitorError("validation", "INVALID_RETRY_DELAY");
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60 * 60 * 1000) throw safeMonitorError("validation", "INVALID_TIMEOUT");
   const deadline = Date.now() + timeoutMs;
@@ -169,7 +171,9 @@ export async function monitor({ sessionId, retryDelayMs = 1_000, timeoutMs = 120
     }
     if (!response.ok) {
       const status = Number.isSafeInteger(response.status) ? response.status : 0;
-      if (!TRANSIENT_MONITOR_STATUSES.has(status)) throw safeMonitorError("http", `HTTP_${status}`);
+      if (!TRANSIENT_MONITOR_STATUSES.has(status) && !(status === 404 && exactSessionEndpoint)) {
+        throw safeMonitorError("http", `HTTP_${status}`);
+      }
       await new Promise((resolvePromise) => setTimeout(resolvePromise, Math.min(retryDelayMs, Math.max(0, deadline - Date.now()))));
       continue;
     }

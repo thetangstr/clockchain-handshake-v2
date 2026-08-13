@@ -938,6 +938,49 @@ test("fresh-agent monitor resolves the authoritative exact-session snapshot URL"
   assert.equal(requestedUrl, `http://relay.example.test/v1/sessions/${SESSION}/snapshot`);
 });
 
+test("fresh-agent monitor retries a transient exact-session 404 during terminal archival", async (t) => {
+  const previousEndpoint = process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL;
+  process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL = "http://relay.example.test/v1/sessions/{sessionId}/snapshot";
+  t.after(() => {
+    if (previousEndpoint === undefined) delete process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL;
+    else process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL = previousEndpoint;
+  });
+  t.mock.method(globalThis, "fetch", async () => {
+    fetch.calls = (fetch.calls ?? 0) + 1;
+    if (fetch.calls === 1) return { ok: false, status: 404 };
+    return { ok: true, status: 200, json: async () => completeMonitorSnapshot() };
+  });
+  fetch.calls = 0;
+
+  const result = await runFreshAgentMonitor({ sessionId: SESSION, retryDelayMs: 1, timeoutMs: 1_000 });
+
+  assert.equal(result.sessionId, SESSION);
+  assert.equal(fetch.calls, 2);
+});
+
+test("fresh-agent monitor fails a 404 immediately when the endpoint is not session-scoped", async (t) => {
+  const previousEndpoint = process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL;
+  process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL = "https://monitor.example.test/current";
+  t.after(() => {
+    if (previousEndpoint === undefined) delete process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL;
+    else process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL = previousEndpoint;
+  });
+  t.mock.method(globalThis, "fetch", async () => {
+    fetch.calls = (fetch.calls ?? 0) + 1;
+    return { ok: false, status: 404 };
+  });
+  fetch.calls = 0;
+
+  await assert.rejects(
+    () => runFreshAgentMonitor({ sessionId: SESSION, retryDelayMs: 1, timeoutMs: 1_000 }),
+    (error) => {
+      assert.deepEqual(error.diagnostic, { phase: "monitor", category: "http", code: "HTTP_404" });
+      assert.equal(fetch.calls, 1);
+      return true;
+    },
+  );
+});
+
 test("fresh-agent monitor fails permanent 401 immediately with a safe diagnostic", async (t) => {
   const previousEndpoint = process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL;
   process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL = "https://monitor.example.test/session";
