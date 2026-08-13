@@ -141,12 +141,15 @@
             { "Effect": "Allow", "Action": ["sqs:SendMessage"], "Resource": { "Fn::GetAtt": ["ResponderQueue", "Arn"] } },
             { "Effect": "Allow", "Action": ["sqs:ReceiveMessage", "sqs:DeleteMessage"], "Resource": { "Fn::GetAtt": ["InitiatorQueue", "Arn"] } }
           ] } },
-          { "PolicyName": "bedrock-sonnet", "PolicyDocument": { "Version": "2012-10-17", "Statement": [{ "Effect": "Allow", "Action": ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"], "Resource": [
-            { "Ref": "BedrockModelArn" },
-            { "Fn::Sub": "arn:${AWS::Partition}:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6" },
-            { "Fn::Sub": "arn:${AWS::Partition}:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-4-6" },
-            { "Fn::Sub": "arn:${AWS::Partition}:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6" }
-          ] }] } }
+          { "PolicyName": "bedrock-sonnet", "PolicyDocument": { "Version": "2012-10-17", "Statement": [
+            { "Effect": "Allow", "Action": ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"], "Resource": [
+              { "Ref": "BedrockModelArn" },
+              { "Fn::Sub": "arn:${AWS::Partition}:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6" },
+              { "Fn::Sub": "arn:${AWS::Partition}:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-4-6" },
+              { "Fn::Sub": "arn:${AWS::Partition}:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6" }
+            ] },
+            { "Effect": "Allow", "Action": ["bedrock:ListInferenceProfiles"], "Resource": "*" }
+          ] } }
         ],
         "Tags": [{ "Key": "ClockchainRunId", "Value": { "Ref": "RunId" } }, { "Key": "ClockchainPhase", "Value": "Phase6C2" }, { "Key": "ClockchainExpiresAt", "Value": { "Ref": "ExpiresAt" } }, { "Key": "ClockchainCostCenter", "Value": { "Ref": "CostCenter" } }]
       }

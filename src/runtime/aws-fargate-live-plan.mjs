@@ -28,7 +28,7 @@ const SG_ID = /^sg-[a-z0-9-]+$/;
 const IMAGE = /^([0-9]{12})\.dkr\.ecr\.([a-z]{2}(?:-gov)?-[a-z]+-[0-9])\.amazonaws\.com\/clockchain-mechanics-proof@sha256:[0-9a-f]{64}$/;
 const TEMPLATE_PATH = "infra/mechanics-proof/fargate-live-runtime.yaml";
 const TEMPLATE_SCHEMA = "clockchain.fargate-live-runtime-template/v1";
-const TEMPLATE_SHA256 = "cd54763b6b21f4392cac8976128d2f46cbabac1337f1663fbef7cf5abcab17b0";
+const TEMPLATE_SHA256 = "937b5095a7d7a1b404f2ca30f8a967a9ec6d58a31c94ff653e340adc38386dba";
 const EXPECTED_OUTPUTS = Object.freeze([
   "ClusterArn",
   "InitiatorExecutionRoleArn",

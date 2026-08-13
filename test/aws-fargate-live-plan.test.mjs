@@ -177,6 +177,11 @@ test("live Fargate template defines disposable private networking, exact role bo
     { "Fn::Sub": "arn:${AWS::Partition}:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6" },
   ]);
   assert.notEqual(bedrockStatement.Resource, "*");
+  assert.deepEqual(bedrockPolicy.PolicyDocument.Statement[1], {
+    Effect: "Allow",
+    Action: ["bedrock:ListInferenceProfiles"],
+    Resource: "*",
+  });
   const initiatorQueueStatements = resources.InitiatorTaskRole.Properties.Policies.find((policy) => policy.PolicyName === "bootstrap-exchange").PolicyDocument.Statement;
   const responderQueueStatements = resources.ResponderTaskRole.Properties.Policies.find((policy) => policy.PolicyName === "bootstrap-exchange").PolicyDocument.Statement;
   assert.deepEqual(initiatorQueueStatements.map((statement) => statement.Action), [
