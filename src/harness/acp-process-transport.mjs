@@ -945,7 +945,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
       const publicStage = PERMISSION_FAILURE_STAGES.includes(fixedStage) ? fixedStage : "unknown";
       if (!retainedReplay) permissionDenials += 1;
       let unrelatedRejection = null;
-      if (commandStage === "approval" || retainedReplay) {
+      if (["approval", "input", "tool"].includes(commandStage) || retainedReplay) {
         try { unrelatedRejection = rejectOnceOption(params); } catch {}
       }
       if (retainedReplay && unrelatedRejection === null) {

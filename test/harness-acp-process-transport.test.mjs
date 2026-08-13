@@ -129,6 +129,7 @@ function acpFixtureSpawn({
   promptUpdateSessionId = null,
   unrelatedPermissionBeforeHelper = false,
   unrelatedPermissionOptions = null,
+  unrelatedPermissionRawInput = null,
   duplicatePermissionAfterHelper = false,
   duplicatePermissionOptions = null,
 }) {
@@ -177,7 +178,7 @@ function acpFixtureSpawn({
               toolCallId: "tool-unrelated",
               kind: "execute",
               status: "pending",
-              rawInput: { command: "pwd", cwd: permissionCwd },
+              rawInput: unrelatedPermissionRawInput ?? { command: "pwd", cwd: permissionCwd },
             },
             options: unrelatedPermissionOptions ?? [
               { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
@@ -950,6 +951,44 @@ test("ACP process transport denies an unrelated command without poisoning a late
     mandate: VALID_MANDATE,
     mcpEndpoint: MCP_ENDPOINT,
     a2aConfig: a2aConfig("initiator"),
+  });
+  assert.deepEqual(calls.find((entry) => entry[0] === "unrelatedPermission")[1], {
+    outcome: { outcome: "selected", optionId: "reject_once" },
+  });
+  assert.deepEqual(calls.find((entry) => entry[0] === "permission")[1], {
+    outcome: { outcome: "selected", optionId: "allow_once" },
+  });
+  await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
+});
+
+test("ACP process transport rejects a non-command permission without poisoning the retained Clockchain action", async () => {
+  const action = retainedAction({ role: "responder", requestDigest: "d".repeat(64), commandSha256: DIGEST });
+  const calls = [];
+  const transport = createAcpProcessTransport({
+    harness: "claude",
+    pin: ACP_VERSION_PINS.claude,
+    spawn: acpFixtureSpawn({
+      calls,
+      helperAction: action,
+      permissionCwd: "/workspace/responder",
+      unrelatedPermissionBeforeHelper: true,
+      unrelatedPermissionRawInput: { path: "/workspace/responder" },
+    }),
+    workspace: "/workspace/responder",
+    home: "/workspace/responder/home",
+    nowMs: () => 1786337001000,
+    actionRecorder: actionRecorderFor([action], calls),
+    env: {},
+    retainedActions: [],
+    partyBridge: partyBridgeFor(calls),
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.claude,
+    runtime: { runtimeId: "runtime-responder", sessionId: SESSION, role: "responder", harness: "claude" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("responder"),
   });
   assert.deepEqual(calls.find((entry) => entry[0] === "unrelatedPermission")[1], {
     outcome: { outcome: "selected", optionId: "reject_once" },
