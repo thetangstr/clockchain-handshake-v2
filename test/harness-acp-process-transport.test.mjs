@@ -126,6 +126,7 @@ function acpFixtureSpawn({
   permissionCommand = `clockchain-agent-authorize ${DIGEST}`,
   permissionCwd = undefined,
   permissionDescription = undefined,
+  permissionRawInputExtras = null,
   permissionOptions = null,
   permissionTitle = "display-only approval label",
   promptUpdateSessionId = null,
@@ -259,6 +260,7 @@ function acpFixtureSpawn({
                 command: permissionCommand,
                 ...(permissionCwd === undefined ? {} : { cwd: permissionCwd }),
                 ...(permissionDescription === undefined ? {} : { description: permissionDescription }),
+                ...(permissionRawInputExtras ?? {}),
               },
             },
             options: permissionOptions ?? [
@@ -502,6 +504,85 @@ test("ACP process transport forwards only role-specific provider auth and pins t
     configId: "model",
     value: "sonnet",
   });
+});
+
+test("ACP process transport authorizes the exact safe Claude Bash input envelope", async () => {
+  const calls = [];
+  const action = retainedAction({ role: "responder", requestDigest: "d".repeat(64), commandSha256: DIGEST });
+  const transport = createAcpProcessTransport({
+    harness: "claude",
+    pin: ACP_VERSION_PINS.claude,
+    spawn: acpFixtureSpawn({
+      calls,
+      helperAction: action,
+      permissionCommand: `clockchain-agent-authorize ${action.commandSha256}`,
+      permissionDescription: "Authorize the exact retained Clockchain helper",
+      permissionRawInputExtras: {
+        timeout: 120_000,
+        run_in_background: false,
+        dangerouslyDisableSandbox: false,
+      },
+    }),
+    workspace: "/workspace/responder",
+    home: "/workspace/responder/home",
+    env: { CLOCKCHAIN_CLAUDE_MODEL: "sonnet" },
+    actionRecorder: actionRecorderFor([action], calls),
+    nowMs: () => 1786337001000,
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.claude,
+    runtime: { runtimeId: "runtime-responder", sessionId: SESSION, role: "responder", harness: "claude" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("responder"),
+  });
+  assert.deepEqual(calls.find((entry) => entry[0] === "permission")?.[1], {
+    outcome: { outcome: "selected", optionId: "allow_once" },
+  });
+  await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
+});
+
+test("ACP process transport rejects unsafe Claude Bash execution controls", async () => {
+  const unsafeInputs = [
+    { timeout: 0 },
+    { timeout: 600_001 },
+    { timeout: 1.5 },
+    { run_in_background: true },
+    { dangerouslyDisableSandbox: true },
+  ];
+  for (const permissionRawInputExtras of unsafeInputs) {
+    const calls = [];
+    const action = retainedAction({ role: "responder", requestDigest: "d".repeat(64), commandSha256: DIGEST });
+    const transport = createAcpProcessTransport({
+      harness: "claude",
+      pin: ACP_VERSION_PINS.claude,
+      spawn: acpFixtureSpawn({
+        calls,
+        helperAction: action,
+        permissionCommand: `clockchain-agent-authorize ${action.commandSha256}`,
+        permissionRawInputExtras,
+      }),
+      workspace: "/workspace/responder",
+      home: "/workspace/responder/home",
+      env: { CLOCKCHAIN_CLAUDE_MODEL: "sonnet" },
+      actionRecorder: actionRecorderFor([action], calls),
+      nowMs: () => 1786337001000,
+      partyBridge: partyBridgeFor(calls),
+      trustedAdapterPublicKeys: [action.adapterPublicKey],
+    });
+    await transport.launch({
+      acp: ACP_VERSION_PINS.claude,
+      runtime: { runtimeId: "runtime-responder", sessionId: SESSION, role: "responder", harness: "claude" },
+      mandate: VALID_MANDATE,
+      mcpEndpoint: MCP_ENDPOINT,
+      a2aConfig: a2aConfig("responder"),
+    });
+    assert.deepEqual(calls.find((entry) => entry[0] === "permission")?.[1], {
+      outcome: { outcome: "selected", optionId: "reject_once" },
+    });
+    await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
+  }
 });
 
 test("Codex ACP launch fails closed when the required model pin is absent", async () => {

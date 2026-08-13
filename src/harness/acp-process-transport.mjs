@@ -900,7 +900,15 @@ export function createAcpProcessTransport(optionsInput = {}) {
       throw permissionCommandFailure("tool");
     }
     let rawInput;
-    try { rawInput = optionalObject(toolCall.rawInput, ["command"], ["cwd", "description"]); }
+    try {
+      rawInput = optionalObject(
+        toolCall.rawInput,
+        ["command"],
+        harness === "claude"
+          ? ["cwd", "description", "timeout", "run_in_background", "dangerouslyDisableSandbox"]
+          : ["cwd", "description"],
+      );
+    }
     catch { throw permissionCommandFailure("input"); }
     if (
       rawInput.description !== undefined &&
@@ -908,6 +916,16 @@ export function createAcpProcessTransport(optionsInput = {}) {
         rawInput.description.length > 256 || /[\u0000-\u001f\u007f]/.test(rawInput.description))
     ) throw permissionCommandFailure("input");
     if (rawInput.cwd !== undefined && rawInput.cwd !== options.workspace) throw permissionCommandFailure("cwd");
+    if (
+      rawInput.timeout !== undefined &&
+      (!Number.isSafeInteger(rawInput.timeout) || rawInput.timeout < 1 || rawInput.timeout > 600_000)
+    ) throw permissionCommandFailure("input");
+    if (rawInput.run_in_background !== undefined && rawInput.run_in_background !== false) {
+      throw permissionCommandFailure("input");
+    }
+    if (rawInput.dangerouslyDisableSandbox !== undefined && rawInput.dangerouslyDisableSandbox !== false) {
+      throw permissionCommandFailure("input");
+    }
     try { return retainedCommand(rawInput.command); }
     catch {
       const value = rawInput.command;
