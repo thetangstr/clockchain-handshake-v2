@@ -133,6 +133,7 @@ function acpFixtureSpawn({
   duplicatePermissionAfterHelper = false,
   duplicatePermissionOptions = null,
 }) {
+  let promptCount = 0;
   return (command, args, options) => {
     calls.push({ command, args, options });
     const clientToAgent = new TransformStream();
@@ -169,6 +170,8 @@ function acpFixtureSpawn({
       },
       async prompt(params) {
         calls.push(["prompt", params]);
+        const currentPromptCount = promptCount;
+        promptCount += 1;
         const updateSessionId = promptUpdateSessionId ?? params.sessionId;
         let effectiveStopReason = stopReason;
         if (unrelatedPermissionBeforeHelper) {
@@ -190,7 +193,8 @@ function acpFixtureSpawn({
         }
         let helperUpdate = null;
         if (sessionUpdates !== null) {
-          for (const update of sessionUpdates) {
+          const updates = typeof sessionUpdates === "function" ? sessionUpdates(currentPromptCount) : sessionUpdates;
+          for (const update of updates) {
             await connection.sessionUpdate({ sessionId: updateSessionId, update });
           }
         } else if (helperAction !== null) {
@@ -1042,6 +1046,64 @@ test("ACP process transport cancels a non-command permission without a reject op
   assert.deepEqual(calls.find((entry) => entry[0] === "permission")[1], {
     outcome: { outcome: "selected", optionId: "allow_once" },
   });
+  await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
+});
+
+test("ACP continuation restates every exact pending retained approval before another MCP call", async () => {
+  const actions = ["init", "policy", "inspect"].map((operation, index) => retainedAction({
+    actionId: `action-${index}`,
+    commandSha256: String(index + 1).repeat(64),
+    operation,
+  }));
+  const calls = [];
+  let completionChecks = 0;
+  const transport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({
+      calls,
+      permissionCommand: `clockchain-agent-authorize ${actions[0].commandSha256}`,
+      sessionUpdates: (promptCount) => promptCount === 0 ? [{
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-mcp-setup",
+        status: "completed",
+        rawInput: { server: "clockchain-handshake", tool: "agent_handshake_invite", arguments: {} },
+        rawOutput: {
+          result: { structuredContent: { helperSteps: actions.map((action) => helperStepForAction(action)) } },
+          error: null,
+        },
+      }] : [],
+    }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    nowMs: () => 1786337001000,
+    actionRecorder: actionRecorderFor(actions, calls),
+    env: {},
+    partyBridge: partyBridgeFor(calls, {
+      completionStatus() {
+        completionChecks += 1;
+        return completionChecks >= 2
+          ? { complete: true, protocolSessionId: SESSION }
+          : { complete: false, protocolSessionId: SESSION };
+      },
+    }),
+    trustedAdapterPublicKeys: actions.map((action) => action.adapterPublicKey),
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  });
+  const prompts = calls.filter((entry) => entry[0] === "prompt");
+  assert.equal(prompts.length, 2);
+  const continuation = prompts[1][1].prompt[0].text;
+  assert.doesNotMatch(continuation, new RegExp(actions[0].commandSha256));
+  assert.match(continuation, new RegExp(`clockchain-agent-authorize ${actions[1].commandSha256}`));
+  assert.match(continuation, new RegExp(`clockchain-agent-authorize ${actions[2].commandSha256}`));
+  assert.match(continuation, /one at a time, in this order/i);
+  assert.match(continuation, /Do not call another MCP tool/i);
   await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
 });
 

@@ -379,7 +379,20 @@ function promptText({ role, sessionId, mandate, a2aConfig }) {
   ].join("\n");
 }
 
-function continuationPromptText({ role, protocolSessionId, mandate, a2aConfig, bridgeProgress }) {
+function continuationPromptText({ role, protocolSessionId, mandate, a2aConfig, bridgeProgress, pendingApprovals }) {
+  const approvals = snapshotArray(pendingApprovals, { max: 3 });
+  if (
+    approvals.some((value) => typeof value !== "string" || !/^clockchain-agent-authorize [0-9a-f]{64}$/.test(value)) ||
+    new Set(approvals).size !== approvals.length
+  ) fail();
+  if (approvals.length > 0) {
+    return [
+      "Complete the already-registered Clockchain helper actions before another MCP call.",
+      "Request these exact retained approval commands one at a time, in this order:",
+      ...approvals.map((approval, index) => `${index + 1}. ${approval}`),
+      "Do not alter, wrap, quote, or replace any command. Do not call another MCP tool until every command above completes.",
+    ].join("\n");
+  }
   if (protocolSessionId === null) {
     if (role === "initiator") {
       return [
@@ -1174,6 +1187,9 @@ export function createAcpProcessTransport(optionsInput = {}) {
                   mandate: cleanMandateValue,
                   a2aConfig: cleanPeer,
                   bridgeProgress,
+                  pendingApprovals: [...retainedByCommand.values()]
+                    .filter((entry) => entry.state === "pending")
+                    .map((entry) => `clockchain-agent-authorize ${entry.action.commandSha256}`),
                 }),
             }],
           });
