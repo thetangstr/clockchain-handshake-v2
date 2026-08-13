@@ -43,6 +43,7 @@ const PERMISSION_FAILURE_STAGES = Object.freeze([
   "session", "protocol", "registration", "state", "options", "unknown",
   ...PERMISSION_COMMAND_STAGES.flatMap((stage) => [`command-${stage}`, `command-${stage}-after-authorization`]),
 ]);
+const ACP_STOP_REASONS = Object.freeze(["cancelled", "max_tokens", "max_turn_requests", "refusal"]);
 const CODEX_MODEL = "gpt-5.6-terra";
 const CLAUDE_BEDROCK_MODEL = "us.anthropic.claude-sonnet-4-6";
 const LAUNCH_FAILURE_STAGES = Object.freeze([
@@ -60,7 +61,8 @@ const LAUNCH_FAILURE_STAGES = Object.freeze([
   "completion-protocol-bridge-accept", "completion-protocol-bridge-join",
   "completion-protocol-bridge-helper", "completion-protocol-bridge-digest",
   "completion-protocol-bridge-incomplete",
-  ...PERMISSION_FAILURE_STAGES.map((stage) => `completion-permission-${stage}`), "completion-stop",
+  ...PERMISSION_FAILURE_STAGES.map((stage) => `completion-permission-${stage}`),
+  ...ACP_STOP_REASONS.map((reason) => `completion-stop-${reason}`), "completion-stop-unknown",
 ]);
 const LAUNCH_FAILURES = new WeakMap();
 
@@ -1086,7 +1088,9 @@ export function createAcpProcessTransport(optionsInput = {}) {
             fail();
           }
           if (prompted?.stopReason !== "end_turn") {
-            launchStage = "completion-stop";
+            launchStage = ACP_STOP_REASONS.includes(prompted?.stopReason)
+              ? `completion-stop-${prompted.stopReason}`
+              : "completion-stop-unknown";
             fail();
           }
           promptUsage = addUsage(promptUsage, safeUsage(prompted.usage));

@@ -2124,7 +2124,7 @@ test("ACP process transport denies broad shell permission and rejects malformed 
     mcpEndpoint: MCP_ENDPOINT,
     a2aConfig: a2aConfig("initiator"),
   }), (error) => {
-    assert.equal(acpProcessTransportFailureStage(error), "completion-stop");
+    assert.equal(acpProcessTransportFailureStage(error), "completion-stop-refusal");
     return true;
   });
 });
