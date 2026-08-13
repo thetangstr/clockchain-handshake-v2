@@ -23,6 +23,7 @@ const OPTION_KEYS = Object.freeze([
 const TOOL_SERVER = "clockchain-handshake";
 const TOOL_PREFIX = "agent_handshake_";
 const ROLES = Object.freeze(["initiator", "responder"]);
+const HELPER_OPERATIONS = Object.freeze(["init", "policy", "inspect", "register", "sign", "verify-certificate"]);
 const MAX_DEPTH = 12;
 const MAX_KEYS = 64;
 const MAX_ARRAY = 64;
@@ -433,7 +434,7 @@ function parseToolName(update) {
   return null;
 }
 
-function cleanHelperStep(value) {
+function cleanEnrichedHelperStep(value) {
   const item = optionalObject(value, [
     "approvalCommand", "commandLength", "commandSha256", "operation", "role", "sessionId", "shellCommand",
   ], ["policyDigest"]);
@@ -462,7 +463,67 @@ function cleanHelperStep(value) {
   });
 }
 
-function appendHelperSteps(value, found) {
+function cleanProductionHelperStep(value, binding) {
+  const item = exactObject(value, ["argvAfterVerifiedPrefix", "operation", "shellCommand", "shellCommandSuffix"]);
+  if (!HELPER_OPERATIONS.includes(item.operation)) fail();
+  const argv = snapshotArray(item.argvAfterVerifiedPrefix, { min: 3, max: 5 });
+  if (argv.some((entry) => typeof entry !== "string" || entry.length === 0 || entry.length > MAX_HELPER_COMMAND)) fail();
+  const expectedStateDir = `$TMPDIR/.clockchain/handshakes/${binding.sessionId}/${binding.role}`;
+  if (
+    argv[0] !== item.operation || argv[1] !== "--state-dir" || argv[2] !== expectedStateDir ||
+    !(
+      argv.length === 3 ||
+      argv.length === 5 && argv[3] === "--payload-base64url" && /^[A-Za-z0-9_-]+$/.test(argv[4])
+    )
+  ) fail();
+  const expectedSuffix = argv.map((entry, index) => index === 2 ? `"${entry}"` : entry).join(" ");
+  if (item.shellCommandSuffix !== expectedSuffix) fail();
+  if (
+    typeof item.shellCommand !== "string" || Buffer.byteLength(item.shellCommand) < 1 ||
+    Buffer.byteLength(item.shellCommand) > MAX_HELPER_COMMAND ||
+    !item.shellCommand.endsWith(` ${expectedSuffix}`) || item.shellCommand.length === expectedSuffix.length + 1
+  ) fail();
+  const commandSha256 = createHash("sha256").update(item.shellCommand).digest("hex");
+  let policyDigest;
+  if (argv.length === 5) {
+    let payload;
+    try {
+      const bytes = Buffer.from(argv[4], "base64url");
+      if (bytes.length < 1 || bytes.toString("base64url") !== argv[4]) fail();
+      payload = JSON.parse(bytes.toString("utf8"));
+    } catch {
+      fail();
+    }
+    if (payload !== null && typeof payload === "object" && !Array.isArray(payload) && /^[0-9a-f]{64}$/.test(payload.policyDigest)) {
+      policyDigest = payload.policyDigest;
+    }
+  }
+  return Object.freeze({
+    approvalCommand: `clockchain-agent-authorize ${commandSha256}`,
+    commandLength: Buffer.byteLength(item.shellCommand),
+    commandSha256,
+    operation: item.operation,
+    ...(policyDigest === undefined ? {} : { policyDigest }),
+    role: binding.role,
+    sessionId: binding.sessionId,
+    shellCommand: item.shellCommand,
+  });
+}
+
+function cleanHelperStep(value, binding) {
+  let descriptors;
+  try { descriptors = Object.getOwnPropertyDescriptors(value); } catch { fail(); }
+  const keys = Reflect.ownKeys(descriptors);
+  if (keys.some((key) => typeof key !== "string")) fail();
+  if (keys.includes("argvAfterVerifiedPrefix") || keys.includes("shellCommandSuffix")) {
+    return cleanProductionHelperStep(value, binding);
+  }
+  const enriched = cleanEnrichedHelperStep(value);
+  if (enriched.role !== binding.role || enriched.sessionId !== binding.sessionId) fail();
+  return enriched;
+}
+
+function appendHelperStepGroups(value, found, binding) {
   if (value === null || value === undefined) return;
   if (typeof value === "string") {
     let parsed;
@@ -471,7 +532,7 @@ function appendHelperSteps(value, found) {
     } catch {
       return;
     }
-    appendHelperSteps(parsed, found);
+    appendHelperStepGroups(parsed, found, binding);
     return;
   }
   if (Array.isArray(value)) {
@@ -479,7 +540,7 @@ function appendHelperSteps(value, found) {
     for (const blockValue of blocks) {
       const block = exactObject(blockValue, ["text", "type"]);
       if (block.type !== "text") fail();
-      appendHelperSteps(block.text, found);
+      appendHelperStepGroups(block.text, found, binding);
     }
     return;
   }
@@ -493,18 +554,20 @@ function appendHelperSteps(value, found) {
   }
   const helperStep = descriptors.helperStep?.value;
   if (helperStep !== undefined) {
-    found.push(cleanHelperStep(helperStep));
+    found.push(Object.freeze([cleanHelperStep(helperStep, binding)]));
   }
   const helperSteps = descriptors.helperSteps?.value;
   if (helperSteps !== undefined) {
-    for (const step of snapshotArray(helperSteps)) found.push(cleanHelperStep(step));
+    const group = snapshotArray(helperSteps, { min: 1, max: 3 }).map((step) => cleanHelperStep(step, binding));
+    if (group.length > 1 && JSON.stringify(group.map((step) => step.operation)) !== JSON.stringify(["init", "policy", "inspect"])) fail();
+    found.push(Object.freeze(group));
   }
   const localAction = descriptors.localAction?.value;
-  if (localAction !== undefined) appendHelperSteps(localAction, found);
+  if (localAction !== undefined) appendHelperStepGroups(localAction, found, binding);
   const structuredContent = descriptors.structuredContent?.value;
-  if (structuredContent !== undefined) appendHelperSteps(structuredContent, found);
+  if (structuredContent !== undefined) appendHelperStepGroups(structuredContent, found, binding);
   const content = descriptors.content?.value;
-  if (content !== undefined) appendHelperSteps(content, found);
+  if (content !== undefined) appendHelperStepGroups(content, found, binding);
 }
 
 function authoritativeToolResult(update) {
@@ -569,12 +632,15 @@ function mcpFailureResult(value) {
   return mcpFailureBlocks(descriptors.content?.value);
 }
 
-function helperStepsFromToolResult(result, actionRecorder) {
-  const steps = [];
-  appendHelperSteps(result, steps);
-  if (steps.length === 0) return [];
-  if (steps.length !== 1 || actionRecorder === null) fail();
-  return steps;
+function helperStepsFromToolResult(result, actionRecorder, binding) {
+  const groups = [];
+  appendHelperStepGroups(result, groups, binding);
+  if (groups.length === 0) return [];
+  if (actionRecorder === null) fail();
+  const unique = new Map();
+  for (const group of groups) unique.set(digestJson(group), group);
+  if (unique.size !== 1) fail();
+  return [...unique.values()][0];
 }
 
 function wait(ms) {
@@ -786,7 +852,12 @@ export function createAcpProcessTransport(optionsInput = {}) {
             }
           }
           failureStage = "retained-extract";
-          const extractedHelperSteps = helperStepsFromToolResult(toolResult.result, actionRecorder);
+          const retainedSessionId = partyBridge === null ? session.sessionId : protocolSessionId;
+          if (retainedSessionId === null) fail();
+          const extractedHelperSteps = helperStepsFromToolResult(toolResult.result, actionRecorder, {
+            role: session.role,
+            sessionId: retainedSessionId,
+          });
           failureStage = "retained-record";
           const extractedRetainedActions = extractedHelperSteps.map((step) => validateRetainedLocalAction(actionRecorder.record(step)));
           failureStage = "retained-register";

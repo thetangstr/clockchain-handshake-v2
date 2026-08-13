@@ -6,6 +6,7 @@ import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { types } from "node:util";
 
 import { rawEd25519PublicKey } from "../agent-handshake/v2/host-key-certificate.mjs";
+import { localPolicyDigest, validateLocalPolicy } from "../agent-handshake/v2/policy.mjs";
 import { writePrivateFile } from "../core/private-path.mjs";
 
 const RELEASE_PREFIX = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/";
@@ -190,6 +191,16 @@ function requestBinding(expected) {
   if (bytes.length < 1 || bytes.toString("base64url") !== expected.argv[payloadIndex + 1]) fail();
   let record;
   try { record = JSON.parse(bytes.toString("utf8")); } catch { fail(); }
+  if (expected.operation === "policy") {
+    let policy;
+    try { policy = validateLocalPolicy(record); } catch { fail(); }
+    if (policy.role !== expected.role) fail();
+    return Object.freeze({
+      digest: createHash("sha256").update(bytes).digest("hex"),
+      length: bytes.length,
+      policyDigest: localPolicyDigest(policy),
+    });
+  }
   if (
     record === null || typeof record !== "object" || Array.isArray(record) ||
     record.operation !== expected.operation || record.role !== expected.role ||

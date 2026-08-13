@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import { AgentSideConnection, PROTOCOL_VERSION, ndJsonStream } from "@agentclientprotocol/sdk";
@@ -44,6 +45,31 @@ function helperStepForAction(action, overrides = {}) {
     role: action.role,
     sessionId: action.sessionId,
     shellCommand,
+  });
+}
+
+function productionHelperStep({ operation, role = "initiator", sessionId = SESSION, payload, prefix = "node verified-helper" }) {
+  const argvAfterVerifiedPrefix = [operation, "--state-dir", `$TMPDIR/.clockchain/handshakes/${sessionId}/${role}`];
+  if (payload !== undefined) {
+    argvAfterVerifiedPrefix.push("--payload-base64url", Buffer.from(JSON.stringify(payload), "utf8").toString("base64url"));
+  }
+  const shellCommandSuffix = argvAfterVerifiedPrefix
+    .map((value, index) => index === 2 ? `"${value}"` : value)
+    .join(" ");
+  return Object.freeze({
+    operation,
+    argvAfterVerifiedPrefix: Object.freeze(argvAfterVerifiedPrefix),
+    shellCommand: `${prefix} ${shellCommandSuffix}`,
+    shellCommandSuffix,
+  });
+}
+
+function retainedActionForProductionStep(step, overrides = {}) {
+  return retainedAction({
+    commandLength: Buffer.byteLength(step.shellCommand),
+    commandSha256: createHash("sha256").update(step.shellCommand).digest("hex"),
+    operation: step.operation,
+    ...overrides,
   });
 }
 
@@ -1319,6 +1345,101 @@ test("ACP process transport registers retained actions from installed Codex ACP 
     a2aConfig: a2aConfig("initiator"),
   });
   assert.equal((await transport.executeRetainedAction({ sessionId: SESSION, role: "initiator", actionId: "action-1" })).executed, true);
+});
+
+test("ACP process transport derives retained metadata from the production MCP setup batch", async () => {
+  const steps = [
+    productionHelperStep({ operation: "init" }),
+    productionHelperStep({ operation: "policy", payload: { policyDigest: "a".repeat(64), role: "initiator", sessionId: SESSION, operation: "policy" } }),
+    productionHelperStep({ operation: "inspect" }),
+  ];
+  const actions = steps.map((step, index) => retainedActionForProductionStep(step, {
+    actionId: `setup-${index + 1}`,
+    requestDigest: String(index + 1).repeat(64),
+  }));
+  const calls = [];
+  const transport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({
+      calls,
+      skipPermission: true,
+      sessionUpdates: [{
+        sessionUpdate: "tool_call_update",
+        toolCallId: "mcp-call-setup",
+        status: "completed",
+        rawInput: { server: "clockchain-handshake", tool: "agent_handshake_create_invitation", arguments: {} },
+        rawOutput: {
+          result: { structuredContent: { localAction: { helperSteps: steps } } },
+          error: null,
+        },
+      }],
+    }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    nowMs: () => 1786337001000,
+    actionRecorder: actionRecorderFor(actions, calls),
+    env: {},
+    partyBridge: partyBridgeFor(calls),
+    retainedActions: [],
+    trustedAdapterPublicKeys: actions.map((action) => action.adapterPublicKey),
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: OTHER_SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  });
+  const recorded = calls.filter((entry) => Array.isArray(entry) && entry[0] === "record").map((entry) => entry[1]);
+  assert.equal(recorded.length, 3);
+  assert.deepEqual(recorded.map((entry) => entry.operation), ["init", "policy", "inspect"]);
+  assert.ok(recorded.every((entry) => entry.role === "initiator" && entry.sessionId === SESSION));
+  assert.ok(recorded.every((entry) => entry.approvalCommand === `clockchain-agent-authorize ${entry.commandSha256}`));
+});
+
+test("ACP process transport derives retained metadata from one production MCP signing step", async () => {
+  const step = productionHelperStep({
+    operation: "sign",
+    role: "responder",
+    payload: { operation: "sign", policyDigest: "a".repeat(64), role: "responder", sessionId: SESSION },
+  });
+  const action = retainedActionForProductionStep(step, { role: "responder", policyDigest: "a".repeat(64) });
+  const calls = [];
+  const transport = createAcpProcessTransport({
+    harness: "claude",
+    pin: ACP_VERSION_PINS.claude,
+    spawn: acpFixtureSpawn({
+      calls,
+      skipPermission: true,
+      sessionUpdates: [{
+        sessionUpdate: "tool_call_update",
+        toolCallId: "mcp-call-sign",
+        status: "completed",
+        rawOutput: [{ type: "text", text: JSON.stringify({ localAction: { helperStep: step } }) }],
+        _meta: { claudeCode: { toolName: "mcp__clockchain-handshake__agent_handshake_next" } },
+      }],
+    }),
+    workspace: "/workspace/responder",
+    home: "/workspace/responder/home",
+    nowMs: () => 1786337001000,
+    actionRecorder: actionRecorderFor([action], calls),
+    env: {},
+    partyBridge: partyBridgeFor(calls),
+    retainedActions: [],
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.claude,
+    runtime: { runtimeId: "runtime-responder", sessionId: OTHER_SESSION, role: "responder", harness: "claude" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: { ...a2aConfig("responder"), invitationPath: "/workspace/responder/responder-invitation.txt" },
+  });
+  const recorded = calls.find((entry) => Array.isArray(entry) && entry[0] === "record")[1];
+  assert.equal(recorded.commandLength, Buffer.byteLength(step.shellCommand));
+  assert.equal(recorded.commandSha256, createHash("sha256").update(step.shellCommand).digest("hex"));
+  assert.equal(recorded.policyDigest, "a".repeat(64));
 });
 
 test("ACP keeps controller correlation separate from the bridge-bound protocol session", async () => {

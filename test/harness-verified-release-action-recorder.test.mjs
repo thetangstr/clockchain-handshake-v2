@@ -9,6 +9,7 @@ import { execFile } from "node:child_process";
 import test from "node:test";
 
 import { validateRetainedLocalAction } from "../src/harness/harness-adapter-contract.mjs";
+import { digestHex } from "../src/core/canonical.mjs";
 import { createAcpProcessTransport } from "../src/harness/acp-process-transport.mjs";
 import {
   createVerifiedReleaseActionRecorder,
@@ -53,6 +54,21 @@ function helperStep({ manifestDigest, payload }) {
     commandSha256,
     operation: "sign",
     policyDigest: "c".repeat(64),
+    role: "initiator",
+    sessionId: SESSION,
+    shellCommand: command,
+  };
+}
+
+function policyHelperStep({ manifestDigest, policy }) {
+  const payload = Buffer.from(JSON.stringify(policy), "utf8").toString("base64url");
+  const command = `node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${manifestDigest} ./manifest.json ./clockchain-agent-handshake.cjs policy --state-dir "$TMPDIR/.clockchain/handshakes/${SESSION}/initiator" --payload-base64url ${payload}`;
+  const commandSha256 = createHash("sha256").update(command).digest("hex");
+  return {
+    approvalCommand: `clockchain-agent-authorize ${commandSha256}`,
+    commandLength: Buffer.byteLength(command),
+    commandSha256,
+    operation: "policy",
     role: "initiator",
     sessionId: SESSION,
     shellCommand: command,
@@ -153,6 +169,44 @@ test("verified release recorder returns an ACP-valid action and privately correl
     }),
     /HELPER_ACTION_REPLAYED/,
   );
+});
+
+test("verified release recorder binds the production policy payload to its canonical digest", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "verified-release-policy-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const run = await createFreshAgentRun({ parent });
+  const fixture = releaseFixture({ schema: "clockchain.agent-handshake-cli-result/v1", operation: "policy" });
+  const socketRoot = join("/tmp", `verified-policy-${randomBytes(6).toString("hex")}`);
+  t.after(() => rm(socketRoot, { recursive: true, force: true }));
+  const recorder = await createVerifiedReleaseActionRecorder({
+    fetchImpl: fixture.fetchImpl,
+    manifestDigest: fixture.manifestDigest,
+    room: run.roles.initiator,
+    runtimeExecPath: process.execPath,
+    socketRoot,
+  });
+  t.after(() => recorder.close());
+  recorder.setCompletionHandler(async () => ({ accepted: true }));
+  const policy = {
+    schema: "clockchain.agent-handshake-policy/v1",
+    protocol: "clockchain.agent-handshake/v2",
+    role: "initiator",
+    mcpOrigin: "https://mcp.clockchain.network",
+    reference: "NS-1847",
+    statementDigest: "d".repeat(64),
+    maxValidForSeconds: "90",
+    identityPolicy: {
+      erc8004: "required_existing_or_fresh",
+      chainId: "eip155:11155111",
+      registryAddress: "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+    },
+    externalBusinessActionsAllowed: false,
+  };
+  const action = recorder.recordRetainedAction(policyHelperStep({ manifestDigest: fixture.manifestDigest, policy }));
+  assert.equal(action.operation, "policy");
+  assert.equal(action.policyDigest, digestHex(policy));
+  assert.equal(action.sessionId, SESSION);
+  assert.equal(action.role, "initiator");
 });
 
 test("verified release recorder rejects proxy and accessor authority without invoking it", async () => {
