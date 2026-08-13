@@ -242,15 +242,20 @@ export async function runFargateLiveMechanicsProof(optionsInput) {
   const reconcile = { stack: false, taskDefinitions: false, tasks: false };
   let stackCreated = false;
   let failureClass = "mutation";
+  let controllerFailureStage = "identity";
 
   try {
     const identity = await controlPlane.getCallerIdentity();
     if (identity.accountId !== plan.accountId) throw new Error("account mismatch");
+    controllerFailureStage = "mcp-gate";
     const mcp = await mcpGate({ mcpUrl: plan.mcpUrl });
     if (mcp?.healthy !== true || mcp?.checkpointTool !== true || mcp?.endpoint !== plan.mcpUrl) throw new Error("MCP gate failed");
+    controllerFailureStage = "stack-exists";
     if (await controlPlane.stackExists({ stackName })) throw new Error("same run stack already exists");
+    controllerFailureStage = "validate-template";
     await controlPlane.validateTemplate({ templateBody: stableJson(plan.template) });
     reconcile.stack = true;
+    controllerFailureStage = "create-stack";
     const create = await controlPlane.createStack({
       stackName,
       templateBody: stableJson(plan.template),
@@ -261,20 +266,27 @@ export async function runFargateLiveMechanicsProof(optionsInput) {
     if (typeof stackId !== "string" || !stackId.includes(`:cloudformation:${plan.region}:${plan.accountId}:stack/${stackName}/`)) throw new Error("stack create failed");
     stackCreated = true;
     reconcile.stack = false;
+    controllerFailureStage = "wait-stack-create";
     await controlPlane.waitStackCreateComplete({ stackName, stackId });
+    controllerFailureStage = "describe-stack-outputs";
     const outputs = await controlPlane.describeStackOutputs({ stackName, stackId });
     clusterArn = outputs.ClusterArn;
+    controllerFailureStage = "list-stack-resources";
     const resources = validateStackResources(await controlPlane.listStackResources({ stackName, stackId }), stackId, stackName);
+    controllerFailureStage = "wait-execution-role-propagation";
     await controlPlane.waitExecutionRolePropagation({
       initiatorExecutionRoleArn: outputs.InitiatorExecutionRoleArn,
       responderExecutionRoleArn: outputs.ResponderExecutionRoleArn,
     });
+    controllerFailureStage = "wait-invitation-window";
     const invitationWindow = await waitInvitationWindow({
       deadlineMs: Date.parse(plan.parameters.ExpiresAt) - 300_000,
       minimumRemainingMs: 90_000,
     });
     if (JSON.stringify(invitationWindow) !== JSON.stringify({ ready: true })) throw new Error("invitation window unavailable");
+    controllerFailureStage = "build-task-definitions";
     const definitions = buildFargateLiveTaskDefinitions({ stackPlan: plan, stackOutputs: outputs, stackResources: taskDefinitionResourceEnvelope(resources) });
+    controllerFailureStage = "register-task-definitions";
     for (const role of ROLES) {
       reconcile.taskDefinitions = true;
       const registered = await controlPlane.registerTaskDefinition({ role, taskDefinition: definitions[role] });
@@ -283,6 +295,7 @@ export async function runFargateLiveMechanicsProof(optionsInput) {
     }
     reconcile.taskDefinitions = false;
     reconcile.tasks = true;
+    controllerFailureStage = "run-tasks";
     const publicEventStartTimeMs = Date.now();
     const runs = ROLES.map((role) => controlPlane.runTask({
         role,
@@ -297,7 +310,9 @@ export async function runFargateLiveMechanicsProof(optionsInput) {
       taskArns[role] = run.tasks?.[0]?.taskArn;
       if (typeof taskArns[role] !== "string") throw new Error("run task missing task arn");
     }
+    controllerFailureStage = "wait-tasks-running";
     await controlPlane.waitTasksRunning({ cluster: clusterArn, taskArns: ROLES.map((role) => taskArns[role]) });
+    controllerFailureStage = "collect-live-infra";
     let liveRuntimeInfraInputs = null;
     let collectionError = null;
     try {
@@ -316,16 +331,19 @@ export async function runFargateLiveMechanicsProof(optionsInput) {
     }
     reconcile.tasks = false;
     failureClass = "protocol";
+    controllerFailureStage = "poll-events";
     const events = terminalEvents(await controlPlane.pollPublicEvents({
       runId: plan.runId,
       startTimeMs: publicEventStartTimeMs,
       logGroupNames: [outputs.InitiatorLogGroupName, outputs.ResponderLogGroupName],
       deadlineMs: pollingDeadline(plan),
     }), plan.runId);
+    controllerFailureStage = "stop-tasks";
     const stopped = await stopSuccessfulTasks({ controlPlane, clusterArn, taskArns });
     let runtimeEvidenceInputs = null;
     if (stopped.cleanupErrors.length === 0 && collectionError === null) {
       try {
+        controllerFailureStage = "collect-runtime-evidence";
         runtimeEvidenceInputs = await collectRuntimeEvidenceInputs(Object.freeze({
           runId: plan.runId,
           stackName,
@@ -342,6 +360,7 @@ export async function runFargateLiveMechanicsProof(optionsInput) {
         collectionError = error;
       }
     }
+    controllerFailureStage = "cleanup";
     const cleaned = await cleanupAfterRuntimeCollection({ controlPlane, stackName, taskDefinitions, stackCreated });
     if (stopped.cleanupErrors.length > 0 || cleaned.cleanupErrors.length > 0 || cleaned.absence?.absent !== true) {
       return Object.freeze({
@@ -365,6 +384,7 @@ export async function runFargateLiveMechanicsProof(optionsInput) {
       runtimeEvidenceInputs,
       cleanupAbsence: cleaned.absence,
     });
+    controllerFailureStage = "finalize-evidence";
     const publicProof = await finalizeVerifiedEvidence(fullEvidence);
     const evidence = Object.freeze({
       schema: "clockchain.fargate-live-controller-evidence/v1",
@@ -378,6 +398,7 @@ export async function runFargateLiveMechanicsProof(optionsInput) {
       publicEvents: reducePublicEvents(events),
       cleanupAbsenceDigest: sha256Hex(cleaned.absence),
     });
+    controllerFailureStage = "retain-evidence";
     await retainEvidence(Object.freeze({ controllerEvidence: evidence, publicProof }));
     return Object.freeze({ schema: FARGATE_LIVE_RESULT_SCHEMA, status: FARGATE_LIVE_STATUS_SUCCEEDED, evidence });
   } catch (error) {
@@ -396,12 +417,13 @@ export async function runFargateLiveMechanicsProof(optionsInput) {
       return Object.freeze({
         schema: FARGATE_LIVE_RESULT_SCHEMA,
         status: CLEANUP_UNCONFIRMED,
+        controllerFailureStage,
         ...(failureStages === null ? {} : { failureStages }),
         ...(progressStages === null ? {} : { progressStages }),
         cleanupFailedSteps: cleaned.cleanupFailedSteps,
       });
     }
-    return Object.freeze({ schema: FARGATE_LIVE_RESULT_SCHEMA, status: CLEANUP_UNCONFIRMED });
+    return Object.freeze({ schema: FARGATE_LIVE_RESULT_SCHEMA, status: CLEANUP_UNCONFIRMED, controllerFailureStage });
   }
 }
 

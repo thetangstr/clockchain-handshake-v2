@@ -403,6 +403,22 @@ test("live Fargate adapter enters resource-scoped cleanup after every mutation b
   }
 });
 
+test("live Fargate adapter reports the secret-free controller stage that failed", async () => {
+  const plan = await livePlan();
+  const controlPlane = fakeControlPlane(plan);
+  const result = await runFargateLiveMechanicsProof({
+    plan,
+    controlPlane,
+    mcpGate: async () => ({ healthy: true, checkpointTool: true, endpoint: "https://mcp.clockchain.network/handshake/mcp" }),
+    waitInvitationWindow: async () => { throw new Error("private upstream detail"); },
+    retainEvidence: async () => { throw new Error("must not retain"); },
+  });
+
+  assert.equal(result.status, CLEANUP_UNCONFIRMED);
+  assert.equal(result.controllerFailureStage, "wait-invitation-window");
+  assert.equal(JSON.stringify(result).includes("private upstream detail"), false);
+});
+
 test("live Fargate adapter returns failed-clean after protocol failure with confirmed cleanup", async () => {
   const plan = await livePlan();
   const controlPlane = fakeControlPlane(plan);
