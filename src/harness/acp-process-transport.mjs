@@ -366,11 +366,14 @@ function promptText({ role, sessionId, mandate, a2aConfig }) {
     return [
       "Clockchain fresh-agent bootstrap.",
       "role: responder",
-      "You have exactly one action now.",
+      "Your first action now is to accept the invitation.",
       `Call the dedicated Clockchain MCP tool agent_handshake_accept_invitation with this exact opaque invitation unchanged: ${a2aConfig.invitation}`,
       "Do not print, summarize, or copy the invitation anywhere else.",
-      "Do not call any other MCP or local tool.",
-      "After that tool returns, end this turn. The adapter will give you the exact next action.",
+      "After that tool returns, do not end this turn.",
+      "If it returns helperSteps, execute each helperStep.approvalCommand with Bash exactly as returned, one at a time, in order.",
+      "Then call agent_handshake_join using responderAccess as access and the exact helper outputs.",
+      "Continue until Clockchain returns a certificate and the retained local verification reports that the certificate is verified.",
+      "Follow each MCP result's next action. Never alter a helper command or the invitation.",
     ].join("\n");
   }
   const mandateJson = JSON.stringify(mandate);

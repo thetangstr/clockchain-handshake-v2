@@ -971,11 +971,12 @@ test("ACP process transport rejects authority, endpoint, pin, and secret leakage
   const responderPrompt = responderCalls.find((entry) => entry[0] === "prompt")[1].prompt[0].text;
   assert.match(responderPrompt, new RegExp(INVITATION.replace(".", "\\.")));
   assert.match(responderPrompt, /agent_handshake_accept_invitation/);
-  assert.match(responderPrompt, /exactly one action now/i);
-  assert.match(responderPrompt, /Do not call any other MCP or local tool/i);
-  assert.match(responderPrompt, /After that tool returns, end this turn/i);
+  assert.match(responderPrompt, /first action now/i);
+  assert.match(responderPrompt, /After that tool returns, do not end this turn/i);
+  assert.match(responderPrompt, /execute each helperStep\.approvalCommand with Bash/i);
+  assert.match(responderPrompt, /Call agent_handshake_join/i);
   assert.match(responderPrompt, /do not print/i);
-  assert.doesNotMatch(responderPrompt, /Continue until Clockchain returns a certificate/i);
+  assert.match(responderPrompt, /Continue until Clockchain returns a certificate/i);
   assert.doesNotMatch(responderPrompt, /direct A2A endpoint:|direct A2A peer card:|direct A2A peer endpoint:/i);
   assert.doesNotMatch(responderPrompt, /read.*(?:file|path)|responder-invitation/i);
   assert.doesNotMatch(JSON.stringify(responderCalls[0]), new RegExp(INVITATION.replace(".", "\\.")));
