@@ -17,6 +17,7 @@ test("mechanics proof Fargate app Dockerfile is pinned, nonroot, and entrypoint-
   assert.match(dockerfile, /^RUN npm ci --omit=dev && rm -rf node_modules\/@anthropic-ai\/claude-agent-sdk-linux-x64-musl$/m);
   assert.match(dockerfile, /^RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates openssl && rm -rf \/var\/lib\/apt\/lists\/\*$/m);
   assert.match(dockerfile, /^RUN mkdir -p \/workspace && chown node:node \/workspace$/m);
+  assert.match(dockerfile, /^RUN node scripts\/install-pinned-agent-handshake-release\.mjs \/app\/release-assets$/m);
   assert.doesNotMatch(dockerfile, /chown -R .*\/app/);
   assert.match(dockerfile, /^USER node$/m);
   assert.match(dockerfile, /^EXPOSE 8443$/m);

@@ -7,6 +7,8 @@ import { pathToFileURL } from "node:url";
 import { createStdinBootstrapExchange } from "../src/runtime/stdin-bootstrap-exchange.mjs";
 import { createTaskRoleAwsSqsBootstrapExchange } from "../src/runtime/aws-sqs-bootstrap-exchange.mjs";
 import { resolveAwsEcsTaskBootstrap } from "../src/runtime/aws-ecs-task-bootstrap.mjs";
+import { createImageReleaseAssetFetch } from "../src/harness/image-release-assets.mjs";
+import { createVerifiedReleaseActionRecorder } from "../src/harness/verified-release-action-recorder.mjs";
 import {
   createMechanicsProofPartyRuntime,
   mechanicsProofPartyRuntimeFailureStage,
@@ -20,6 +22,7 @@ const CODEX_AUTH_BASE64 = /^[A-Za-z0-9+/=]{4,98304}$/;
 const CLAUDE_AUTH_BASE64 = CODEX_AUTH_BASE64;
 const PRIVATE_DNS = /^(?:[a-z0-9-]+\.)*(?:task\.local|internal|local)$/i;
 const MANAGED_IDLE_MS = 300_000;
+const IMAGE_RELEASE_ASSETS = "/app/release-assets";
 
 function value(env, name) {
   const item = env[name];
@@ -246,7 +249,14 @@ export async function runMain({
       stdout.write(`${JSON.stringify(resolved.attestation)}\n`);
     }
     failureStage = "runtime-create";
-    runtime = await createRuntime(options);
+    runtime = await createRuntime(options, argv[2] === "--run-managed" ? {
+      createActionRecorder(input) {
+        return createVerifiedReleaseActionRecorder({
+          ...input,
+          fetchImpl: createImageReleaseAssetFetch(IMAGE_RELEASE_ASSETS),
+        });
+      },
+    } : {});
     failureStage = "exchange-create";
     bootstrapExchange = argv[2] === "--run-managed"
       ? createManagedBootstrapExchange(Object.freeze({ ...managedEnvironment, role: options.role, runId: options.runId }))

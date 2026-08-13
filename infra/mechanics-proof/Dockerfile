@@ -11,6 +11,10 @@ RUN npm ci --omit=dev && rm -rf node_modules/@anthropic-ai/claude-agent-sdk-linu
 COPY bin ./bin
 COPY src ./src
 COPY prompts ./prompts
+COPY release/agent-handshake/pin.json ./release/agent-handshake/pin.json
+COPY scripts/install-pinned-agent-handshake-release.mjs ./scripts/install-pinned-agent-handshake-release.mjs
+
+RUN node scripts/install-pinned-agent-handshake-release.mjs /app/release-assets
 
 RUN mkdir -p /workspace && chown node:node /workspace
 
