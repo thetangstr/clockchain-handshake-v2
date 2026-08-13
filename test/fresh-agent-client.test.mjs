@@ -1082,7 +1082,7 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
   const fixture = JSON.parse(await readFile(new URL("./fixtures/fresh-agent/prompts.json", import.meta.url), "utf8"));
   assert.equal(fixture.endpoint, CLOCKCHAIN_HANDSHAKE_MCP_URL);
   for (const prompt of [fixture.initiator, fixture.responder].map((value) => `${value}\n\n${fixture.actionDecision}`)) {
-    assert.ok(prompt.length < 2_450);
+    assert.ok(prompt.length < 3_000);
     assert.match(prompt, /direct authorization/i);
     assert.match(prompt, /controlled Sepolia test/i);
     assert.match(prompt, /fresh ERC-8004 identity/i);
@@ -1106,6 +1106,13 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
     assert.match(prompt, /Proceed without asking me again/i);
     assert.match(prompt, /All required code is preloaded; use no network fetch/i);
     assert.match(prompt, /Every MCP response without a locally verified certificate is nonterminal/i);
+    assert.match(prompt, /one to three plain-language sentences/i);
+    assert.match(prompt, /what you verified.*what completed.*what happens next/i);
+    assert.match(prompt, /do not narrate routine polling/i);
+    assert.match(prompt, /raw JSON.*private material.*full hashes/i);
+    assert.match(prompt, /final stakeholder summary/i);
+    assert.match(prompt, /role.*ERC-8004 identity.*agreement status.*certificate verification.*no external business action/i);
+    assert.match(prompt, /Never announce success before.*locally verified/i);
     assert.match(prompt, /wait or pending.*returned bounded interval/i);
     assert.match(prompt, /Never finish merely because the other role is pending/i);
     assert.match(prompt, /Clockchain host.*funds.*registration gas/i);

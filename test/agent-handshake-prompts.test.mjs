@@ -20,7 +20,7 @@ const readPrompt = (name) => readFile(join(ROOT, "prompts", `${name}.md`), "utf8
 for (const name of NAMES) {
   test(`${name} is a concise, exact fresh-stakeholder prompt`, async () => {
     const text = await readPrompt(name);
-    assert.ok(text.trim().split(/\s+/).length <= 180, `${name} exceeds 180 words`);
+    assert.ok(text.trim().split(/\s+/).length <= 230, `${name} exceeds 230 words`);
     assert.match(text, /https:\/\/mcp\.clockchain\.network\/mcp/);
     assert.match(text, /wallet-bridge\.mjs/);
     assert.match(text, /ERC-8004/);
@@ -33,6 +33,13 @@ for (const name of NAMES) {
     for (const word of FORBIDDEN) assert.doesNotMatch(text.toLowerCase(), new RegExp(`\\b${word}\\b`));
     assert.doesNotMatch(text, /\.json handoff|handoff file/i);
     assert.doesNotMatch(text, /signing companion/i);
+    assert.match(text, /one to three plain-language sentences/i);
+    assert.match(text, /what you verified.*what completed.*what happens next/i);
+    assert.match(text, /do not narrate routine polling/i);
+    assert.match(text, /raw JSON.*private material.*full hashes/i);
+    assert.match(text, /final stakeholder summary/i);
+    assert.match(text, /role.*ERC-8004 identity.*agreement status.*certificate verification.*no external business action/i);
+    assert.match(text, /Never announce success before.*locally verified/i);
   });
 }
 
