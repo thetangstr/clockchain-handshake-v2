@@ -378,7 +378,16 @@ function deferredToolInstructions(harness, tool) {
     : [];
 }
 
-function promptText({ role, sessionId, mandate, a2aConfig, harness }) {
+function localActionInstructions(deterministicLocalActions) {
+  return deterministicLocalActions
+    ? [
+      "The harness adapter executes validated local identity actions under the retained local policy.",
+      "Never call Bash or replay any helperStep, approvalCommand, or local-action command returned by Clockchain.",
+    ]
+    : ["If it returns helperSteps, execute each helperStep.approvalCommand with Bash exactly as returned, one at a time, in order."];
+}
+
+function promptText({ role, sessionId, mandate, a2aConfig, harness, deterministicLocalActions }) {
   if (role === "responder") {
     const acceptTool = promptToolName(harness, "agent_handshake_accept_invitation");
     return [
@@ -389,7 +398,7 @@ function promptText({ role, sessionId, mandate, a2aConfig, harness }) {
       ...deferredToolInstructions(harness, "agent_handshake_accept_invitation"),
       "Do not print, summarize, or copy the invitation anywhere else.",
       "After that tool returns, do not end this turn.",
-      "If it returns helperSteps, execute each helperStep.approvalCommand with Bash exactly as returned, one at a time, in order.",
+      ...localActionInstructions(deterministicLocalActions),
       "Then call agent_handshake_join using responderAccess as access and the exact helper outputs.",
       "Continue until Clockchain returns a certificate and the retained local verification reports that the certificate is verified.",
       "Follow each MCP result's next action. Never alter a helper command or the invitation.",
@@ -408,11 +417,11 @@ function promptText({ role, sessionId, mandate, a2aConfig, harness }) {
     `First call ${inviteTool} with the four mandate fields as the tool arguments themselves; do not nest them under mandate or terms.`,
     ...deferredToolInstructions(harness, "agent_handshake_invite"),
     "After agent_handshake_invite returns, do not end this turn.",
-    "If it returns helperSteps, execute each helperStep.approvalCommand with Bash exactly as returned, one at a time, in order.",
+    ...localActionInstructions(deterministicLocalActions),
     "Then call agent_handshake_join using initiatorAccess as access and the exact helper outputs.",
     "A result whose public body has an error field is not an invitation and must never be copied or used as role access.",
     "Continue until Clockchain returns a certificate and the retained local verification reports that the certificate is verified.",
-    "Whenever an MCP result includes helperStep or helperSteps, request each exact helperStep.approvalCommand through the retained local-action approval path before the next MCP call.",
+    ...(deterministicLocalActions ? [] : ["Whenever an MCP result includes helperStep or helperSteps, request each exact helperStep.approvalCommand through the retained local-action approval path before the next MCP call."]),
     "Follow each MCP result's next action, including waits or retries. Do not end your turn before the verified certificate unless a non-retryable tool error makes completion impossible.",
     "Use the dedicated clockchain-handshake MCP server and retained local-action approvals only.",
   ].join("\n");
@@ -1198,6 +1207,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
       if (rejectableCommandStage || retainedReplay) {
         try { unrelatedRejection = rejectOnceOption(params); } catch {}
       }
+      const deterministicReplayRejected = retainedReplay && actionRecorder?.executeAuthorizedAction != null && unrelatedRejection !== null;
       const recoverableCancellation = unrelatedRejection === null && (
         retainedReplay || ((commandStage === "tool" || commandStage?.startsWith("input") === true) &&
           permissionDenials <= MAX_PERMISSION_DENIALS)
@@ -1207,7 +1217,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
         event("acp.permission.denied", `denied ACP permission at ${publicStage}`, publicStage);
         return Object.freeze({ outcome: Object.freeze({ outcome: "cancelled" }) });
       }
-      if (unrelatedRejection === null || permissionDenials > MAX_PERMISSION_DENIALS) {
+      if (!deterministicReplayRejected && (unrelatedRejection === null || permissionDenials > MAX_PERMISSION_DENIALS)) {
         fatalPermissionDenied = true;
         permissionFailureStage ??= publicStage;
       }
@@ -1528,7 +1538,14 @@ export function createAcpProcessTransport(optionsInput = {}) {
             prompt: [{
               type: "text",
               text: promptAttempt === 0
-                ? promptText({ role: clean.role, sessionId: clean.sessionId, mandate: cleanMandateValue, a2aConfig: cleanPeer, harness })
+                ? promptText({
+                  role: clean.role,
+                  sessionId: clean.sessionId,
+                  mandate: cleanMandateValue,
+                  a2aConfig: cleanPeer,
+                  harness,
+                  deterministicLocalActions: actionRecorder?.executeAuthorizedAction != null,
+                })
                 : continuationPromptText({
                   role: clean.role,
                   protocolSessionId,

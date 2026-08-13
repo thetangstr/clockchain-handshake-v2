@@ -157,6 +157,7 @@ function acpFixtureSpawn({
   unrelatedPermissionRawInput = null,
   duplicatePermissionAfterHelper = false,
   duplicatePermissionOptions = null,
+  unsolicitedPermissionAfterDeterministicExecution = false,
   latePriorSessionUpdateOnContinuation = null,
 }) {
   let promptCount = 0;
@@ -336,6 +337,22 @@ function acpFixtureSpawn({
           }
         }
         if (helperUpdate !== null) await helperUpdate;
+        if (unsolicitedPermissionAfterDeterministicExecution) {
+          const unsolicitedPermission = await connection.requestPermission({
+            sessionId: params.sessionId,
+            toolCall: {
+              toolCallId: "tool-unsolicited-after-deterministic",
+              kind: "execute",
+              status: "pending",
+              rawInput: { command: permissionCommand, ...(permissionCwd === undefined ? {} : { cwd: permissionCwd }) },
+            },
+            options: [
+              { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
+              { optionId: "reject_once", name: "Reject", kind: "reject_once" },
+            ],
+          });
+          calls.push(["unsolicitedPermissionAfterDeterministicExecution", unsolicitedPermission]);
+        }
         await connection.sessionUpdate({
           sessionId: params.sessionId,
           update: { sessionUpdate: "usage_update", used: 7, size: 100000 },
@@ -1521,6 +1538,60 @@ test("ACP transport rejects a deterministic action recorder without an explicit 
     env: {},
     trustedAdapterPublicKeys: [action.adapterPublicKey],
   }), /failed safely/);
+});
+
+test("ACP deterministic adapter rejects a model replay after executing the retained action without failing the workflow", async () => {
+  const action = retainedAction({ operation: "init" });
+  const calls = [];
+  let completionChecks = 0;
+  const transport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({
+      calls,
+      permissionCommand: `clockchain-agent-authorize ${action.commandSha256}`,
+      sessionUpdates: (promptCount) => promptCount === 0 ? [{
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-mcp-deterministic",
+        kind: "other",
+        title: "agent_handshake_invite",
+        status: "completed",
+        rawInput: { server: "clockchain-handshake", tool: "agent_handshake_invite", arguments: {} },
+        rawOutput: { result: { initiatorAccess: `${"a".repeat(32)}.${"b".repeat(32)}`, sessionId: SESSION, helperStep: helperStepForAction(action) }, error: null },
+      }] : [],
+      skipPermission: true,
+      unsolicitedPermissionAfterDeterministicExecution: true,
+    }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    nowMs: () => 1786337001000,
+    actionRecorder: deterministicActionRecorderFor([action], {
+      init: { schema: "clockchain.agent-handshake-cli-result/v1", helperVersion: "2.1.3", operation: "init", address: "0x1111111111111111111111111111111111111111" },
+    }, calls),
+    env: {},
+    partyBridge: partyBridgeFor(calls, {
+      completionStatus() {
+        completionChecks += 1;
+        return { complete: completionChecks >= 2, protocolSessionId: SESSION };
+      },
+    }),
+    retainedActionPolicy: () => Object.freeze({ decision: "authorize" }),
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  }).catch((error) => assert.fail(`unexpected stage ${acpProcessTransportFailureStage(error)}`));
+  assert.deepEqual(calls.find((entry) => entry[0] === "unsolicitedPermissionAfterDeterministicExecution")[1], {
+    outcome: { outcome: "selected", optionId: "reject_once" },
+  });
+  const firstPrompt = calls.find((entry) => entry[0] === "prompt")[1].prompt[0].text;
+  assert.match(firstPrompt, /harness adapter executes validated local identity actions/i);
+  assert.match(firstPrompt, /Never call Bash or replay/i);
+  assert.doesNotMatch(firstPrompt, /execute each helperStep\.approvalCommand with Bash/i);
 });
 
 test("ACP process transport fails closed when an unrelated command lacks one exact rejection option", async () => {
