@@ -162,6 +162,8 @@ test("facilitator runbook describes the exact visible production proof", async (
     "https://clockchain-research.vercel.app/handshake/claude-v6",
     "TMUX_TMPDIR=/tmp tmux -L clockchain-demo attach -t codex",
     "TMUX_TMPDIR=/tmp tmux -L clockchain-demo attach -t claude",
+    "scripts/start-facilitator-demo-controller.zsh",
+    "Start fresh demo",
   ]) assert.match(text, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 
   assert.doesNotMatch(text, /Hermes/i);

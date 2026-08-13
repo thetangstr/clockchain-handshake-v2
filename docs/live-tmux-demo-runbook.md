@@ -19,16 +19,25 @@ The production host wallet must have at least 0.025 Sepolia ETH. The launcher
 checks this before creating a session, so an invitation cannot expire while the
 demo waits for testnet funding.
 
-## Start the stable panes
+## Prepare the facilitator control
 
-From the repository root, run:
+Before the audience arrives, start the loopback-only controller once from the
+repository root:
 
 ```sh
-scripts/start-live-tmux-demo.zsh
+scripts/start-facilitator-demo-controller.zsh
 ```
 
-The command creates or reuses three stable tmux sessions. Open these two for
-the stakeholders:
+Then open the original research monitor:
+
+https://clockchain-research.vercel.app/handshake/claude-v6?live=1
+
+Only this Mac Studio sees **Facilitator controller ready**. Every other viewer
+gets the same read-only monitor but cannot launch production.
+
+## Start the fresh run
+
+Open or keep these two stable terminal sessions visible for the stakeholders:
 
 ```sh
 TMUX_TMPDIR=/tmp tmux -L clockchain-demo attach -t codex
@@ -36,13 +45,12 @@ TMUX_TMPDIR=/tmp tmux -L clockchain-demo attach -t claude
 ```
 
 The first pane is **Codex / Payer**. The second is **Claude Code / Requestor**.
-The controller waits offstage. As soon as funding is sufficient it starts both
-fresh agents automatically; there is no separate “start the demo” command and
-no stale invitation to paste.
-
-Keep the original research monitor open:
-
-https://clockchain-research.vercel.app/handshake/claude-v6
+Click **Start fresh demo** at the top of the monitor. That one click clears the
+old board, resets the two stable panes, checks the two-seat Sepolia balance,
+and starts the existing production Codex and Claude Code runner. There is no
+second start command and no stale invitation to paste. If the panes do not yet
+exist on a newly prepared machine, click Start first, then attach to them as
+soon as the button reports **Demo started**.
 
 ## What the audience should see
 
@@ -71,6 +79,15 @@ pane shows the Requestor's. Both copies show the same signed certificate and
 the proposal, acceptance, and acknowledgment ledger references. These copies
 come from the verified public evidence object and never include private keys,
 role access, provider credentials, or local state paths.
+
+## Record the tutorial master
+
+For the tutorial recording, use one 16:9 macOS screen recording with the
+research monitor and both stable terminal windows visible. Start recording
+before clicking **Start fresh demo** and keep recording until both terminals
+show their complete stakeholder receipt copies. The editor can crop and zoom
+this one synchronized master into monitor, Codex, and Claude Code close-ups
+without asking the protocol to run again.
 
 ## If the run stops
 
