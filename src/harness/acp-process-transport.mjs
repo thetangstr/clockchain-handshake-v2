@@ -482,16 +482,29 @@ function claudeClockchainPermissionTool(toolCall) {
   try { descriptors = Object.getOwnPropertyDescriptors(toolCall); }
   catch { throw permissionCommandFailure("tool"); }
   const metaDescriptor = descriptors._meta;
-  if (metaDescriptor === undefined) return null;
-  if (!metaDescriptor.enumerable || !Object.hasOwn(metaDescriptor, "value")) throw permissionCommandFailure("tool");
-  let meta;
-  let claudeCode;
-  try {
-    meta = optionalObject(metaDescriptor.value, ["claudeCode"], []);
-    claudeCode = optionalObject(meta.claudeCode, ["toolName"], []);
-  } catch { throw permissionCommandFailure("tool"); }
-  if (typeof claudeCode.toolName !== "string" || !claudeCode.toolName.startsWith(`mcp__${TOOL_SERVER}__`)) return null;
-  const toolName = claudeCode.toolName.slice(`mcp__${TOOL_SERVER}__`.length);
+  let nativeToolName;
+  if (metaDescriptor === undefined) {
+    const titleDescriptor = descriptors.title;
+    if (titleDescriptor === undefined) return null;
+    if (!titleDescriptor.enumerable || !Object.hasOwn(titleDescriptor, "value")) {
+      throw permissionCommandFailure("tool");
+    }
+    nativeToolName = titleDescriptor.value;
+  } else {
+    if (!metaDescriptor.enumerable || !Object.hasOwn(metaDescriptor, "value")) {
+      throw permissionCommandFailure("tool");
+    }
+    try {
+      const meta = optionalObject(metaDescriptor.value, ["claudeCode"], []);
+      const claudeCode = optionalObject(meta.claudeCode, ["toolName"], ["parentToolUseId"]);
+      if (claudeCode.parentToolUseId !== undefined && typeof claudeCode.parentToolUseId !== "string") {
+        throw permissionCommandFailure("tool");
+      }
+      nativeToolName = claudeCode.toolName;
+    } catch { throw permissionCommandFailure("tool"); }
+  }
+  if (typeof nativeToolName !== "string" || !nativeToolName.startsWith(`mcp__${TOOL_SERVER}__`)) return null;
+  const toolName = nativeToolName.slice(`mcp__${TOOL_SERVER}__`.length);
   if (!CLAUDE_CLOCKCHAIN_PERMISSION_TOOLS.has(toolName) || toolCall.kind !== "other") {
     throw permissionCommandFailure("tool");
   }

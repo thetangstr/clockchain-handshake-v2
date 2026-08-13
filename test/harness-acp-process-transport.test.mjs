@@ -559,11 +559,10 @@ test("ACP process transport authorizes only the dedicated Clockchain MCP namespa
       sessionUpdates: [],
       permissionToolCall: {
         toolCallId: "tool-clockchain-invite",
-        title: "agent_handshake_accept_invitation",
+        title: "mcp__clockchain-handshake__agent_handshake_accept_invitation",
         kind: "other",
         status: "pending",
         rawInput: { invitation: INVITATION },
-        _meta: { claudeCode: { toolName: "mcp__clockchain-handshake__agent_handshake_accept_invitation" } },
       },
     }),
     workspace: "/workspace/responder",
@@ -598,11 +597,10 @@ test("ACP process transport rejects foreign and controller-only Claude MCP permi
         sessionUpdates: [],
         permissionToolCall: {
           toolCallId: "tool-forbidden-mcp",
-          title: "forbidden",
+          title: toolName,
           kind: "other",
           status: "pending",
           rawInput: {},
-          _meta: { claudeCode: { toolName } },
         },
       }),
       workspace: "/workspace/responder",
@@ -622,6 +620,40 @@ test("ACP process transport rejects foreign and controller-only Claude MCP permi
     });
     await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
   }
+});
+
+test("ACP process transport rejects a Clockchain-looking Claude permission outside the MCP tool kind", async () => {
+  const calls = [];
+  const transport = createAcpProcessTransport({
+    harness: "claude",
+    pin: ACP_VERSION_PINS.claude,
+    spawn: acpFixtureSpawn({
+      calls,
+      sessionUpdates: [],
+      permissionToolCall: {
+        toolCallId: "tool-spoofed-mcp",
+        title: "mcp__clockchain-handshake__agent_handshake_accept_invitation",
+        kind: "execute",
+        status: "pending",
+        rawInput: { invitation: INVITATION },
+      },
+    }),
+    workspace: "/workspace/responder",
+    home: "/workspace/responder/home",
+    env: {},
+    trustedAdapterPublicKeys: [retainedAction({ role: "responder" }).adapterPublicKey],
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.claude,
+    runtime: { runtimeId: "runtime-responder", sessionId: SESSION, role: "responder", harness: "claude" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("responder"),
+  });
+  assert.deepEqual(calls.find((entry) => entry[0] === "permission")[1], {
+    outcome: { outcome: "selected", optionId: "reject_once" },
+  });
+  await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
 });
 
 test("ACP process transport rejects unsafe Claude Bash execution controls", async () => {
