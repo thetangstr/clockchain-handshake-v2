@@ -1,0 +1,13 @@
+{
+  "schema": "clockchain.eacf-baseline-source/v1",
+  "sourceCommit": "7c697314f0b1fb78956988e5a8ca02b5de4b8396",
+  "designCommit": "c303802ceb331f3e2c7df7e76a7488e8e7719c81",
+  "planCommit": "375a0efd3976576e5fea5991777883d7d6247555",
+  "imageDigest": "sha256:66fec05bd3ede0640bb8df3a76466607fc6a27af08d537a11ebcccd6388b7c85",
+  "accountId": "570035913370",
+  "region": "us-west-2",
+  "maxTasks": 2,
+  "maxTtlSeconds": 3600,
+  "maxBudgetUsd": 25,
+  "liveResult": null
+}
