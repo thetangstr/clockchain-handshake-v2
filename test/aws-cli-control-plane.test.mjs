@@ -114,19 +114,54 @@ test("AWS CLI control plane stops absence confirmation after one hundred twenty 
   assert.equal(sleeps.every((ms) => ms === 1000), true);
 });
 
-test("AWS CLI control plane gives bounded CloudFormation waiters enough time for live stack creation", async () => {
+test("AWS CLI control plane owns the live stack creation deadline instead of trusting CLI waiter attempt counts", async () => {
   const observedTimeouts = [];
+  const sleeps = [];
+  let createObservations = 0;
   const control = createAwsCliControlPlane({
     region: "us-west-2",
-    executor: async (_file, _argv, options) => {
+    sleep: async (ms) => { sleeps.push(ms); },
+    executor: async (_file, argv, options) => {
       observedTimeouts.push(options.timeoutMs);
+      if (argv[0] === "cloudformation" && argv[1] === "describe-stacks") {
+        createObservations += 1;
+        return {
+          stdout: JSON.stringify({ Stacks: [{
+            StackName: "clockchain-11111111-2222-4333-8444-555555555555",
+            StackStatus: createObservations < 20 ? "CREATE_IN_PROGRESS" : "CREATE_COMPLETE",
+          }] }),
+          stderr: "",
+          exitCode: 0,
+        };
+      }
       return { stdout: "", stderr: "", exitCode: 0 };
     },
   });
   await control.waitStackCreateComplete({ stackName: "clockchain-11111111-2222-4333-8444-555555555555" });
   await control.waitStackDeleteComplete({ stackName: "clockchain-11111111-2222-4333-8444-555555555555" });
   await control.waitTasksStopped({ cluster: "cluster", taskArns: ["task-a", "task-b"] });
-  assert.deepEqual(observedTimeouts, [300_000, 300_000, 300_000]);
+  assert.equal(createObservations, 20);
+  assert.deepEqual(sleeps, Array(19).fill(5_000));
+  assert.deepEqual(observedTimeouts, [...Array(20).fill(30_000), 300_000, 300_000]);
+});
+
+test("AWS CLI control plane fails closed on a terminal stack creation state", async () => {
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    sleep: async () => {},
+    executor: async () => ({
+      stdout: JSON.stringify({ Stacks: [{
+        StackName: "clockchain-11111111-2222-4333-8444-555555555555",
+        StackStatus: "ROLLBACK_IN_PROGRESS",
+      }] }),
+      stderr: "",
+      exitCode: 0,
+    }),
+  });
+  await assert.rejects(
+    () => control.waitStackCreateComplete({ stackName: "clockchain-11111111-2222-4333-8444-555555555555" }),
+    /AWS CLI control-plane validation failed safely/,
+  );
 });
 
 test("AWS CLI control plane owns the cold-task running deadline instead of trusting CLI waiter attempt counts", async () => {
@@ -203,7 +238,7 @@ test("AWS CLI control plane has exact allowlisted argv shapes for Task 4 actions
   const responseFor = (argv) => {
     const key = argv.slice(0, argv[0] === "cloudformation" && argv[1] === "wait" || argv[0] === "ecs" && argv[1] === "wait" ? 3 : 2).join(" ");
     if (key === "sts get-caller-identity") return { Account: "123456789012", Arn: "arn:aws:iam::123456789012:user/controller", UserId: "AIDA" };
-  if (key === "cloudformation describe-stacks") return { Stacks: [{ Outputs: [{ OutputKey: "ClusterArn", OutputValue: "arn:aws:ecs:us-west-2:123456789012:cluster/c" }] }] };
+  if (key === "cloudformation describe-stacks") return { Stacks: [{ StackStatus: "CREATE_COMPLETE", Outputs: [{ OutputKey: "ClusterArn", OutputValue: "arn:aws:ecs:us-west-2:123456789012:cluster/c" }] }] };
     if (key === "cloudformation create-stack") return { StackId: "arn:aws:cloudformation:us-west-2:123456789012:stack/clockchain-11111111-2222-4333-8444-555555555555/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" };
     if (key === "cloudformation list-stack-resources") return { StackResourceSummaries: [{ LogicalResourceId: "Cluster", PhysicalResourceId: "cluster", ResourceType: "AWS::ECS::Cluster" }] };
     if (key === "ecs register-task-definition") return { taskDefinition: { taskDefinitionArn: "arn:aws:ecs:us-west-2:123456789012:task-definition/x:1" } };
@@ -279,7 +314,7 @@ test("AWS CLI control plane validates real create-stack StackId and binds later 
       seen.push(argv);
       const key = argv.slice(0, argv[0] === "cloudformation" && argv[1] === "wait" ? 3 : 2).join(" ");
       if (key === "cloudformation create-stack") return { stdout: JSON.stringify({ StackId: stackId, OperationId: operationId }), stderr: "", exitCode: 0 };
-      if (key === "cloudformation describe-stacks") return { stdout: JSON.stringify({ Stacks: [{ StackId: stackId, StackName: stackName, Outputs: [] }] }), stderr: "", exitCode: 0 };
+      if (key === "cloudformation describe-stacks") return { stdout: JSON.stringify({ Stacks: [{ StackId: stackId, StackName: stackName, StackStatus: "CREATE_COMPLETE", Outputs: [] }] }), stderr: "", exitCode: 0 };
       return { stdout: JSON.stringify({ StackResourceSummaries: [{ LogicalResourceId: "Cluster", PhysicalResourceId: "cluster", ResourceType: "AWS::ECS::Cluster" }] }), stderr: "", exitCode: 0 };
     },
   });
@@ -291,7 +326,7 @@ test("AWS CLI control plane validates real create-stack StackId and binds later 
     stackName,
     resources: [{ logicalResourceId: "Cluster", physicalResourceId: "cluster", resourceType: "AWS::ECS::Cluster" }],
   });
-  assert.equal(seen.some((argv) => argv[0] === "cloudformation" && argv[1] === "wait" && argv.includes(stackId)), true);
+  assert.equal(seen.some((argv) => argv[0] === "cloudformation" && argv[1] === "wait" && argv.includes(stackId)), false);
   assert.equal(seen.some((argv) => argv[0] === "cloudformation" && argv[1] === "describe-stacks" && argv.includes(stackId)), true);
   assert.equal(seen.some((argv) => argv[0] === "cloudformation" && argv[1] === "list-stack-resources" && argv.includes(stackId)), true);
 

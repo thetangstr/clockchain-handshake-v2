@@ -326,10 +326,24 @@ export function createAwsCliControlPlane(optionsInput = {}) {
       stackIdArn(response.StackId, { stackName: name, region, accountId });
       return Object.freeze({ StackId: response.StackId });
     },
-    waitStackCreateComplete({ stackName: name, stackId = null }) {
+    async waitStackCreateComplete({ stackName: name, stackId = null }) {
       stackName(name);
       const identifier = stackId === null ? name : stackIdArn(stackId, { stackName: name, region, accountId });
-      return callAws(["cloudformation", "wait", "stack-create-complete", "--stack-name", identifier, "--region", region, "--output", "json"], { timeoutMs: 300_000 });
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        const response = await callAws(["cloudformation", "describe-stacks", "--stack-name", identifier, "--region", region, "--output", "json"]);
+        if (!Array.isArray(response.Stacks) || response.Stacks.length !== 1) fail();
+        const stack = response.Stacks[0];
+        if (
+          stack === null || typeof stack !== "object" ||
+          (stack.StackName !== undefined && stack.StackName !== name) ||
+          (stackId !== null && stack.StackId !== stackId) ||
+          typeof stack.StackStatus !== "string"
+        ) fail();
+        if (stack.StackStatus === "CREATE_COMPLETE") return Object.freeze({ stackId: stack.StackId ?? null, stackName: name });
+        if (stack.StackStatus !== "CREATE_IN_PROGRESS") fail();
+        if (attempt < 59) await sleepFn(5_000);
+      }
+      fail();
     },
     async describeStackOutputs({ stackName: name, stackId = null }) {
       stackName(name);
