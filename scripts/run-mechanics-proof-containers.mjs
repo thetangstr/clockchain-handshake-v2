@@ -395,7 +395,7 @@ export function createDockerCliDriver({ spawnImpl = spawn } = {}) {
     },
     async createContainer(input) {
       const args = [
-        "create", "--name", input.name, "--read-only", "--network", input.network,
+        "create", "--interactive", "--name", input.name, "--read-only", "--network", input.network,
         "--network-alias", input.networkAlias,
         "--env-file", input.envFile, "--label", `clockchain.mechanics-proof.run-id=${input.labels["clockchain.mechanics-proof.run-id"]}`,
         "--label", `clockchain.mechanics-proof.role=${input.role}`,

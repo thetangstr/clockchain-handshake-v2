@@ -379,6 +379,7 @@ test("real Docker driver argv includes per-role network aliases and not credenti
     command: ["--run"],
   });
   const args = calls[0][1];
+  assert.equal(args.includes("--interactive"), true);
   assert.equal(args.includes("--network-alias"), true);
   assert.equal(args[args.indexOf("--network-alias") + 1], "initiator.task.local");
   assert.equal(args.includes("--env-file"), true);
