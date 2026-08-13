@@ -77,7 +77,7 @@ function fundingAlertCents(value, fallback) {
 
 function fundingMaximumCents(value, fallback) {
   const cents = fundingAlertCents(value, fallback);
-  if (cents < 4 || cents > 40) {
+  if (cents < 2 || cents > 40) {
     throw new Error("AGENT_HANDSHAKE_V2_FUNDING_CONFIGURATION_INVALID");
   }
   return cents;

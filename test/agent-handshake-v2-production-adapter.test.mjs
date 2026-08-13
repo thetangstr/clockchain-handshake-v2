@@ -13,7 +13,7 @@ import { agentHandshakeV2StatementDigest } from "../src/agent-handshake/v2/terms
 import { buildV2Fixture, ed25519, INITIATOR, REPOSITORY_SHA, SESSION_ID, TERMS } from "./support/agent-handshake-v2-fixture.mjs";
 
 test("production session fails closed without an immutable repository SHA", async () => {
-  assert.equal(AGENT_HANDSHAKE_V2_FUNDING_AMOUNT_ETH, "0.02");
+  assert.equal(AGENT_HANDSHAKE_V2_FUNDING_AMOUNT_ETH, "0.01");
   await assert.rejects(
     loadAgentHandshakeV2Session({ env: {} }),
     /HANDSHAKE_SHA_INVALID/,

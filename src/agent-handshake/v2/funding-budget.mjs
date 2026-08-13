@@ -1,9 +1,9 @@
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HOUR_MS = 60 * 60 * 1000;
-export const AGENT_HANDSHAKE_V2_SEAT_FUNDING_ETH = "0.02";
-const SEAT_CENTS = 2;
-const SESSION_CENTS = 4;
+export const AGENT_HANDSHAKE_V2_SEAT_FUNDING_ETH = "0.01";
+const SEAT_CENTS = 1;
+const SESSION_CENTS = 2;
 const HOUR_CENTS = 20;
 const DAY_CENTS = 100;
 export const AGENT_HANDSHAKE_V2_MAX_HOURLY_FUNDING_CENTS = 40;
@@ -22,7 +22,7 @@ function invalid() {
 }
 
 function amountCents(value) {
-  if (value === "0.01") return 1;
+  if (value === "0.02") return 2;
   if (value === AGENT_HANDSHAKE_V2_SEAT_FUNDING_ETH) return SEAT_CENTS;
   invalid();
 }

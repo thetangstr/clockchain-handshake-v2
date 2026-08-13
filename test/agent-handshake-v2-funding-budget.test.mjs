@@ -14,7 +14,7 @@ const A = "0x" + "1".repeat(40);
 const B = "0x" + "2".repeat(40);
 
 test("required-fresh reserves both seats atomically before either transfer", async () => {
-  assert.equal(AGENT_HANDSHAKE_V2_SEAT_FUNDING_ETH, "0.02");
+  assert.equal(AGENT_HANDSHAKE_V2_SEAT_FUNDING_ETH, "0.01");
   let records = [];
   const budget = createFundingBudget({
     load: async () => records,
@@ -26,10 +26,10 @@ test("required-fresh reserves both seats atomically before either transfer", asy
     identityMode: "required_fresh",
     sessionId: "22222222-3333-4444-8555-666666666666",
   });
-  assert.equal(reservation.totalEth, "0.04");
+  assert.equal(reservation.totalEth, "0.02");
   assert.deepEqual(reservation.addresses, [A, B]);
   assert.equal(records.length, 2);
-  assert.deepEqual(records.map(({ amountEth }) => amountEth), ["0.02", "0.02"]);
+  assert.deepEqual(records.map(({ amountEth }) => amountEth), ["0.01", "0.01"]);
 });
 
 test("concurrent, duplicate, exhausted, and backpressured reservations fail without partial state", async () => {
@@ -83,7 +83,7 @@ test("a bounded hourly override admits one controlled test run without disabling
   }));
   const budget = createFundingBudget({
     load: async () => records,
-    maxHourCents: 24,
+    maxHourCents: 22,
     save: async (next) => { records = structuredClone(next); },
     now: () => now,
   });
@@ -91,7 +91,7 @@ test("a bounded hourly override admits one controlled test run without disabling
     addresses: [A, B],
     identityMode: "required_fresh",
     sessionId: "22222222-3333-4444-8555-666666666666",
-  })).totalEth, "0.04");
+  })).totalEth, "0.02");
   await assert.rejects(() => budget.reserve({
     addresses: ["0x" + "3".repeat(40)],
     identityMode: "required_existing_or_fresh",
@@ -121,7 +121,7 @@ test("funding budget emits threshold-only alerts without exposing reserved addre
     identityMode: "required_fresh",
     sessionId: "22222222-3333-4444-8555-666666666666",
   });
-  assert.deepEqual(alerts, [{ dailyEth: "0.18", hourlyEth: "0.18" }]);
+  assert.deepEqual(alerts, [{ dailyEth: "0.16", hourlyEth: "0.16" }]);
   assert.equal(JSON.stringify(alerts).includes(A), false);
   assert.equal(JSON.stringify(alerts).includes(B), false);
 });
@@ -138,7 +138,7 @@ test("not-required reserves nothing and existing-or-fresh reserves only missing 
     addresses: [A],
     identityMode: "required_existing_or_fresh",
     sessionId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
-  })).totalEth, "0.02");
+  })).totalEth, "0.01");
 });
 
 test("file store is restart-safe and remains mode 0600", async () => {

@@ -37,6 +37,7 @@ export const CLOCKCHAIN_HANDSHAKE_TOOLS = Object.freeze([
   "agent_handshake_join",
   "agent_handshake_status",
   "agent_handshake_next",
+  "agent_handshake_submit_checkpoint",
   "agent_handshake_submit",
   "agent_handshake_get_certificate",
 ]);
@@ -71,12 +72,12 @@ const DIAGNOSTIC_PHASES = Object.freeze(new Set([
   "agent-exit", "configure", "invitation", "monitor", "preflight", "prepare", "timeout", "unknown",
 ]));
 const DIAGNOSTIC_CATEGORIES = Object.freeze(new Set([
-  "agent", "authentication", "client", "deadline", "http", "monitor", "process", "runtime", "unknown", "validation",
+  "agent", "authentication", "client", "deadline", "http", "monitor", "process", "runtime", "service", "unknown", "validation",
 ]));
 const DIAGNOSTIC_CODES = Object.freeze(new Set([
   "AGENT_EXIT", "AGENT_FAILED", "AGENT_OUTPUT_INVALID", "CONFIGURE_FAILED", "HELPER_PROOF_MISSING",
   "HELPER_COMMAND_MISMATCH", "HELPER_EXECUTION_FAILED",
-  "INVALID_RETRY_DELAY", "INVALID_TIMEOUT", "INVITATION_MISSING", "MONITOR_FAILED", "MONITOR_RESULT_INVALID",
+  "INVALID_RETRY_DELAY", "INVALID_TIMEOUT", "INVITATION_MISSING", "INVITATION_UNAVAILABLE", "MONITOR_FAILED", "MONITOR_RESULT_INVALID",
   "NODE24_REQUIRED", "PREPARE_FAILED", "AUTHENTICATION_FAILED", "TIMEOUT", "UNKNOWN",
 ]));
 
@@ -189,17 +190,43 @@ function cleanHelperDiagnosticDetails(code, value) {
 function cleanProofMissingDiagnosticDetails(value) {
   if (
     value === null || typeof value !== "object" || Array.isArray(value) ||
-    JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(["client", "lastMcpTool", "role"])
+    JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(["client", "lastMcpTool", "pendingHelperOperation", "recentMcpTools", "role"])
   ) return null;
   if (
     !FRESH_AGENT_CLIENTS.includes(value.client) || !ROLES.includes(value.role) ||
-    !(value.lastMcpTool === null || CLOCKCHAIN_HANDSHAKE_TOOLS.includes(value.lastMcpTool))
+    !(value.lastMcpTool === null || CLOCKCHAIN_HANDSHAKE_TOOLS.includes(value.lastMcpTool)) ||
+    !(value.pendingHelperOperation === null || HELPER_OPERATIONS.includes(value.pendingHelperOperation)) ||
+    !Array.isArray(value.recentMcpTools) || value.recentMcpTools.length > 4 ||
+    value.recentMcpTools.some((tool) => !CLOCKCHAIN_HANDSHAKE_TOOLS.includes(tool)) ||
+    (value.recentMcpTools.at(-1) ?? null) !== value.lastMcpTool
   ) return null;
-  return Object.freeze({ client: value.client, lastMcpTool: value.lastMcpTool, role: value.role });
+  return Object.freeze({
+    client: value.client,
+    lastMcpTool: value.lastMcpTool,
+    pendingHelperOperation: value.pendingHelperOperation,
+    recentMcpTools: Object.freeze([...value.recentMcpTools]),
+    role: value.role,
+  });
+}
+
+function cleanInvitationUnavailableDetails(value) {
+  if (
+    value === null || typeof value !== "object" || Array.isArray(value) ||
+    Object.keys(value).sort().join(",") !== "client,error,retryable,role" ||
+    !FRESH_AGENT_CLIENTS.includes(value.client) || !ROLES.includes(value.role) ||
+    value.error !== "HANDSHAKE_UNAVAILABLE" || value.retryable !== false
+  ) return null;
+  return Object.freeze({
+    client: value.client,
+    error: value.error,
+    retryable: false,
+    role: value.role,
+  });
 }
 
 function cleanDiagnosticDetails(code, value) {
   if (["HELPER_PROOF_MISSING", "INVITATION_MISSING"].includes(code)) return cleanProofMissingDiagnosticDetails(value);
+  if (code === "INVITATION_UNAVAILABLE") return cleanInvitationUnavailableDetails(value);
   return cleanHelperDiagnosticDetails(code, value);
 }
 
@@ -649,7 +676,7 @@ export function buildClientCommands({
       }),
       launch: Object.freeze({
         args: Object.freeze([
-          "exec", "--model", "gpt-5.6-terra", "--skip-git-repo-check", "--strict-config", "--ignore-rules", "--ephemeral",
+          "exec", "--model", "gpt-5.6-terra", "--skip-git-repo-check", "--strict-config", "--ignore-rules",
           "--sandbox", "workspace-write", "--config", 'approval_policy="never"',
           "--config", "allow_login_shell=false",
           "--config", "sandbox_workspace_write.network_access=true", "--json", "--cd", cwd, "-",
@@ -688,7 +715,6 @@ export function buildClientCommands({
       args: Object.freeze([
         "--print", existingLoginIsolated ? "--session-id" : "--resume", claudeSessionId,
         "--model", "sonnet", "--effort", "low",
-        ...(existingLoginIsolated ? ["--no-session-persistence"] : []),
         "--disable-slash-commands", "--no-chrome",
         "--strict-mcp-config", "--mcp-config", JSON.stringify({
           mcpServers: { "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL } },
@@ -708,6 +734,50 @@ export function buildClientCommands({
       input: prompt,
       limitation: null,
     }),
+  });
+}
+
+export function buildClientContinuationCommand({
+  client,
+  claudeSessionId,
+  hostHome = homedir(),
+  hostUid = process.getuid?.(),
+  prompt,
+  workspace,
+} = {}) {
+  const clean = cleanClient(client);
+  const cwd = absolute(workspace);
+  if (typeof prompt !== "string" || prompt.length === 0) fail();
+  if (clean === "codex") {
+    return Object.freeze({
+      file: "codex",
+      args: Object.freeze([
+        "exec", "resume", "--last", "--model", "gpt-5.6-terra", "--skip-git-repo-check",
+        "--strict-config", "--ignore-rules", "--json", "-",
+      ]),
+      input: prompt,
+    });
+  }
+  if (!UUID.test(claudeSessionId)) fail();
+  const sandboxSettings = buildClaudeSandboxSettings({ hostHome, hostUid, workspace: cwd });
+  return Object.freeze({
+    file: "claude",
+    args: Object.freeze([
+      "--print", "--resume", claudeSessionId, "--model", "sonnet", "--effort", "low",
+      "--disable-slash-commands", "--no-chrome",
+      "--strict-mcp-config", "--mcp-config", JSON.stringify({
+        mcpServers: { "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL } },
+      }),
+      "--permission-mode", "dontAsk", "--setting-sources", "",
+      "--settings", JSON.stringify(sandboxSettings),
+      "--output-format", "stream-json", "--verbose",
+      "--tools", "Bash,Read,ToolSearch",
+      "--allowedTools", ["ToolSearch", "Bash"].concat(CLOCKCHAIN_HANDSHAKE_TOOLS
+        .map((tool) => `mcp__clockchain-handshake__${tool}`)
+        .concat(["Read(./manifest.json)", "Read(./clockchain-agent-handshake.cjs)"]))
+        .join(","),
+    ]),
+    input: prompt,
   });
 }
 
@@ -1327,6 +1397,51 @@ function completedClockchainMcpTool(event, claudeMcpToolCalls) {
   return null;
 }
 
+function publicMcpFailure(value) {
+  const pending = [value];
+  let visited = 0;
+  while (pending.length > 0) {
+    visited += 1;
+    if (visited > 10_000) fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
+    const current = pending.pop();
+    if (typeof current === "string") {
+      const parsed = parseJsonString(current);
+      if (parsed !== null) pending.push(parsed);
+      continue;
+    }
+    if (current === null || typeof current !== "object") continue;
+    if (Array.isArray(current)) {
+      pending.push(...current);
+      continue;
+    }
+    if (
+      current.error === "HANDSHAKE_UNAVAILABLE" && current.retryable === false &&
+      Object.keys(current).sort().join(",") === "error,retryable"
+    ) return Object.freeze({ error: current.error, retryable: false });
+    pending.push(...Object.values(current));
+  }
+  return null;
+}
+
+function nonRetryableInvitationFailure(event, claudeMcpToolCalls) {
+  if (
+    event?.type === "item.completed" && event?.item?.type === "mcp_tool_call" &&
+    isClockchainMcpToolName(event.item.tool) &&
+    (event.item.tool === "agent_handshake_invite" || event.item.tool.endsWith("__agent_handshake_invite"))
+  ) return publicMcpFailure(event.item.result);
+  if (event?.type !== "user" || !Array.isArray(event?.message?.content)) return null;
+  for (const block of event.message.content) {
+    if (
+      block?.type === "tool_result" && typeof block.tool_use_id === "string" &&
+      claudeMcpToolCalls.get(block.tool_use_id) === "agent_handshake_invite"
+    ) {
+      const found = publicMcpFailure(block.content);
+      if (found !== null) return found;
+    }
+  }
+  return null;
+}
+
 function isTrustedMcpResultEvent(event, claudeMcpToolCalls) {
   if (
     event?.type === "item.completed" && event?.item?.type === "mcp_tool_call" &&
@@ -1382,6 +1497,29 @@ function reconcileRecoveredHelperExecution(
   });
 }
 
+function approvalMarkerWords(command) {
+  const marker = command.endsWith(" 2>&1") ? command.slice(0, -5) : command;
+  return parseLiteralShellWords(marker);
+}
+
+function isolatedWorkspaceApprovalMatches(command, expected, approvalExecutable) {
+  if (expected.approvalCommand === null) return false;
+  const segments = command.split(" && ");
+  if (segments.length !== 2) return false;
+  let changeDirectory = [];
+  let approval = [];
+  try {
+    changeDirectory = parseLiteralShellWords(segments[0]);
+    approval = approvalMarkerWords(segments[1]);
+  } catch {
+    return false;
+  }
+  const workspace = dirname(dirname(dirname(approvalExecutable)));
+  return changeDirectory.length === 2 && changeDirectory[0] === "cd" && changeDirectory[1] === workspace &&
+    approval.length === 2 && [approvalExecutable, basename(approvalExecutable)].includes(approval[0]) &&
+    approval[1] === expected.commandSha256;
+}
+
 function bindHelperExecution(command, expectedHelperCommands, approvalExecutable) {
   const expected = expectedHelperCommands[0];
   if (expected === undefined) {
@@ -1391,9 +1529,12 @@ function bindHelperExecution(command, expectedHelperCommands, approvalExecutable
   let approvalMatches = expected.approvalCommand !== null && command === expected.approvalCommand;
   if (!approvalMatches && expected.approvalCommand !== null) {
     let words = [];
-    try { words = parseLiteralShellWords(command); } catch {}
-    approvalMatches = words.length === 2 && words[0] === approvalExecutable &&
+    try { words = approvalMarkerWords(command); } catch {}
+    approvalMatches = words.length === 2 && [approvalExecutable, basename(approvalExecutable)].includes(words[0]) &&
       words[1] === expected.commandSha256;
+  }
+  if (!approvalMatches) {
+    approvalMatches = isolatedWorkspaceApprovalMatches(command, expected, approvalExecutable);
   }
   const helperActual = fingerprintHelperExecutionCommand(command);
   const containsApproval = /(^|[;&|\s])clockchain-agent-authorize\s+[0-9a-f]{64}(?:\s|$)/.test(command);
@@ -1587,13 +1728,33 @@ function killProcessGroup(child) {
   } catch { child.kill?.("SIGTERM"); }
 }
 
-function observeChild(child, role, all, canaries, { adapter, client, expectedInvitation, manifestDigest, requireInvitation = false } = {}) {
+function observeChild(child, role, all, canaries, {
+  adapter,
+  allowIncomplete = false,
+  client,
+  expectedInvitation,
+  manifestDigest,
+  requireInvitation = false,
+  sessionState,
+} = {}) {
   if (!SHA256.test(manifestDigest)) fail();
   if (!FRESH_AGENT_CLIENTS.includes(client)) fail();
   if (
     adapter === null || typeof adapter !== "object" ||
     typeof adapter.authorize !== "function" || typeof adapter.record !== "function" ||
     typeof adapter.executable !== "string" || !isAbsolute(adapter.executable)
+  ) fail();
+  const persistent = sessionState ?? {
+    expectedHelperCommands: [],
+    helperExecutionState: { failed: false, details: null },
+    lastMcpTool: null,
+    recentMcpTools: [],
+  };
+  if (
+    persistent === null || typeof persistent !== "object" ||
+    !Array.isArray(persistent.expectedHelperCommands) ||
+    persistent.helperExecutionState === null || typeof persistent.helperExecutionState !== "object" ||
+    !Array.isArray(persistent.recentMcpTools)
   ) fail();
   let resolveInvitation;
   let rejectInvitation;
@@ -1609,9 +1770,15 @@ function observeChild(child, role, all, canaries, { adapter, client, expectedInv
     let observed = {};
     const claudeBashCommands = new Map();
     const claudeMcpToolCalls = new Map();
-    const expectedHelperCommands = [];
-    const helperExecutionState = { failed: false, details: null };
-      let lastMcpTool = null;
+    const expectedHelperCommands = persistent.expectedHelperCommands;
+    const helperExecutionState = persistent.helperExecutionState;
+    const recentMcpTools = persistent.recentMcpTools;
+    function rememberMcpTool(tool) {
+      if (tool === null) return;
+      recentMcpTools.push(tool);
+      if (recentMcpTools.length > 4) recentMcpTools.shift();
+      persistent.lastMcpTool = tool;
+    }
     let settled = false;
     function processLine(line) {
       if (line.trim().length === 0) return;
@@ -1622,12 +1789,24 @@ function observeChild(child, role, all, canaries, { adapter, client, expectedInv
         event?.type === "item.started" && event?.item?.type === "mcp_tool_call" &&
         isClockchainMcpToolName(event.item.tool)
       ) {
-        lastMcpTool = CLOCKCHAIN_HANDSHAKE_TOOLS.find((name) => (
+        rememberMcpTool(CLOCKCHAIN_HANDSHAKE_TOOLS.find((name) => (
           event.item.tool === name || event.item.tool.endsWith(`__${name}`)
-        ));
+        )));
       }
       const completedMcpTool = completedClockchainMcpTool(event, claudeMcpToolCalls);
-      if (completedMcpTool !== null) lastMcpTool = completedMcpTool;
+      rememberMcpTool(completedMcpTool);
+      const invitationFailure = requireInvitation
+        ? nonRetryableInvitationFailure(event, claudeMcpToolCalls)
+        : null;
+      if (invitationFailure !== null) {
+        reject(diagnostic("invitation", "service", "INVITATION_UNAVAILABLE", {
+          client,
+          error: invitationFailure.error,
+          retryable: invitationFailure.retryable,
+          role,
+        }));
+        return;
+      }
       const discoveredHelperCommands = collectExpectedHelperCommands(event);
       reconcileRecoveredHelperExecution(
         discoveredHelperCommands,
@@ -1812,16 +1991,52 @@ function observeChild(child, role, all, canaries, { adapter, client, expectedInv
         assertSecretFree(lineBuffer, canaries);
         assertSecretFree(stderr, canaries);
         if (requireInvitation && observed.invitation === undefined) {
-          fail("invitation", "agent", "INVITATION_MISSING", { client, lastMcpTool, role });
+          if (allowIncomplete && helperExecutionState.failed !== true) {
+            traceLifecycle({
+              phase: "continuation-needed",
+              client,
+              lastMcpTool: persistent.lastMcpTool,
+              pendingHelperOperation: expectedHelperCommands.at(-1)?.operation ?? null,
+              recentMcpTools,
+              role,
+            });
+            resolvePromise(null);
+            return;
+          }
+          fail("invitation", "agent", "INVITATION_MISSING", {
+            client,
+            lastMcpTool: persistent.lastMcpTool,
+            pendingHelperOperation: expectedHelperCommands.at(-1)?.operation ?? null,
+            recentMcpTools,
+            role,
+          });
         }
         if (observed.helperProof === undefined) {
+          if (allowIncomplete && helperExecutionState.failed !== true) {
+            traceLifecycle({
+              phase: "continuation-needed",
+              client,
+              lastMcpTool: persistent.lastMcpTool,
+              pendingHelperOperation: expectedHelperCommands.at(-1)?.operation ?? null,
+              recentMcpTools,
+              role,
+            });
+            resolvePromise(null);
+            return;
+          }
           fail(
             "agent-exit",
             "agent",
             helperExecutionState.failed ? "HELPER_EXECUTION_FAILED" : "HELPER_PROOF_MISSING",
             helperExecutionState.failed
               ? helperExecutionState.details
-              : { client, lastMcpTool, role },
+              : {
+                  client,
+                  lastMcpTool: persistent.lastMcpTool,
+                  pendingHelperOperation: expectedHelperCommands.at(-1)?.operation ?? null,
+                  recentMcpTools,
+                  role,
+                },
           );
         }
         resolvePromise(observed.helperProof);
@@ -2344,7 +2559,19 @@ export async function runFreshAgentHandshake({
         if (ready !== true) fail("prepare", "client", "PREPARE_FAILED");
         traceLifecycle({ phase: "prepare", role, client, status: "completed" });
       }
-      prepared[role] = { adapter, authenticationMode, claudeSessionId, client, env };
+      prepared[role] = {
+        adapter,
+        authenticationMode,
+        claudeSessionId,
+        client,
+        env,
+        sessionState: {
+          expectedHelperCommands: [],
+          helperExecutionState: { failed: false, details: null },
+          lastMcpTool: null,
+          recentMcpTools: [],
+        },
+      };
     }
     const timedOut = new Promise((_, rejectPromise) => {
       timer = setTimeout(() => {
@@ -2352,6 +2579,41 @@ export async function runFreshAgentHandshake({
         rejectPromise(diagnostic("timeout", "deadline", "TIMEOUT"));
       }, timeoutMs);
     });
+    function spawnContinuation(role, turn, { requireInvitation = false } = {}) {
+      const room = run.roles[role];
+      const current = prepared[role];
+      const pendingAction = current.sessionState.expectedHelperCommands[0];
+      const command = buildClientContinuationCommand({
+        client: current.client,
+        claudeSessionId: current.claudeSessionId,
+        hostHome,
+        hostUid: process.getuid?.(),
+        prompt: requireInvitation
+          ? "The prior invitation attempt ended without a result. Retry the exact original reference, statement, validity, and identity policy only if Clockchain explicitly marked the prior response retryable:true. Never retry HANDSHAKE_UNAVAILABLE with retryable:false. Do not change the terms and do not finish until the invitation is returned or Clockchain gives a terminal rejection."
+          : pendingAction !== undefined
+            ? `Clockchain has an exact pending ${pendingAction.operation} action from the latest MCP result. Preserve the assigned role and exact local policy, and make your own policy decision now. If it is permitted, execute only the exact approvalCommand already returned by Clockchain; the adapter will run the bound action without the model rewriting it. For proposal or acceptance, submit the required commitment checkpoint before the artifact signature. If it is not permitted, state the refusal and stop. Do not call agent_handshake_next again until this action is approved and its helper result is submitted. Do not finish until the signed closing certificate is locally verified.`
+          : "Continue the existing Clockchain handshake now. Preserve the assigned role and local policy. Poll only at Clockchain's returned interval, approve only matching digest-bound local actions, and do not finish until the signed closing certificate is locally verified.",
+        workspace: room.workspace,
+      });
+      const child = spawnProcess(command.file, command.args, {
+        cwd: room.workspace,
+        detached: true,
+        env: current.env,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      children.push(child);
+      traceLifecycle({ phase: "continuation-spawn", role, turn });
+      const observed = observeChild(child, role, children, canaries, {
+        adapter: current.adapter,
+        allowIncomplete: turn < 3,
+        client: current.client,
+        manifestDigest: pin.manifestDigest,
+        requireInvitation,
+        sessionState: current.sessionState,
+      });
+      sendPrompt(child, command.input);
+      return observed;
+    }
     const initiatorCommands = buildClientCommands({
       client: prepared.initiator.client,
       claudeAuthenticationMode: prepared.initiator.authenticationMode,
@@ -2371,16 +2633,31 @@ export async function runFreshAgentHandshake({
     traceLifecycle({ phase: "spawn", role: "initiator" });
     const initiatorObserved = observeChild(initiatorChild, "initiator", children, canaries, {
       adapter: prepared.initiator.adapter,
+      allowIncomplete: true,
       client: prepared.initiator.client,
       manifestDigest: pin.manifestDigest,
       requireInvitation: true,
+      sessionState: prepared.initiator.sessionState,
     });
     sendPrompt(initiatorChild, initiatorCommands.launch.input);
-    const actualInvitation = await Promise.race([
-      initiatorObserved.invitation,
-      initiatorObserved.result.then(() => fail("invitation", "agent", "INVITATION_MISSING")),
-      timedOut,
-    ]);
+    let initiatorResult = initiatorObserved.result;
+    let invitationResult = initiatorObserved.invitation;
+    let actualInvitation;
+    for (let turn = 0; actualInvitation === undefined && turn <= 3; turn += 1) {
+      const outcome = await Promise.race([
+        invitationResult.then((value) => ({ type: "invitation", value })),
+        initiatorResult.then((value) => ({ type: "result", value })),
+        timedOut,
+      ]);
+      if (outcome.type === "invitation") {
+        actualInvitation = outcome.value;
+        break;
+      }
+      if (outcome.value !== null || turn === 3) fail("invitation", "agent", "INVITATION_MISSING");
+      const continued = spawnContinuation("initiator", turn + 1, { requireInvitation: true });
+      initiatorResult = continued.result;
+      invitationResult = continued.invitation;
+    }
     const responderCommands = buildClientCommands({
       client: prepared.responder.client,
       claudeAuthenticationMode: prepared.responder.authenticationMode,
@@ -2400,13 +2677,26 @@ export async function runFreshAgentHandshake({
     traceLifecycle({ phase: "spawn", role: "responder" });
     const responderObserved = observeChild(responderChild, "responder", children, canaries, {
       adapter: prepared.responder.adapter,
+      allowIncomplete: true,
       client: prepared.responder.client,
       expectedInvitation: actualInvitation,
       manifestDigest: pin.manifestDigest,
+      sessionState: prepared.responder.sessionState,
     });
     sendPrompt(responderChild, responderCommands.launch.input);
+    async function completeRole(role, initialResult) {
+      let proof = await initialResult;
+      for (let turn = 1; proof === null && turn <= 3; turn += 1) {
+        const observed = spawnContinuation(role, turn);
+        proof = await observed.result;
+      }
+      return proof;
+    }
     const results = await Promise.race([
-      Promise.all([initiatorObserved.result, responderObserved.result]),
+      Promise.all([
+        completeRole("initiator", initiatorResult),
+        completeRole("responder", responderObserved.result),
+      ]),
       timedOut,
     ]);
     clearTimeout(timer);

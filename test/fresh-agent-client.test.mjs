@@ -15,6 +15,7 @@ import {
   VERIFIED_HELPER_BOOTSTRAP,
   assertFreshAgentNodeRuntime,
   buildClientCommands,
+  buildClientContinuationCommand,
   buildClaudeSandboxSettings,
   classifyClaudeBashCommand,
   classifyHelperExecutionCommand,
@@ -464,7 +465,7 @@ test("builds exact endpoint configuration for Codex and Claude Code", () => {
   assert.deepEqual(codex.configure.args, ["mcp", "add", "clockchain-handshake", "--url", CLOCKCHAIN_HANDSHAKE_MCP_URL]);
   assert.deepEqual(claude.configure.args, ["mcp", "add", "--transport", "http", "--scope", "user", "clockchain-handshake", CLOCKCHAIN_HANDSHAKE_MCP_URL]);
   assert.deepEqual(codex.launch.args, [
-    "exec", "--model", "gpt-5.6-terra", "--skip-git-repo-check", "--strict-config", "--ignore-rules", "--ephemeral",
+    "exec", "--model", "gpt-5.6-terra", "--skip-git-repo-check", "--strict-config", "--ignore-rules",
     "--sandbox", "workspace-write", "--config", 'approval_policy="never"',
     "--config", "allow_login_shell=false",
     "--config", "sandbox_workspace_write.network_access=true", "--json", "--cd", "/tmp/a", "-",
@@ -508,7 +509,8 @@ test("builds exact endpoint configuration for Codex and Claude Code", () => {
     "--allowedTools",
     ["ToolSearch", "Bash"].concat([
       "agent_handshake_invite", "agent_handshake_accept_invitation", "agent_handshake_join",
-      "agent_handshake_status", "agent_handshake_next", "agent_handshake_submit",
+      "agent_handshake_status", "agent_handshake_next", "agent_handshake_submit_checkpoint",
+      "agent_handshake_submit",
       "agent_handshake_get_certificate",
     ].map((tool) => `mcp__clockchain-handshake__${tool}`)).concat([
       "Read(./manifest.json)",
@@ -516,6 +518,32 @@ test("builds exact endpoint configuration for Codex and Claude Code", () => {
     ]).join(","),
   ]);
   assert.equal(claude.launch.input, "hello");
+});
+
+test("builds persistent continuation turns for the same isolated Codex and Claude sessions", () => {
+  const codex = buildClientContinuationCommand({ client: "codex", prompt: "continue", workspace: "/tmp/a" });
+  assert.deepEqual(codex, {
+    file: "codex",
+    args: [
+      "exec", "resume", "--last", "--model", "gpt-5.6-terra", "--skip-git-repo-check",
+      "--strict-config", "--ignore-rules", "--json", "-",
+    ],
+    input: "continue",
+  });
+  const claude = buildClientContinuationCommand({
+    client: "claude",
+    claudeSessionId: SESSION,
+    hostHome: "/Users/tester",
+    hostUid: 501,
+    prompt: "continue",
+    workspace: "/tmp/b",
+  });
+  assert.equal(claude.file, "claude");
+  assert.deepEqual(claude.args.slice(0, 7), [
+    "--print", "--resume", SESSION, "--model", "sonnet", "--effort", "low",
+  ]);
+  assert.equal(claude.args.includes("--no-session-persistence"), false);
+  assert.equal(claude.input, "continue");
 });
 
 test("macOS Keychain Claude mode keeps authentication while explicitly disabling inherited agent state", () => {
@@ -535,7 +563,7 @@ test("macOS Keychain Claude mode keeps authentication while explicitly disabling
   assert.equal(claude.prepare.args.includes("--no-session-persistence"), true);
   assert.equal(claude.prepare.args.includes("--session-id"), false);
   assert.equal(claude.launch.args.includes("--safe-mode"), false);
-  assert.equal(claude.launch.args.includes("--no-session-persistence"), true);
+  assert.equal(claude.launch.args.includes("--no-session-persistence"), false);
   assert.equal(claude.launch.args.includes("--strict-mcp-config"), true);
   assert.equal(claude.launch.args.includes("--disable-slash-commands"), true);
   assert.equal(claude.launch.args.includes("--setting-sources"), true);
@@ -1472,6 +1500,186 @@ test("starts the Responder only after the Initiator emits its actual one-time in
   assert.equal((await readdir(parent)).length, 0);
 });
 
+test("continues the same isolated client sessions when a successful turn ends before certificate proof", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-continuation-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const calls = [];
+  const turns = { initiator: 0, responder: 0 };
+  const spawnProcess = (file, args, options) => {
+    const role = options.cwd.includes("/initiator/") ? "initiator" : "responder";
+    turns[role] += 1;
+    calls.push({ args, file, role, turn: turns[role] });
+    const child = new EventEmitter();
+    child.pid = null;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {
+      queueMicrotask(() => {
+        if (role === "initiator" && turns[role] === 1) {
+          child.stdout.emit("data", Buffer.from(streamEvent({
+            type: "item.completed",
+            item: { type: "agent_message", text: INVITATION },
+          })));
+        }
+        if (turns[role] === 2) {
+          const event = role === "initiator"
+            ? codexHelperProofEvent(helperProof(role), { command: verifyCertificateCommand(role) })
+            : claudeHelperProofEvent(helperProof(role), { command: verifyCertificateCommand(role) });
+          child.stdout.emit("data", Buffer.from(event));
+        }
+        child.emit("close", 0, null);
+      });
+    } };
+    child.kill = () => {};
+    return child;
+  };
+
+  const result = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, { spawnProcess }));
+
+  assert.equal(result.certificateVerified, true);
+  assert.deepEqual(turns, { initiator: 2, responder: 2 });
+  assert.equal(calls.some((entry) => entry.role === "initiator" && entry.args.slice(0, 3).join(" ") === "exec resume --last"), true);
+  assert.equal(calls.filter((entry) => entry.role === "responder" && entry.args.includes("--resume")).length, 2);
+});
+
+test("continuation tells the agent to decide the exact pending action before polling again", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-pending-action-continuation-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const inputs = [];
+  const turns = { initiator: 0, responder: 0 };
+  const pending = nonterminalHelperCommand("initiator", "sign");
+  const spawnProcess = (_file, _args, options) => {
+    const role = options.cwd.includes("/initiator/") ? "initiator" : "responder";
+    turns[role] += 1;
+    const turn = turns[role];
+    const child = new EventEmitter();
+    child.pid = null;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end(input) {
+      inputs.push({ input, role, turn });
+      queueMicrotask(() => {
+        if (role === "initiator" && turn === 1) {
+          child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+          child.stdout.emit("data", Buffer.from(codexExpectedHelperEvent(pending)));
+        } else if (role === "initiator") {
+          child.stdout.emit("data", Buffer.from(codexHelperProofEvent(
+            nonterminalHelperResult("initiator", "sign"),
+            { command: approvalCommand(pending) },
+          )));
+          child.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+        } else {
+          child.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
+        }
+        child.emit("close", 0, null);
+      });
+    } };
+    child.kill = () => {};
+    return child;
+  };
+
+  const result = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, { spawnProcess }));
+
+  assert.equal(result.certificateVerified, true);
+  const continuation = inputs.find((entry) => entry.role === "initiator" && entry.turn === 2).input;
+  assert.match(continuation, /Clockchain has an exact pending sign action/);
+  assert.match(continuation, /make your own policy decision now/i);
+  assert.match(continuation, /execute only the exact approvalCommand already returned by Clockchain/i);
+  assert.match(continuation, /submit the required commitment checkpoint before the artifact signature/i);
+  assert.match(continuation, /Do not call agent_handshake_next again until/i);
+});
+
+test("continues the same Codex session when its first turn ends before producing the invitation", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-invitation-continuation-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const inputs = [];
+  const turns = { initiator: 0, responder: 0 };
+  const spawnProcess = (_file, _args, options) => {
+    const role = options.cwd.includes("/initiator/") ? "initiator" : "responder";
+    turns[role] += 1;
+    const turn = turns[role];
+    const child = new EventEmitter();
+    child.pid = null;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end(input) {
+      inputs.push({ input, role, turn });
+      queueMicrotask(() => {
+        if (role === "initiator" && turn === 2) {
+          child.stdout.emit("data", Buffer.from(streamEvent({
+            type: "item.completed",
+            item: { type: "agent_message", text: INVITATION },
+          })));
+        }
+        if ((role === "initiator" && turn === 3) || (role === "responder" && turn === 1)) {
+          const event = role === "initiator"
+            ? codexHelperProofEvent(helperProof(role), { command: verifyCertificateCommand(role) })
+            : claudeHelperProofEvent(helperProof(role), { command: verifyCertificateCommand(role) });
+          child.stdout.emit("data", Buffer.from(event));
+        }
+        child.emit("close", 0, null);
+      });
+    } };
+    child.kill = () => {};
+    return child;
+  };
+
+  const result = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, { spawnProcess }));
+
+  assert.equal(result.certificateVerified, true);
+  assert.deepEqual(turns, { initiator: 3, responder: 1 });
+  const continuationPrompt = inputs.find((entry) => entry.role === "initiator" && entry.turn === 2).input;
+  assert.match(continuationPrompt, /only if Clockchain explicitly marked the prior response retryable:true/);
+  assert.match(continuationPrompt, /Never retry HANDSHAKE_UNAVAILABLE with retryable:false/);
+});
+
+test("stops after one non-retryable invitation rejection instead of burning continuation attempts", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-invitation-unavailable-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  let spawned = 0;
+  const error = await rejectsFreshAgentRun(parent, {
+    spawnProcess: () => {
+      spawned += 1;
+      const child = new EventEmitter();
+      child.pid = null;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.stdin = { end() {
+        queueMicrotask(() => {
+          child.stdout.emit("data", Buffer.from(streamEvent({
+            type: "item.completed",
+            item: {
+              type: "mcp_tool_call",
+              tool: "agent_handshake_invite",
+              status: "completed",
+              result: {
+                isError: true,
+                content: [{ type: "text", text: JSON.stringify({ error: "HANDSHAKE_UNAVAILABLE", retryable: false }) }],
+              },
+            },
+          })));
+          child.emit("close", 0, null);
+        });
+      } };
+      child.kill = () => {};
+      return child;
+    },
+  });
+
+  assert.equal(spawned, 1);
+  assert.deepEqual(error.diagnostic, {
+    phase: "invitation",
+    category: "service",
+    code: "INVITATION_UNAVAILABLE",
+    details: {
+      client: "codex",
+      error: "HANDSHAKE_UNAVAILABLE",
+      retryable: false,
+      role: "initiator",
+    },
+  });
+});
+
 test("fresh-agent injected failures produce distinct safe diagnostics", async (t) => {
   const cases = [
     ["configure", {
@@ -1500,7 +1708,13 @@ test("fresh-agent injected failures produce distinct safe diagnostics", async (t
         phase: "invitation",
         category: "agent",
         code: "INVITATION_MISSING",
-        details: { client: "codex", lastMcpTool: null, role: "initiator" },
+        details: {
+          client: "codex",
+          lastMcpTool: null,
+          pendingHelperOperation: null,
+          recentMcpTools: [],
+          role: "initiator",
+        },
       },
     }],
     ["monitor", {
@@ -1567,7 +1781,13 @@ test("invitation diagnostics retain the last started Clockchain tool without tra
     phase: "invitation",
     category: "agent",
     code: "INVITATION_MISSING",
-    details: { client: "codex", lastMcpTool: "agent_handshake_invite", role: "initiator" },
+    details: {
+      client: "codex",
+      lastMcpTool: "agent_handshake_invite",
+      pendingHelperOperation: null,
+      recentMcpTools: Array(4).fill("agent_handshake_invite"),
+      role: "initiator",
+    },
   });
 });
 
@@ -1636,6 +1856,8 @@ test("rejects model-authored certificate claims without completed helper executi
     details: {
       client: "codex",
       lastMcpTool: "agent_handshake_next",
+      pendingHelperOperation: null,
+      recentMcpTools: ["agent_handshake_next"],
       role: "initiator",
     },
   });
@@ -1846,6 +2068,85 @@ test("rejects a Claude approval command wrapped in shell transport", async (t) =
       actual: publicCommandDetails(compoundApproval),
     },
   });
+  assert.deepEqual(await readdir(parent), []);
+});
+
+test("accepts Claude's exact isolated-workspace cd wrapper around one approval marker", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-claude-workspace-approval-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const children = {};
+  const command = nonterminalHelperCommand("responder", "init");
+  const spawnProcess = (_file, _args, options) => {
+    const role = children.initiator === undefined ? "initiator" : "responder";
+    const child = new EventEmitter();
+    child.pid = null;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {
+      queueMicrotask(() => {
+        if (role === "initiator") {
+          child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+          return;
+        }
+        const wrappedApproval = `cd "${options.cwd}" && ${approvalCommand(command)}`;
+        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+        children.responder.stdout.emit("data", Buffer.from(claudeExpectedHelperEvent(command)));
+        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(
+          nonterminalHelperResult("responder", "init"),
+          { command: wrappedApproval, id: "workspace-approval" },
+        )));
+        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
+        children.initiator.emit("close", 0, null);
+        children.responder.emit("close", 0, null);
+      });
+    } };
+    child.kill = () => {};
+    children[role] = child;
+    return child;
+  };
+
+  const result = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, { spawnProcess }));
+
+  assert.equal(result.certificateVerified, true);
+  assert.deepEqual(await readdir(parent), []);
+});
+
+test("accepts Claude's one approval marker with stderr merged into captured output", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-claude-approval-stderr-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const children = {};
+  const command = nonterminalHelperCommand("responder", "init");
+  const spawnProcess = () => {
+    const role = children.initiator === undefined ? "initiator" : "responder";
+    const child = new EventEmitter();
+    child.pid = null;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {
+      queueMicrotask(() => {
+        if (role === "initiator") {
+          child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+          return;
+        }
+        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+        children.responder.stdout.emit("data", Buffer.from(claudeExpectedHelperEvent(command)));
+        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(
+          nonterminalHelperResult("responder", "init"),
+          { command: `${approvalCommand(command)} 2>&1`, id: "approval-stderr" },
+        )));
+        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
+        children.initiator.emit("close", 0, null);
+        children.responder.emit("close", 0, null);
+      });
+    } };
+    child.kill = () => {};
+    children[role] = child;
+    return child;
+  };
+
+  const result = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, { spawnProcess }));
+
+  assert.equal(result.certificateVerified, true);
   assert.deepEqual(await readdir(parent), []);
 });
 
