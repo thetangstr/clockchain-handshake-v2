@@ -1193,7 +1193,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
         sessionEstablishing = true;
         const created = await connection.newSession({
           cwd: options.workspace,
-          mcpServers: harness === "codex" ? [] : [mcpServer()],
+          mcpServers: [mcpServer()],
         });
         sessionEstablishing = false;
         if (typeof created?.sessionId !== "string" || created.sessionId.length === 0) fail();
