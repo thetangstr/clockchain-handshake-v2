@@ -390,6 +390,19 @@ function usageTotals(agent) {
   }), { apiCalls: 0, inputTokens: 0, outputTokens: 0 });
 }
 
+export function isVerifiedV2Monitor(monitor, { initiatorAddress, responderAddress, sessionId } = {}) {
+  return Boolean(
+    monitor && typeof monitor === "object" && !Array.isArray(monitor) &&
+    monitor.schema === "clockchain.agent-handshake-snapshot/v2" &&
+    monitor.sessionId === sessionId &&
+    monitor.checker?.stage === "VERIFIED" &&
+    monitor.certificate?.outcome === "VERIFIED" &&
+    monitor.externalBusinessActionPerformed === false &&
+    monitor.parties?.initiator?.sessionKeyAddress === initiatorAddress &&
+    monitor.parties?.responder?.sessionKeyAddress === responderAddress
+  );
+}
+
 export async function runHermesV2ProductionGate({ parent, providerSecret } = {}) {
   if (typeof providerSecret !== "string" || providerSecret.length < 16 || typeof parent !== "string") fail("INPUT_INVALID");
   if (!process.versions.node.startsWith("24.")) fail("NODE24_REQUIRED");
@@ -461,12 +474,11 @@ export async function runHermesV2ProductionGate({ parent, providerSecret } = {})
     const monitorResponse = await fetch(`${RELAY}/v1/sessions/${encodeURIComponent(invited.sessionId)}/snapshot`);
     if (!monitorResponse.ok) fail("MONITOR_HTTP_FAILED");
     const monitor = await monitorResponse.json();
-    if (
-      monitor.sessionId !== invited.sessionId || monitor.verdict?.outcome !== "VERIFIED" ||
-      monitor.externalBusinessActionPerformed !== false ||
-      monitor.parties?.initiator?.sessionKeyAddress !== initiator.address ||
-      monitor.parties?.responder?.sessionKeyAddress !== responder.address
-    ) fail("MONITOR_RESULT_INVALID");
+    if (!isVerifiedV2Monitor(monitor, {
+      initiatorAddress: initiator.address,
+      responderAddress: responder.address,
+      sessionId: invited.sessionId,
+    })) fail("MONITOR_RESULT_INVALID");
     const result = {
       schema: "clockchain.hermes-v2-production-gate/v1",
       ok: true,

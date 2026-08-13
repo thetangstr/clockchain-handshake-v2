@@ -19,6 +19,7 @@ import {
   extractSigningRequestFromArgv,
   parseHermesDecision,
 } from "../src/testing/hermes-v2-live.mjs";
+import { isVerifiedV2Monitor } from "../src/testing/hermes-v2-orchestrator.mjs";
 
 const SESSION = "123e4567-e89b-42d3-a456-426614174000";
 const POLICY_DIGEST = "a".repeat(64);
@@ -216,6 +217,30 @@ test("Hermes invocation is K3, ignores rules, and inherits only the explicit rol
   assert.equal(invocation.env.HOME, "/private/tmp/run/responder/home");
   assert.equal(Object.hasOwn(invocation.env, "ANTHROPIC_API_KEY"), false);
   assert.equal(Object.hasOwn(invocation.env, "OPENAI_API_KEY"), false);
+});
+
+test("live gate reads the v2 monitor's checker and certificate fields", () => {
+  const monitor = {
+    schema: "clockchain.agent-handshake-snapshot/v2",
+    sessionId: SESSION,
+    checker: { stage: "VERIFIED" },
+    certificate: { outcome: "VERIFIED" },
+    externalBusinessActionPerformed: false,
+    parties: {
+      initiator: { sessionKeyAddress: "0x" + "1".repeat(40) },
+      responder: { sessionKeyAddress: "0x" + "2".repeat(40) },
+    },
+  };
+  assert.equal(isVerifiedV2Monitor(monitor, {
+    initiatorAddress: monitor.parties.initiator.sessionKeyAddress,
+    responderAddress: monitor.parties.responder.sessionKeyAddress,
+    sessionId: SESSION,
+  }), true);
+  assert.equal(isVerifiedV2Monitor({ ...monitor, checker: { stage: "WAITING" } }, {
+    initiatorAddress: monitor.parties.initiator.sessionKeyAddress,
+    responderAddress: monitor.parties.responder.sessionKeyAddress,
+    sessionId: SESSION,
+  }), false);
 });
 
 test("native streamable MCP client initializes, lists, and parses tool content", async () => {
