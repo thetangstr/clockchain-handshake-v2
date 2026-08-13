@@ -34,7 +34,12 @@ const MAX_COMPLETION_PROMPTS = 16;
 const PERMISSION_REGISTRATION_GRACE_MS = 5_000;
 const PROCESS_TERM_GRACE_MS = 50;
 const PROCESS_KILL_GRACE_MS = 50;
-const PERMISSION_FAILURE_STAGES = Object.freeze(["session", "command", "protocol", "registration", "state", "options", "unknown"]);
+const PERMISSION_COMMAND_FAILURES = new WeakMap();
+const PERMISSION_COMMAND_STAGES = Object.freeze(["tool", "input", "cwd", "approval"]);
+const PERMISSION_FAILURE_STAGES = Object.freeze([
+  "session", "protocol", "registration", "state", "options", "unknown",
+  ...PERMISSION_COMMAND_STAGES.flatMap((stage) => [`command-${stage}`, `command-${stage}-after-authorization`]),
+]);
 const CODEX_MODEL = "gpt-5.6-terra";
 const CLAUDE_BEDROCK_MODEL = "us.anthropic.claude-sonnet-4-6";
 const LAUNCH_FAILURE_STAGES = Object.freeze([
@@ -378,6 +383,13 @@ function addUsage(left, right) {
 function retainedCommand(value) {
   if (typeof value !== "string" || !/^clockchain-agent-authorize [0-9a-f]{64}$/.test(value)) fail();
   return value.slice("clockchain-agent-authorize ".length);
+}
+
+function permissionCommandFailure(stage) {
+  if (!PERMISSION_COMMAND_STAGES.includes(stage)) fail();
+  const error = new Error("ACP process transport validation failed safely.");
+  PERMISSION_COMMAND_FAILURES.set(error, stage);
+  return error;
 }
 
 function trustedKeySet(value) {
@@ -734,6 +746,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
   let terminated = false;
   let permissionDenied = false;
   let permissionFailureStage = null;
+  let permissionAuthorized = false;
   let protocolFailure = false;
   let protocolFailureStage = null;
   let sessionUpdateBarrier = Promise.resolve();
@@ -801,10 +814,15 @@ export function createAcpProcessTransport(optionsInput = {}) {
   }
   function permissionCommand(params) {
     const toolCall = params?.toolCall;
-    if (toolCall === null || typeof toolCall !== "object" || Array.isArray(toolCall) || types.isProxy(toolCall)) fail();
-    const rawInput = optionalObject(toolCall.rawInput, ["command"], ["cwd"]);
-    if (rawInput.cwd !== undefined && rawInput.cwd !== options.workspace) fail();
-    return retainedCommand(rawInput.command);
+    if (toolCall === null || typeof toolCall !== "object" || Array.isArray(toolCall) || types.isProxy(toolCall)) {
+      throw permissionCommandFailure("tool");
+    }
+    let rawInput;
+    try { rawInput = optionalObject(toolCall.rawInput, ["command"], ["cwd"]); }
+    catch { throw permissionCommandFailure("input"); }
+    if (rawInput.cwd !== undefined && rawInput.cwd !== options.workspace) throw permissionCommandFailure("cwd");
+    try { return retainedCommand(rawInput.command); }
+    catch { throw permissionCommandFailure("approval"); }
   }
   async function requestPermission(params) {
     let denialStage = "session";
@@ -831,11 +849,16 @@ export function createAcpProcessTransport(optionsInput = {}) {
       const optionsList = params?.options;
       if (!Array.isArray(optionsList) || !optionsList.some((option) => option?.optionId === "allow_once" && option?.kind === "allow_once")) fail();
       entry.state = "authorized";
+      permissionAuthorized = true;
       event("acp.permission.authorized", "authorized retained local action", digestValue);
       return Object.freeze({ outcome: Object.freeze({ outcome: "selected", optionId: "allow_once" }) });
-    } catch {
+    } catch (error) {
       permissionDenied = true;
-      permissionFailureStage ??= PERMISSION_FAILURE_STAGES.includes(denialStage) ? denialStage : "unknown";
+      const commandStage = denialStage === "command" ? PERMISSION_COMMAND_FAILURES.get(error) : null;
+      const fixedStage = commandStage === null || commandStage === undefined
+        ? denialStage
+        : `command-${commandStage}${permissionAuthorized ? "-after-authorization" : ""}`;
+      permissionFailureStage ??= PERMISSION_FAILURE_STAGES.includes(fixedStage) ? fixedStage : "unknown";
       return Object.freeze({ outcome: Object.freeze({ outcome: "cancelled" }) });
     }
   }
@@ -958,6 +981,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
       sessionEstablishing = false;
       permissionDenied = false;
       permissionFailureStage = null;
+      permissionAuthorized = false;
       sessionUpdateBarrier = Promise.resolve();
       cancelRetainedRegistrationWaiters();
       retainedByCommand.clear();
