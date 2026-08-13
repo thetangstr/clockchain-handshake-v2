@@ -9,6 +9,7 @@ import test from "node:test";
 import {
   createMechanicsProofPartyRuntime,
   mechanicsProofPartyRuntimeFailureStage,
+  waitForMechanicsProofInvitation,
 } from "../src/testing/mechanics-proof-party-runtime.mjs";
 import { createVerifiedReleaseActionRecorder } from "../src/harness/verified-release-action-recorder.mjs";
 import { createAcpProcessTransport } from "../src/harness/acp-process-transport.mjs";
@@ -174,6 +175,24 @@ function dependencies(calls, overrides = {}) {
     ...dependencyOverrides,
   };
 }
+
+test("default invitation wait accommodates a cold agent startup beyond ninety seconds", async () => {
+  let polls = 0;
+  let elapsedMs = 0;
+  const invitation = Object.freeze({ invitation: "private-invitation", sessionId: PROTOCOL_SESSION_ID });
+  const result = await waitForMechanicsProofInvitation({
+    publicEvidence() {
+      polls += 1;
+      return {
+        invitations: polls > 18_001 ? [{ direction: "inbound" }] : [],
+      };
+    },
+    takeInvitation() { return invitation; },
+  }, async (delayMs) => { elapsedMs += delayMs; });
+
+  assert.equal(result, invitation);
+  assert.equal(elapsedMs, 90_005);
+});
 
 function initiatorBridgeEvidence() {
   const base = dependencies([]).createBridge().publicEvidence();

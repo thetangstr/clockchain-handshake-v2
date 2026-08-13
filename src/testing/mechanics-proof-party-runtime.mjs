@@ -252,13 +252,21 @@ function createBootstrapSigner() {
   });
 }
 
-async function waitForInvitation(transport) {
-  for (let count = 0; count < 18_000; count += 1) {
-    const evidence = transport.publicEvidence();
-    if (Array.isArray(evidence?.invitations) && evidence.invitations.some((entry) => entry?.direction === "inbound")) {
-      return transport.takeInvitation();
+export async function waitForMechanicsProofInvitation(
+  transport,
+  sleep = (delayMs) => new Promise((resolveSleep) => setTimeout(resolveSleep, delayMs)),
+) {
+  try {
+    if (typeof transport?.publicEvidence !== "function" || typeof transport?.takeInvitation !== "function" || typeof sleep !== "function") fail();
+    for (let count = 0; count < 60_000; count += 1) {
+      const evidence = transport.publicEvidence();
+      if (Array.isArray(evidence?.invitations) && evidence.invitations.some((entry) => entry?.direction === "inbound")) {
+        return transport.takeInvitation();
+      }
+      await sleep(5);
     }
-    await new Promise((resolve) => setTimeout(resolve, 5));
+  } catch (error) {
+    sanitize(error);
   }
   fail();
 }
@@ -274,7 +282,7 @@ const DEFAULTS = Object.freeze({
   createInvitationTransport: createInvitationBootstrapTransport,
   createProcessTransport: createAcpProcessTransport,
   createTlsIdentity: createEphemeralTlsIdentity,
-  waitForInvitation,
+  waitForInvitation: waitForMechanicsProofInvitation,
 });
 
 function dependencies(input = {}) {
