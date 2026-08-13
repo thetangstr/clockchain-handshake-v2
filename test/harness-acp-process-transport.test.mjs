@@ -1049,6 +1049,9 @@ test("ACP process transport performs real ACP lifecycle with unauthenticated ded
   assert.doesNotMatch(prompt, /validForMinutes|45/);
   assert.match(prompt, new RegExp(`session: ${SESSION}`));
   assert.match(prompt, /First call agent_handshake_invite/i);
+  assert.match(prompt, /After agent_handshake_invite returns, do not end this turn/i);
+  assert.match(prompt, /execute each helperStep\.approvalCommand with Bash/i);
+  assert.match(prompt, /initiatorAccess as access/i);
   assert.match(prompt, /direct A2A endpoint:/i);
   assert.match(prompt, /direct A2A peer card:/i);
   assert.match(prompt, /direct A2A peer endpoint:/i);
