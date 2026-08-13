@@ -999,6 +999,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
   let session = null;
   let protocolSessionId = null;
   let acpSessionId = null;
+  const retiredAcpSessionIds = new Set();
   let provisionalAcpSessionId = null;
   const provisionalToolUpdates = [];
   let sessionEstablishing = false;
@@ -1238,6 +1239,10 @@ export function createAcpProcessTransport(optionsInput = {}) {
       failureStage = "envelope-update-type";
       const updateType = params?.update?.sessionUpdate;
       if (typeof updateType !== "string") fail();
+      if (retiredAcpSessionIds.has(params.sessionId)) {
+        if (updateType === "tool_call" || updateType === "tool_call_update") fail();
+        return;
+      }
       if (acpSessionId === null) {
         failureStage = "envelope-before-session";
         if (!sessionEstablishing) fail();
@@ -1366,6 +1371,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
       session = { sessionId: clean.sessionId, role: clean.role };
       protocolSessionId = null;
       acpSessionId = null;
+      retiredAcpSessionIds.clear();
       provisionalAcpSessionId = null;
       provisionalToolUpdates.length = 0;
       sessionEstablishing = false;
@@ -1463,6 +1469,8 @@ export function createAcpProcessTransport(optionsInput = {}) {
             launchStage = "session";
             sessionEstablishing = true;
             provisionalAcpSessionId = null;
+            if (acpSessionId === null) fail();
+            retiredAcpSessionIds.add(acpSessionId);
             acpSessionId = null;
             const continuationSession = await connection.newSession({
               cwd: options.workspace,
@@ -1478,6 +1486,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
             });
             sessionEstablishing = false;
             if (typeof continuationSession?.sessionId !== "string" || continuationSession.sessionId.length === 0) fail();
+            if (retiredAcpSessionIds.has(continuationSession.sessionId)) fail();
             if (provisionalAcpSessionId !== null && provisionalAcpSessionId !== continuationSession.sessionId) fail();
             acpSessionId = continuationSession.sessionId;
             for (const update of provisionalToolUpdates.splice(0)) await sessionUpdate(update);

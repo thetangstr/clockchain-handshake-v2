@@ -138,6 +138,7 @@ function acpFixtureSpawn({
   unrelatedPermissionRawInput = null,
   duplicatePermissionAfterHelper = false,
   duplicatePermissionOptions = null,
+  latePriorSessionUpdateOnContinuation = null,
 }) {
   let promptCount = 0;
   let newSessionCount = 0;
@@ -157,6 +158,12 @@ function acpFixtureSpawn({
       },
       async newSession(params) {
         calls.push(["newSession", params]);
+        if (newSessionCount > 0 && latePriorSessionUpdateOnContinuation !== null) {
+          await connection.sessionUpdate({
+            sessionId: newSessionIds?.[newSessionCount - 1] ?? newSessionId,
+            update: latePriorSessionUpdateOnContinuation,
+          });
+        }
         if (newSessionUpdates !== null) {
           for (const update of newSessionUpdates) {
             await connection.sessionUpdate({ sessionId: newSessionUpdateSessionId, update });
@@ -1681,6 +1688,113 @@ test("Claude continuation resolves the exact native next tool after joining", as
   assert.doesNotMatch(continuation, /ToolSearch/);
 });
 
+test("Claude accepts a late prior-session notification while opening a fresh continuation session", async () => {
+  const calls = [];
+  let completionChecks = 0;
+  const transport = createAcpProcessTransport({
+    harness: "claude",
+    pin: ACP_VERSION_PINS.claude,
+    spawn: acpFixtureSpawn({
+      calls,
+      newSessionIds: ["acp-claude-turn-1", "acp-claude-turn-2"],
+      latePriorSessionUpdateOnContinuation: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "late display-only event" },
+      },
+      skipPermission: true,
+    }),
+    workspace: "/workspace/responder",
+    home: "/workspace/responder/home",
+    partyBridge: partyBridgeFor(calls, {
+      completionStatus() {
+        completionChecks += 1;
+        return { complete: completionChecks >= 2, protocolSessionId: SESSION };
+      },
+    }),
+    env: {},
+    trustedAdapterPublicKeys: [retainedAction({ role: "responder" }).adapterPublicKey],
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.claude,
+    runtime: { runtimeId: "runtime-responder", sessionId: SESSION, role: "responder", harness: "claude" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("responder"),
+  });
+  assert.equal(calls.filter((entry) => entry[0] === "newSession").length, 2);
+});
+
+test("Claude fails closed on a late prior-session tool update during continuation rollover", async () => {
+  const calls = [];
+  let completionChecks = 0;
+  const transport = createAcpProcessTransport({
+    harness: "claude",
+    pin: ACP_VERSION_PINS.claude,
+    spawn: acpFixtureSpawn({
+      calls,
+      newSessionIds: ["acp-claude-turn-1", "acp-claude-turn-2"],
+      latePriorSessionUpdateOnContinuation: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "late-prior-tool",
+        kind: "other",
+        title: "agent_handshake_next",
+        status: "completed",
+        rawInput: { server: "clockchain-handshake", tool: "agent_handshake_next", arguments: {} },
+        rawOutput: { result: {}, error: null },
+      },
+      skipPermission: true,
+    }),
+    workspace: "/workspace/responder",
+    home: "/workspace/responder/home",
+    partyBridge: partyBridgeFor(calls, {
+      completionStatus() {
+        completionChecks += 1;
+        return { complete: completionChecks >= 2, protocolSessionId: SESSION };
+      },
+    }),
+    env: {},
+    trustedAdapterPublicKeys: [retainedAction({ role: "responder" }).adapterPublicKey],
+  });
+  await assert.rejects(() => transport.launch({
+    acp: ACP_VERSION_PINS.claude,
+    runtime: { runtimeId: "runtime-responder", sessionId: SESSION, role: "responder", harness: "claude" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("responder"),
+  }));
+});
+
+test("Claude rejects a continuation that reuses a retired ACP session id", async () => {
+  const calls = [];
+  let completionChecks = 0;
+  const transport = createAcpProcessTransport({
+    harness: "claude",
+    pin: ACP_VERSION_PINS.claude,
+    spawn: acpFixtureSpawn({
+      calls,
+      newSessionIds: ["acp-claude-reused", "acp-claude-reused"],
+      skipPermission: true,
+    }),
+    workspace: "/workspace/responder",
+    home: "/workspace/responder/home",
+    partyBridge: partyBridgeFor(calls, {
+      completionStatus() {
+        completionChecks += 1;
+        return { complete: completionChecks >= 2, protocolSessionId: SESSION };
+      },
+    }),
+    env: {},
+    trustedAdapterPublicKeys: [retainedAction({ role: "responder" }).adapterPublicKey],
+  });
+  await assert.rejects(() => transport.launch({
+    acp: ACP_VERSION_PINS.claude,
+    runtime: { runtimeId: "runtime-responder", sessionId: SESSION, role: "responder", harness: "claude" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("responder"),
+  }));
+});
+
 test("Claude session exposes Bash plus exactly seven Clockchain MCP tools without deferred search", async () => {
   const calls = [];
   const transport = createAcpProcessTransport({
@@ -1825,7 +1939,11 @@ test("ACP completion loop leaves headroom to verify a certificate after sixteen 
   const transport = createAcpProcessTransport({
     harness: "codex",
     pin: ACP_VERSION_PINS.codex,
-    spawn: acpFixtureSpawn({ calls, sessionUpdates: [], skipPermission: true }),
+    spawn: acpFixtureSpawn({
+      calls,
+      sessionUpdates: [],
+      skipPermission: true,
+    }),
     workspace: "/workspace/initiator",
     home: "/workspace/initiator/home",
     partyBridge: partyBridgeFor(calls, {
@@ -1921,7 +2039,12 @@ test("ACP responder continuation repeats the exact private invitation while no p
   const transport = createAcpProcessTransport({
     harness: "claude",
     pin: ACP_VERSION_PINS.claude,
-    spawn: acpFixtureSpawn({ calls, sessionUpdates: [], skipPermission: true }),
+    spawn: acpFixtureSpawn({
+      calls,
+      newSessionIds: ["acp-claude-responder-1", "acp-claude-responder-2"],
+      sessionUpdates: [],
+      skipPermission: true,
+    }),
     workspace: "/workspace/responder",
     home: "/workspace/responder/home",
     partyBridge: partyBridgeFor(calls, {
