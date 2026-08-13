@@ -233,6 +233,19 @@ test("AWS CLI control plane waits for newly-created execution role policies befo
   assert.deepEqual(waits, [30_000]);
 });
 
+test("AWS CLI control plane gives task-definition registration one bounded slow-mutation window", async () => {
+  const observedTimeouts = [];
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    executor: async (_file, argv, options) => {
+      observedTimeouts.push([argv.slice(0, 2).join(" "), options.timeoutMs]);
+      return { stdout: JSON.stringify({ taskDefinition: { taskDefinitionArn: "arn:aws:ecs:us-west-2:123456789012:task-definition/x:1" } }), stderr: "", exitCode: 0 };
+    },
+  });
+  await control.registerTaskDefinition({ taskDefinition: { family: "x" } });
+  assert.deepEqual(observedTimeouts, [["ecs register-task-definition", 60_000]]);
+});
+
 test("AWS CLI control plane has exact allowlisted argv shapes for Task 4 actions", async () => {
   const calls = [];
   const responseFor = (argv) => {

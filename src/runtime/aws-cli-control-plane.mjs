@@ -373,7 +373,10 @@ export function createAwsCliControlPlane(optionsInput = {}) {
     },
     registerTaskDefinition({ taskDefinition }) {
       plain(taskDefinition);
-      return callAws(["ecs", "register-task-definition", "--cli-input-json", JSON.stringify(taskDefinition), "--region", region, "--output", "json"]);
+      return callAws(
+        ["ecs", "register-task-definition", "--cli-input-json", JSON.stringify(taskDefinition), "--region", region, "--output", "json"],
+        { timeoutMs: 60_000 },
+      );
     },
     runTask({ cluster, taskDefinitionArn, role, networkConfiguration, startedBy, platformVersion = "1.4.0" }) {
       if (!["initiator", "responder"].includes(role) || typeof cluster !== "string" || typeof taskDefinitionArn !== "string") fail();
