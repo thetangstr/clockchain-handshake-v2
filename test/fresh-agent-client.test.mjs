@@ -2502,6 +2502,58 @@ test("accepts the exact isolated adapter executable as the short Claude approval
   assert.deepEqual(await readdir(parent), []);
 });
 
+test("accepts independently approved MCP-bound setup actions in the agent's chosen order", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-claude-setup-order-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const children = {};
+  const initCommand = nonterminalHelperCommand("responder", "init");
+  const policyCommand = nonterminalHelperCommand("responder", "policy");
+  const spawnProcess = () => {
+    const role = children.initiator === undefined ? "initiator" : "responder";
+    const child = new EventEmitter();
+    child.pid = null;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {
+      queueMicrotask(() => {
+        if (role === "initiator") {
+          child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+          return;
+        }
+        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+        children.responder.stdout.emit("data", Buffer.from(streamEvent({
+          type: "user",
+          message: { content: [{
+            type: "tool_result",
+            tool_use_id: "mcp-setup",
+            content: JSON.stringify({ localAction: { helperSteps: [helperStep(initCommand), helperStep(policyCommand)] } }),
+            is_error: false,
+          }] },
+        })));
+        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(
+          nonterminalHelperResult("responder", "policy"),
+          { command: approvalCommand(policyCommand), id: "policy-first" },
+        )));
+        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(
+          nonterminalHelperResult("responder", "init"),
+          { command: approvalCommand(initCommand), id: "init-second" },
+        )));
+        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
+        children.initiator.emit("close", 0, null);
+        children.responder.emit("close", 0, null);
+      });
+    } };
+    child.kill = () => {};
+    children[role] = child;
+    return child;
+  };
+
+  const result = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, { spawnProcess }));
+
+  assert.equal(result.certificateVerified, true);
+  assert.deepEqual(await readdir(parent), []);
+});
+
 test("accepts Claude line wrapping only when the exact helper command bytes are otherwise unchanged", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "fresh-agent-claude-line-wrap-"));
   t.after(() => rm(parent, { recursive: true, force: true }));

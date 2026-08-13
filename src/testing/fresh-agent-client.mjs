@@ -1702,40 +1702,44 @@ function approvalMarkerWords(command) {
   return parseLiteralShellWords(marker);
 }
 
-function isolatedWorkspaceApprovalMatches(command, expected, approvalExecutable) {
-  if (expected.approvalCommand === null) return false;
+function isolatedWorkspaceApprovalDigest(command, approvalExecutable) {
   const segments = command.split(" && ");
-  if (segments.length !== 2) return false;
+  if (segments.length !== 2) return null;
   let changeDirectory = [];
   let approval = [];
   try {
     changeDirectory = parseLiteralShellWords(segments[0]);
     approval = approvalMarkerWords(segments[1]);
   } catch {
-    return false;
+    return null;
   }
   const workspace = dirname(dirname(dirname(approvalExecutable)));
   return changeDirectory.length === 2 && changeDirectory[0] === "cd" && changeDirectory[1] === workspace &&
     approval.length === 2 && [approvalExecutable, basename(approvalExecutable)].includes(approval[0]) &&
-    approval[1] === expected.commandSha256;
+    SHA256.test(approval[1]) ? approval[1] : null;
 }
 
-function bindHelperExecution(command, expectedHelperCommands, approvalExecutable) {
-  const expected = expectedHelperCommands[0];
+function approvalMarkerDigest(command, approvalExecutable) {
+  let words = [];
+  try { words = approvalMarkerWords(command); } catch {}
+  if (
+    words.length === 2 && [approvalExecutable, basename(approvalExecutable)].includes(words[0]) &&
+    SHA256.test(words[1])
+  ) return words[1];
+  return isolatedWorkspaceApprovalDigest(command, approvalExecutable);
+}
+
+function bindHelperExecution(command, expectedHelperCommands, approvalExecutable, allowOutOfOrder = true) {
+  const markerDigest = approvalMarkerDigest(command, approvalExecutable);
+  const matchedIndex = !allowOutOfOrder || markerDigest === null ? -1 : expectedHelperCommands.findIndex(
+    (candidate) => candidate.approvalCommand === `clockchain-agent-authorize ${markerDigest}`,
+  );
+  const expected = expectedHelperCommands[matchedIndex < 0 ? 0 : matchedIndex];
   if (expected === undefined) {
     const actual = fingerprintHelperExecutionCommand(command);
     return Object.freeze({ bound: false, actual });
   }
-  let approvalMatches = expected.approvalCommand !== null && command === expected.approvalCommand;
-  if (!approvalMatches && expected.approvalCommand !== null) {
-    let words = [];
-    try { words = approvalMarkerWords(command); } catch {}
-    approvalMatches = words.length === 2 && [approvalExecutable, basename(approvalExecutable)].includes(words[0]) &&
-      words[1] === expected.commandSha256;
-  }
-  if (!approvalMatches) {
-    approvalMatches = isolatedWorkspaceApprovalMatches(command, expected, approvalExecutable);
-  }
+  const approvalMatches = markerDigest === expected.commandSha256;
   const helperActual = fingerprintHelperExecutionCommand(command);
   const containsApproval = /(^|[;&|\s])clockchain-agent-authorize\s+[0-9a-f]{64}(?:\s|$)/.test(command);
   const helperExecutionShaped = command.startsWith("node --input-type=commonjs --eval ");
@@ -1788,8 +1792,9 @@ function bindHelperExecution(command, expectedHelperCommands, approvalExecutable
 
 function consumeHelperExecution(binding, expectedHelperCommands) {
   if (!binding.bound) return;
-  if (expectedHelperCommands[0] !== binding.expected) fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
-  expectedHelperCommands.shift();
+  const index = expectedHelperCommands.indexOf(binding.expected);
+  if (index < 0) fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
+  expectedHelperCommands.splice(index, 1);
 }
 
 function validateVerifyCertificateCommand(value, proof, manifestDigest) {
@@ -1828,7 +1833,7 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
     typeof event.item.command === "string"
   ) {
     const command = unwrapCodexCommandExecution(event.item.command);
-    const binding = bindHelperExecution(command, expectedHelperCommands, adapter.executable);
+    const binding = bindHelperExecution(command, expectedHelperCommands, adapter.executable, helperExecutionState.failed !== true);
     if (binding.bound) adapter.authorize(binding.expected).catch(() => {});
     return null;
   }
@@ -1837,7 +1842,7 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
     typeof event.item.command === "string"
   ) {
     const command = unwrapCodexCommandExecution(event.item.command);
-    const binding = bindHelperExecution(command, expectedHelperCommands, adapter.executable);
+    const binding = bindHelperExecution(command, expectedHelperCommands, adapter.executable, helperExecutionState.failed !== true);
     if (binding.bound) adapter.authorize(binding.expected).catch(() => {});
     if (
       binding.bound &&
@@ -1866,7 +1871,7 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
       const command = helperShaped
         ? stripLiteralShellLineContinuations(rawCommand)
         : rawCommand;
-      const binding = bindHelperExecution(command, expectedHelperCommands, adapter.executable);
+      const binding = bindHelperExecution(command, expectedHelperCommands, adapter.executable, helperExecutionState.failed !== true);
       if (binding.bound) adapter.authorize(binding.expected).catch(() => {});
       claudeBashCommands.set(block.id, Object.freeze({
         command: binding.bound ? binding.expected.shellCommand : command,
@@ -1901,12 +1906,15 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
     if (execution === null || typeof execution !== "object" || typeof execution.command !== "string") fail();
     if (execution.details !== null && !output.matched) fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
     if (execution.details !== null) {
-      const expected = expectedHelperCommands[0];
+      const expectedIndex = expectedHelperCommands.findIndex((candidate) => (
+        candidate.commandSha256 === execution.details.expected.commandSha256 &&
+        candidate.commandLength === execution.details.expected.commandLength
+      ));
+      const expected = expectedHelperCommands[expectedIndex];
       if (
-        expected === undefined || expected.commandSha256 !== execution.details.expected.commandSha256 ||
-        expected.commandLength !== execution.details.expected.commandLength
+        expected === undefined
       ) fail();
-      expectedHelperCommands.shift();
+      expectedHelperCommands.splice(expectedIndex, 1);
     }
     const parsed = output.proof;
     if (parsed === null) continue;
