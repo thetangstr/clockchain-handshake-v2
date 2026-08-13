@@ -2466,7 +2466,7 @@ test("accepts inert leading narration comments before one exact Claude approval 
   t.after(() => rm(parent, { recursive: true, force: true }));
   const children = {};
   const command = nonterminalHelperCommand("responder", "init");
-  const commentedApproval = `# Initialize the fresh Responder identity using the bound action\n${approvalCommand(command)}`;
+  const commentedApproval = `# Initialize the fresh Responder identity using the bound action\n${approvalCommand(command)}\n`;
   const spawnProcess = () => {
     const role = children.initiator === undefined ? "initiator" : "responder";
     const child = new EventEmitter();
