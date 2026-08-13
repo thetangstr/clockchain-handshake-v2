@@ -709,6 +709,45 @@ test("AWS CLI control plane derives VPC inspection only from explicit subnet, ro
   assert.equal(calls.length, 3);
 });
 
+test("AWS CLI control plane resolves a public subnet through its VPC main route table when no explicit association exists", async () => {
+  const calls = [];
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    executor: async (_file, argv) => {
+      calls.push(argv);
+      const key = argv.slice(0, 2).join(" ");
+      if (key === "ec2 describe-vpcs") {
+        return { stdout: JSON.stringify({ Vpcs: [{ VpcId: "vpc-live", CidrBlockAssociationSet: [{ CidrBlock: "10.44.0.0/16" }] }] }), stderr: "", exitCode: 0 };
+      }
+      if (key === "ec2 describe-subnets") {
+        return { stdout: JSON.stringify({ Subnets: [
+          { SubnetId: "subnet-public", VpcId: "vpc-live", CidrBlock: "10.44.1.0/24", AvailabilityZone: "us-west-2a", MapPublicIpOnLaunch: true },
+        ] }), stderr: "", exitCode: 0 };
+      }
+      if (argv.includes("Name=association.subnet-id,Values=subnet-public")) {
+        return { stdout: JSON.stringify({ RouteTables: [] }), stderr: "", exitCode: 0 };
+      }
+      assert.equal(argv.includes("Name=vpc-id,Values=vpc-live"), true);
+      assert.equal(argv.includes("Name=association.main,Values=true"), true);
+      return { stdout: JSON.stringify({ RouteTables: [{
+        RouteTableId: "rtb-main",
+        Routes: [{ DestinationCidrBlock: "0.0.0.0/0", GatewayId: "igw-live", State: "active" }],
+        Associations: [{ Main: true }],
+      }] }), stderr: "", exitCode: 0 };
+    },
+  });
+
+  const inspection = await control.inspectNetwork({
+    vpcId: "vpc-live",
+    publicSubnetId: "subnet-public",
+    initiatorPrivateCidr: "10.44.16.0/24",
+    responderPrivateCidr: "10.44.17.0/24",
+  });
+
+  assert.equal(inspection.publicSubnet.routeTableId, "rtb-main");
+  assert.equal(calls.length, 4);
+});
+
 test("AWS CLI control plane reconciles run-scoped task definitions and tasks, then polls exact role log groups", async () => {
   const seen = [];
   const control = createAwsCliControlPlane({

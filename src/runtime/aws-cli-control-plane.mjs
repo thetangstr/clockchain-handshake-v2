@@ -535,7 +535,16 @@ export function createAwsCliControlPlane(optionsInput = {}) {
       const routes = await callAws(["ec2", "describe-route-tables", "--filters", `Name=association.subnet-id,Values=${publicSubnetId}`, "--region", region, "--output", "json"]);
       const vpc = vpcs.Vpcs?.[0];
       const publicSubnet = subnets.Subnets?.find((subnet) => subnet.SubnetId === publicSubnetId);
-      const publicRouteTable = routes.RouteTables?.[0];
+      let publicRouteTable = routes.RouteTables?.[0];
+      if (publicRouteTable === undefined) {
+        const mainRoutes = await callAws([
+          "ec2", "describe-route-tables", "--filters",
+          `Name=vpc-id,Values=${vpcId}`,
+          "Name=association.main,Values=true",
+          "--region", region, "--output", "json",
+        ]);
+        publicRouteTable = mainRoutes.RouteTables?.[0];
+      }
       if (!vpc || !publicSubnet || !publicRouteTable) fail();
       return Object.freeze({
         vpc: Object.freeze({ vpcId: vpc.VpcId, cidrs: Object.freeze((vpc.CidrBlockAssociationSet ?? []).map((entry) => entry.CidrBlock)) }),
