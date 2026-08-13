@@ -24,6 +24,7 @@ const EMPTY_DIGEST = createHash("sha256").update("").digest("hex");
 const RECORDER_FAILURE_STAGES = Object.freeze([
   "construction-options", "construction-room", "construction-paths", "construction-platform",
   "release-manifest-fetch", "release-helper-fetch", "release-assets", "adapter-layout", "completion-socket",
+  "execution-launch", "execution-output", "execution-public-result",
 ]);
 const RECORDER_FAILURES = new WeakMap();
 const execFileAsync = promisify(execFile);
@@ -554,24 +555,24 @@ export async function createVerifiedReleaseActionRecorder(input = {}) {
     ) fail();
     let stdout;
     try {
-      ({ stdout } = await execFileAsync(executable, [input.commandSha256], {
+      ({ stdout } = await execFileAsync(runtime, [executable, input.commandSha256], {
         cwd: workspace,
         encoding: "utf8",
         env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, TMPDIR: tmp },
         maxBuffer: MAX_RESULT_BYTES,
       }));
-    } catch { fail(); }
+    } catch { throw stagedFailure("execution-launch"); }
     if (
       typeof stdout !== "string" || Buffer.byteLength(stdout) < 2 ||
       Buffer.byteLength(stdout) > MAX_RESULT_BYTES || !stdout.endsWith("\n") ||
       stdout.slice(0, -1).includes("\n")
-    ) fail();
+    ) throw stagedFailure("execution-output");
     let publicResult;
-    try { publicResult = JSON.parse(stdout.slice(0, -1)); } catch { fail(); }
+    try { publicResult = JSON.parse(stdout.slice(0, -1)); } catch { throw stagedFailure("execution-public-result"); }
     if (
       publicResult === null || typeof publicResult !== "object" || Array.isArray(publicResult) ||
       types.isProxy(publicResult) || ![Object.prototype, null].includes(Object.getPrototypeOf(publicResult))
-    ) fail();
+    ) throw stagedFailure("execution-public-result");
     return Object.freeze({
       actionId: action.actionId,
       commandSha256: action.commandSha256,

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, unlink, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -236,6 +236,7 @@ test("verified release recorder executes one authorized action by digest without
     sessionId: signingFixture.request.sessionId,
   });
   const action = recorder.recordRetainedAction(step);
+  await chmod(join(recorder.bin, "clockchain-agent-authorize"), 0o400);
   const executed = await recorder.executeAuthorizedAction({
     actionId: action.actionId,
     commandSha256: action.commandSha256,
@@ -259,6 +260,49 @@ test("verified release recorder executes one authorized action by digest without
     role: action.role,
     sessionId: action.sessionId,
   }));
+});
+
+test("verified release recorder exposes a fixed execution-launch stage", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "verified-release-exec-stage-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const run = await createFreshAgentRun({ parent });
+  const signingFixture = await buildAgentCliFixture("initiator");
+  const result = {
+    schema: "clockchain.agent-handshake-cli-result/v1",
+    helperVersion: "2.1.3",
+    operation: "sign",
+    address: signingFixture.parties.initiator.sessionKeyAddress,
+    bytesSha256: signingFixture.request.bytesSha256,
+    signatureHex: `0x${"1".repeat(130)}`,
+  };
+  const fixture = releaseFixture(result);
+  const socketRoot = join("/tmp", `verified-exec-stage-${randomBytes(6).toString("hex")}`);
+  t.after(() => rm(socketRoot, { recursive: true, force: true }));
+  const recorder = await createVerifiedReleaseActionRecorder({
+    fetchImpl: fixture.fetchImpl,
+    manifestDigest: fixture.manifestDigest,
+    room: run.roles.initiator,
+    runtimeExecPath: process.execPath,
+    socketRoot,
+  });
+  t.after(() => recorder.close());
+  recorder.setCompletionHandler(async () => ({ accepted: true }));
+  const request = Buffer.from(JSON.stringify(signingFixture.request));
+  const step = helperStep({
+    manifestDigest: fixture.manifestDigest,
+    payload: request.toString("base64url"),
+    policyDigest: signingFixture.request.policyDigest,
+    role: signingFixture.request.role,
+    sessionId: signingFixture.request.sessionId,
+  });
+  const action = recorder.recordRetainedAction(step);
+  await unlink(join(recorder.bin, "clockchain-agent-authorize"));
+  await assert.rejects(() => recorder.executeAuthorizedAction({
+    actionId: action.actionId,
+    commandSha256: action.commandSha256,
+    role: action.role,
+    sessionId: action.sessionId,
+  }), (error) => verifiedReleaseActionRecorderFailureStage(error) === "execution-launch");
 });
 
 test("verified release recorder binds the production policy payload to its canonical digest", async (t) => {

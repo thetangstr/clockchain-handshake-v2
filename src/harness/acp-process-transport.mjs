@@ -8,6 +8,7 @@ import { ClientSideConnection, PROTOCOL_VERSION, ndJsonStream } from "@agentclie
 
 import { validateHarnessEvent, validateRetainedLocalAction } from "./harness-adapter-contract.mjs";
 import { directA2APartyBridgeFailureStage } from "./direct-a2a-party-bridge.mjs";
+import { verifiedReleaseActionRecorderFailureStage } from "./verified-release-action-recorder.mjs";
 import { ACP_VERSION_PINS } from "./version-pins.mjs";
 
 const MCP_ENDPOINT = "https://mcp.clockchain.network/handshake/mcp";
@@ -1354,12 +1355,20 @@ export function createAcpProcessTransport(optionsInput = {}) {
               entry.state = "authorized";
               permissionAuthorized = true;
               event("acp.permission.authorized", "authorized retained local action", retained.commandSha256);
-              const executed = exactObject(await actionRecorder.executeAuthorizedAction(Object.freeze({
-                actionId: retained.actionId,
-                commandSha256: retained.commandSha256,
-                role: retained.role,
-                sessionId: retained.sessionId,
-              })), ["actionId", "commandSha256", "executed", "operation", "publicResult", "role", "sessionId"]);
+              let executedInput;
+              try {
+                executedInput = await actionRecorder.executeAuthorizedAction(Object.freeze({
+                  actionId: retained.actionId,
+                  commandSha256: retained.commandSha256,
+                  role: retained.role,
+                  sessionId: retained.sessionId,
+                }));
+              } catch (error) {
+                const recorderStage = verifiedReleaseActionRecorderFailureStage(error);
+                failureStage = recorderStage === null ? "retained-execute" : `retained-execute-${recorderStage}`;
+                throw error;
+              }
+              const executed = exactObject(executedInput, ["actionId", "commandSha256", "executed", "operation", "publicResult", "role", "sessionId"]);
               if (
                 executed.actionId !== retained.actionId || executed.commandSha256 !== retained.commandSha256 ||
                 executed.executed !== true || executed.operation !== retained.operation ||
