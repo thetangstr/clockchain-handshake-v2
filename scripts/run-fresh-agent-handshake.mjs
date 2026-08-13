@@ -156,8 +156,11 @@ async function prepareClient({ authentication, command, env, room }) {
 
 export async function monitor({ sessionId, retryDelayMs = 1_000, timeoutMs = 120_000 } = {}) {
   const endpointTemplate = value("CLOCKCHAIN_RESEARCH_MONITOR_URL");
-  const exactSessionEndpoint = endpointTemplate.includes("{sessionId}");
   const endpoint = endpointTemplate.replace("{sessionId}", encodeURIComponent(sessionId));
+  let exactSessionEndpoint = endpointTemplate.includes("{sessionId}");
+  try {
+    exactSessionEndpoint ||= new URL(endpoint).pathname === `/v1/sessions/${encodeURIComponent(sessionId)}/snapshot`;
+  } catch {}
   if (!Number.isSafeInteger(retryDelayMs) || retryDelayMs < 1 || retryDelayMs > 60_000) throw safeMonitorError("validation", "INVALID_RETRY_DELAY");
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60 * 60 * 1000) throw safeMonitorError("validation", "INVALID_TIMEOUT");
   const deadline = Date.now() + timeoutMs;
