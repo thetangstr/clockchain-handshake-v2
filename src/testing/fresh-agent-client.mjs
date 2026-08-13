@@ -5,6 +5,9 @@ import { chmod, mkdir, readFile, realpath, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { gunzipSync } from "node:zlib";
+
+import { privateKeyToAccount } from "viem/accounts";
 
 import { assertSecretFree } from "../core/redact.mjs";
 import { preparePrivateDirectory, readPrivateText, writePrivateFile } from "../core/private-path.mjs";
@@ -21,7 +24,12 @@ import {
   AGENT_HANDSHAKE_V2_SNAPSHOT_SCHEMA,
   buildAgentHandshakeV2Snapshot,
 } from "../monitor/agent-snapshot-v2.mjs";
-import { createStreamableMcpClient } from "./hermes-v2-live.mjs";
+import {
+  commitmentCheckpointDigest,
+  createCommitmentCheckpoint,
+  createStreamableMcpClient,
+  extractSigningRequestFromArgv,
+} from "./hermes-v2-live.mjs";
 
 const ROLES = Object.freeze(["initiator", "responder"]);
 const HELPER_OPERATIONS = Object.freeze([
@@ -38,6 +46,7 @@ export const CLOCKCHAIN_HANDSHAKE_TOOLS = Object.freeze([
   "agent_handshake_join",
   "agent_handshake_status",
   "agent_handshake_next",
+  "agent_handshake_submit_checkpoint",
   "agent_handshake_submit",
   "agent_handshake_get_certificate",
 ]);
@@ -990,7 +999,9 @@ async function preloadVerifiedReleaseAssets({ fetchImpl, manifestDigest, workspa
 }
 
 export async function prepareAgentHarnessAdapter({
+  checkpointState = null,
   fetchImpl = globalThis.fetch,
+  getCheckpointClient = null,
   manifestDigest,
   now = Date.now,
   room,
@@ -998,7 +1009,9 @@ export async function prepareAgentHarnessAdapter({
 } = {}) {
   if (
     !SHA256.test(manifestDigest) || room === null || typeof room !== "object" || Array.isArray(room) ||
-    typeof now !== "function"
+    typeof now !== "function" ||
+    !(checkpointState === null || checkpointState !== null && typeof checkpointState === "object" && !Array.isArray(checkpointState)) ||
+    !(getCheckpointClient === null || typeof getCheckpointClient === "function")
   ) fail();
   const workspace = absolute(room.workspace);
   const tmp = descendant(workspace, room.tmp);
@@ -1032,6 +1045,68 @@ export async function prepareAgentHarnessAdapter({
     }
     if (roleAccess !== null && JSON.stringify(roleAccess) !== JSON.stringify(binding)) fail();
     roleAccess = binding;
+  }
+
+  function signingPayload(request) {
+    let bytes;
+    try {
+      bytes = gunzipSync(Buffer.from(request.bytesGzipBase64Url, "base64url"));
+    } catch {
+      fail();
+    }
+    if (createHash("sha256").update(bytes).digest("hex") !== request.bytesSha256) fail();
+    try { return JSON.parse(bytes.toString("utf8")); } catch { fail(); }
+  }
+
+  async function submitPrivateReleaseCheckpoint({ action, expected, output }) {
+    const request = extractSigningRequestFromArgv(expected.argv);
+    if (!["proposal", "acceptance"].includes(request.operation)) return;
+    if (checkpointState === null || getCheckpointClient === null || roleAccess === null) fail();
+    if (roleAccess.role !== request.role || roleAccess.sessionId !== request.sessionId) fail();
+    let helperResult;
+    try { helperResult = JSON.parse(output.stdout.toString("utf8").trim()); } catch { fail(); }
+    if (
+      helperResult?.schema !== HELPER_RESULT_SCHEMA || helperResult?.helperVersion !== "2.1.3" ||
+      helperResult.operation !== "sign" || helperResult.bytesSha256 !== request.bytesSha256 ||
+      !SIGNATURE.test(helperResult.signatureHex ?? "") || !PUBLIC_ADDRESS.test(helperResult.address ?? "")
+    ) fail();
+    let wallet;
+    try { wallet = JSON.parse(await readPrivateText({ path: join(action.stateDir, "wallet.json"), maxBytes: 16 * 1024 })); }
+    catch { fail(); }
+    if (typeof wallet?.privateKey !== "string" || !/^0x[0-9a-f]{64}$/.test(wallet.privateKey)) fail();
+    const account = privateKeyToAccount(wallet.privateKey);
+    const address = account.address.toLowerCase();
+    if (address !== String(wallet.address).toLowerCase() || address !== helperResult.address.toLowerCase()) fail();
+    const previousCheckpoint = request.operation === "proposal" ? null : checkpointState.proposal;
+    if (request.operation === "acceptance" && previousCheckpoint === undefined) fail();
+    const checkpoint = await createCommitmentCheckpoint({
+      artifactPayload: signingPayload(request),
+      artifactSignatureHex: helperResult.signatureHex,
+      artifactType: request.operation,
+      nowMs: now(),
+      previousCheckpoint,
+      role: request.role,
+      sessionId: request.sessionId,
+      signerAddress: address,
+      signMessage: ({ raw }) => account.signMessage({ message: { raw } }),
+    });
+    const client = await getCheckpointClient();
+    if (client === null || typeof client?.callTool !== "function") fail();
+    const submitted = await client.callTool("agent_handshake_submit_checkpoint", {
+      access: roleAccess.access,
+      artifactSignatureHex: helperResult.signatureHex,
+      checkpoint,
+    });
+    const checkpointDigest = commitmentCheckpointDigest(checkpoint);
+    if (submitted?.checkpointDigest !== checkpointDigest) fail();
+    checkpointState[request.operation] = checkpoint;
+    traceLifecycle({
+      phase: "adapter-checkpoint-submitted",
+      artifactType: request.operation,
+      checkpointDigest,
+      role: request.role,
+      sessionId: request.sessionId,
+    });
   }
 
   function record(value) {
@@ -1148,6 +1223,9 @@ export async function prepareAgentHarnessAdapter({
           child.once("close", (code) => resolveExit(Number.isSafeInteger(code) && code >= 0 && code <= 255 ? code : 86));
         });
         retryable = exitCode !== 0;
+        if (exitCode === 0 && expected.operation === "sign") {
+          await submitPrivateReleaseCheckpoint({ action, expected, output });
+        }
         await writeResponse(exitCode, output);
       } catch (error) {
         traceLifecycle({
@@ -2658,6 +2736,7 @@ function verifyParentCertificateBinding({ initiatorProof, monitorResult, pin, re
 
 export async function runFreshAgentHandshake({
   authenticationModes = { initiator: "disposable", responder: "disposable" },
+  checkpointClientFactory = () => createStreamableMcpClient({ endpoint: CLOCKCHAIN_HANDSHAKE_MCP_URL }),
   clients,
   configureClient,
   contractClientFactory = () => createStreamableMcpClient({ endpoint: CLOCKCHAIN_HANDSHAKE_MCP_URL }),
@@ -2682,7 +2761,8 @@ export async function runFreshAgentHandshake({
   exactObject(modelEnvironment, ROLES);
   exactObject(secretCanaries, ROLES);
   if (
-    typeof configureClient !== "function" || typeof contractClientFactory !== "function" || typeof monitor !== "function" ||
+    typeof checkpointClientFactory !== "function" || typeof configureClient !== "function" ||
+    typeof contractClientFactory !== "function" || typeof monitor !== "function" ||
     typeof prepareAdapter !== "function" || typeof prepareClient !== "function"
   ) fail();
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60 * 60 * 1000) fail();
@@ -2697,6 +2777,19 @@ export async function runFreshAgentHandshake({
   let run;
   const children = [];
   const adapters = [];
+  const checkpointState = {};
+  let checkpointClientPromise = null;
+  const getCheckpointClient = async () => {
+    if (checkpointClientPromise === null) {
+      checkpointClientPromise = (async () => {
+        const client = checkpointClientFactory();
+        if (client === null || typeof client?.connect !== "function" || typeof client?.callTool !== "function") fail();
+        await client.connect();
+        return client;
+      })();
+    }
+    return checkpointClientPromise;
+  };
   let timer;
   try {
     let contractTools;
@@ -2724,6 +2817,8 @@ export async function runFreshAgentHandshake({
       const client = cleanClient(clients[role]);
       const authenticationMode = cleanAuthenticationMode(client, authenticationModes[role]);
       const adapter = await prepareAdapter({
+        checkpointState,
+        getCheckpointClient,
         manifestDigest: pin.manifestDigest,
         room: run.roles[role],
         runtimeExecPath: runtime?.execPath ?? process.execPath,
@@ -2797,7 +2892,7 @@ export async function runFreshAgentHandshake({
         prompt: requireInvitation
           ? "The prior invitation attempt ended without a result. Retry the exact original reference, statement, validity, and identity policy only if Clockchain explicitly marked the prior response retryable:true. Never retry HANDSHAKE_UNAVAILABLE with retryable:false. Do not change the terms and do not finish until the invitation is returned or Clockchain gives a terminal rejection."
           : pendingAction !== undefined
-            ? `Clockchain has an exact pending ${pendingAction.operation} action from the latest MCP result. Preserve the assigned role and exact local policy, and make your own policy decision now. If it is permitted, ${current.client === "claude" ? "call clockchain-adapter approve_bound_action with only the digest from approvalCommand; never run approvalCommand in Bash" : "execute only the exact approvalCommand already returned by Clockchain"}. The adapter will run only that approved bound action without the model rewriting it, then release its exact helper result. Submit the exact returned signature with agent_handshake_submit. If it is not permitted, state the refusal and stop. Do not call agent_handshake_next again until this action is approved and its helper result is submitted. Do not finish until the signed closing certificate is locally verified.`
+            ? `Clockchain has an exact pending ${pendingAction.operation} action from the latest MCP result. Preserve the assigned role and exact local policy, and make your own policy decision now. If it is permitted, ${current.client === "claude" ? "call clockchain-adapter approve_bound_action with only the digest from approvalCommand; never run approvalCommand in Bash" : "execute only the exact approvalCommand already returned by Clockchain"}. The adapter will run the bound action without the model rewriting it. For proposal or acceptance, the adapter automatically submits the commitment checkpoint before releasing the signature. Do not create or call a checkpoint; submit the exact returned signature with agent_handshake_submit. If it is not permitted, state the refusal and stop. Do not call agent_handshake_next again until this action is approved and its helper result is submitted. Do not finish until the signed closing certificate is locally verified.`
           : "Continue the existing Clockchain handshake now. Preserve the assigned role and local policy. Poll only at Clockchain's returned interval, approve only matching digest-bound local actions, and do not finish until the signed closing certificate is locally verified.",
         workspace: room.workspace,
       });

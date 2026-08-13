@@ -32,6 +32,7 @@ import {
   validateFreshAgentMonitorSnapshot,
   validateReleaseAgreement,
 } from "../src/testing/fresh-agent-client.mjs";
+import { commitmentCheckpointDigest } from "../src/testing/hermes-v2-live.mjs";
 import { buildAgentCliFixture } from "./support/agent-cli-fixture.mjs";
 import {
   monitor as runFreshAgentMonitor,
@@ -460,7 +461,7 @@ test("fails before preparing either agent when the live MCP tool contract drifts
   const error = await rejectsFreshAgentRun(parent, {
     contractClientFactory: () => ({
       connect: async () => {},
-      listTools: async () => [...CLOCKCHAIN_HANDSHAKE_TOOLS, "agent_handshake_submit_checkpoint"],
+      listTools: async () => [...CLOCKCHAIN_HANDSHAKE_TOOLS, "unexpected_tool"],
     }),
     configureClient: async () => { configured += 1; },
     prepareClient: async () => { prepared += 1; return true; },
@@ -550,7 +551,8 @@ test("builds exact endpoint configuration for Codex and Claude Code", () => {
     "--allowedTools",
     ["ToolSearch", "Bash", "mcp__clockchain-adapter__approve_bound_action"].concat([
       "agent_handshake_invite", "agent_handshake_accept_invitation", "agent_handshake_join",
-      "agent_handshake_status", "agent_handshake_next", "agent_handshake_submit",
+      "agent_handshake_status", "agent_handshake_next", "agent_handshake_submit_checkpoint",
+      "agent_handshake_submit",
       "agent_handshake_get_certificate",
     ].map((tool) => `mcp__clockchain-handshake__${tool}`)).concat([
       "Read(./manifest.json)",
@@ -1194,9 +1196,9 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
     assert.match(prompt, /run only its short approvalCommand/i);
     assert.match(prompt, /approvalCommand is only an authorization marker/i);
     assert.match(prompt, /inspect its authenticated signingSummary and structured operation/i);
-    assert.match(prompt, /adapter executes only that approved bound argument array/i);
-    assert.match(prompt, /executes only that approved bound argument array.*releases its exact helper result/i);
-    assert.doesNotMatch(prompt, /checkpoint/i);
+    assert.match(prompt, /adapter.*executes the already-bound structured argument array/i);
+    assert.match(prompt, /automatically submits.*commitment checkpoint.*before releasing.*signature/i);
+    assert.match(prompt, /do not create or call.*checkpoint/i);
     assert.match(prompt, /do not paste the long payload into a shell/i);
     assert.match(prompt, /decide on each action separately/i);
     assert.match(prompt, /authorization marker for that digest-bound action/i);
@@ -1320,7 +1322,7 @@ test("harness adapter executes the exact MCP-bound argv after only a short diges
   assert.deepEqual(await readdir(adapter.pending), []);
 });
 
-test("harness adapter releases an approved proposal without calling a nonexistent public checkpoint tool", async (t) => {
+test("harness adapter submits the private proposal checkpoint before releasing the helper signature", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "fresh-agent-adapter-checkpoint-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
   const run = await createFreshAgentRun({ parent });
@@ -1350,22 +1352,23 @@ test("harness adapter releases an approved proposal without calling a nonexisten
   const encoded = Buffer.from(JSON.stringify(fixture.request), "utf8").toString("base64url");
   const command = `node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${manifestDigest} ./manifest.json ./clockchain-agent-handshake.cjs sign --state-dir "$TMPDIR/.clockchain/handshakes/${SESSION}/initiator" --payload-base64url ${encoded}`;
   const step = helperStep(command);
-  let checkpointCalls = 0;
+  const calls = [];
+  const checkpointState = {};
+  const checkpointClient = {
+    async callTool(name, args) {
+      calls.push({ args, name });
+      return { checkpointDigest: commitmentCheckpointDigest(args.checkpoint) };
+    },
+  };
   const fetchImpl = async (url) => ({
     ok: true,
     status: 200,
     arrayBuffer: async () => Buffer.from(url.endsWith("/manifest.json") ? manifest : helperSource),
   });
   const adapter = await prepareAgentHarnessAdapter({
+    checkpointState,
     fetchImpl,
-    getCheckpointClient: async () => ({
-      async callTool() {
-        checkpointCalls += 1;
-        const error = new Error("unavailable");
-        error.code = "MCP_TOOL_UNAVAILABLE";
-        throw error;
-      },
-    }),
+    getCheckpointClient: async () => checkpointClient,
     manifestDigest,
     room,
     runtimeExecPath: process.execPath,
@@ -1384,7 +1387,12 @@ test("harness adapter releases an approved proposal without calling a nonexisten
   });
   await new Promise((resolve) => setImmediate(resolve));
   await adapter.authorize(step);
-  assert.equal(checkpointCalls, 0);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, "agent_handshake_submit_checkpoint");
+  assert.equal(calls[0].args.artifactSignatureHex, signatureHex);
+  assert.equal(calls[0].args.checkpoint.artifactType, "proposal");
+  assert.equal(calls[0].args.checkpoint.role, "initiator");
+  assert.equal(checkpointState.proposal, calls[0].args.checkpoint);
   assert.equal(JSON.parse((await approved).stdout).signatureHex, signatureHex);
 });
 
@@ -1940,8 +1948,8 @@ test("continuation tells the agent to decide the exact pending action before pol
   assert.match(continuation, /Clockchain has an exact pending sign action/);
   assert.match(continuation, /make your own policy decision now/i);
   assert.match(continuation, /execute only the exact approvalCommand already returned by Clockchain/i);
-  assert.match(continuation, /adapter will run only that approved bound action.*release its exact helper result/i);
-  assert.doesNotMatch(continuation, /checkpoint/i);
+  assert.match(continuation, /adapter automatically submits.*commitment checkpoint.*before releasing.*signature/i);
+  assert.match(continuation, /do not create or call.*checkpoint/i);
   assert.match(continuation, /submit the exact returned signature with agent_handshake_submit/i);
   assert.match(continuation, /Do not call agent_handshake_next again until/i);
 });
