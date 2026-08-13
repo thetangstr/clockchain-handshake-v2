@@ -33,7 +33,7 @@ test("production session publishes a root-signed host key before discovery with 
   });
   assert.equal(session.protocol, "clockchain.agent-handshake/v2");
   assert.equal(session.sessionDeadlineMs, now + 10 * 60_000);
-  assert.equal(session.invitationExpiresAtMs, now + 120_000);
+  assert.equal(session.invitationExpiresAtMs, now + 5 * 60_000);
   assert.equal(session.terms.validForSeconds, "90");
   assert.equal(session.sessionOpenedBlock, "6999");
   assert.equal(calls.length, 1);
