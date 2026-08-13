@@ -1,5 +1,5 @@
 import { createPublicKey, generateKeyPairSync, sign } from "node:crypto";
-import { chmod, lstat, mkdir, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { types } from "node:util";
@@ -65,7 +65,7 @@ const RUNTIME_FAILURE_STAGES = Object.freeze([
   "recorder-adapter-layout", "recorder-completion-socket",
   "checkpoint-client-create",
   "bridge-create", "provider-auth", "provider-auth-input", "provider-auth-decode", "provider-auth-parse",
-  "provider-auth-install", "provider-auth-export", "transport-create", "adapter-create", "agent-starting", "agent-trace",
+  "provider-auth-install", "provider-auth-config", "provider-auth-export", "transport-create", "adapter-create", "agent-starting", "agent-trace",
   "agent-launch", "agent-launch-spawn", "agent-launch-stream", "agent-launch-initialize", "agent-launch-session",
   "agent-launch-model", "agent-launch-prompt", "agent-launch-completion", "agent-launch-completion-protocol",
   "agent-launch-completion-protocol-envelope", "agent-launch-completion-protocol-usage",
@@ -370,6 +370,23 @@ async function installClaudeSerializedAuth(value, home, setStage) {
   await installAppleClientAuthentication({ authentication, home }).catch(fail);
 }
 
+async function installCodexRuntimeConfig(home, setStage) {
+  setStage("config");
+  const directory = join(home, ".codex");
+  await mkdir(directory, { recursive: true, mode: 0o700 }).catch(fail);
+  if (process.platform !== "win32") await chmod(directory, 0o700).catch(fail);
+  const content = [
+    "model = \"gpt-5.6-terra\"",
+    "model_reasoning_effort = \"low\"",
+    "[mcp_servers.clockchain-handshake]",
+    `url = \"${MCP_ENDPOINT}\"`,
+    "",
+  ].join("\n");
+  const destination = join(directory, "config.toml");
+  await writeFile(destination, content, { flag: "wx", mode: 0o600 }).catch(fail);
+  if (process.platform !== "win32") await chmod(destination, 0o600).catch(fail);
+}
+
 async function providerEnvFor(harness, home, env = process.env, setStage = () => {}, allowMissing = false) {
   const result = {};
   setStage("input");
@@ -383,6 +400,7 @@ async function providerEnvFor(harness, home, env = process.env, setStage = () =>
     const apiKeys = ["CODEX_API_KEY", "OPENAI_API_KEY"].filter((key) => hasEnv(env, key));
     if (apiKeys.length > 1 || (hasSerializedAuth && apiKeys.length > 0) || (!hasSerializedAuth && apiKeys.length !== 1)) fail();
     if (hasSerializedAuth) await installCodexSerializedAuth(authJson, home, setStage);
+    await installCodexRuntimeConfig(home, setStage);
     setStage("export");
     for (const key of CODEX_PROVIDER_ENV) {
       const value = env[key];

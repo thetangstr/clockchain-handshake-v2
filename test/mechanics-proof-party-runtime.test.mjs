@@ -468,6 +468,13 @@ test("initiator runtime installs serialized Codex subscription auth into isolate
         transportEnv = input.env;
         const installed = readFileSync(join(root, "home", ".codex", "auth.json"), "utf8");
         assert.deepEqual(JSON.parse(installed), JSON.parse(serialized));
+        assert.equal(readFileSync(join(root, "home", ".codex", "config.toml"), "utf8"), [
+          "model = \"gpt-5.6-terra\"",
+          "model_reasoning_effort = \"low\"",
+          "[mcp_servers.clockchain-handshake]",
+          "url = \"https://mcp.clockchain.network/handshake/mcp\"",
+          "",
+        ].join("\n"));
         return {};
       },
     }));

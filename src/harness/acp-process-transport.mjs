@@ -1172,27 +1172,22 @@ export function createAcpProcessTransport(optionsInput = {}) {
         sessionEstablishing = true;
         const created = await connection.newSession({
           cwd: options.workspace,
-          mcpServers: [mcpServer()],
+          mcpServers: harness === "codex" ? [] : [mcpServer()],
         });
         sessionEstablishing = false;
         if (typeof created?.sessionId !== "string" || created.sessionId.length === 0) fail();
         if (provisionalAcpSessionId !== null && provisionalAcpSessionId !== created.sessionId) fail();
         acpSessionId = created.sessionId;
         for (const update of provisionalToolUpdates.splice(0)) await sessionUpdate(update);
-        if (harness === "codex" || provider.pinModel === true) {
+        if (provider.pinModel === true) {
           launchStage = "model";
           await connection.setSessionConfigOption({
             sessionId: acpSessionId,
             configId: "model",
             value: provider.model,
           });
-          if (harness === "codex") {
-            await connection.setSessionConfigOption({
-              sessionId: acpSessionId,
-              configId: "reasoning_effort",
-              value: "low",
-            });
-          }
+        }
+        if (harness === "codex" || provider.pinModel === true) {
           event("acp.model.pinned", `pinned ${harness} ACP model`, `model:${provider.model}`);
         }
         event("acp.session.new", "created ACP session", digest(created.sessionId));

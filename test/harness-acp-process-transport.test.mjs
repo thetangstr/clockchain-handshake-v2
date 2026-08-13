@@ -413,11 +413,8 @@ test("ACP process transport forwards only role-specific provider auth and pins t
   assert.equal(codexCalls[0].options.env.OPENAI_API_KEY, undefined);
   assert.equal(codexCalls[0].options.env.ANTHROPIC_API_KEY, undefined);
   assert.equal(codexCalls[0].options.env.AWS_SECRET_ACCESS_KEY, undefined);
-  assert.deepEqual(codexCalls.find((call) => Array.isArray(call) && call[0] === "setSessionConfigOption")?.[1], {
-    sessionId: `acp-${SESSION}`,
-    configId: "model",
-    value: "gpt-5.6-terra",
-  });
+  assert.equal(codexCalls.some((call) => Array.isArray(call) && call[0] === "setSessionConfigOption"), false);
+  assert.deepEqual(codexCalls.find((call) => Array.isArray(call) && call[0] === "newSession")?.[1].mcpServers, []);
   await codexTransport.terminate({ sessionId: SESSION });
   const codexEvidence = await codexTransport.collectEvidence({ sessionId: SESSION });
   assert.doesNotMatch(JSON.stringify(codexEvidence), /codex-secret-value|wrong-role-secret|gpt-5\.6-terra/);
@@ -827,7 +824,7 @@ test("ACP process transport performs real ACP lifecycle with unauthenticated ded
 
   assert.equal(launched.sessionId, SESSION);
   assert.deepEqual(calls.filter(Array.isArray).map((entry) => entry[0]), [
-    "initialize", "newSession", "setSessionConfigOption", "setSessionConfigOption", "prompt", "record", "permission",
+    "initialize", "newSession", "prompt", "record", "permission",
   ]);
   assert.equal(calls[0].options.env.CLOCKCHAIN_MCP_BEARER, undefined);
   assert.equal(calls[0].options.env.CLOCKCHAIN_MCP_AUTH_HEADER, undefined);
@@ -838,17 +835,9 @@ test("ACP process transport performs real ACP lifecycle with unauthenticated ded
   assert.equal(initialize.clientCapabilities.terminal, false);
   const newSession = calls.find((entry) => entry[0] === "newSession")[1];
   assert.equal(newSession.cwd, "/workspace/initiator");
-  assert.deepEqual(newSession.mcpServers, [{
-    type: "http",
-    name: "clockchain-handshake",
-    url: MCP_ENDPOINT,
-    headers: [],
-  }]);
+  assert.deepEqual(newSession.mcpServers, []);
   const configOptions = calls.filter((entry) => entry[0] === "setSessionConfigOption").map((entry) => entry[1]);
-  assert.deepEqual(configOptions, [
-    { sessionId: `acp-${SESSION}`, configId: "model", value: "gpt-5.6-terra" },
-    { sessionId: `acp-${SESSION}`, configId: "reasoning_effort", value: "low" },
-  ]);
+  assert.deepEqual(configOptions, []);
   const prompt = calls.find((entry) => entry[0] === "prompt")[1].prompt[0].text;
   assert.match(prompt, /role: initiator/);
   assert.match(prompt, /NS-1847/);
