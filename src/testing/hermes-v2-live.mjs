@@ -233,7 +233,7 @@ export function createHermesDecisionPrompt({ action, policy } = {}) {
     "actionDigest is an opaque, exact binding for this specific action. It is independently checked by the adapter and is expected to differ from localPolicy.statementDigest; never compare those two digests.",
     "Use localPolicy to judge the role, terms, time limit, identity requirement, and no-external-action boundary. The action packet establishes only the operation, role, session, and opaque binding.",
     "Identity claim is a prerequisite that binds the new local key and policy; fresh ERC-8004 registration happens only after Clockchain funds the new key. Approve that prerequisite when the policy requires a fresh identity.",
-    "A proposal or acceptance may be approved only for the stated role and immutable policy. Evidence may be approved only after the matching verified handshake artifacts exist. Never authorize any external business action.",
+    "A proposal or acceptance may be approved only for the stated role and immutable policy. An evidence action from this Clockchain MCP is issued only after the matching handshake artifacts have been verified; its presence is the verified-artifact condition. Never authorize any external business action.",
     "Approve only when the role, reference, statement digest, time limit, identity requirement, and no-external-action boundary match.",
     "Return exactly one JSON object with keys decision, actionDigest, reasonCode. Use decision approve or refuse. Copy actionDigest exactly. For approval reasonCode MUST be the exact uppercase string APPROVE_POLICY_MATCH; for refusal reasonCode MUST be the exact uppercase string REFUSE_POLICY_MISMATCH. Add no markdown or commentary.",
     JSON.stringify(packet),

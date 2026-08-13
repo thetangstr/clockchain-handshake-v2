@@ -66,6 +66,7 @@ test("Hermes decision prompt contains public policy facts and no transport autho
   assert.match(prompt, /registration happens only after Clockchain funds the new key/i);
   assert.match(prompt, /expected to differ from localPolicy\.statementDigest/i);
   assert.match(prompt, /never compare those two digests/i);
+  assert.match(prompt, /evidence action from this Clockchain MCP is issued only after the matching handshake artifacts have been verified/i);
   assert.match(prompt, /APPROVE_POLICY_MATCH/i);
   for (const forbidden of ["roleAccess", "invitation", "privateKey", "signatureHex", "bytesGzipBase64Url"]) {
     assert.doesNotMatch(prompt, new RegExp(forbidden, "i"));
