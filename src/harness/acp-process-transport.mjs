@@ -358,15 +358,35 @@ function promptText({ role, sessionId, mandate, a2aConfig }) {
       "A result whose public body has an error field is not an invitation and must never be copied or used as role access.",
     ] : []),
     "Continue until Clockchain returns a certificate and the retained local verification reports that the certificate is verified.",
+    "Whenever an MCP result includes helperStep or helperSteps, request each exact helperStep.approvalCommand through the retained local-action approval path before the next MCP call.",
     "Follow each MCP result's next action, including waits or retries. Do not end your turn before the verified certificate unless a non-retryable tool error makes completion impossible.",
     "Use the dedicated clockchain-handshake MCP server and retained local-action approvals only.",
   ].join("\n");
 }
 
-function continuationPromptText() {
+function continuationPromptText({ role, protocolSessionId, mandate, a2aConfig }) {
+  if (protocolSessionId === null) {
+    if (role === "initiator") {
+      return [
+        "No Clockchain protocol session exists yet.",
+        `Call agent_handshake_invite now with exactly this argument object: ${JSON.stringify(mandate)}.`,
+        "If Clockchain returns a retryable error, follow its wait and retry instructions and call agent_handshake_invite again.",
+        "Do not end your turn before the invitation succeeds or a non-retryable tool error makes completion impossible.",
+      ].join("\n");
+    }
+    return [
+      "No Clockchain protocol session exists yet.",
+      `Read exactly one UTF-8 invitation from ${a2aConfig.invitationPath} and pass it unchanged to agent_handshake_accept_invitation now.`,
+      "Do not print, summarize, or copy the invitation anywhere else.",
+      "If Clockchain returns a retryable error, follow its wait and retry instructions and call agent_handshake_accept_invitation again.",
+      "Do not end your turn before the invitation is accepted or a non-retryable tool error makes completion impossible.",
+    ].join("\n");
+  }
   return [
-    "Continue the existing Clockchain handshake from its current MCP state.",
-    "Follow the next action returned by the dedicated clockchain-handshake MCP server and use retained local-action approvals only.",
+    `Continue the existing Clockchain handshake in protocol session ${protocolSessionId}; do not create or accept another invitation.`,
+    `If ${role} has not joined, call agent_handshake_join using the exact access, helperVersion, sessionKeyAddress, and policyDigest from the prior Clockchain and retained-helper results.`,
+    "Then call agent_handshake_status and agent_handshake_next with the exact access returned by Clockchain and follow the returned next action.",
+    "Whenever an MCP result includes helperStep or helperSteps, request each exact helperStep.approvalCommand through the retained local-action approval path before the next MCP call.",
     "Do not end your turn until the local certificate verification is complete, unless a non-retryable tool error makes completion impossible.",
   ].join("\n");
 }
@@ -1108,7 +1128,12 @@ export function createAcpProcessTransport(optionsInput = {}) {
               type: "text",
               text: promptAttempt === 0
                 ? promptText({ role: clean.role, sessionId: clean.sessionId, mandate: cleanMandateValue, a2aConfig: cleanPeer })
-                : continuationPromptText(),
+                : continuationPromptText({
+                  role: clean.role,
+                  protocolSessionId,
+                  mandate: cleanMandateValue,
+                  a2aConfig: cleanPeer,
+                }),
             }],
           });
           launchStage = "completion";

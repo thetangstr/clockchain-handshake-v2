@@ -1039,7 +1039,46 @@ test("ACP process transport re-prompts an end-turning agent until the Clockchain
   const prompts = calls.filter((entry) => entry[0] === "prompt");
   assert.equal(prompts.length, 2);
   assert.match(prompts[1][1].prompt[0].text, /Continue the existing Clockchain handshake/i);
+  assert.match(prompts[1][1].prompt[0].text, new RegExp(SESSION));
+  assert.match(prompts[1][1].prompt[0].text, /agent_handshake_join/);
+  assert.match(prompts[1][1].prompt[0].text, /agent_handshake_next/);
+  assert.doesNotMatch(prompts[1][1].prompt[0].text, /agent_handshake_invite/);
   assert.equal(completionChecks, 2);
+});
+
+test("ACP continuation repeats the exact role bootstrap while no protocol session exists", async () => {
+  const calls = [];
+  let completionChecks = 0;
+  const transport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({ calls, sessionUpdates: [], skipPermission: true }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    partyBridge: partyBridgeFor(calls, {
+      completionStatus() {
+        completionChecks += 1;
+        return completionChecks >= 2
+          ? { complete: true, protocolSessionId: SESSION }
+          : { complete: false, protocolSessionId: null };
+      },
+    }),
+    env: {},
+    trustedAdapterPublicKeys: [retainedAction({ role: "initiator" }).adapterPublicKey],
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  });
+  const prompts = calls.filter((entry) => entry[0] === "prompt");
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[1][1].prompt[0].text, /agent_handshake_invite/);
+  assert.match(prompts[1][1].prompt[0].text, /"validForSeconds":"90"/);
+  assert.match(prompts[1][1].prompt[0].text, /"erc8004":"required_existing_or_fresh"/);
+  assert.doesNotMatch(prompts[1][1].prompt[0].text, /existing Clockchain handshake/i);
 });
 
 test("ACP process transport distinguishes each public Clockchain boundary at incomplete completion", async () => {
