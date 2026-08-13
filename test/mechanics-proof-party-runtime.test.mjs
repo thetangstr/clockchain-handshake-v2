@@ -8,6 +8,7 @@ import test from "node:test";
 
 import {
   createMechanicsProofPartyRuntime,
+  mechanicsProofInvitationWaitFailureStage,
   mechanicsProofPartyRuntimeFailureStage,
   waitForMechanicsProofInvitation,
 } from "../src/testing/mechanics-proof-party-runtime.mjs";
@@ -210,6 +211,65 @@ test("invitation wait uses elapsed time instead of expiring after early timer wa
 
   assert.equal(result, invitation);
   assert.equal(elapsedMs, 100_000);
+});
+
+test("invitation wait brands observation, consumption, sleep, and timeout boundaries", async () => {
+  const cases = [
+    {
+      stage: "observe",
+      transport: { publicEvidence() { throw new Error("private observation"); }, takeInvitation() {} },
+      sleep: async () => {},
+      nowMs: () => 0,
+    },
+    {
+      stage: "take",
+      transport: { publicEvidence() { return { invitations: [{ direction: "inbound" }] }; }, takeInvitation() { throw new Error("private take"); } },
+      sleep: async () => {},
+      nowMs: () => 0,
+    },
+    {
+      stage: "sleep",
+      transport: { publicEvidence() { return { invitations: [] }; }, takeInvitation() {} },
+      sleep: async () => { throw new Error("private sleep"); },
+      nowMs: () => 0,
+    },
+    {
+      stage: "timeout",
+      transport: { publicEvidence() { return { invitations: [] }; }, takeInvitation() {} },
+      sleep: async () => {},
+      nowMs: (() => { const values = [0, 300_000]; return () => values.shift(); })(),
+    },
+  ];
+  for (const candidate of cases) {
+    await assert.rejects(
+      waitForMechanicsProofInvitation(candidate.transport, candidate.sleep, candidate.nowMs),
+      (error) => {
+        assert.equal(error.message, "Mechanics proof party runtime failed safely.");
+        assert.equal(mechanicsProofInvitationWaitFailureStage(error), candidate.stage);
+        assert.doesNotMatch(JSON.stringify(error), /private/i);
+        return true;
+      },
+    );
+  }
+});
+
+test("party runtime distinguishes invitation receipt event publication from invitation waiting", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-invitation-event-"));
+  const root = join(parent, "responder");
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const runtime = await createMechanicsProofPartyRuntime(options(root), dependencies([]));
+  let events = 0;
+  await assert.rejects(() => runtime.run({
+    peerDescriptor: peerDescriptor(),
+    onPublicEvent() {
+      events += 1;
+      if (events === 2) throw new Error("private event sink");
+    },
+  }), (error) => {
+    assert.equal(mechanicsProofPartyRuntimeFailureStage(error), "invitation-received-event");
+    assert.doesNotMatch(JSON.stringify(error), /private/i);
+    return true;
+  });
 });
 
 function initiatorBridgeEvidence() {

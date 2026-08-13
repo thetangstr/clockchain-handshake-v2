@@ -54,7 +54,8 @@ const AWS_CREDENTIAL_OVERRIDE_ENV = Object.freeze([
   "AWS_PROFILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_SQS",
 ]);
 const RUNTIME_FAILURE_STAGES = Object.freeze([
-  "peer-validate", "listener-create", "listener-ready", "invitation-await", "recorder-create",
+  "peer-validate", "listener-create", "listener-ready", "invitation-await", "invitation-await-observe",
+  "invitation-await-take", "invitation-await-sleep", "invitation-await-timeout", "invitation-received-event", "recorder-create",
   "recorder-construction-options", "recorder-construction-room", "recorder-construction-paths",
   "recorder-construction-platform",
   "recorder-release-manifest-fetch", "recorder-release-helper-fetch", "recorder-release-assets",
@@ -100,6 +101,7 @@ const RUNTIME_FAILURE_STAGES = Object.freeze([
   "listener-listen-eperm", "listener-listen-other",
 ]);
 const RUNTIME_FAILURES = new WeakMap();
+const INVITATION_WAIT_FAILURES = new WeakMap();
 
 function fail() { throw new Error(ERROR); }
 function sanitize(error) { if (error?.message === ERROR) throw error; fail(); }
@@ -113,6 +115,17 @@ function stagedFailure(stage) {
 
 export function mechanicsProofPartyRuntimeFailureStage(error) {
   return RUNTIME_FAILURES.get(error) ?? null;
+}
+
+function invitationWaitFailure(stage) {
+  if (!["observe", "take", "sleep", "timeout"].includes(stage)) fail();
+  const error = new Error(ERROR);
+  INVITATION_WAIT_FAILURES.set(error, stage);
+  return error;
+}
+
+export function mechanicsProofInvitationWaitFailureStage(error) {
+  return INVITATION_WAIT_FAILURES.get(error) ?? null;
 }
 
 function exact(value, keys) {
@@ -267,13 +280,18 @@ export async function waitForMechanicsProofInvitation(
     const deadlineMs = startedAtMs + 300_000;
     if (!Number.isSafeInteger(startedAtMs) || !Number.isSafeInteger(deadlineMs)) fail();
     for (;;) {
-      const evidence = transport.publicEvidence();
+      let evidence;
+      try { evidence = transport.publicEvidence(); }
+      catch { throw invitationWaitFailure("observe"); }
       if (Array.isArray(evidence?.invitations) && evidence.invitations.some((entry) => entry?.direction === "inbound")) {
-        return transport.takeInvitation();
+        try { return transport.takeInvitation(); }
+        catch { throw invitationWaitFailure("take"); }
       }
       const currentMs = nowMs();
-      if (!Number.isSafeInteger(currentMs) || currentMs < startedAtMs || currentMs >= deadlineMs) fail();
-      await sleep(Math.min(5, deadlineMs - currentMs));
+      if (!Number.isSafeInteger(currentMs) || currentMs < startedAtMs) fail();
+      if (currentMs >= deadlineMs) throw invitationWaitFailure("timeout");
+      try { await sleep(Math.min(5, deadlineMs - currentMs)); }
+      catch { throw invitationWaitFailure("sleep"); }
     }
   } catch (error) {
     sanitize(error);
@@ -514,6 +532,7 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
           if (options.role === "responder") {
             runStage = "invitation-await";
             privateInvitation = await deps.waitForInvitation(invitationTransport);
+            runStage = "invitation-received-event";
             await emit("a2a.invitation.received", invitationTransport.publicEvidence());
           }
           runStage = "recorder-create";
@@ -693,10 +712,12 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
         } catch (error) {
           runFailed = true;
           const listenerStage = runStage === "listener-create" ? invitationBootstrapFailureStage(error) : null;
+          const invitationWaitStage = runStage === "invitation-await" ? mechanicsProofInvitationWaitFailureStage(error) : null;
           const recorderStage = runStage === "recorder-create" ? verifiedReleaseActionRecorderFailureStage(error) : null;
           const launchStage = runStage === "agent-launch" ? acpProcessTransportFailureStage(error) : null;
           runFailureStage = listenerStage !== null
             ? `listener-${listenerStage}`
+            : invitationWaitStage !== null ? `invitation-await-${invitationWaitStage}`
             : recorderStage !== null ? `recorder-${recorderStage}`
               : launchStage !== null ? `agent-launch-${launchStage}` : runStage;
         }
