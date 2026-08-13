@@ -125,6 +125,8 @@ function acpFixtureSpawn({
   skipPermission = false,
   permissionCommand = `clockchain-agent-authorize ${DIGEST}`,
   permissionCwd = undefined,
+  permissionDescription = undefined,
+  permissionOptions = null,
   permissionTitle = "display-only approval label",
   promptUpdateSessionId = null,
   unrelatedPermissionBeforeHelper = false,
@@ -256,9 +258,10 @@ function acpFixtureSpawn({
               rawInput: {
                 command: permissionCommand,
                 ...(permissionCwd === undefined ? {} : { cwd: permissionCwd }),
+                ...(permissionDescription === undefined ? {} : { description: permissionDescription }),
               },
             },
-            options: [
+            options: permissionOptions ?? [
               { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
               { optionId: "reject_once", name: "Reject", kind: "reject_once" },
             ],
@@ -428,6 +431,12 @@ test("ACP process transport forwards only role-specific provider auth and pins t
       calls: claudeCalls,
       helperAction: claudeAction,
       permissionCommand: `clockchain-agent-authorize ${claudeAction.commandSha256}`,
+      permissionDescription: "Authorize the exact retained Clockchain helper",
+      permissionOptions: [
+        { optionId: "reject", name: "Deny", kind: "reject_once" },
+        { optionId: "allow", name: "Allow Once", kind: "allow_once" },
+        { optionId: "allow_always", name: "Always Allow", kind: "allow_always" },
+      ],
     }),
     workspace: "/workspace/responder",
     home: "/workspace/responder/home",
@@ -461,6 +470,9 @@ test("ACP process transport forwards only role-specific provider auth and pins t
   assert.equal(claudeCalls[0].options.env.ANTHROPIC_API_KEY, undefined);
   assert.equal(claudeCalls[0].options.env.CODEX_API_KEY, undefined);
   assert.equal(claudeCalls.find((call) => Array.isArray(call) && call[0] === "setSessionConfigOption"), undefined);
+  assert.deepEqual(claudeCalls.find((entry) => entry[0] === "permission")[1], {
+    outcome: { outcome: "selected", optionId: "allow" },
+  });
   await claudeTransport.terminate({ sessionId: SESSION });
   const claudeEvidence = await claudeTransport.collectEvidence({ sessionId: SESSION });
   assert.doesNotMatch(JSON.stringify(claudeEvidence), /wrong-role|forbidden|us\.anthropic/);

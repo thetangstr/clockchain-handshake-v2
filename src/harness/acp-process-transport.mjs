@@ -900,8 +900,13 @@ export function createAcpProcessTransport(optionsInput = {}) {
       throw permissionCommandFailure("tool");
     }
     let rawInput;
-    try { rawInput = optionalObject(toolCall.rawInput, ["command"], ["cwd"]); }
+    try { rawInput = optionalObject(toolCall.rawInput, ["command"], ["cwd", "description"]); }
     catch { throw permissionCommandFailure("input"); }
+    if (
+      rawInput.description !== undefined &&
+      (harness !== "claude" || typeof rawInput.description !== "string" || rawInput.description.length < 1 ||
+        rawInput.description.length > 256 || /[\u0000-\u001f\u007f]/.test(rawInput.description))
+    ) throw permissionCommandFailure("input");
     if (rawInput.cwd !== undefined && rawInput.cwd !== options.workspace) throw permissionCommandFailure("cwd");
     try { return retainedCommand(rawInput.command); }
     catch {
@@ -916,17 +921,23 @@ export function createAcpProcessTransport(optionsInput = {}) {
       throw permissionCommandFailure("approval");
     }
   }
-  function rejectOnceOption(params) {
+  function permissionOption(params, kind) {
     const matches = snapshotArray(params?.options, { min: 1 }).filter((candidate) => {
       const option = optionalObject(candidate, ["kind", "name", "optionId"], ["_meta"]);
       if (
         typeof option.kind !== "string" || typeof option.name !== "string" ||
         typeof option.optionId !== "string"
       ) fail();
-      return option.kind === "reject_once" && option.optionId === "reject_once";
+      return option.kind === kind;
     });
     if (matches.length !== 1) fail();
-    return "reject_once";
+    return matches[0].optionId;
+  }
+  function rejectOnceOption(params) {
+    return permissionOption(params, "reject_once");
+  }
+  function allowOnceOption(params) {
+    return permissionOption(params, "allow_once");
   }
   async function requestPermission(params) {
     let denialStage = "session";
@@ -955,12 +966,11 @@ export function createAcpProcessTransport(optionsInput = {}) {
         fail();
       }
       denialStage = "options";
-      const optionsList = params?.options;
-      if (!Array.isArray(optionsList) || !optionsList.some((option) => option?.optionId === "allow_once" && option?.kind === "allow_once")) fail();
+      const allowOnce = allowOnceOption(params);
       entry.state = "authorized";
       permissionAuthorized = true;
       event("acp.permission.authorized", "authorized retained local action", digestValue);
-      return Object.freeze({ outcome: Object.freeze({ outcome: "selected", optionId: "allow_once" }) });
+      return Object.freeze({ outcome: Object.freeze({ outcome: "selected", optionId: allowOnce }) });
     } catch (error) {
       const commandStage = denialStage === "command" ? PERMISSION_COMMAND_FAILURES.get(error) : null;
       const fixedStage = commandStage === null || commandStage === undefined
