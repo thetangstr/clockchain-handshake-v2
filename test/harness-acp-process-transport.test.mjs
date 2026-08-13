@@ -86,6 +86,25 @@ function actionRecorderFor(actions, calls = []) {
   });
 }
 
+function deterministicActionRecorderFor(actions, outputs, calls = []) {
+  const base = actionRecorderFor(actions, calls);
+  const byId = new Map(actions.map((action) => [action.actionId, action]));
+  return Object.freeze({
+    ...base,
+    async executeAuthorizedAction(input) {
+      calls.push(["executeAuthorizedAction", input]);
+      const action = byId.get(input.actionId);
+      if (
+        action === undefined || input.commandSha256 !== action.commandSha256 ||
+        input.role !== action.role || input.sessionId !== action.sessionId
+      ) throw new Error("unexpected retained action");
+      const publicResult = outputs[action.operation];
+      if (publicResult === undefined) throw new Error("missing public result");
+      return { ...input, executed: true, operation: action.operation, publicResult };
+    },
+  });
+}
+
 function partyBridgeFor(calls, { delayMs = 0, reject = false, completionStatus = () => ({ complete: true, protocolSessionId: SESSION }) } = {}) {
   return Object.freeze({
     completionStatus() {
@@ -1417,6 +1436,91 @@ test("ACP continuation gives the agent exactly one pending retained action", asy
   assert.doesNotMatch(continuation, /approval|authorize.*person|AskUserQuestion|request these/i);
   assert.match(continuation, /Do not call another MCP tool/i);
   await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
+});
+
+test("ACP transport executes authorized retained actions deterministically without prompting the model for Bash", async () => {
+  const access = `${"q".repeat(96)}.${"r".repeat(43)}`;
+  const address = "0x1111111111111111111111111111111111111111";
+  const policyDigest = "7".repeat(64);
+  const actions = ["init", "policy", "inspect"].map((operation, index) => retainedAction({
+    actionId: `action-${index}`,
+    commandSha256: String(index + 1).repeat(64),
+    operation,
+    role: "responder",
+  }));
+  const outputs = {
+    init: { schema: "clockchain.agent-handshake-cli-result/v1", helperVersion: "2.1.3", operation: "init", address },
+    policy: { schema: "clockchain.agent-handshake-cli-result/v1", helperVersion: "2.1.3", operation: "policy", policyDigest },
+    inspect: { schema: "clockchain.agent-handshake-cli-result/v1", helperVersion: "2.1.3", operation: "inspect", address, policyDigest, registration: null },
+  };
+  const calls = [];
+  const policyCalls = [];
+  let completionChecks = 0;
+  const transport = createAcpProcessTransport({
+    harness: "claude",
+    pin: ACP_VERSION_PINS.claude,
+    spawn: acpFixtureSpawn({
+      calls,
+      newSessionIds: [`acp-${SESSION}-setup`, `acp-${SESSION}-continue`],
+      skipPermission: true,
+      sessionUpdates: (promptCount) => promptCount === 0 ? [{
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-mcp-setup",
+        kind: "other",
+        title: "agent_handshake_accept_invitation",
+        status: "completed",
+        rawInput: { server: "clockchain-handshake", tool: "agent_handshake_accept_invitation", arguments: {} },
+        rawOutput: { result: { responderAccess: access, sessionId: SESSION, structuredContent: { helperSteps: actions.map((action) => helperStepForAction(action)) } }, error: null },
+      }] : [],
+    }),
+    workspace: "/workspace/responder",
+    home: "/workspace/responder/home",
+    nowMs: () => 1786337001000,
+    actionRecorder: deterministicActionRecorderFor(actions, outputs, calls),
+    env: {},
+    partyBridge: partyBridgeFor(calls, {
+      completionStatus() {
+        completionChecks += 1;
+        return completionChecks >= 2
+          ? { complete: true, protocolSessionId: SESSION }
+          : { complete: false, protocolSessionId: SESSION };
+      },
+    }),
+    retainedActionPolicy({ retainedAction }) {
+      policyCalls.push(retainedAction.actionId);
+      return Object.freeze({ decision: "authorize" });
+    },
+    trustedAdapterPublicKeys: actions.map((action) => action.adapterPublicKey),
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.claude,
+    runtime: { runtimeId: "runtime-responder", sessionId: SESSION, role: "responder", harness: "claude" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("responder"),
+  }).catch((error) => assert.fail(`unexpected stage ${acpProcessTransportFailureStage(error)}`));
+  assert.deepEqual(calls.filter((entry) => entry[0] === "executeAuthorizedAction").map((entry) => entry[1].actionId), [
+    "action-0", "action-1", "action-2",
+  ]);
+  assert.deepEqual(policyCalls, ["action-0", "action-1", "action-2"]);
+  const continuation = calls.filter((entry) => entry[0] === "prompt")[1][1].prompt[0].text;
+  assert.doesNotMatch(continuation, /Bash|clockchain-agent-authorize/);
+  assert.match(continuation, new RegExp(address));
+  assert.match(continuation, new RegExp(policyDigest));
+});
+
+test("ACP transport rejects a deterministic action recorder without an explicit local policy", () => {
+  const action = retainedAction();
+  assert.throws(() => createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: fakeSpawn([]),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    actionRecorder: deterministicActionRecorderFor([action], { "verify-certificate": {} }),
+    env: {},
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  }), /failed safely/);
 });
 
 test("ACP process transport fails closed when an unrelated command lacks one exact rejection option", async () => {

@@ -171,6 +171,7 @@ test("verified release recorder returns an ACP-valid action and privately correl
     home: run.roles.initiator.home,
     pin: ACP_VERSION_PINS.codex,
     retainedActions: [],
+    retainedActionPolicy: () => ({ decision: "authorize" }),
     trustedAdapterPublicKeys: [recorder.trustedAdapterPublicKey],
     workspace: run.roles.initiator.workspace,
   });
@@ -195,6 +196,69 @@ test("verified release recorder returns an ACP-valid action and privately correl
     }),
     /HELPER_ACTION_REPLAYED/,
   );
+});
+
+test("verified release recorder executes one authorized action by digest without a model-authored shell command", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "verified-release-driver-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const run = await createFreshAgentRun({ parent });
+  const signingFixture = await buildAgentCliFixture("initiator");
+  const result = {
+    schema: "clockchain.agent-handshake-cli-result/v1",
+    helperVersion: "2.1.3",
+    operation: "sign",
+    address: signingFixture.parties.initiator.sessionKeyAddress,
+    bytesSha256: signingFixture.request.bytesSha256,
+    signatureHex: `0x${"1".repeat(130)}`,
+  };
+  const fixture = releaseFixture(result);
+  const socketRoot = join("/tmp", `verified-driver-${randomBytes(6).toString("hex")}`);
+  t.after(() => rm(socketRoot, { recursive: true, force: true }));
+  const recorder = await createVerifiedReleaseActionRecorder({
+    fetchImpl: fixture.fetchImpl,
+    manifestDigest: fixture.manifestDigest,
+    room: run.roles.initiator,
+    runtimeExecPath: process.execPath,
+    socketRoot,
+  });
+  t.after(() => recorder.close());
+  const completions = [];
+  recorder.setCompletionHandler(async (completion) => {
+    completions.push(completion);
+    return { accepted: true };
+  });
+  const request = Buffer.from(JSON.stringify(signingFixture.request));
+  const step = helperStep({
+    manifestDigest: fixture.manifestDigest,
+    payload: request.toString("base64url"),
+    policyDigest: signingFixture.request.policyDigest,
+    role: signingFixture.request.role,
+    sessionId: signingFixture.request.sessionId,
+  });
+  const action = recorder.recordRetainedAction(step);
+  const executed = await recorder.executeAuthorizedAction({
+    actionId: action.actionId,
+    commandSha256: action.commandSha256,
+    role: action.role,
+    sessionId: action.sessionId,
+  });
+  assert.deepEqual(executed, {
+    actionId: action.actionId,
+    commandSha256: action.commandSha256,
+    executed: true,
+    operation: "sign",
+    publicResult: result,
+    role: "initiator",
+    sessionId: signingFixture.request.sessionId,
+  });
+  assert.equal(completions.length, 1);
+  assert.deepEqual(completions[0].result, result);
+  await assert.rejects(() => recorder.executeAuthorizedAction({
+    actionId: action.actionId,
+    commandSha256: action.commandSha256,
+    role: action.role,
+    sessionId: action.sessionId,
+  }));
 });
 
 test("verified release recorder binds the production policy payload to its canonical digest", async (t) => {

@@ -18,7 +18,7 @@ const ACTION_KEYS = Object.freeze([
 ]);
 const OPTION_KEYS = Object.freeze([
   "actionRecorder", "env", "harness", "home", "nowMs", "pin", "retainedActions",
-  "partyBridge", "publicEventSink", "spawn", "trustedAdapterPublicKeys", "workspace",
+  "partyBridge", "publicEventSink", "retainedActionPolicy", "spawn", "trustedAdapterPublicKeys", "workspace",
 ]);
 const TOOL_SERVER = "clockchain-handshake";
 const TOOL_PREFIX = "agent_handshake_";
@@ -592,9 +592,10 @@ function snapshotArray(value, { min = 0, max = MAX_ARRAY } = {}) {
 
 function cleanActionRecorder(value) {
   if (value === undefined) return null;
-  const item = exactObject(value, ["record"]);
+  const item = optionalObject(value, ["record"], ["executeAuthorizedAction"]);
   if (typeof item.record !== "function") fail();
-  return Object.freeze({ record: item.record });
+  if (item.executeAuthorizedAction !== undefined && typeof item.executeAuthorizedAction !== "function") fail();
+  return Object.freeze({ executeAuthorizedAction: item.executeAuthorizedAction ?? null, record: item.record });
 }
 
 function cleanPartyBridge(value) {
@@ -967,6 +968,9 @@ export function createAcpProcessTransport(optionsInput = {}) {
   const retainedActions = cleanRetainedActions(options.retainedActions);
   const trustedKeys = trustedKeySet(options.trustedAdapterPublicKeys);
   const actionRecorder = cleanActionRecorder(options.actionRecorder);
+  const retainedActionPolicy = options.retainedActionPolicy ?? null;
+  if (retainedActionPolicy !== null && typeof retainedActionPolicy !== "function") fail();
+  if (actionRecorder?.executeAuthorizedAction != null && retainedActionPolicy === null) fail();
   const partyBridge = cleanPartyBridge(options.partyBridge);
   const publicEventSink = options.publicEventSink ?? (() => undefined);
   if (typeof publicEventSink !== "function") fail();
@@ -1325,6 +1329,38 @@ export function createAcpProcessTransport(optionsInput = {}) {
           failureStage = "retained-register";
           for (const retained of extractedRetainedActions) {
             registerRetainedAction(retained);
+          }
+          if (actionRecorder?.executeAuthorizedAction != null) {
+            failureStage = "retained-authorize";
+            for (const retained of extractedRetainedActions) {
+              const entry = retainedByCommand.get(retained.commandSha256);
+              if (entry === undefined || entry.state !== "pending") fail();
+              const decision = exactObject(await retainedActionPolicy(Object.freeze({
+                retainedAction: retained,
+                role: retained.role,
+                sessionId: retained.sessionId,
+              })), ["decision"]);
+              if (decision.decision !== "authorize") fail();
+              entry.state = "authorized";
+              permissionAuthorized = true;
+              event("acp.permission.authorized", "authorized retained local action", retained.commandSha256);
+              const executed = exactObject(await actionRecorder.executeAuthorizedAction(Object.freeze({
+                actionId: retained.actionId,
+                commandSha256: retained.commandSha256,
+                role: retained.role,
+                sessionId: retained.sessionId,
+              })), ["actionId", "commandSha256", "executed", "operation", "publicResult", "role", "sessionId"]);
+              if (
+                executed.actionId !== retained.actionId || executed.commandSha256 !== retained.commandSha256 ||
+                executed.executed !== true || executed.operation !== retained.operation ||
+                executed.role !== retained.role || executed.sessionId !== retained.sessionId
+              ) fail();
+              const publicResult = retainedHelperPublicResult(JSON.stringify(executed.publicResult), retained.operation);
+              if (publicResult !== null) helperPublic[retained.operation] = publicResult;
+              entry.state = "consumed";
+              event("acp.retained_action.executed", "executed authorized retained local action", retained.commandSha256);
+            }
+            latestHelperOperation = null;
           }
         }
       }

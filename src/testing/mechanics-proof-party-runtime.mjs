@@ -700,6 +700,7 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
               }));
               publicTraceQueue.catch(() => undefined);
             },
+            retainedActionPolicy: () => Object.freeze({ decision: "authorize" }),
             trustedAdapterPublicKeys: [actionRecorder.trustedAdapterPublicKey],
             workspace: paths.workspace,
           });

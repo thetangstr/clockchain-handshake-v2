@@ -1,9 +1,10 @@
+import { execFile } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign as signBytes } from "node:crypto";
 import { chmod, lstat, mkdir, unlink, writeFile } from "node:fs/promises";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
-import { types } from "node:util";
+import { promisify, types } from "node:util";
 
 import { rawEd25519PublicKey } from "../agent-handshake/v2/host-key-certificate.mjs";
 import { localPolicyDigest, validateLocalPolicy } from "../agent-handshake/v2/policy.mjs";
@@ -25,6 +26,7 @@ const RECORDER_FAILURE_STAGES = Object.freeze([
   "release-manifest-fetch", "release-helper-fetch", "release-assets", "adapter-layout", "completion-socket",
 ]);
 const RECORDER_FAILURES = new WeakMap();
+const execFileAsync = promisify(execFile);
 
 export const VERIFIED_RELEASE_HELPER_BOOTSTRAP = 'const fs=require("node:fs");const crypto=require("node:crypto");const Module=require("node:module");const argv=process.argv.slice(1);const expected=argv.shift();const manifestPath=argv.shift();const helperPath=argv.shift();const manifestBytes=fs.readFileSync(manifestPath);const manifestDigest=crypto.createHash("sha256").update(manifestBytes).digest("hex");if(manifestDigest!==expected)process.exit(86);const manifest=JSON.parse(manifestBytes);if(manifest.schema!=="clockchain.agent-handshake-release-manifest/v1"||manifest.version!=="2.1.3"||!/^24\\./.test(manifest.nodeRuntime)||!/^24\\./.test(process.versions.node)||!Array.isArray(manifest.assets)||manifest.assets.length!==1)process.exit(86);const asset=manifest.assets[0];if(asset.filename!=="clockchain-agent-handshake.cjs"||asset.url!=="https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.3/clockchain-agent-handshake.cjs"||typeof asset.sha256!=="string"||!/^[0-9a-f]{64}$/.test(asset.sha256))process.exit(86);const helperBytes=fs.readFileSync(helperPath);const helperDigest=crypto.createHash("sha256").update(helperBytes).digest("hex");if(helperDigest!==asset.sha256)process.exit(86);process.argv=[process.execPath].concat(helperPath).concat(argv);const loaded=new Module(helperPath);loaded.filename=helperPath;loaded.paths=[];const compile=loaded._compile.bind(loaded);compile(...[helperBytes.toString("utf8")].concat(helperPath));';
 
@@ -539,13 +541,56 @@ export async function createVerifiedReleaseActionRecorder(input = {}) {
     return action;
   }
 
+  async function executeAuthorizedAction(value) {
+    const input = snapshotObject(value, ["actionId", "commandSha256", "role", "sessionId"]);
+    if (
+      typeof input.actionId !== "string" || !SHA256.test(input.commandSha256) ||
+      !ROLES.includes(input.role) || !UUID.test(input.sessionId)
+    ) fail();
+    const action = retainedByCommand.get(input.commandSha256);
+    if (
+      action === undefined || action.actionId !== input.actionId || action.role !== input.role ||
+      action.sessionId !== input.sessionId
+    ) fail();
+    let stdout;
+    try {
+      ({ stdout } = await execFileAsync(executable, [input.commandSha256], {
+        cwd: workspace,
+        encoding: "utf8",
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, TMPDIR: tmp },
+        maxBuffer: MAX_RESULT_BYTES,
+      }));
+    } catch { fail(); }
+    if (
+      typeof stdout !== "string" || Buffer.byteLength(stdout) < 2 ||
+      Buffer.byteLength(stdout) > MAX_RESULT_BYTES || !stdout.endsWith("\n") ||
+      stdout.slice(0, -1).includes("\n")
+    ) fail();
+    let publicResult;
+    try { publicResult = JSON.parse(stdout.slice(0, -1)); } catch { fail(); }
+    if (
+      publicResult === null || typeof publicResult !== "object" || Array.isArray(publicResult) ||
+      types.isProxy(publicResult) || ![Object.prototype, null].includes(Object.getPrototypeOf(publicResult))
+    ) fail();
+    return Object.freeze({
+      actionId: action.actionId,
+      commandSha256: action.commandSha256,
+      executed: true,
+      operation: action.operation,
+      publicResult,
+      role: action.role,
+      sessionId: action.sessionId,
+    });
+  }
+
   return Object.freeze({
-    actionRecorder: Object.freeze({ record: recordRetainedAction }),
+    actionRecorder: Object.freeze({ executeAuthorizedAction, record: recordRetainedAction }),
     bin,
     consumed,
     pending,
     record: recordRetainedAction,
     recordRetainedAction,
+    executeAuthorizedAction,
     root,
     trustedAdapterPublicKey,
     setCompletionHandler(handler) {
