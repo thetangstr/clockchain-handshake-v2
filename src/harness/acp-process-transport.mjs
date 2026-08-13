@@ -400,12 +400,13 @@ function continuationPromptText({
     new Set(approvals).size !== approvals.length
   ) fail();
   if (approvals.length > 0) {
+    const approval = approvals[0];
     return [
-      "Complete the already-registered Clockchain helper actions before another MCP call.",
-      "Execute these exact local commands now with the Bash tool, one at a time, in this order:",
-      ...approvals.map((approval, index) => `${index + 1}. ${approval}`),
-      "Run every command in the foreground: run_in_background must be false.",
-      "Do not alter, wrap, quote, or replace any command. Do not call another MCP tool until every command above completes.",
+      "Complete exactly one already-registered Clockchain helper action.",
+      "Execute exactly one local command now with the Bash tool:",
+      approval,
+      "Run it in the foreground: run_in_background must be false.",
+      "Do not alter, wrap, quote, or replace the command. Do not call another MCP tool before it completes.",
     ].join("\n");
   }
   if (protocolSessionId === null) {
@@ -440,26 +441,30 @@ function continuationPromptText({
     ].join("\n");
   }
   if (joined !== true) {
+    const accessField = role === "initiator" ? "initiatorAccess" : "responderAccess";
     return [
       `Continue the existing Clockchain handshake in protocol session ${protocolSessionId}; do not create or accept another invitation.`,
       "You have not joined this Clockchain protocol session.",
-      "Call agent_handshake_join now using the exact access, helperVersion, sessionKeyAddress, and policyDigest from the prior Clockchain and retained-helper results.",
+      `Use the exact ${accessField} returned by Clockchain as the join argument named access.`,
+      "Call agent_handshake_join now using that access plus the exact helperVersion, sessionKeyAddress, and policyDigest from the retained-helper results.",
       "Call no other tool before agent_handshake_join returns.",
       "Do not end your turn before agent_handshake_join returns or a non-retryable tool error makes completion impossible.",
     ].join("\n");
   }
   if (latestHelperOperation === "sign") {
+    const accessField = role === "initiator" ? "initiatorAccess" : "responderAccess";
     return [
       `Continue the existing Clockchain handshake in protocol session ${protocolSessionId}; do not create or accept another invitation.`,
       "The latest retained signing helper has completed.",
-      "Call agent_handshake_submit now using the exact unchanged access and policyDigest from Clockchain plus the exact signatureHex from the completed helper output.",
+      `Use the exact unchanged ${accessField} returned by Clockchain as the submit argument named access.`,
+      "Call agent_handshake_submit now using that access and the exact policyDigest plus signatureHex from the completed helper output.",
       "Call no other tool before agent_handshake_submit returns.",
       "Do not end your turn before agent_handshake_submit returns or a non-retryable tool error makes completion impossible.",
     ].join("\n");
   }
   return [
     `Continue the existing Clockchain handshake in protocol session ${protocolSessionId}; do not create or accept another invitation.`,
-    `You have joined as ${role}. Call agent_handshake_next now with the exact unchanged access returned by Clockchain.`,
+    `You have joined as ${role}. Call agent_handshake_next now with the exact unchanged ${role === "initiator" ? "initiatorAccess" : "responderAccess"} returned by Clockchain as the argument named access.`,
     "Follow the returned next action exactly. If it is a retryable wait, wait and call agent_handshake_next again.",
     "Call no other tool before agent_handshake_next returns.",
     "Do not end your turn before agent_handshake_next returns or a non-retryable tool error makes completion impossible.",

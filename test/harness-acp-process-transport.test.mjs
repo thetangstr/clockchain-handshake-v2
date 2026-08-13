@@ -1316,7 +1316,7 @@ test("ACP process transport cancels a non-command permission without a reject op
   await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
 });
 
-test("ACP continuation restates every exact pending retained approval before another MCP call", async () => {
+test("ACP continuation gives the agent exactly one pending retained action", async () => {
   const actions = ["init", "policy", "inspect"].map((operation, index) => retainedAction({
     actionId: `action-${index}`,
     commandSha256: String(index + 1).repeat(64),
@@ -1368,10 +1368,10 @@ test("ACP continuation restates every exact pending retained approval before ano
   const continuation = prompts[1][1].prompt[0].text;
   assert.doesNotMatch(continuation, new RegExp(actions[0].commandSha256));
   assert.match(continuation, new RegExp(`clockchain-agent-authorize ${actions[1].commandSha256}`));
-  assert.match(continuation, new RegExp(`clockchain-agent-authorize ${actions[2].commandSha256}`));
-  assert.match(continuation, /one at a time, in this order/i);
+  assert.doesNotMatch(continuation, new RegExp(actions[2].commandSha256));
+  assert.match(continuation, /exactly one local command/i);
   assert.match(continuation, /run_in_background must be false/i);
-  assert.match(continuation, /Execute these exact local commands now with the Bash tool/i);
+  assert.match(continuation, /Execute exactly one local command now with the Bash tool/i);
   assert.doesNotMatch(continuation, /approval|authorize.*person|AskUserQuestion|request these/i);
   assert.match(continuation, /Do not call another MCP tool/i);
   await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
@@ -1532,6 +1532,7 @@ test("ACP process transport re-prompts an end-turning agent until the Clockchain
   assert.match(prompts[1][1].prompt[0].text, new RegExp(SESSION));
   assert.match(prompts[1][1].prompt[0].text, /You have not joined this Clockchain protocol session/i);
   assert.match(prompts[1][1].prompt[0].text, /Call agent_handshake_join now/i);
+  assert.match(prompts[1][1].prompt[0].text, /initiatorAccess.*join argument named access/i);
   assert.doesNotMatch(prompts[1][1].prompt[0].text, /If .* has not joined/i);
   assert.doesNotMatch(prompts[1][1].prompt[0].text, /agent_handshake_status|agent_handshake_next|agent_handshake_get_certificate/);
   assert.doesNotMatch(prompts[1][1].prompt[0].text, /agent_handshake_invite/);
@@ -1577,6 +1578,55 @@ test("ACP continuation advances a joined party with one exact next call", async 
   assert.match(prompts[1][1].prompt[0].text, /You have joined as initiator/i);
   assert.match(prompts[1][1].prompt[0].text, /Call agent_handshake_next now/i);
   assert.doesNotMatch(prompts[1][1].prompt[0].text, /agent_handshake_join|agent_handshake_status|agent_handshake_submit/);
+});
+
+test("ACP continuation submits the exact result of a completed signing helper", async () => {
+  const action = retainedAction({ operation: "sign", commandSha256: "9".repeat(64) });
+  const calls = [];
+  let completionChecks = 0;
+  const transport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({
+      calls,
+      helperAction: action,
+      permissionCommand: `clockchain-agent-authorize ${action.commandSha256}`,
+      sessionUpdates: (promptCount) => promptCount === 0 ? [{
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-handshake-join-sign",
+        kind: "other",
+        title: "agent_handshake_join",
+        status: "completed",
+        rawInput: { server: "clockchain-handshake", tool: "agent_handshake_join", arguments: {} },
+        rawOutput: { result: { sessionId: SESSION, helperStep: helperStepForAction(action) }, error: null },
+      }] : [],
+    }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    nowMs: () => 1786337001000,
+    actionRecorder: actionRecorderFor([action], calls),
+    partyBridge: partyBridgeFor(calls, {
+      completionStatus() {
+        completionChecks += 1;
+        return { complete: completionChecks >= 2, protocolSessionId: SESSION };
+      },
+    }),
+    env: {},
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  }).catch((error) => assert.fail(`unexpected stage ${acpProcessTransportFailureStage(error)}`));
+  const prompts = calls.filter((entry) => entry[0] === "prompt");
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[1][1].prompt[0].text, /latest retained signing helper has completed/i);
+  assert.match(prompts[1][1].prompt[0].text, /initiatorAccess.*submit argument named access/i);
+  assert.match(prompts[1][1].prompt[0].text, /Call agent_handshake_submit now/i);
+  assert.doesNotMatch(prompts[1][1].prompt[0].text, /agent_handshake_join|agent_handshake_status|agent_handshake_next/);
 });
 
 test("ACP completion loop leaves headroom to verify a certificate after sixteen protocol turns", async () => {
