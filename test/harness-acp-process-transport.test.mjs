@@ -487,6 +487,21 @@ test("ACP process transport forwards only role-specific provider auth and pins t
   assert.equal(claudeCalls[0].options.env.ANTHROPIC_API_KEY, undefined);
   assert.equal(claudeCalls[0].options.env.CODEX_API_KEY, undefined);
   assert.equal(claudeCalls.find((call) => Array.isArray(call) && call[0] === "setSessionConfigOption"), undefined);
+  assert.deepEqual(claudeCalls.find((call) => Array.isArray(call) && call[0] === "newSession")?.[1]._meta, {
+    claudeCode: {
+      options: {
+        toolAliases: {
+          agent_handshake_accept_invitation: "mcp__clockchain-handshake__agent_handshake_accept_invitation",
+          agent_handshake_get_certificate: "mcp__clockchain-handshake__agent_handshake_get_certificate",
+          agent_handshake_invite: "mcp__clockchain-handshake__agent_handshake_invite",
+          agent_handshake_join: "mcp__clockchain-handshake__agent_handshake_join",
+          agent_handshake_next: "mcp__clockchain-handshake__agent_handshake_next",
+          agent_handshake_status: "mcp__clockchain-handshake__agent_handshake_status",
+          agent_handshake_submit: "mcp__clockchain-handshake__agent_handshake_submit",
+        },
+      },
+    },
+  });
   assert.deepEqual(claudeCalls.find((entry) => entry[0] === "permission")[1], {
     outcome: { outcome: "selected", optionId: "allow" },
   });

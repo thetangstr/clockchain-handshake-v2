@@ -26,6 +26,9 @@ const CLAUDE_CLOCKCHAIN_PERMISSION_TOOLS = Object.freeze(new Set([
   "agent_handshake_accept_invitation", "agent_handshake_get_certificate", "agent_handshake_invite",
   "agent_handshake_join", "agent_handshake_next", "agent_handshake_status", "agent_handshake_submit",
 ]));
+const CLAUDE_CLOCKCHAIN_TOOL_ALIASES = Object.freeze(Object.fromEntries(
+  [...CLAUDE_CLOCKCHAIN_PERMISSION_TOOLS].map((tool) => [tool, `mcp__${TOOL_SERVER}__${tool}`]),
+));
 const ROLES = Object.freeze(["initiator", "responder"]);
 const HELPER_OPERATIONS = Object.freeze(["init", "policy", "inspect", "register", "sign", "verify-certificate"]);
 const MAX_DEPTH = 12;
@@ -371,6 +374,7 @@ function promptText({ role, sessionId, mandate, a2aConfig }) {
       "role: responder",
       "Your first action now is to accept the invitation.",
       `Call the dedicated Clockchain MCP tool agent_handshake_accept_invitation with this exact opaque invitation unchanged: ${a2aConfig.invitation}`,
+      "That exact short tool name is available through the configured Claude adapter alias; use ToolSearch to load it if Claude deferred it.",
       "Do not print, summarize, or copy the invitation anywhere else.",
       "After that tool returns, do not end this turn.",
       "If it returns helperSteps, execute each helperStep.approvalCommand with Bash exactly as returned, one at a time, in order.",
@@ -431,6 +435,7 @@ function continuationPromptText({
     return [
       "No Clockchain protocol session exists yet.",
       `Pass this exact opaque invitation unchanged to agent_handshake_accept_invitation now: ${a2aConfig.invitation}`,
+      "The exact short tool name is available through the configured Claude adapter alias; use ToolSearch to load it if Claude deferred it.",
       "Do not print, summarize, or copy the invitation anywhere else.",
       "If Clockchain returns a retryable error, follow its wait and retry instructions and call agent_handshake_accept_invitation again.",
       "Do not end your turn before the invitation is accepted or a non-retryable tool error makes completion impossible.",
@@ -1396,6 +1401,13 @@ export function createAcpProcessTransport(optionsInput = {}) {
         const created = await connection.newSession({
           cwd: options.workspace,
           mcpServers: [mcpServer()],
+          ...(harness === "claude" ? {
+            _meta: Object.freeze({
+              claudeCode: Object.freeze({
+                options: Object.freeze({ toolAliases: CLAUDE_CLOCKCHAIN_TOOL_ALIASES }),
+              }),
+            }),
+          } : {}),
         });
         sessionEstablishing = false;
         if (typeof created?.sessionId !== "string" || created.sessionId.length === 0) fail();
