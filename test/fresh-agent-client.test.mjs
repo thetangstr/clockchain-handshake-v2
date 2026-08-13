@@ -7,9 +7,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { privateKeyToAccount } from "viem/accounts";
 
 import {
   CLOCKCHAIN_HANDSHAKE_MCP_URL,
+  CLOCKCHAIN_HANDSHAKE_TOOLS,
   CLAUDE_CONTEXT_MARKER,
   FreshAgentDiagnosticError,
   VERIFIED_HELPER_BOOTSTRAP,
@@ -30,6 +32,8 @@ import {
   validateFreshAgentMonitorSnapshot,
   validateReleaseAgreement,
 } from "../src/testing/fresh-agent-client.mjs";
+import { commitmentCheckpointDigest } from "../src/testing/hermes-v2-live.mjs";
+import { buildAgentCliFixture } from "./support/agent-cli-fixture.mjs";
 import {
   monitor as runFreshAgentMonitor,
   runFreshAgentCliAttempt,
@@ -1130,6 +1134,74 @@ test("harness adapter executes the exact MCP-bound argv after only a short diges
   const { stdout } = await approved;
   assert.equal(JSON.parse(stdout).operation, "init");
   assert.deepEqual(await readdir(adapter.pending), []);
+});
+
+test("harness adapter submits the private proposal checkpoint before releasing the helper signature", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-adapter-checkpoint-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const run = await createFreshAgentRun({ parent });
+  const room = run.roles.initiator;
+  const fixture = await buildAgentCliFixture("initiator");
+  const account = privateKeyToAccount(`0x${"4".repeat(64)}`);
+  const signatureHex = fixture.proposalEnvelope.signature.value;
+  const helperSource = [
+    'const fs=require("node:fs"),path=require("node:path");',
+    'const state=process.argv[process.argv.indexOf("--state-dir")+1];',
+    'fs.mkdirSync(state,{recursive:true});',
+    `fs.writeFileSync(path.join(state,"wallet.json"),JSON.stringify({address:${JSON.stringify(account.address)},privateKey:${JSON.stringify(`0x${"4".repeat(64)}`)}}),{mode:0o600});`,
+    `process.stdout.write(JSON.stringify({schema:"clockchain.agent-handshake-cli-result/v1",helperVersion:"2.1.2",operation:"sign",address:${JSON.stringify(account.address)},bytesSha256:${JSON.stringify(fixture.request.bytesSha256)},signatureHex:${JSON.stringify(signatureHex)}})+"\\n");`,
+  ].join("");
+  const helperDigest = createHash("sha256").update(helperSource).digest("hex");
+  const manifest = JSON.stringify({
+    schema: "clockchain.agent-handshake-release-manifest/v1",
+    version: "2.1.2",
+    nodeRuntime: "24.0.0",
+    assets: [{
+      filename: "clockchain-agent-handshake.cjs",
+      url: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/clockchain-agent-handshake.cjs",
+      sha256: helperDigest,
+    }],
+  });
+  const manifestDigest = createHash("sha256").update(manifest).digest("hex");
+  const encoded = Buffer.from(JSON.stringify(fixture.request), "utf8").toString("base64url");
+  const command = `node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${manifestDigest} ./manifest.json ./clockchain-agent-handshake.cjs sign --state-dir "$TMPDIR/.clockchain/handshakes/${SESSION}/initiator" --payload-base64url ${encoded}`;
+  const step = helperStep(command);
+  const calls = [];
+  const checkpointState = {};
+  const checkpointClient = {
+    async callTool(name, args) {
+      calls.push({ args, name });
+      return { checkpointDigest: commitmentCheckpointDigest(args.checkpoint) };
+    },
+  };
+  const fetchImpl = async (url) => ({
+    ok: true,
+    status: 200,
+    arrayBuffer: async () => Buffer.from(url.endsWith("/manifest.json") ? manifest : helperSource),
+  });
+  const adapter = await prepareAgentHarnessAdapter({
+    checkpointState,
+    fetchImpl,
+    getCheckpointClient: async () => checkpointClient,
+    manifestDigest,
+    room,
+    runtimeExecPath: process.execPath,
+  });
+  adapter.bindRoleAccess(roleAccess("initiator", CLOCKCHAIN_HANDSHAKE_TOOLS));
+  adapter.record(step);
+  const approved = execFileAsync(adapter.executable, [step.commandSha256], {
+    cwd: room.workspace,
+    env: { ...process.env, PATH: `${adapter.bin}:${process.env.PATH}`, TMPDIR: room.tmp },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await adapter.authorize(step);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, "agent_handshake_submit_checkpoint");
+  assert.equal(calls[0].args.artifactSignatureHex, signatureHex);
+  assert.equal(calls[0].args.checkpoint.artifactType, "proposal");
+  assert.equal(calls[0].args.checkpoint.role, "initiator");
+  assert.equal(checkpointState.proposal, calls[0].args.checkpoint);
+  assert.equal(JSON.parse((await approved).stdout).signatureHex, signatureHex);
 });
 
 test("harness adapter replays a completed approval without manufacturing exit 86", async (t) => {

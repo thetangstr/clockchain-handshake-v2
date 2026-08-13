@@ -5,6 +5,9 @@ import { chmod, mkdir, readFile, realpath, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { gunzipSync } from "node:zlib";
+
+import { privateKeyToAccount } from "viem/accounts";
 
 import { assertSecretFree } from "../core/redact.mjs";
 import { preparePrivateDirectory, readPrivateText, writePrivateFile } from "../core/private-path.mjs";
@@ -21,6 +24,12 @@ import {
   AGENT_HANDSHAKE_V2_SNAPSHOT_SCHEMA,
   buildAgentHandshakeV2Snapshot,
 } from "../monitor/agent-snapshot-v2.mjs";
+import {
+  commitmentCheckpointDigest,
+  createCommitmentCheckpoint,
+  createStreamableMcpClient,
+  extractSigningRequestFromArgv,
+} from "./hermes-v2-live.mjs";
 
 const ROLES = Object.freeze(["initiator", "responder"]);
 const HELPER_OPERATIONS = Object.freeze([
@@ -105,6 +114,17 @@ function traceAccessClaims(value) {
     };
   } catch {
     return null;
+  }
+}
+
+function roleAccessClaims(value) {
+  if (typeof value !== "string" || !ROLE_TOKEN.test(value)) fail();
+  try {
+    const parsed = JSON.parse(Buffer.from(value.split(".")[0], "base64url").toString("utf8"));
+    if (!ROLES.includes(parsed?.role) || !UUID.test(parsed?.sessionId ?? "")) fail();
+    return Object.freeze({ role: parsed.role, sessionId: parsed.sessionId });
+  } catch {
+    fail();
   }
 }
 
@@ -928,12 +948,20 @@ async function preloadVerifiedReleaseAssets({ fetchImpl, manifestDigest, workspa
 }
 
 export async function prepareAgentHarnessAdapter({
+  checkpointState = null,
   fetchImpl = globalThis.fetch,
+  getCheckpointClient = null,
   manifestDigest,
+  now = Date.now,
   room,
   runtimeExecPath = process.execPath,
 } = {}) {
-  if (!SHA256.test(manifestDigest) || room === null || typeof room !== "object" || Array.isArray(room)) fail();
+  if (
+    !SHA256.test(manifestDigest) || room === null || typeof room !== "object" || Array.isArray(room) ||
+    typeof now !== "function" ||
+    !(checkpointState === null || checkpointState !== null && typeof checkpointState === "object" && !Array.isArray(checkpointState)) ||
+    !(getCheckpointClient === null || typeof getCheckpointClient === "function")
+  ) fail();
   const workspace = absolute(room.workspace);
   const tmp = descendant(workspace, room.tmp);
   const runtime = absolute(runtimeExecPath);
@@ -953,6 +981,76 @@ export async function prepareAgentHarnessAdapter({
   await writePrivateFile({ path: nodeShim, bytes: Buffer.from(adapterNodeShim(runtime), "utf8") });
   await chmod(nodeShim, 0o500);
   const active = new Map();
+  let roleAccess = null;
+
+  function bindRoleAccess(value) {
+    if (typeof value !== "string" || !ROLE_TOKEN.test(value)) fail();
+    if (roleAccess !== null && roleAccess !== value) fail();
+    roleAccess = value;
+  }
+
+  function signingPayload(request) {
+    let bytes;
+    try {
+      bytes = gunzipSync(Buffer.from(request.bytesGzipBase64Url, "base64url"));
+    } catch {
+      fail();
+    }
+    if (createHash("sha256").update(bytes).digest("hex") !== request.bytesSha256) fail();
+    try { return JSON.parse(bytes.toString("utf8")); } catch { fail(); }
+  }
+
+  async function submitPrivateReleaseCheckpoint({ action, expected, output }) {
+    const request = extractSigningRequestFromArgv(expected.argv);
+    if (!["proposal", "acceptance"].includes(request.operation)) return;
+    if (checkpointState === null || getCheckpointClient === null || roleAccess === null) fail();
+    const claims = roleAccessClaims(roleAccess);
+    if (claims?.role !== request.role || claims?.sessionId !== request.sessionId) fail();
+    let helperResult;
+    try { helperResult = JSON.parse(output.stdout.toString("utf8").trim()); } catch { fail(); }
+    if (
+      helperResult?.schema !== HELPER_RESULT_SCHEMA || helperResult?.helperVersion !== "2.1.2" ||
+      helperResult.operation !== "sign" || helperResult.bytesSha256 !== request.bytesSha256 ||
+      !SIGNATURE.test(helperResult.signatureHex ?? "") || !PUBLIC_ADDRESS.test(helperResult.address ?? "")
+    ) fail();
+    let wallet;
+    try { wallet = JSON.parse(await readPrivateText({ path: join(action.stateDir, "wallet.json"), maxBytes: 16 * 1024 })); }
+    catch { fail(); }
+    if (typeof wallet?.privateKey !== "string" || !/^0x[0-9a-f]{64}$/.test(wallet.privateKey)) fail();
+    const account = privateKeyToAccount(wallet.privateKey);
+    const address = account.address.toLowerCase();
+    if (address !== String(wallet.address).toLowerCase() || address !== helperResult.address.toLowerCase()) fail();
+    const previousCheckpoint = request.operation === "proposal" ? null : checkpointState.proposal;
+    if (request.operation === "acceptance" && previousCheckpoint === undefined) fail();
+    const checkpoint = await createCommitmentCheckpoint({
+      artifactPayload: signingPayload(request),
+      artifactSignatureHex: helperResult.signatureHex,
+      artifactType: request.operation,
+      nowMs: now(),
+      previousCheckpoint,
+      role: request.role,
+      sessionId: request.sessionId,
+      signerAddress: address,
+      signMessage: ({ raw }) => account.signMessage({ message: { raw } }),
+    });
+    const client = await getCheckpointClient();
+    if (client === null || typeof client?.callTool !== "function") fail();
+    const submitted = await client.callTool("agent_handshake_submit_checkpoint", {
+      access: roleAccess,
+      artifactSignatureHex: helperResult.signatureHex,
+      checkpoint,
+    });
+    const checkpointDigest = commitmentCheckpointDigest(checkpoint);
+    if (submitted?.checkpointDigest !== checkpointDigest) fail();
+    checkpointState[request.operation] = checkpoint;
+    traceLifecycle({
+      phase: "adapter-checkpoint-submitted",
+      artifactType: request.operation,
+      checkpointDigest,
+      role: request.role,
+      sessionId: request.sessionId,
+    });
+  }
 
   function record(value) {
     const expected = expectedHelperCommand(value);
@@ -1068,6 +1166,9 @@ export async function prepareAgentHarnessAdapter({
           child.once("close", (code) => resolveExit(Number.isSafeInteger(code) && code >= 0 && code <= 255 ? code : 86));
         });
         retryable = exitCode !== 0;
+        if (exitCode === 0 && expected.operation === "sign") {
+          await submitPrivateReleaseCheckpoint({ action, expected, output });
+        }
         await writeResponse(exitCode, output);
       } catch (error) {
         traceLifecycle({
@@ -1096,7 +1197,7 @@ export async function prepareAgentHarnessAdapter({
       .map(([, value]) => value));
   }
 
-  return Object.freeze({ authorize, bin, close, executable, pending, record, root });
+  return Object.freeze({ authorize, bin, bindRoleAccess, close, executable, pending, record, root });
 }
 
 function append(output, chunk) {
@@ -1395,6 +1496,55 @@ function completedClockchainMcpTool(event, claudeMcpToolCalls) {
     ) return claudeMcpToolCalls.get(block.tool_use_id);
   }
   return null;
+}
+
+function roleAccessFromValue(value) {
+  const pending = [value];
+  let found = null;
+  let visited = 0;
+  while (pending.length > 0) {
+    if (++visited > 10_000) fail("agent-exit", "validation", "AGENT_OUTPUT_INVALID");
+    const current = pending.pop();
+    if (typeof current === "string") {
+      const parsed = parseJsonString(current);
+      if (parsed !== null) pending.push(parsed);
+      continue;
+    }
+    if (current === null || typeof current !== "object") continue;
+    if (Array.isArray(current)) {
+      pending.push(...current);
+      continue;
+    }
+    if (Object.hasOwn(current, "roleAccess")) {
+      if (typeof current.roleAccess !== "string" || !ROLE_TOKEN.test(current.roleAccess)) fail();
+      if (found !== null && found !== current.roleAccess) fail();
+      found = current.roleAccess;
+    }
+    pending.push(...Object.values(current));
+  }
+  return found;
+}
+
+function bindCompletedRoleAccess(event, claudeMcpToolCalls, adapter, expectedRole) {
+  const values = [];
+  if (
+    event?.type === "item.completed" && event?.item?.type === "mcp_tool_call" &&
+    event.item.status === "completed" && isClockchainMcpToolName(event.item.tool)
+  ) values.push(event.item.result);
+  if (event?.type === "user" && Array.isArray(event?.message?.content)) {
+    for (const block of event.message.content) {
+      if (
+        block?.type === "tool_result" && block.is_error !== true &&
+        typeof block.tool_use_id === "string" && claudeMcpToolCalls.has(block.tool_use_id)
+      ) values.push(block.content);
+    }
+  }
+  for (const value of values) {
+    const access = roleAccessFromValue(value);
+    if (access === null) continue;
+    if (roleAccessClaims(access).role !== expectedRole) fail();
+    adapter.bindRoleAccess(access);
+  }
 }
 
 function publicMcpFailure(value) {
@@ -1795,6 +1945,7 @@ function observeChild(child, role, all, canaries, {
       }
       const completedMcpTool = completedClockchainMcpTool(event, claudeMcpToolCalls);
       rememberMcpTool(completedMcpTool);
+      bindCompletedRoleAccess(event, claudeMcpToolCalls, adapter, role);
       const invitationFailure = requireInvitation
         ? nonRetryableInvitationFailure(event, claudeMcpToolCalls)
         : null;
@@ -2472,6 +2623,7 @@ function verifyParentCertificateBinding({ initiatorProof, monitorResult, pin, re
 
 export async function runFreshAgentHandshake({
   authenticationModes = { initiator: "disposable", responder: "disposable" },
+  checkpointClientFactory = () => createStreamableMcpClient({ endpoint: CLOCKCHAIN_HANDSHAKE_MCP_URL }),
   clients,
   configureClient,
   modelEnvironment = {},
@@ -2495,6 +2647,7 @@ export async function runFreshAgentHandshake({
   exactObject(modelEnvironment, ROLES);
   exactObject(secretCanaries, ROLES);
   if (
+    typeof checkpointClientFactory !== "function" ||
     typeof configureClient !== "function" || typeof monitor !== "function" ||
     typeof prepareAdapter !== "function" || typeof prepareClient !== "function"
   ) fail();
@@ -2510,6 +2663,19 @@ export async function runFreshAgentHandshake({
   let run;
   const children = [];
   const adapters = [];
+  const checkpointState = {};
+  let checkpointClientPromise = null;
+  const getCheckpointClient = async () => {
+    if (checkpointClientPromise === null) {
+      checkpointClientPromise = (async () => {
+        const client = checkpointClientFactory();
+        if (client === null || typeof client?.connect !== "function" || typeof client?.callTool !== "function") fail();
+        await client.connect();
+        return client;
+      })();
+    }
+    return checkpointClientPromise;
+  };
   let timer;
   try {
     run = await createFreshAgentRun({ parent });
@@ -2518,6 +2684,8 @@ export async function runFreshAgentHandshake({
       const client = cleanClient(clients[role]);
       const authenticationMode = cleanAuthenticationMode(client, authenticationModes[role]);
       const adapter = await prepareAdapter({
+        checkpointState,
+        getCheckpointClient,
         manifestDigest: pin.manifestDigest,
         room: run.roles[role],
         runtimeExecPath: runtime?.execPath ?? process.execPath,
