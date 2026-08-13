@@ -267,10 +267,6 @@ export async function preloadVerifiedReleaseAssets({ fetchImpl, manifestDigest, 
   await writeFile(join(workspace, "clockchain-agent-handshake.cjs"), helperBytes, { mode: 0o600 });
 }
 
-function adapterNodeShim(runtimeExecPath) {
-  return `#!${runtimeExecPath}\n` + `"use strict";\nconst { spawnSync }=require("node:child_process");\nconst args=process.argv.slice(2);\nif(args[0]==="--input-type=commonjs"&&args[1]==="--eval"&&args.at(-1)!==="--version")process.exit(86);\nconst child=spawnSync(${JSON.stringify(runtimeExecPath)},args,{env:process.env,stdio:"inherit"});\nif(child.error||!Number.isSafeInteger(child.status))process.exit(86);\nprocess.exitCode=child.status;\n`;
-}
-
 function adapterExecutable(runtimeExecPath, publicKeyDer) {
   return `#!${runtimeExecPath}\n` + String.raw`"use strict";
 const { spawnSync }=require("node:child_process");
@@ -450,9 +446,6 @@ export async function createVerifiedReleaseActionRecorder(input = {}) {
   const executable = join(bin, "clockchain-agent-authorize");
   await writePrivateFile({ path: executable, bytes: Buffer.from(adapterExecutable(runtime, publicKeyDer), "utf8") });
   await chmod(executable, 0o500);
-  const nodeShim = join(bin, "node");
-  await writePrivateFile({ path: nodeShim, bytes: Buffer.from(adapterNodeShim(runtime), "utf8") });
-  await chmod(nodeShim, 0o500);
   let completionHandlerSet = false;
   const retainedByCommand = new Map();
 

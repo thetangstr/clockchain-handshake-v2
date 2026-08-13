@@ -88,6 +88,30 @@ function sendCompletion(socketPath, value) {
   });
 }
 
+test("verified release recorder exposes only the authorization command on the agent PATH", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "verified-release-path-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const run = await createFreshAgentRun({ parent });
+  const fixture = releaseFixture({
+    schema: "clockchain.agent-handshake-cli-result/v1",
+    helperVersion: "2.1.2",
+    operation: "init",
+  });
+  const socketRoot = join("/tmp", `verified-path-${randomBytes(6).toString("hex")}`);
+  t.after(() => rm(socketRoot, { recursive: true, force: true }));
+  const recorder = await createVerifiedReleaseActionRecorder({
+    fetchImpl: fixture.fetchImpl,
+    manifestDigest: fixture.manifestDigest,
+    room: run.roles.initiator,
+    runtimeExecPath: process.execPath,
+    socketRoot,
+  });
+  t.after(() => recorder.close());
+
+  assert.deepEqual(await readdir(recorder.bin), ["clockchain-agent-authorize"]);
+  await assert.rejects(lstat(join(recorder.bin, "node")), { code: "ENOENT" });
+});
+
 test("verified release recorder returns an ACP-valid action and privately correlates one helper completion", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "verified-release-recorder-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
