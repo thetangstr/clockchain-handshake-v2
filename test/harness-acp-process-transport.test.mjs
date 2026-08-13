@@ -1418,9 +1418,30 @@ test("ACP process transport distinguishes each public Clockchain boundary at inc
   };
   const cases = [
     {
-      expectedStage: "completion-protocol-bridge-incomplete-no-tool-result",
+      expectedStage: "completion-protocol-bridge-incomplete-no-clockchain-tool",
       protocolSessionId: null,
       sessionUpdates: [],
+    },
+    {
+      expectedStage: "completion-protocol-bridge-incomplete-clockchain-tool-incomplete",
+      protocolSessionId: null,
+      sessionUpdates: [{
+        sessionUpdate: "tool_call_update",
+        toolCallId: "pending-invite",
+        status: "in_progress",
+        rawInput: { server: "clockchain-handshake", tool: "agent_handshake_invite", arguments: {} },
+      }],
+    },
+    {
+      expectedStage: "completion-protocol-bridge-incomplete-clockchain-tool-failed",
+      protocolSessionId: null,
+      sessionUpdates: [{
+        sessionUpdate: "tool_call_update",
+        toolCallId: "failed-invite",
+        status: "failed",
+        rawInput: { server: "clockchain-handshake", tool: "agent_handshake_invite", arguments: {} },
+        rawOutput: { result: null, error: "redacted by ACP fixture" },
+      }],
     },
     {
       expectedStage: "completion-protocol-bridge-incomplete-mcp-failure",
