@@ -700,6 +700,7 @@ const RUN_HISTORY_LIMIT = 50;
 
 function handleRuns(sessions) {
   const runs = [];
+  let insertionOrder = 0;
   for (const session of sessions.values()) {
     if (session.discovery === undefined) continue;
     const snapshot = session.monitorSnapshot;
@@ -721,23 +722,27 @@ function handleRuns(sessions) {
       ? snapshot?.failure?.reasonCode ?? null
       : snapshot?.reasonCode ?? null;
     runs.push({
-      sessionId: session.sessionId,
-      startedAtMs: sessionStartedAtMs(session),
-      stage,
-      outcome,
-      reasonCode,
-      anchors: {
-        proposal: anchors?.proposal?.blockHeight ?? null,
-        acceptance: anchors?.acceptance?.blockHeight ?? null,
-        acknowledgment: anchors?.acknowledgment?.blockHeight ?? null,
+      insertionOrder,
+      value: {
+        sessionId: session.sessionId,
+        startedAtMs: sessionStartedAtMs(session),
+        stage,
+        outcome,
+        reasonCode,
+        anchors: {
+          proposal: anchors?.proposal?.blockHeight ?? null,
+          acceptance: anchors?.acceptance?.blockHeight ?? null,
+          acknowledgment: anchors?.acknowledgment?.blockHeight ?? null,
+        },
       },
     });
+    insertionOrder += 1;
   }
-  runs.sort((a, b) => b.startedAtMs - a.startedAtMs);
+  runs.sort((a, b) => b.value.startedAtMs - a.value.startedAtMs || b.insertionOrder - a.insertionOrder);
   return {
     ok: true,
     paymentMoved: false,
-    runs: runs.slice(0, RUN_HISTORY_LIMIT),
+    runs: runs.slice(0, RUN_HISTORY_LIMIT).map(({ value }) => value),
   };
 }
 
