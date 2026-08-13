@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createHermesNativeHarnessAdapter } from "../src/harness/hermes-native-adapter.mjs";
-import { DIGEST, MCP_ENDPOINT, SESSION, a2aConfig, retainedAction } from "./harness-acp-fixtures.mjs";
+import { DIGEST, INVITATION, MCP_ENDPOINT, SESSION, a2aConfig, retainedAction } from "./harness-acp-fixtures.mjs";
 
 const HERMES_TOOLS = Object.freeze([
   "agent_handshake_invite",
@@ -95,6 +95,13 @@ for (const role of ["initiator", "responder"]) {
     assert.equal(launch.legacyRole, role === "initiator" ? "payer" : "requestor");
     assert.match(launch.prompt, new RegExp(`Role: ${role === "initiator" ? "Initiator" : "Responder"}`));
     assert.doesNotMatch(launch.prompt, /payer|requestor|payment|invoice/i);
+    if (role === "responder") {
+      assert.match(launch.prompt, new RegExp(INVITATION.replace(".", "\\.")));
+      assert.match(launch.prompt, /agent_handshake_accept_invitation/);
+      assert.doesNotMatch(launch.prompt, /responder-invitation|\/workspace\/responder/i);
+    } else {
+      assert.doesNotMatch(launch.prompt, new RegExp(INVITATION.replace(".", "\\.")));
+    }
 
     assert.deepEqual(await adapter.decideLocalAction({ sessionId: SESSION, role, retainedAction: action }), {
       decision: "authorize",

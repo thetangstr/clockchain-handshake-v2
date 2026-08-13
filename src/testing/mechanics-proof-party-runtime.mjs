@@ -1,5 +1,5 @@
 import { createPublicKey, generateKeyPairSync, sign } from "node:crypto";
-import { chmod, lstat, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { types } from "node:util";
@@ -673,12 +673,10 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
             transport: processTransport,
             trustedAdapterPublicKeys: [actionRecorder.trustedAdapterPublicKey],
           });
-          let invitationPath;
+          let responderInvitation;
           if (privateInvitation !== null) {
             if (privateInvitation.sessionId === undefined || typeof privateInvitation.invitation !== "string") fail();
-            invitationPath = join(paths.workspace, "responder-invitation.txt");
-            await writeFile(invitationPath, `${privateInvitation.invitation}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
-            await chmod(invitationPath, 0o600);
+            responderInvitation = privateInvitation.invitation;
             privateInvitation = null;
           }
           runStage = "agent-starting";
@@ -691,7 +689,7 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
             a2aConfig: {
               endpoint: localRuntime.endpoint,
               peerCard: { endpoint: peer.runtime.endpoint, id: peer.runtime.runtimeId },
-              ...(invitationPath === undefined ? {} : { invitationPath }),
+              ...(responderInvitation === undefined ? {} : { invitation: responderInvitation }),
             },
           });
           launched = true;

@@ -30,6 +30,7 @@ const MAX_DATA_DEPTH = 8;
 const MAX_ARRAY_LENGTH = 32;
 const MAX_OBJECT_KEYS = 64;
 const MAX_STRING_LENGTH = 4096;
+const INVITATION = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 
 function fail() {
   throw new Error("Hermes native harness adapter validation failed safely.");
@@ -169,16 +170,25 @@ function freezeData(value, depth = 0) {
 }
 
 function a2aConfig(value) {
-  const item = objectValues(value, ["endpoint", "peerCard"]);
+  assertNotProxy(value);
+  if (value === null || typeof value !== "object" || Array.isArray(value)) fail();
+  const keys = Object.keys(Object.getOwnPropertyDescriptors(value));
+  if (!keys.includes("endpoint") || !keys.includes("peerCard") || keys.some((key) => !["endpoint", "peerCard", "invitation"].includes(key))) fail();
+  const item = objectValues(value, keys);
   if (typeof item.endpoint !== "string" || !item.endpoint.startsWith("https://")) fail();
   const peerCard = objectValues(item.peerCard, ["endpoint", "id"]);
   if (
     typeof peerCard.id !== "string" || peerCard.id.length === 0 ||
     typeof peerCard.endpoint !== "string" || !peerCard.endpoint.startsWith("https://")
   ) fail();
+  if (
+    item.invitation !== undefined &&
+    (typeof item.invitation !== "string" || item.invitation.length < 80 || item.invitation.length > MAX_STRING_LENGTH || !INVITATION.test(item.invitation))
+  ) fail();
   return Object.freeze({
     endpoint: item.endpoint,
     peerCard: Object.freeze({ id: peerCard.id, endpoint: peerCard.endpoint }),
+    ...(item.invitation === undefined ? {} : { invitation: item.invitation }),
   });
 }
 
@@ -277,14 +287,18 @@ export function createHermesNativeHarnessAdapter(options = {}) {
       const cleanRuntime = runtime(suppliedRuntime);
       const cleanMandate = freezeData(mandate);
       const cleanA2aConfig = a2aConfig(suppliedA2aConfig);
+      if (cleanRuntime.role === "responder" ? cleanA2aConfig.invitation === undefined : cleanA2aConfig.invitation !== undefined) fail();
       const invitationId = configuredInvitationId ?? cleanRuntime.sessionId;
-      const prompt = buildHermesPrompt({
+      const basePrompt = buildHermesPrompt({
         role: cleanRuntime.role,
         mcpMode: "dedicated-v2",
         kitUrl,
         kitCommit,
         invitationId,
       });
+      const prompt = cleanRuntime.role === "responder"
+        ? `Before your first MCP call, pass this exact opaque invitation unchanged to agent_handshake_accept_invitation: ${cleanA2aConfig.invitation}\nDo not print, summarize, or copy the invitation anywhere else.\n\n${basePrompt}`
+        : basePrompt;
       if (cleanTransport.launch !== undefined) {
         await cleanTransport.launch(Object.freeze({
           runtime: cleanRuntime,

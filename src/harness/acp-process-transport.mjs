@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn as nodeSpawn } from "node:child_process";
-import { isAbsolute, relative } from "node:path";
+import { isAbsolute } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { types } from "node:util";
 
@@ -32,6 +32,7 @@ const MAX_HELPER_COMMAND = 64 * 1024;
 const MAX_PROVISIONAL_TOOL_UPDATES = 16;
 const MAX_COMPLETION_PROMPTS = 24;
 const MAX_PERMISSION_DENIALS = 16;
+const INVITATION = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const PERMISSION_REGISTRATION_GRACE_MS = 5_000;
 const PROCESS_TERM_GRACE_MS = 50;
 const PROCESS_KILL_GRACE_MS = 50;
@@ -291,15 +292,18 @@ function cleanRetainedActions(value) {
 }
 
 function cleanA2A(value) {
-  const item = optionalObject(value, ["endpoint", "peerCard"], ["invitationPath"]);
+  const item = optionalObject(value, ["endpoint", "peerCard"], ["invitation"]);
   const peer = exactObject(item.peerCard, ["endpoint", "id"]);
   if (typeof item.endpoint !== "string" || !item.endpoint.startsWith("https://")) fail();
   if (typeof peer.endpoint !== "string" || !peer.endpoint.startsWith("https://") || typeof peer.id !== "string" || peer.id.length === 0) fail();
-  if (item.invitationPath !== undefined && (typeof item.invitationPath !== "string" || !isAbsolute(item.invitationPath))) fail();
+  if (
+    item.invitation !== undefined &&
+    (typeof item.invitation !== "string" || item.invitation.length < 80 || item.invitation.length > MAX_STRING || !INVITATION.test(item.invitation))
+  ) fail();
   return Object.freeze({
     endpoint: item.endpoint,
     peerCard: Object.freeze({ ...peer }),
-    ...(item.invitationPath === undefined ? {} : { invitationPath: item.invitationPath }),
+    ...(item.invitation === undefined ? {} : { invitation: item.invitation }),
   });
 }
 
@@ -360,9 +364,9 @@ function promptText({ role, sessionId, mandate, a2aConfig }) {
     `direct A2A endpoint: ${a2aConfig.endpoint}`,
     `direct A2A peer card: ${a2aConfig.peerCard.id}`,
     `direct A2A peer endpoint: ${a2aConfig.peerCard.endpoint}`,
-    ...(role === "responder" && a2aConfig.invitationPath !== undefined ? [
-      `Before your first MCP call, read exactly one UTF-8 invitation from ${a2aConfig.invitationPath}.`,
-      "Pass that exact value unchanged to agent_handshake_accept_invitation; do not print, summarize, or copy it anywhere else.",
+    ...(role === "responder" ? [
+      `Before your first MCP call, pass this exact opaque invitation unchanged to agent_handshake_accept_invitation: ${a2aConfig.invitation}`,
+      "Do not print, summarize, or copy the invitation anywhere else.",
     ] : []),
     ...(role === "initiator" ? [
       "First call agent_handshake_invite with the four mandate fields as the tool arguments themselves; do not nest them under mandate or terms.",
@@ -387,7 +391,7 @@ function continuationPromptText({ role, protocolSessionId, mandate, a2aConfig, b
     }
     return [
       "No Clockchain protocol session exists yet.",
-      `Read exactly one UTF-8 invitation from ${a2aConfig.invitationPath} and pass it unchanged to agent_handshake_accept_invitation now.`,
+      `Pass this exact opaque invitation unchanged to agent_handshake_accept_invitation now: ${a2aConfig.invitation}`,
       "Do not print, summarize, or copy the invitation anywhere else.",
       "If Clockchain returns a retryable error, follow its wait and retry instructions and call agent_handshake_accept_invitation again.",
       "Do not end your turn before the invitation is accepted or a non-retryable tool error makes completion impossible.",
@@ -1073,11 +1077,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
       if (mcpEndpoint !== MCP_ENDPOINT) fail();
       const clean = cleanRuntime(runtime, harness);
       const cleanPeer = cleanA2A(a2aConfig);
-      if (cleanPeer.invitationPath !== undefined) {
-        if (clean.role !== "responder") fail();
-        const offset = relative(options.workspace, cleanPeer.invitationPath);
-        if (offset === "" || offset.startsWith("..") || isAbsolute(offset)) fail();
-      }
+      if (clean.role === "responder" ? cleanPeer.invitation === undefined : cleanPeer.invitation !== undefined) fail();
       session = { sessionId: clean.sessionId, role: clean.role };
       protocolSessionId = null;
       acpSessionId = null;

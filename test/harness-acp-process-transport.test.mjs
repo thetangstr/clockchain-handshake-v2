@@ -6,7 +6,7 @@ import { AgentSideConnection, PROTOCOL_VERSION, ndJsonStream } from "@agentclien
 
 import { acpProcessTransportFailureStage, createAcpProcessTransport } from "../src/harness/acp-process-transport.mjs";
 import { ACP_VERSION_PINS } from "../src/harness/version-pins.mjs";
-import { DIGEST, MCP_ENDPOINT, OTHER_SESSION, SESSION, a2aConfig, retainedAction } from "./harness-acp-fixtures.mjs";
+import { DIGEST, INVITATION, MCP_ENDPOINT, OTHER_SESSION, SESSION, a2aConfig, retainedAction } from "./harness-acp-fixtures.mjs";
 
 const VALID_MANDATE = Object.freeze({
   reference: "NS-1847",
@@ -757,14 +757,18 @@ test("ACP process transport rejects authority, endpoint, pin, and secret leakage
     runtime: { runtimeId: "runtime-responder", sessionId: SESSION, role: "responder", harness: "claude" },
     mandate: VALID_MANDATE,
     mcpEndpoint: MCP_ENDPOINT,
-    a2aConfig: { ...a2aConfig("responder"), invitationPath: "/workspace/responder/responder-invitation.txt" },
+    a2aConfig: a2aConfig("responder"),
   });
   const responderPrompt = responderCalls.find((entry) => entry[0] === "prompt")[1].prompt[0].text;
-  assert.match(responderPrompt, /read exactly one UTF-8 invitation from \/workspace\/responder\/responder-invitation\.txt/);
+  assert.match(responderPrompt, new RegExp(INVITATION.replace(".", "\\.")));
   assert.match(responderPrompt, /agent_handshake_accept_invitation/);
   assert.match(responderPrompt, /do not print/i);
+  assert.doesNotMatch(responderPrompt, /read.*(?:file|path)|responder-invitation/i);
+  assert.doesNotMatch(JSON.stringify(responderCalls[0]), new RegExp(INVITATION.replace(".", "\\.")));
+  assert.doesNotMatch(JSON.stringify(await transport.streamEvents({ sessionId: SESSION })), new RegExp(INVITATION.replace(".", "\\.")));
   assert.equal((await transport.executeRetainedAction({ sessionId: SESSION, role: "responder", actionId: "action-1" })).executed, true);
   await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
+  assert.doesNotMatch(JSON.stringify(await transport.collectEvidence({ sessionId: SESSION })), new RegExp(INVITATION.replace(".", "\\.")));
   await assert.rejects(() => transport.streamEvents({ sessionId: "other" }));
   assert.equal(DIGEST.length, 64);
 });
@@ -1253,6 +1257,40 @@ test("ACP continuation repeats the exact role bootstrap while no protocol sessio
   assert.match(prompts[1][1].prompt[0].text, /"validForSeconds":"90"/);
   assert.match(prompts[1][1].prompt[0].text, /"erc8004":"required_existing_or_fresh"/);
   assert.doesNotMatch(prompts[1][1].prompt[0].text, /existing Clockchain handshake/i);
+});
+
+test("ACP responder continuation repeats the exact private invitation while no protocol session exists", async () => {
+  const calls = [];
+  let completionChecks = 0;
+  const transport = createAcpProcessTransport({
+    harness: "claude",
+    pin: ACP_VERSION_PINS.claude,
+    spawn: acpFixtureSpawn({ calls, sessionUpdates: [], skipPermission: true }),
+    workspace: "/workspace/responder",
+    home: "/workspace/responder/home",
+    partyBridge: partyBridgeFor(calls, {
+      completionStatus() {
+        completionChecks += 1;
+        return completionChecks >= 2
+          ? { complete: true, protocolSessionId: SESSION }
+          : { complete: false, protocolSessionId: null };
+      },
+    }),
+    env: {},
+    trustedAdapterPublicKeys: [retainedAction({ role: "responder" }).adapterPublicKey],
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.claude,
+    runtime: { runtimeId: "runtime-responder", sessionId: SESSION, role: "responder", harness: "claude" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("responder"),
+  });
+  const prompts = calls.filter((entry) => entry[0] === "prompt");
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[1][1].prompt[0].text, new RegExp(INVITATION.replace(".", "\\.")));
+  assert.match(prompts[1][1].prompt[0].text, /agent_handshake_accept_invitation/);
+  assert.doesNotMatch(prompts[1][1].prompt[0].text, /read.*(?:file|path)|responder-invitation/i);
 });
 
 test("ACP process transport distinguishes each public Clockchain boundary at incomplete completion", async () => {
@@ -1974,7 +2012,7 @@ test("ACP process transport derives retained metadata from one production MCP si
     runtime: { runtimeId: "runtime-responder", sessionId: OTHER_SESSION, role: "responder", harness: "claude" },
     mandate: VALID_MANDATE,
     mcpEndpoint: MCP_ENDPOINT,
-    a2aConfig: { ...a2aConfig("responder"), invitationPath: "/workspace/responder/responder-invitation.txt" },
+    a2aConfig: a2aConfig("responder"),
   });
   const recorded = calls.find((entry) => Array.isArray(entry) && entry[0] === "record")[1];
   assert.equal(recorded.commandLength, Buffer.byteLength(step.shellCommand));

@@ -19,6 +19,7 @@ const MAX_DATA_DEPTH = 8;
 const MAX_ARRAY_LENGTH = 32;
 const MAX_OBJECT_KEYS = 64;
 const MAX_STRING_LENGTH = 4096;
+const INVITATION = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 
 function fail() {
   throw new Error("ACP harness adapter validation failed safely.");
@@ -80,7 +81,7 @@ function a2aConfig(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) fail();
   const descriptors = Object.getOwnPropertyDescriptors(value);
   const keys = Object.keys(descriptors);
-  if (!keys.includes("endpoint") || !keys.includes("peerCard") || keys.some((key) => !["endpoint", "peerCard", "invitationPath"].includes(key))) fail();
+  if (!keys.includes("endpoint") || !keys.includes("peerCard") || keys.some((key) => !["endpoint", "peerCard", "invitation"].includes(key))) fail();
   const item = objectValues(value, keys);
   if (typeof item.endpoint !== "string" || !item.endpoint.startsWith("https://")) fail();
   const peerCard = objectValues(item.peerCard, ["endpoint", "id"]);
@@ -88,11 +89,14 @@ function a2aConfig(value) {
     typeof peerCard.id !== "string" || peerCard.id.length === 0 ||
     typeof peerCard.endpoint !== "string" || !peerCard.endpoint.startsWith("https://")
   ) fail();
-  if (item.invitationPath !== undefined && (typeof item.invitationPath !== "string" || item.invitationPath.length === 0)) fail();
+  if (
+    item.invitation !== undefined &&
+    (typeof item.invitation !== "string" || item.invitation.length < 80 || item.invitation.length > MAX_STRING_LENGTH || !INVITATION.test(item.invitation))
+  ) fail();
   return Object.freeze({
     endpoint: item.endpoint,
     peerCard: Object.freeze({ id: peerCard.id, endpoint: peerCard.endpoint }),
-    ...(item.invitationPath === undefined ? {} : { invitationPath: item.invitationPath }),
+    ...(item.invitation === undefined ? {} : { invitation: item.invitation }),
   });
 }
 

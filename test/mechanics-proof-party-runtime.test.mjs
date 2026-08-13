@@ -20,6 +20,7 @@ const PROTOCOL_SESSION_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const DIGEST = "a".repeat(64);
 const OTHER_DIGEST = "b".repeat(64);
 const CERTIFICATE = "-----BEGIN CERTIFICATE-----\npublic-test-certificate\n-----END CERTIFICATE-----\n";
+const PRIVATE_INVITATION = `${"a".repeat(96)}.${"b".repeat(43)}`;
 
 function publicKey() {
   return generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" });
@@ -75,7 +76,7 @@ function dependencies(calls, overrides = {}) {
     async close() { calls.push("invitation.close"); return { closed: true }; },
     publicEvidence() { return { sessionId: PROTOCOL_SESSION_ID, invitations: [{ direction: "inbound" }] }; },
     async sendInvitation() { throw new Error("responder must not send invitation"); },
-    takeInvitation() { calls.push("invitation.take"); return { invitation: "private-invitation", sessionId: PROTOCOL_SESSION_ID }; },
+    takeInvitation() { calls.push("invitation.take"); return { invitation: PRIVATE_INVITATION, sessionId: PROTOCOL_SESSION_ID }; },
   };
   const bridgeEvidence = {
     schema: "clockchain.direct-a2a-party-bridge-evidence/v1",
@@ -160,9 +161,10 @@ function dependencies(calls, overrides = {}) {
           calls.push("agent.launch");
           assert.equal(input.runtime.sessionId, RUN_ID);
           if (input.runtime.role === "responder") {
-            assert.equal(input.a2aConfig.invitationPath.endsWith("/responder-invitation.txt"), true);
-          } else {
+            assert.equal(input.a2aConfig.invitation, PRIVATE_INVITATION);
             assert.equal("invitationPath" in input.a2aConfig, false);
+          } else {
+            assert.equal("invitation" in input.a2aConfig, false);
           }
           return { sessionId: RUN_ID, role: "responder", harness: "claude" };
         },

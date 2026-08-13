@@ -12,6 +12,7 @@ export const SESSION = "11111111-2222-4333-8444-555555555555";
 export const OTHER_SESSION = "22222222-3333-4444-8555-666666666666";
 export const MCP_ENDPOINT = "https://mcp.clockchain.network/handshake/mcp";
 export const DIGEST = "a".repeat(64);
+export const INVITATION = `${"a".repeat(96)}.${"b".repeat(43)}`;
 
 export function retainedAction(overrides = {}) {
   const { privateKey } = generateKeyPairSync("ed25519");
@@ -47,6 +48,7 @@ export function a2aConfig(role) {
       id: role === "initiator" ? "responder-card" : "initiator-card",
       endpoint: `https://a2a.example.test/${role === "initiator" ? "responder" : "initiator"}`,
     },
+    ...(role === "responder" ? { invitation: INVITATION } : {}),
   };
 }
 
