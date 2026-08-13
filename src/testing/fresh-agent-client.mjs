@@ -1611,13 +1611,21 @@ function observeChild(child, role, all, canaries, { adapter, client, expectedInv
     const claudeMcpToolCalls = new Map();
     const expectedHelperCommands = [];
     const helperExecutionState = { failed: false, details: null };
-    let lastMcpTool = null;
+      let lastMcpTool = null;
     let settled = false;
     function processLine(line) {
       if (line.trim().length === 0) return;
       let event;
       try { event = JSON.parse(line); } catch { fail(); }
       recordClaudeMcpToolCalls(event, claudeMcpToolCalls);
+      if (
+        event?.type === "item.started" && event?.item?.type === "mcp_tool_call" &&
+        isClockchainMcpToolName(event.item.tool)
+      ) {
+        lastMcpTool = CLOCKCHAIN_HANDSHAKE_TOOLS.find((name) => (
+          event.item.tool === name || event.item.tool.endsWith(`__${name}`)
+        ));
+      }
       const completedMcpTool = completedClockchainMcpTool(event, claudeMcpToolCalls);
       if (completedMcpTool !== null) lastMcpTool = completedMcpTool;
       const discoveredHelperCommands = collectExpectedHelperCommands(event);

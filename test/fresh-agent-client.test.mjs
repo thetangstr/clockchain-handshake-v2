@@ -1541,6 +1541,36 @@ test("fresh-agent injected failures produce distinct safe diagnostics", async (t
   assert.ok(new Set(serialized).size >= 4);
 });
 
+test("invitation diagnostics retain the last started Clockchain tool without transcript data", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-invitation-tool-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const error = await rejectsFreshAgentRun(parent, {
+    spawnProcess: () => {
+      const child = new EventEmitter();
+      child.pid = null;
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.stdin = { end() {
+        queueMicrotask(() => {
+          child.stdout.emit("data", Buffer.from(streamEvent({
+            type: "item.started",
+            item: { type: "mcp_tool_call", tool: "agent_handshake_invite", status: "in_progress" },
+          })));
+          child.emit("close", 0, null);
+        });
+      } };
+      child.kill = () => {};
+      return child;
+    },
+  });
+  assert.deepEqual(error.diagnostic, {
+    phase: "invitation",
+    category: "agent",
+    code: "INVITATION_MISSING",
+    details: { client: "codex", lastMcpTool: "agent_handshake_invite", role: "initiator" },
+  });
+});
+
 test("fresh-agent diagnostics serialize without supplied canary secrets", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "fresh-agent-secret-diagnostic-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
