@@ -1816,7 +1816,7 @@ test("Claude session exposes Bash plus exactly seven Clockchain MCP tools withou
   ]);
 });
 
-test("ACP continuation submits the exact result of a completed signing helper", async () => {
+test("ACP continuation advances after the adapter submits a completed signing helper", async () => {
   const action = retainedAction({ operation: "sign", commandSha256: "9".repeat(64) });
   const calls = [];
   let completionChecks = 0;
@@ -1859,13 +1859,11 @@ test("ACP continuation submits the exact result of a completed signing helper", 
   }).catch((error) => assert.fail(`unexpected stage ${acpProcessTransportFailureStage(error)}`));
   const prompts = calls.filter((entry) => entry[0] === "prompt");
   assert.equal(prompts.length, 2);
-  assert.match(prompts[1][1].prompt[0].text, /latest retained signing helper has completed/i);
-  assert.match(prompts[1][1].prompt[0].text, /initiatorAccess.*submit argument named access/i);
-  assert.match(prompts[1][1].prompt[0].text, /Call agent_handshake_submit now/i);
-  assert.doesNotMatch(prompts[1][1].prompt[0].text, /agent_handshake_join|agent_handshake_status|agent_handshake_next/);
+  assert.match(prompts[1][1].prompt[0].text, /Call agent_handshake_next now/i);
+  assert.doesNotMatch(prompts[1][1].prompt[0].text, /agent_handshake_submit/);
 });
 
-test("ACP continuation preserves a completed signature until Clockchain acknowledges its submit", async () => {
+test("ACP continuation does not ask the model to courier a completed signature", async () => {
   const action = retainedAction({ operation: "sign", commandSha256: "6".repeat(64) });
   const calls = [];
   let completionChecks = 0;
@@ -1910,14 +1908,6 @@ test("ACP continuation preserves a completed signature until Clockchain acknowle
         status: "completed",
         rawInput: { server: "clockchain-handshake", tool: "agent_handshake_status", arguments: {} },
         rawOutput: { result: { sessionId: SESSION, stage: "sign_proposal" }, error: null },
-      }] : promptCount === 1 ? [{
-        sessionUpdate: "tool_call_update",
-        toolCallId: "tool-submit-signature",
-        kind: "other",
-        title: "agent_handshake_submit",
-        status: "completed",
-        rawInput: { server: "clockchain-handshake", tool: "agent_handshake_submit", arguments: {} },
-        rawOutput: { result: { sessionId: SESSION, stage: "proposal_submitted" }, error: null },
       }] : [],
     }),
     workspace: "/workspace/initiator",
@@ -1927,7 +1917,7 @@ test("ACP continuation preserves a completed signature until Clockchain acknowle
     partyBridge: partyBridgeFor(calls, {
       completionStatus() {
         completionChecks += 1;
-        return { complete: completionChecks >= 3, protocolSessionId: SESSION };
+        return { complete: completionChecks >= 2, protocolSessionId: SESSION };
       },
     }),
     env: {},
@@ -1941,12 +1931,9 @@ test("ACP continuation preserves a completed signature until Clockchain acknowle
     a2aConfig: a2aConfig("initiator"),
   }).catch((error) => assert.fail(`unexpected stage ${acpProcessTransportFailureStage(error)}`));
   const prompts = calls.filter((entry) => entry[0] === "prompt");
-  assert.equal(prompts.length, 3);
-  assert.match(prompts[1][1].prompt[0].text, /latest retained signing helper has completed/i);
-  assert.match(prompts[1][1].prompt[0].text, /Call agent_handshake_submit now/i);
-  assert.doesNotMatch(prompts[1][1].prompt[0].text, /agent_handshake_next/);
-  assert.match(prompts[2][1].prompt[0].text, /Call agent_handshake_next now/i);
-  assert.doesNotMatch(prompts[2][1].prompt[0].text, /agent_handshake_submit/);
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[1][1].prompt[0].text, /Call agent_handshake_next now/i);
+  assert.doesNotMatch(prompts[1][1].prompt[0].text, /agent_handshake_submit/);
 });
 
 test("ACP continuation retains validated public helper output for the exact join call", async () => {

@@ -34,6 +34,17 @@ function successEnvelope(id = 1) {
   };
 }
 
+function signatureSuccessEnvelope(id = 1) {
+  return {
+    jsonrpc: "2.0",
+    id,
+    result: {
+      content: [{ type: "text", text: JSON.stringify({ role: "initiator", sessionId: SESSION_ID, stage: "proposal_submitted" }) }],
+      structuredContent: { role: "initiator", sessionId: SESSION_ID, stage: "proposal_submitted" },
+    },
+  };
+}
+
 test("private checkpoint client performs one exact JSON-RPC write and accepts JSON or SSE", async () => {
   for (const sse of [false, true]) {
     const calls = [];
@@ -82,4 +93,48 @@ test("private checkpoint client never retries an ambiguous write and leaks no pr
     );
     assert.equal(calls, 1);
   }
+});
+
+test("private handshake client submits one policy-bound signature without model mediation", async () => {
+  const calls = [];
+  const client = createAgentHandshakeCheckpointClient({
+    endpoint: "https://mcp.clockchain.network/handshake/mcp",
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return new Response(JSON.stringify(signatureSuccessEnvelope()), { status: 200 });
+    },
+    timeoutMs: 1_000,
+  });
+  const result = await client.submitSignature({ access: ACCESS, policyDigest: DIGEST, signatureHex: SIGNATURE });
+  assert.deepEqual(result, { role: "initiator", sessionId: SESSION_ID, stage: "proposal_submitted" });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(JSON.parse(calls[0].init.body), {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: {
+      name: "agent_handshake_submit",
+      arguments: { access: ACCESS, policyDigest: DIGEST, signatureHex: SIGNATURE },
+    },
+  });
+});
+
+test("private handshake client rejects malformed signature acknowledgements without retrying", async () => {
+  let calls = 0;
+  const client = createAgentHandshakeCheckpointClient({
+    endpoint: "https://mcp.clockchain.network/handshake/mcp",
+    fetchImpl: async () => {
+      calls += 1;
+      const envelope = signatureSuccessEnvelope();
+      envelope.result.structuredContent.stage = "unexpected";
+      envelope.result.content[0].text = JSON.stringify(envelope.result.structuredContent);
+      return new Response(JSON.stringify(envelope), { status: 200 });
+    },
+    timeoutMs: 1_000,
+  });
+  await assert.rejects(
+    client.submitSignature({ access: ACCESS, policyDigest: DIGEST, signatureHex: SIGNATURE }),
+    /Clockchain checkpoint submission failed safely/,
+  );
+  assert.equal(calls, 1);
 });

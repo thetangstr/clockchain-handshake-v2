@@ -227,6 +227,7 @@ function signingRequestFromStep(step) {
       commandSha256: item.commandSha256,
       direct: false,
       operation: item.operation,
+      request,
       requestDigest: createHash("sha256").update(raw).digest("hex"),
       sessionId: item.sessionId,
     });
@@ -369,11 +370,12 @@ function reconstructInbound(message, schema) {
 export function createDirectA2APartyBridge(optionsInput = {}) {
   try {
     const options = snapshot(optionsInput, [
-      "activateSignedChannel", "completionRecorder", "invitationTransport", "nowMs", "role", "sessionId", "submitCheckpoint",
+      "activateSignedChannel", "completionRecorder", "invitationTransport", "nowMs", "role", "sessionId", "submitCheckpoint", "submitSignature",
     ]);
     if (
       !ROLES.includes(options.role) || !(options.sessionId === null || UUID.test(options.sessionId)) || typeof options.nowMs !== "function" ||
-      typeof options.activateSignedChannel !== "function" || typeof options.submitCheckpoint !== "function"
+      typeof options.activateSignedChannel !== "function" || typeof options.submitCheckpoint !== "function" ||
+      typeof options.submitSignature !== "function"
     ) fail();
     const completionRecorder = projectMethods(options.completionRecorder, ["setCompletionHandler"]);
     const invitationTransport = projectMethods(options.invitationTransport, ["publicEvidence", "sendInvitation"]);
@@ -485,6 +487,18 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
               ...certificateResult(completion.result, options.role, boundSessionId),
             });
             pendingCertificate = null;
+          } else if (completion.operation === "sign") {
+            const result = helperResult(completion.result, expected);
+            if (roleAccess === null) fail();
+            const submitted = snapshot(await options.submitSignature({
+              access: roleAccess,
+              policyDigest: expected.request.policyDigest,
+              signatureHex: result.signatureHex,
+            }), ["role", "sessionId", "stage"]);
+            const expectedStage = expected.request.operation === "identity_claim"
+              ? "identity_claimed"
+              : `${expected.request.operation}_submitted`;
+            if (submitted.role !== options.role || submitted.sessionId !== boundSessionId || submitted.stage !== expectedStage) fail();
           }
           expected.state = "consumed";
           return Object.freeze({ accepted: true });
@@ -527,6 +541,15 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
         if (
           submitted.checkpointDigest !== checkpointDigest || submitted.role !== options.role ||
           submitted.sessionId !== boundSessionId || submitted.stage !== `${artifactType}_checkpoint_submitted`
+        ) fail();
+        const signatureSubmitted = snapshot(await options.submitSignature({
+          access: roleAccess,
+          policyDigest: expected.request.policyDigest,
+          signatureHex: result.signatureHex,
+        }), ["role", "sessionId", "stage"]);
+        if (
+          signatureSubmitted.role !== options.role || signatureSubmitted.sessionId !== boundSessionId ||
+          signatureSubmitted.stage !== `${artifactType}_submitted`
         ) fail();
         expected.state = "consumed";
         deliveries.push(Object.freeze({

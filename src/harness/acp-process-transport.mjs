@@ -489,21 +489,6 @@ function continuationPromptText({
       "Do not end your turn before agent_handshake_join returns or a non-retryable tool error makes completion impossible.",
     ].join("\n");
   }
-  if (latestHelperOperation === "sign") {
-    const accessField = role === "initiator" ? "initiatorAccess" : "responderAccess";
-    const signed = helperPublic.sign;
-    const policyDigest = helperPublic.inspect?.policyDigest;
-    const submitTool = promptToolName(harness, "agent_handshake_submit");
-    return [
-      `Continue the existing Clockchain handshake in protocol session ${protocolSessionId}; do not create or accept another invitation.`,
-      "The latest retained signing helper has completed.",
-      `Use the exact unchanged ${accessField} returned by Clockchain as the submit argument named access: ${roleAccess ?? accessField}.`,
-      `Call ${submitTool} now with exactly: ${JSON.stringify({ access: roleAccess, policyDigest, signatureHex: signed?.signatureHex })}.`,
-      ...deferredToolInstructions(harness, "agent_handshake_submit"),
-      "Call no other tool before agent_handshake_submit returns.",
-      "Do not end your turn before agent_handshake_submit returns or a non-retryable tool error makes completion impossible.",
-    ].join("\n");
-  }
   const nextTool = promptToolName(harness, "agent_handshake_next");
   return [
     `Continue the existing Clockchain handshake in protocol session ${protocolSessionId}; do not create or accept another invitation.`,
@@ -1278,7 +1263,10 @@ export function createAcpProcessTransport(optionsInput = {}) {
           const entry = retainedByCommand.get(helperDigest);
           if (entry === undefined || entry.state !== "authorized") fail();
           const publicResult = retainedHelperPublicResult(params.update.rawOutput, entry.action.operation);
-          if (publicResult !== null) helperPublic[entry.action.operation] = publicResult;
+          if (publicResult !== null) {
+            helperPublic[entry.action.operation] = publicResult;
+            if (entry.action.operation === "sign") latestHelperOperation = null;
+          }
           authorizedHelperCalls.delete(params.update.toolCallId);
         }
         const clockchainToolName = parseToolName(params.update);
@@ -1330,10 +1318,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
           });
           if (extractedHelperSteps.length > 0) {
             latestHelperOperation = extractedHelperSteps[extractedHelperSteps.length - 1].operation;
-          } else if (
-            latestHelperOperation !== "sign" ||
-            toolResult.toolName === "agent_handshake_submit"
-          ) {
+          } else {
             latestHelperOperation = null;
           }
           failureStage = "retained-record";

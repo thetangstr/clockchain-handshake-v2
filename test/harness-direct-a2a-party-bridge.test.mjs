@@ -56,6 +56,11 @@ async function setup(t, {
     checkpointDigest: commitmentCheckpointDigest(input.checkpoint),
   }),
   transformTaskTransport = (transport) => transport,
+  transformSignatureSubmission = async (_input, role) => ({
+    role,
+    sessionId: SESSION_ID,
+    stage: role === "initiator" ? "proposal_submitted" : "acceptance_submitted",
+  }),
 } = {}) {
   const fixture = await buildV2Fixture();
   const root = await mkdtemp(join(tmpdir(), "direct-a2a-party-bridge-"));
@@ -105,6 +110,7 @@ async function setup(t, {
   const activationCalls = [];
   const activationContexts = [];
   const checkpointCalls = [];
+  const signatureCalls = [];
   for (const role of ["initiator", "responder"]) {
     const completionRecorder = Object.freeze({
       setCompletionHandler(handler) {
@@ -137,9 +143,13 @@ async function setup(t, {
         checkpointCalls.push({ ...input, observedMessages: channel.publicEvidence().messages.length });
         return transformCheckpointSubmission(input, role);
       },
+      submitSignature: async (input) => {
+        signatureCalls.push({ ...input, observedMessages: channel.publicEvidence().messages.length });
+        return transformSignatureSubmission(input, role);
+      },
     });
   }
-  return { activationCalls, activationContexts, authorities, bridges, channel, checkpointCalls, completionHandlers, fixture, invitationCalls };
+  return { activationCalls, activationContexts, authorities, bridges, channel, checkpointCalls, completionHandlers, fixture, invitationCalls, signatureCalls };
 }
 
 function lifecycleStep(role, operation = "init") {
@@ -276,7 +286,7 @@ function completion({ envelope, request, step, role }) {
 }
 
 test("party-local bridges activate only from authoritative join context, then deliver proposal and acceptance with additive checkpoints", async (t) => {
-  const { activationCalls, activationContexts, bridges, channel, checkpointCalls, completionHandlers, fixture, invitationCalls } = await setup(t);
+  const { activationCalls, activationContexts, bridges, channel, checkpointCalls, completionHandlers, fixture, invitationCalls, signatureCalls } = await setup(t);
   const invitation = "opaque.responder.invitation";
   await bridges.initiator.observeToolResult({
     toolName: "agent_handshake_invite",
@@ -357,6 +367,10 @@ test("party-local bridges activate only from authoritative join context, then de
   assert.deepEqual(checkpointCalls.map((call) => [call.access, call.artifactSignatureHex, call.observedMessages]), [
     [ROLE_ACCESS.initiator, fixture.proposalEnvelope.signature.value, 2],
     [ROLE_ACCESS.responder, fixture.acceptanceEnvelope.signature.value, 4],
+  ]);
+  assert.deepEqual(signatureCalls.map((call) => [call.access, call.policyDigest, call.signatureHex]), [
+    [ROLE_ACCESS.initiator, fixture.parties.initiator.policyDigest, fixture.proposalEnvelope.signature.value],
+    [ROLE_ACCESS.responder, fixture.parties.responder.policyDigest, fixture.acceptanceEnvelope.signature.value],
   ]);
   for (const evidence of [bridges.initiator.publicEvidence(), bridges.responder.publicEvidence()]) {
     assert.equal(evidence.schema, "clockchain.direct-a2a-party-bridge-evidence/v1");
@@ -517,15 +531,17 @@ test("private MCP checkpoint rejection keeps the helper completion unreleased", 
   assert.doesNotMatch(JSON.stringify(bridges.initiator.publicEvidence()), /ccra_|signature|checkpoint.*payload/i);
 });
 
-test("identity and evidence signing completions remain local and do not require an active A2A channel", async (t) => {
-  const { bridges, channel, completionHandlers, fixture } = await setup(t);
+test("identity and evidence signing completions submit through the private adapter without an active A2A channel", async (t) => {
+  const { bridges, channel, completionHandlers, fixture, signatureCalls } = await setup(t, {
+    transformSignatureSubmission: async () => ({ role: "initiator", sessionId: SESSION_ID, stage: "identity_claimed" }),
+  });
   const localOnly = signingStep({
     envelope: fixture.proposalEnvelope,
     operation: "proposal",
     policyDigest: fixture.parties.initiator.policyDigest,
     role: "initiator",
   });
-  const request = { ...localOnly.request, operation: "identity" };
+  const request = { ...localOnly.request, operation: "identity_claim" };
   const payload = Buffer.from(JSON.stringify(request)).toString("base64url");
   const shellCommand = localOnly.step.shellCommand.replace(/--payload-base64url\s+[A-Za-z0-9_-]+/, `--payload-base64url ${payload}`);
   const commandSha256 = createHash("sha256").update(shellCommand).digest("hex");
@@ -544,6 +560,15 @@ test("identity and evidence signing completions remain local and do not require 
   assert.deepEqual(await completionHandlers.initiator(localCompletion), { accepted: true });
   assert.equal(channel.publicEvidence().messages.length, 0);
   assert.deepEqual(bridges.initiator.publicEvidence().cardDigests, { initiator: null, responder: null });
+  assert.deepEqual(signatureCalls.map((call) => ({
+    access: call.access,
+    policyDigest: call.policyDigest,
+    signatureHex: call.signatureHex,
+  })), [{
+    access: ROLE_ACCESS.initiator,
+    policyDigest: fixture.parties.initiator.policyDigest,
+    signatureHex: fixture.proposalEnvelope.signature.value,
+  }]);
 });
 
 test("destroy tears down party authority and returns a generic failure when transport close fails", async (t) => {

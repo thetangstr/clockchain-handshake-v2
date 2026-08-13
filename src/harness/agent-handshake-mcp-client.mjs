@@ -8,6 +8,7 @@ const SIGNATURE = /^0x[0-9a-f]{130}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ROLES = Object.freeze(["initiator", "responder"]);
+const SIGNATURE_STAGES = Object.freeze(["identity_claimed", "proposal_submitted", "acceptance_submitted", "evidence_submitted"]);
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_REQUEST_BYTES = 64 * 1024;
 
@@ -87,45 +88,40 @@ export function createAgentHandshakeCheckpointClient(options = {}) {
       item.timeoutMs < 1 || item.timeoutMs > 30_000
     ) fail();
     let nextRequestId = 1;
+    async function callTool(name, args) {
+      const id = nextRequestId++;
+      const body = JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
+      if (Buffer.byteLength(body) > MAX_REQUEST_BYTES) fail();
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), item.timeoutMs);
+      let response;
+      let text;
+      try {
+        response = await item.fetchImpl(endpoint.href, {
+          method: "POST",
+          headers: { accept: "application/json, text/event-stream", "content-type": "application/json" },
+          body,
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        text = await readBounded(response);
+      } finally {
+        clearTimeout(timeout);
+      }
+      if (!Number.isInteger(response?.status) || response.status < 200 || response.status >= 300) fail();
+      return parseToolResult(parseSseJsonRpc(text, { expectedId: id }));
+    }
     return Object.freeze({
       async submitCheckpoint(input) {
         try {
           const supplied = exact(input, ["access", "artifactSignatureHex", "checkpoint"]);
           if (!ACCESS.test(supplied.access) || !SIGNATURE.test(supplied.artifactSignatureHex)) fail();
           const checkpoint = clone(supplied.checkpoint);
-          const id = nextRequestId++;
-          const body = JSON.stringify({
-            jsonrpc: "2.0",
-            id,
-            method: "tools/call",
-            params: {
-              name: "agent_handshake_submit_checkpoint",
-              arguments: {
-                access: supplied.access,
-                artifactSignatureHex: supplied.artifactSignatureHex,
-                checkpoint,
-              },
-            },
-          });
-          if (Buffer.byteLength(body) > MAX_REQUEST_BYTES) fail();
-          const controller = new AbortController();
-          const timeout = setTimeout(() => controller.abort(), item.timeoutMs);
-          let response;
-          let text;
-          try {
-            response = await item.fetchImpl(endpoint.href, {
-              method: "POST",
-              headers: { accept: "application/json, text/event-stream", "content-type": "application/json" },
-              body,
-              cache: "no-store",
-              signal: controller.signal,
-            });
-            text = await readBounded(response);
-          } finally {
-            clearTimeout(timeout);
-          }
-          if (!Number.isInteger(response?.status) || response.status < 200 || response.status >= 300) fail();
-          const result = exact(parseToolResult(parseSseJsonRpc(text, { expectedId: id })), [
+          const result = exact(await callTool("agent_handshake_submit_checkpoint", {
+            access: supplied.access,
+            artifactSignatureHex: supplied.artifactSignatureHex,
+            checkpoint,
+          }), [
             "role", "sessionId", "stage", "checkpointDigest", "roleAccess",
           ]);
           if (
@@ -139,6 +135,15 @@ export function createAgentHandshakeCheckpointClient(options = {}) {
             stage: result.stage,
             checkpointDigest: result.checkpointDigest,
           });
+        } catch { fail(); }
+      },
+      async submitSignature(input) {
+        try {
+          const supplied = exact(input, ["access", "policyDigest", "signatureHex"]);
+          if (!ACCESS.test(supplied.access) || !DIGEST.test(supplied.policyDigest) || !SIGNATURE.test(supplied.signatureHex)) fail();
+          const result = exact(await callTool("agent_handshake_submit", supplied), ["role", "sessionId", "stage"]);
+          if (!ROLES.includes(result.role) || !UUID.test(result.sessionId) || !SIGNATURE_STAGES.includes(result.stage)) fail();
+          return Object.freeze({ role: result.role, sessionId: result.sessionId, stage: result.stage });
         } catch { fail(); }
       },
     });

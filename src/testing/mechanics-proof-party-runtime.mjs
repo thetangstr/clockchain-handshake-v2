@@ -671,6 +671,7 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
             role: options.role,
             sessionId: null,
             submitCheckpoint: checkpointClient.submitCheckpoint,
+            submitSignature: checkpointClient.submitSignature,
           });
           runStage = "provider-auth";
           const providerEnv = await providerEnvFor(options.harness, paths.home, process.env, (stage) => {
