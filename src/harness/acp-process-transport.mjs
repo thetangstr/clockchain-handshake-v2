@@ -29,7 +29,15 @@ const CLAUDE_CLOCKCHAIN_PERMISSION_TOOLS = Object.freeze(new Set([
 const CLAUDE_CLOCKCHAIN_TOOL_ALIASES = Object.freeze(Object.fromEntries(
   [...CLAUDE_CLOCKCHAIN_PERMISSION_TOOLS].map((tool) => [tool, `mcp__${TOOL_SERVER}__${tool}`]),
 ));
-const CLAUDE_CLOCKCHAIN_TOOLS = Object.freeze(["Bash", ...Object.values(CLAUDE_CLOCKCHAIN_TOOL_ALIASES)]);
+const CLAUDE_BUILTIN_TOOLS = Object.freeze(["Bash"]);
+const CLAUDE_CLOCKCHAIN_MCP_SERVERS = Object.freeze({
+  [TOOL_SERVER]: Object.freeze({
+    type: "http",
+    url: MCP_ENDPOINT,
+    headers: Object.freeze({}),
+    alwaysLoad: true,
+  }),
+});
 const ROLES = Object.freeze(["initiator", "responder"]);
 const HELPER_OPERATIONS = Object.freeze(["init", "policy", "inspect", "register", "sign", "verify-certificate"]);
 const MAX_DEPTH = 12;
@@ -359,18 +367,9 @@ function streamPair(child) {
   fail();
 }
 
-function mcpServer() {
-  return Object.freeze({
-    type: "http",
-    name: "clockchain-handshake",
-    url: MCP_ENDPOINT,
-    headers: Object.freeze([]),
-  });
-}
-
 function promptToolName(harness, tool) {
   if (!["codex", "claude"].includes(harness) || !CLAUDE_CLOCKCHAIN_PERMISSION_TOOLS.has(tool)) fail();
-  return harness === "claude" ? CLAUDE_CLOCKCHAIN_TOOL_ALIASES[tool] : tool;
+  return tool;
 }
 
 function deferredToolInstructions(harness, tool) {
@@ -1422,12 +1421,14 @@ export function createAcpProcessTransport(optionsInput = {}) {
         sessionEstablishing = true;
         const created = await connection.newSession({
           cwd: options.workspace,
-          mcpServers: harness === "codex" ? [] : [mcpServer()],
+          mcpServers: [],
           ...(harness === "claude" ? {
             _meta: Object.freeze({
               claudeCode: Object.freeze({
                 options: Object.freeze({
-                  tools: CLAUDE_CLOCKCHAIN_TOOLS,
+                  tools: CLAUDE_BUILTIN_TOOLS,
+                  mcpServers: CLAUDE_CLOCKCHAIN_MCP_SERVERS,
+                  strictMcpConfig: true,
                   toolAliases: CLAUDE_CLOCKCHAIN_TOOL_ALIASES,
                 }),
               }),
@@ -1464,11 +1465,13 @@ export function createAcpProcessTransport(optionsInput = {}) {
             acpSessionId = null;
             const continuationSession = await connection.newSession({
               cwd: options.workspace,
-              mcpServers: [mcpServer()],
+              mcpServers: [],
               _meta: Object.freeze({
                 claudeCode: Object.freeze({
                   options: Object.freeze({
-                    tools: CLAUDE_CLOCKCHAIN_TOOLS,
+                    tools: CLAUDE_BUILTIN_TOOLS,
+                    mcpServers: CLAUDE_CLOCKCHAIN_MCP_SERVERS,
+                    strictMcpConfig: true,
                     toolAliases: CLAUDE_CLOCKCHAIN_TOOL_ALIASES,
                   }),
                 }),

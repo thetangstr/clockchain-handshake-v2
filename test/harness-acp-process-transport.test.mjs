@@ -496,16 +496,16 @@ test("ACP process transport forwards only role-specific provider auth and pins t
   assert.deepEqual(claudeCalls.find((call) => Array.isArray(call) && call[0] === "newSession")?.[1]._meta, {
     claudeCode: {
       options: {
-        tools: [
-          "Bash",
-          "mcp__clockchain-handshake__agent_handshake_accept_invitation",
-          "mcp__clockchain-handshake__agent_handshake_get_certificate",
-          "mcp__clockchain-handshake__agent_handshake_invite",
-          "mcp__clockchain-handshake__agent_handshake_join",
-          "mcp__clockchain-handshake__agent_handshake_next",
-          "mcp__clockchain-handshake__agent_handshake_status",
-          "mcp__clockchain-handshake__agent_handshake_submit",
-        ],
+        tools: ["Bash"],
+        mcpServers: {
+          "clockchain-handshake": {
+            type: "http",
+            url: MCP_ENDPOINT,
+            headers: {},
+            alwaysLoad: true,
+          },
+        },
+        strictMcpConfig: true,
         toolAliases: {
           agent_handshake_accept_invitation: "mcp__clockchain-handshake__agent_handshake_accept_invitation",
           agent_handshake_get_certificate: "mcp__clockchain-handshake__agent_handshake_get_certificate",
@@ -1673,7 +1673,7 @@ test("Claude continuation resolves the exact native next tool after joining", as
     "acp-claude-turn-1",
     "acp-claude-turn-2",
   ]);
-  assert.match(continuation, /mcp__clockchain-handshake__agent_handshake_next/);
+  assert.match(continuation, /agent_handshake_next/);
   assert.match(continuation, /preloaded in this session/);
   assert.doesNotMatch(continuation, /ToolSearch/);
 });
@@ -1785,7 +1785,7 @@ test("Claude rejects a continuation that reuses a retired ACP session id", async
   }));
 });
 
-test("Claude session exposes Bash plus exactly seven Clockchain MCP tools without deferred search", async () => {
+test("Claude session always loads exactly the Clockchain MCP server while restricting built-ins to Bash", async () => {
   const calls = [];
   const transport = createAcpProcessTransport({
     harness: "claude",
@@ -1803,16 +1803,21 @@ test("Claude session exposes Bash plus exactly seven Clockchain MCP tools withou
     mcpEndpoint: MCP_ENDPOINT,
     a2aConfig: a2aConfig("responder"),
   });
-  const options = calls.find((entry) => entry[0] === "newSession")[1]._meta.claudeCode.options;
-  assert.deepEqual(options.tools, [
-    "Bash",
-    "mcp__clockchain-handshake__agent_handshake_accept_invitation",
-    "mcp__clockchain-handshake__agent_handshake_get_certificate",
-    "mcp__clockchain-handshake__agent_handshake_invite",
-    "mcp__clockchain-handshake__agent_handshake_join",
-    "mcp__clockchain-handshake__agent_handshake_next",
-    "mcp__clockchain-handshake__agent_handshake_status",
-    "mcp__clockchain-handshake__agent_handshake_submit",
+  const created = calls.find((entry) => entry[0] === "newSession")[1];
+  assert.deepEqual(created.mcpServers, []);
+  assert.deepEqual(created._meta.claudeCode.options.tools, ["Bash"]);
+  assert.deepEqual(created._meta.claudeCode.options.mcpServers, {
+    "clockchain-handshake": {
+      type: "http",
+      url: MCP_ENDPOINT,
+      headers: {},
+      alwaysLoad: true,
+    },
+  });
+  assert.equal(created._meta.claudeCode.options.strictMcpConfig, true);
+  assert.deepEqual(Object.keys(created._meta.claudeCode.options.toolAliases).sort(), [
+    "agent_handshake_accept_invitation", "agent_handshake_get_certificate", "agent_handshake_invite",
+    "agent_handshake_join", "agent_handshake_next", "agent_handshake_status", "agent_handshake_submit",
   ]);
 });
 
@@ -2130,7 +2135,6 @@ test("ACP responder continuation repeats the exact private invitation while no p
   assert.equal(prompts.length, 2);
   assert.match(prompts[1][1].prompt[0].text, new RegExp(INVITATION.replace(".", "\\.")));
   assert.match(prompts[1][1].prompt[0].text, /agent_handshake_accept_invitation/);
-  assert.match(prompts[1][1].prompt[0].text, /mcp__clockchain-handshake__agent_handshake_accept_invitation/);
   assert.match(prompts[1][1].prompt[0].text, /preloaded in this session/);
   assert.doesNotMatch(prompts[1][1].prompt[0].text, /ToolSearch/);
   assert.doesNotMatch(prompts[1][1].prompt[0].text, /read.*(?:file|path)|responder-invitation/i);
