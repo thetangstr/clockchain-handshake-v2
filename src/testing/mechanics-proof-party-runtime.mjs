@@ -1,6 +1,6 @@
 import { createPublicKey, generateKeyPairSync, sign } from "node:crypto";
 import { chmod, lstat, mkdir, rm, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { types } from "node:util";
 
 import { createA2ACardBootstrap } from "../a2a/card-bootstrap.mjs";
@@ -158,6 +158,15 @@ function cleanPath(value) {
   if (typeof value !== "string" || !isAbsolute(value)) fail();
   const path = resolve(value);
   if (path === "/" || path.length < 8) fail();
+  return path;
+}
+
+function workspaceDescendant(root, value) {
+  const base = cleanPath(root);
+  const path = cleanPath(value);
+  if (base.includes(":") || path.includes(":")) fail();
+  const offset = relative(base, path);
+  if (offset === "" || offset.startsWith("..") || isAbsolute(offset)) fail();
   return path;
 }
 
@@ -561,7 +570,7 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
           const processTransport = deps.createProcessTransport({
             actionRecorder: actionRecorder.actionRecorder,
             env: {
-              PATH: `${join(process.cwd(), "node_modules", ".bin")}:${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`,
+              PATH: `${workspaceDescendant(paths.workspace, actionRecorder.bin)}:${join(process.cwd(), "node_modules", ".bin")}:${dirname(process.execPath)}:/usr/local/bin:/usr/bin:/bin`,
               ...providerEnv,
             },
             harness: options.harness,

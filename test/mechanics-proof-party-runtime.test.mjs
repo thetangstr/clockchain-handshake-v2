@@ -131,10 +131,11 @@ function dependencies(calls, overrides = {}) {
       return invitation;
     },
     async waitForInvitation() { calls.push("invitation.wait"); return invitation.takeInvitation(); },
-    async createActionRecorder() {
+    async createActionRecorder(input) {
       calls.push("recorder.create");
       return {
         actionRecorder: { record() {} },
+        bin: join(input.room.workspace, ".clockchain-adapter", "bin"),
         trustedAdapterPublicKey: publicKey(),
         setCompletionHandler() {},
         async close() { calls.push("recorder.close"); },
@@ -621,6 +622,40 @@ test("party runtime narrows the direct bridge to the transport capability", asyn
   assert.equal(typeof observedBridge.observeToolResult, "function");
 });
 
+test("party runtime exposes the verified per-run authorization shim to the agent PATH", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-recorder-path-"));
+  const root = join(parent, "responder");
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  let observedPath;
+  const runtime = await createMechanicsProofPartyRuntime(options(root), dependencies([], {
+    createProcessTransport(input) {
+      observedPath = input.env.PATH;
+      return {};
+    },
+  }));
+  await runtime.run({ peerDescriptor: peerDescriptor() });
+  const [first] = observedPath.split(":");
+  assert.equal(first, join(root, "workspace", ".clockchain-adapter", "bin"));
+});
+
+test("party runtime rejects a recorder bin whose workspace path contains the PATH delimiter", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-recorder-path-delimiter-"));
+  const root = join(parent, "responder:split");
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  let transportCreated = false;
+  const runtime = await createMechanicsProofPartyRuntime(options(root), dependencies([], {
+    createProcessTransport() {
+      transportCreated = true;
+      return {};
+    },
+  }));
+  await assert.rejects(() => runtime.run({ peerDescriptor: peerDescriptor() }), (error) => {
+    assert.equal(mechanicsProofPartyRuntimeFailureStage(error), "transport-create");
+    return true;
+  });
+  assert.equal(transportCreated, false);
+});
+
 test("party runtime constructs the actual ACP transport across its production boundary", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-real-transport-"));
   const root = join(parent, "responder");
@@ -667,10 +702,10 @@ test("party runtime attempts every teardown and fails closed when any cleanup is
   t.after(() => rm(parent, { recursive: true, force: true }));
   const calls = [];
   const deps = dependencies(calls, {
-    async createActionRecorder() {
+    async createActionRecorder(input) {
       calls.push("recorder.create");
       return {
-        actionRecorder: { record() {} }, trustedAdapterPublicKey: publicKey(), setCompletionHandler() {},
+        actionRecorder: { record() {} }, bin: join(input.room.workspace, ".clockchain-adapter", "bin"), trustedAdapterPublicKey: publicKey(), setCompletionHandler() {},
         async close() { calls.push("recorder.close"); throw new Error("sensitive teardown detail"); },
       };
     },
