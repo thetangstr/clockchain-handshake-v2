@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
@@ -506,13 +506,16 @@ test("builds exact endpoint configuration for Codex and Claude Code", () => {
   assert.deepEqual(claude.launch.args, [
     "--print", "--resume", SESSION, "--model", "sonnet", "--effort", "low", "--disable-slash-commands", "--no-chrome",
     "--strict-mcp-config", "--mcp-config",
-    JSON.stringify({ mcpServers: { "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL } } }),
+    JSON.stringify({ mcpServers: {
+      "clockchain-adapter": { type: "stdio", command: "/tmp/b/.clockchain-adapter/bin/clockchain-agent-mcp", args: [] },
+      "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL },
+    } }),
     "--permission-mode", "dontAsk", "--setting-sources", "",
     "--settings", JSON.stringify(sandboxSettings),
     "--output-format", "stream-json", "--verbose",
     "--tools", "Bash,Read,ToolSearch",
     "--allowedTools",
-    ["ToolSearch", "Bash"].concat([
+    ["ToolSearch", "Bash", "mcp__clockchain-adapter__approve_bound_action"].concat([
       "agent_handshake_invite", "agent_handshake_accept_invitation", "agent_handshake_join",
       "agent_handshake_status", "agent_handshake_next", "agent_handshake_submit_checkpoint",
       "agent_handshake_submit",
@@ -1248,6 +1251,19 @@ test("harness adapter executes the exact MCP-bound argv after only a short diges
   const recorded = adapter.record(step);
   assert.equal(recorded.stateDir, join(room.tmp, ".clockchain", "handshakes", SESSION, "initiator"));
 
+  const mcp = spawn(adapter.mcpExecutable, [], { stdio: ["pipe", "pipe", "pipe"] });
+  let mcpOutput = "";
+  mcp.stdout.on("data", (chunk) => { mcpOutput += chunk.toString("utf8"); });
+  mcp.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } })}\n`);
+  mcp.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} })}\n`);
+  for (let attempt = 0; attempt < 100 && mcpOutput.trim().split("\n").length < 2; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  mcp.kill("SIGTERM");
+  const mcpResponses = mcpOutput.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(mcpResponses[0].result.serverInfo.name, "clockchain-agent-adapter");
+  assert.deepEqual(mcpResponses[1].result.tools.map((tool) => tool.name), ["approve_bound_action"]);
+
   await assert.rejects(
     execFileAsync(join(adapter.bin, "clockchain-agent-authorize"), ["f".repeat(64)], {
       cwd: room.workspace,
@@ -1430,11 +1446,13 @@ test("stakeholder prompts leave mechanics to MCP and use only preloaded verified
   const fixture = JSON.parse(await readFile(new URL("./fixtures/fresh-agent/prompts.json", import.meta.url), "utf8"));
   for (const prompt of [fixture.initiator, fixture.responder]) {
     assert.match(prompt, /may inspect the preloaded manifest and helper source/i);
-    assert.match(prompt, /run only its short approvalCommand/i);
-    assert.match(prompt, /with no prefix or suffix/i);
     assert.doesNotMatch(prompt, /inspect the public manifest/i);
     assert.doesNotMatch(prompt, /download(?:ing|ed)? .*helper/i);
   }
+  assert.match(fixture.initiator, /run only its short approvalCommand/i);
+  assert.match(fixture.initiator, /with no prefix or suffix/i);
+  assert.match(fixture.responder, /clockchain-adapter approve_bound_action/i);
+  assert.match(fixture.responder, /Never run approvalCommand .* in Bash/i);
   assert.match(fixture.initiator, /copy it from the MCP result/i);
   assert.match(fixture.initiator, /continue the Initiator side without waiting for another prompt/i);
 });
@@ -2578,6 +2596,60 @@ test("accepts independently approved MCP-bound setup actions in the agent's chos
           nonterminalHelperResult("responder", "init"),
           { command: approvalCommand(initCommand), id: "init-second" },
         )));
+        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
+        children.initiator.emit("close", 0, null);
+        children.responder.emit("close", 0, null);
+      });
+    } };
+    child.kill = () => {};
+    children[role] = child;
+    return child;
+  };
+
+  const result = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, { spawnProcess }));
+
+  assert.equal(result.certificateVerified, true);
+  assert.deepEqual(await readdir(parent), []);
+});
+
+test("Claude authorizes an MCP-bound action through the structured local adapter tool", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-claude-adapter-tool-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const children = {};
+  const command = nonterminalHelperCommand("responder", "init");
+  const digest = fingerprintHelperExecutionCommand(command).commandSha256;
+  const spawnProcess = () => {
+    const role = children.initiator === undefined ? "initiator" : "responder";
+    const child = new EventEmitter();
+    child.pid = null;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {
+      queueMicrotask(() => {
+        if (role === "initiator") {
+          child.stdout.emit("data", Buffer.from(streamEvent({ type: "item.completed", item: { type: "agent_message", text: INVITATION } })));
+          return;
+        }
+        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+        children.responder.stdout.emit("data", Buffer.from(claudeExpectedHelperEvent(command)));
+        children.responder.stdout.emit("data", Buffer.from(streamEvent({
+          type: "assistant",
+          message: { content: [{
+            type: "tool_use",
+            id: "adapter-approval",
+            name: "mcp__clockchain-adapter__approve_bound_action",
+            input: { digest },
+          }] },
+        })));
+        children.responder.stdout.emit("data", Buffer.from(streamEvent({
+          type: "user",
+          message: { content: [{
+            type: "tool_result",
+            tool_use_id: "adapter-approval",
+            content: [{ type: "text", text: JSON.stringify(nonterminalHelperResult("responder", "init")) }],
+            is_error: false,
+          }] },
+        })));
         children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
         children.initiator.emit("close", 0, null);
         children.responder.emit("close", 0, null);

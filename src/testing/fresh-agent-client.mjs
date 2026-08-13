@@ -74,6 +74,7 @@ const HELPER_RESULT_SCHEMA = "clockchain.agent-handshake-cli-result/v1";
 const EVIDENCE_SCHEMA = "clockchain.fresh-agent-canary-evidence/v1";
 const ATTEMPT_ARTIFACT_SCHEMA = "clockchain.fresh-agent-canary-attempt/v1";
 const RESPONDER_INVITATION_PLACEHOLDER = "<PASTE THE INITIATOR INVITATION>";
+const ADAPTER_APPROVAL_TOOL = "mcp__clockchain-adapter__approve_bound_action";
 const HELPER_CERTIFICATE_BINDINGS = new WeakMap();
 export const CLAUDE_CONTEXT_MARKER = "CLOCKCHAIN_CONTEXT_RECEIVED";
 export const CLAUDE_CONTEXT_PROMPT = `I am using this fresh disposable workspace for an expected Clockchain test. In my next message I will provide a concrete role-specific request. Do not perform any action now; evaluate that later request on its own exact scope and safety boundaries. Reply exactly ${CLAUDE_CONTEXT_MARKER}.`;
@@ -740,6 +741,7 @@ export function buildClientCommands({
   if (!UUID.test(claudeSessionId)) fail();
   const sandboxSettings = buildClaudeSandboxSettings({ hostHome, hostUid, workspace: cwd });
   const existingLoginIsolated = authenticationMode === "existing_login_isolated";
+  const adapterMcpExecutable = join(cwd, ".clockchain-adapter", "bin", "clockchain-agent-mcp");
   return Object.freeze({
     configure: Object.freeze({
       args: Object.freeze(existingLoginIsolated
@@ -766,7 +768,10 @@ export function buildClientCommands({
         "--model", "sonnet", "--effort", "low",
         "--disable-slash-commands", "--no-chrome",
         "--strict-mcp-config", "--mcp-config", JSON.stringify({
-          mcpServers: { "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL } },
+          mcpServers: {
+            "clockchain-adapter": { type: "stdio", command: adapterMcpExecutable, args: [] },
+            "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL },
+          },
         }),
         "--permission-mode", "dontAsk",
         "--setting-sources", "",
@@ -774,7 +779,7 @@ export function buildClientCommands({
         "--output-format", "stream-json",
         "--verbose",
         "--tools", "Bash,Read,ToolSearch",
-        "--allowedTools", ["ToolSearch", "Bash"].concat(CLOCKCHAIN_HANDSHAKE_TOOLS
+        "--allowedTools", ["ToolSearch", "Bash", ADAPTER_APPROVAL_TOOL].concat(CLOCKCHAIN_HANDSHAKE_TOOLS
           .map((tool) => `mcp__clockchain-handshake__${tool}`)
           .concat(["Read(./manifest.json)", "Read(./clockchain-agent-handshake.cjs)"]))
           .join(","),
@@ -809,19 +814,23 @@ export function buildClientContinuationCommand({
   }
   if (!UUID.test(claudeSessionId)) fail();
   const sandboxSettings = buildClaudeSandboxSettings({ hostHome, hostUid, workspace: cwd });
+  const adapterMcpExecutable = join(cwd, ".clockchain-adapter", "bin", "clockchain-agent-mcp");
   return Object.freeze({
     file: "claude",
     args: Object.freeze([
       "--print", "--resume", claudeSessionId, "--model", "sonnet", "--effort", "low",
       "--disable-slash-commands", "--no-chrome",
       "--strict-mcp-config", "--mcp-config", JSON.stringify({
-        mcpServers: { "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL } },
+        mcpServers: {
+          "clockchain-adapter": { type: "stdio", command: adapterMcpExecutable, args: [] },
+          "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL },
+        },
       }),
       "--permission-mode", "dontAsk", "--setting-sources", "",
       "--settings", JSON.stringify(sandboxSettings),
       "--output-format", "stream-json", "--verbose",
       "--tools", "Bash,Read,ToolSearch",
-      "--allowedTools", ["ToolSearch", "Bash"].concat(CLOCKCHAIN_HANDSHAKE_TOOLS
+      "--allowedTools", ["ToolSearch", "Bash", ADAPTER_APPROVAL_TOOL].concat(CLOCKCHAIN_HANDSHAKE_TOOLS
         .map((tool) => `mcp__clockchain-handshake__${tool}`)
         .concat(["Read(./manifest.json)", "Read(./clockchain-agent-handshake.cjs)"]))
         .join(","),
@@ -926,6 +935,19 @@ process.exitCode = child.status;
 `;
 }
 
+function adapterMcpServer(runtimeExecPath, approvalExecutable) {
+  return `#!${runtimeExecPath}\n` + `"use strict";\n` +
+    `const { spawnSync }=require("node:child_process");const readline=require("node:readline");` +
+    `const APPROVER=${JSON.stringify(approvalExecutable)},TOOL="approve_bound_action";` +
+    `function send(v){process.stdout.write(JSON.stringify(v)+"\\n")}function err(id,code,message){send({jsonrpc:"2.0",id,error:{code,message}})}` +
+    `readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line",line=>{let r;try{r=JSON.parse(line)}catch{return}const id=r.id;` +
+    `if(r.method==="initialize"){send({jsonrpc:"2.0",id,result:{protocolVersion:r.params?.protocolVersion??"2025-06-18",capabilities:{tools:{listChanged:false}},serverInfo:{name:"clockchain-agent-adapter",version:"1.0.0"}}});return}` +
+    `if(r.method==="notifications/initialized"||r.method==="notifications/cancelled")return;` +
+    `if(r.method==="tools/list"){send({jsonrpc:"2.0",id,result:{tools:[{name:TOOL,title:"Approve one bound Clockchain action",description:"Approve one exact MCP-bound local action by digest. The adapter executes the recorded structured action.",inputSchema:{type:"object",additionalProperties:false,properties:{digest:{type:"string",pattern:"^[0-9a-f]{64}$"}},required:["digest"]}}]}});return}` +
+    `if(r.method==="tools/call"){const a=r.params?.arguments;if(r.params?.name!==TOOL||!a||Object.keys(a).length!==1||typeof a.digest!=="string"||!/^[0-9a-f]{64}$/.test(a.digest)){err(id,-32602,"invalid arguments");return}const o=spawnSync(APPROVER,[a.digest],{encoding:"utf8",maxBuffer:1048576});if(o.error||o.status!==0){send({jsonrpc:"2.0",id,result:{content:[{type:"text",text:"Bound action failed safely."}],isError:true}});return}send({jsonrpc:"2.0",id,result:{content:[{type:"text",text:o.stdout}],isError:false}});return}` +
+    `if(id!==undefined)err(id,-32601,"method not found")});\n`;
+}
+
 async function fetchReleaseAsset(fetchImpl, url, maxBytes) {
   let response;
   try {
@@ -1006,6 +1028,9 @@ export async function prepareAgentHarnessAdapter({
   const executable = join(bin, "clockchain-agent-authorize");
   await writePrivateFile({ path: executable, bytes: Buffer.from(adapterExecutable(runtime, publicKeyDer), "utf8") });
   await chmod(executable, 0o500);
+  const mcpExecutable = join(bin, "clockchain-agent-mcp");
+  await writePrivateFile({ path: mcpExecutable, bytes: Buffer.from(adapterMcpServer(runtime, executable), "utf8") });
+  await chmod(mcpExecutable, 0o500);
   const nodeShim = join(bin, "node");
   await writePrivateFile({ path: nodeShim, bytes: Buffer.from(adapterNodeShim(runtime), "utf8") });
   await chmod(nodeShim, 0o500);
@@ -1230,7 +1255,7 @@ export async function prepareAgentHarnessAdapter({
       .map(([, value]) => value));
   }
 
-  return Object.freeze({ authorize, bin, bindRoleAccess, close, executable, pending, record, root });
+  return Object.freeze({ authorize, bin, bindRoleAccess, close, executable, mcpExecutable, pending, record, root });
 }
 
 function append(output, chunk) {
@@ -1408,6 +1433,15 @@ function parsedHelperOutput(value, role) {
     return Object.freeze({ matched: true, proof: null });
   }
   return Object.freeze({ matched: true, proof: validateHelperProof(parsed, role) });
+}
+
+function toolResultText(value) {
+  if (typeof value === "string") return value;
+  if (
+    Array.isArray(value) && value.length === 1 && value[0]?.type === "text" &&
+    typeof value[0].text === "string"
+  ) return value[0].text;
+  return null;
 }
 
 function expectedHelperCommand(value) {
@@ -1870,9 +1904,24 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
   }
   if (event?.type === "assistant" && Array.isArray(event?.message?.content)) {
     for (const block of event.message.content) {
-      if (block?.type !== "tool_use" || block?.name !== "Bash") continue;
-      if (typeof block.id !== "string" || block.id.length === 0 || typeof block?.input?.command !== "string") fail();
+      if (block?.type !== "tool_use" || !["Bash", ADAPTER_APPROVAL_TOOL].includes(block?.name)) continue;
+      if (typeof block.id !== "string" || block.id.length === 0) fail();
       if (claudeBashCommands.has(block.id)) fail();
+      if (block.name === ADAPTER_APPROVAL_TOOL) {
+        const digest = block.input?.digest;
+        if (
+          block.input === null || typeof block.input !== "object" || Array.isArray(block.input) ||
+          JSON.stringify(Object.keys(block.input).sort()) !== JSON.stringify(["digest"]) ||
+          typeof digest !== "string" || !SHA256.test(digest)
+        ) fail("agent-exit", "validation", "HELPER_COMMAND_MISMATCH");
+        const command = `clockchain-agent-authorize ${digest}`;
+        const binding = bindHelperExecution(command, expectedHelperCommands, adapter.executable, helperExecutionState.failed !== true);
+        if (!binding.bound) fail("agent-exit", "validation", "HELPER_COMMAND_MISMATCH");
+        adapter.authorize(binding.expected).catch(() => {});
+        claudeBashCommands.set(block.id, Object.freeze({ command: binding.expected.shellCommand, details: binding.details }));
+        continue;
+      }
+      if (typeof block?.input?.command !== "string") fail();
       const rawCommand = block.input.command;
       const helperShaped = /^\s*(?:clockchain-agent-authorize |node --input-type=commonjs --eval )/.test(rawCommand);
       const command = helperShaped
@@ -1900,7 +1949,7 @@ function helperProofFromEvent(event, role, manifestDigest, claudeBashCommands, e
       }
       continue;
     }
-    const output = parsedHelperOutput(block.content, role);
+    const output = parsedHelperOutput(toolResultText(block.content), role);
     if (typeof block.tool_use_id !== "string") {
       if (output.matched) fail();
       continue;
@@ -2061,7 +2110,7 @@ function observeChild(child, role, all, canaries, {
               type: ["thinking", "text", "tool_use", "tool_result"].includes(block?.type) ? block.type : "other",
               tool: typeof block?.name === "string" && (
                 CLOCKCHAIN_HANDSHAKE_TOOLS.some((name) => block.name.endsWith(`__${name}`)) ||
-                block.name === "Bash"
+                block.name === "Bash" || block.name === ADAPTER_APPROVAL_TOOL
               ) ? block.name : null,
               bashShape: block?.name === "Bash" && typeof block?.input?.command === "string"
                 ? classifyClaudeBashCommand(block.input.command)
@@ -2824,7 +2873,7 @@ export async function runFreshAgentHandshake({
         prompt: requireInvitation
           ? "The prior invitation attempt ended without a result. Retry the exact original reference, statement, validity, and identity policy only if Clockchain explicitly marked the prior response retryable:true. Never retry HANDSHAKE_UNAVAILABLE with retryable:false. Do not change the terms and do not finish until the invitation is returned or Clockchain gives a terminal rejection."
           : pendingAction !== undefined
-            ? `Clockchain has an exact pending ${pendingAction.operation} action from the latest MCP result. Preserve the assigned role and exact local policy, and make your own policy decision now. If it is permitted, execute only the exact approvalCommand already returned by Clockchain; the adapter will run the bound action without the model rewriting it. For proposal or acceptance, the adapter automatically submits the commitment checkpoint before releasing the signature. Do not create or call a checkpoint; submit the exact returned signature with agent_handshake_submit. If it is not permitted, state the refusal and stop. Do not call agent_handshake_next again until this action is approved and its helper result is submitted. Do not finish until the signed closing certificate is locally verified.`
+            ? `Clockchain has an exact pending ${pendingAction.operation} action from the latest MCP result. Preserve the assigned role and exact local policy, and make your own policy decision now. If it is permitted, ${current.client === "claude" ? "call clockchain-adapter approve_bound_action with only the digest from approvalCommand; never run approvalCommand in Bash" : "execute only the exact approvalCommand already returned by Clockchain"}. The adapter will run the bound action without the model rewriting it. For proposal or acceptance, the adapter automatically submits the commitment checkpoint before releasing the signature. Do not create or call a checkpoint; submit the exact returned signature with agent_handshake_submit. If it is not permitted, state the refusal and stop. Do not call agent_handshake_next again until this action is approved and its helper result is submitted. Do not finish until the signed closing certificate is locally verified.`
           : "Continue the existing Clockchain handshake now. Preserve the assigned role and local policy. Poll only at Clockchain's returned interval, approve only matching digest-bound local actions, and do not finish until the signed closing certificate is locally verified.",
         workspace: room.workspace,
       });
