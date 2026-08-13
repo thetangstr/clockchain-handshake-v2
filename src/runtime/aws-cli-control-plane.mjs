@@ -38,6 +38,17 @@ const ECS_ATTESTATION_KEYS = Object.freeze([
 ]);
 const PUBLIC_PARTY_FAILURES = new WeakMap();
 const PUBLIC_PARTY_PROGRESS = new WeakMap();
+const PUBLIC_CONTROL_PLANE_FAILURE_STAGE = new WeakMap();
+
+function controlPlaneFailureError(stage) {
+  const error = new Error("AWS CLI control-plane validation failed safely.");
+  PUBLIC_CONTROL_PLANE_FAILURE_STAGE.set(error, stage);
+  return error;
+}
+
+export function publicControlPlaneFailureStage(error) {
+  return PUBLIC_CONTROL_PLANE_FAILURE_STAGE.get(error) ?? null;
+}
 
 function partyFailureError(failures, progress = new Map()) {
   const error = new Error("AWS CLI control-plane observed a safe party failure.");
@@ -412,20 +423,26 @@ export function createAwsCliControlPlane(optionsInput = {}) {
             "logs", "filter-log-events", "--log-group-name", group, "--start-time", String(startTimeMs),
             "--region", region, "--output", "json",
           ]);
-          if (!Array.isArray(response.events) || response.nextToken !== undefined) fail();
+          if (!Array.isArray(response.events)) throw controlPlaneFailureError("logs-envelope");
+          if (response.nextToken !== undefined) throw controlPlaneFailureError("logs-pagination");
           for (const event of response.events) {
-            if (!Number.isSafeInteger(event.timestamp)) fail();
+            if (!Number.isSafeInteger(event.timestamp)) throw controlPlaneFailureError("event-timestamp");
             if (event.timestamp < startTimeMs) continue;
-            if (typeof event.message !== "string") fail();
+            if (typeof event.message !== "string") throw controlPlaneFailureError("event-message");
             if (event.message.startsWith(PARTY_FAILURE_PREFIX)) {
               const stage = event.message.slice(PARTY_FAILURE_PREFIX.length);
-              if (!PARTY_FAILURE_STAGE.test(stage)) fail();
+              if (!PARTY_FAILURE_STAGE.test(stage)) throw controlPlaneFailureError("party-failure-stage");
               const previousFailure = failures.get(groupRole);
-              if (previousFailure !== undefined && previousFailure !== stage) fail();
+              if (previousFailure !== undefined && previousFailure !== stage) throw controlPlaneFailureError("party-failure-stage");
               failures.set(groupRole, stage);
               continue;
             }
-            const record = parse(event.message);
+            let record;
+            try {
+              record = parse(event.message);
+            } catch {
+              throw controlPlaneFailureError("event-json");
+            }
             if (record.schema === "clockchain.mechanics-proof-ecs-attestation/v1") {
               if (
                 JSON.stringify(Object.keys(record).sort()) !== JSON.stringify(ECS_ATTESTATION_KEYS) ||
@@ -433,7 +450,7 @@ export function createAwsCliControlPlane(optionsInput = {}) {
                 !/^[0-9a-f]{64}$/.test(record.workloadAttestationDigest) || !/^sha256:[0-9a-f]{64}$/.test(record.imageId) ||
                 [record.availabilityZone, record.containerArn, record.family, record.privateIp, record.region, record.revision,
                   record.stsArn, record.stsUserId, record.taskArn, record.taskId].some((value) => typeof value !== "string" || value.length < 1 || value.length > 4096)
-              ) fail();
+              ) throw controlPlaneFailureError("attestation-shape");
               if (!progress.has(groupRole)) progress.set(groupRole, "ecs.attested");
               continue;
             }
@@ -443,27 +460,27 @@ export function createAwsCliControlPlane(optionsInput = {}) {
                 JSON.stringify(keys) !== JSON.stringify(["evidenceDigest", "role", "runId", "schema", "sequence", "type"]) ||
                 record.role !== groupRole || record.runId !== runId ||
                 !/^[1-9][0-9]*$/.test(record.sequence) || !PARTY_PROGRESS_TYPES.includes(record.type) || !/^[0-9a-f]{64}$/.test(record.evidenceDigest)
-              ) fail();
+              ) throw controlPlaneFailureError("progress-shape");
               const sequence = Number(record.sequence);
-              if (!Number.isSafeInteger(sequence)) fail();
+              if (!Number.isSafeInteger(sequence)) throw controlPlaneFailureError("progress-shape");
               const priorType = progressEvents.get(groupRole).get(sequence);
               if (priorType !== undefined) {
                 if (priorType !== record.type) fail();
                 continue;
               }
-              if (sequence <= (progressSequence.get(groupRole) ?? 0)) fail();
+              if (sequence <= (progressSequence.get(groupRole) ?? 0)) throw controlPlaneFailureError("progress-shape");
               progressEvents.get(groupRole).set(sequence, record.type);
               progressSequence.set(groupRole, sequence);
               progress.set(groupRole, record.type);
               continue;
             }
             if (record.schema !== "clockchain.mechanics-proof-party-evidence/v1") continue;
-            if (!["initiator", "responder"].includes(record.role)) fail();
-            if (record.role !== groupRole || record.runId !== runId) fail();
+            if (!["initiator", "responder"].includes(record.role)) throw controlPlaneFailureError("evidence-shape");
+            if (record.role !== groupRole || record.runId !== runId) throw controlPlaneFailureError("evidence-shape");
             record.timestamp = new Date(event.timestamp).toISOString();
             const previous = byRole.get(record.role);
             const serialized = JSON.stringify(record);
-            if (previous !== undefined && JSON.stringify(previous) !== serialized) fail();
+            if (previous !== undefined && JSON.stringify(previous) !== serialized) throw controlPlaneFailureError("evidence-shape");
             byRole.set(record.role, record);
           }
         }

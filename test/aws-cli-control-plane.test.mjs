@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   createAwsCliControlPlane,
+  publicControlPlaneFailureStage,
   publicPartyFailureStages,
   publicPartyProgressStages,
 } from "../src/runtime/aws-cli-control-plane.mjs";
@@ -356,6 +357,60 @@ test("AWS CLI control plane retains only the latest exact public progress stage 
     assert.doesNotMatch(JSON.stringify(error), /amazonaws|secret|certificate|private/i);
     return true;
   });
+});
+
+test("AWS CLI control plane brands a malformed public log line without retaining its contents", async () => {
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    executor: async () => ({
+      stdout: JSON.stringify({ events: [{ timestamp: 1786565101000, message: "private malformed log contents" }] }),
+      stderr: "",
+      exitCode: 0,
+    }),
+  });
+
+  await assert.rejects(() => control.pollPublicEvents({
+    logGroupNames: ["/clockchain/mechanics-proof/run/initiator", "/clockchain/mechanics-proof/run/responder"],
+    runId: "11111111-2222-4333-8444-555555555555",
+    startTimeMs: 0,
+    deadlineMs: Date.now() + 1000,
+  }), (error) => {
+    assert.equal(publicControlPlaneFailureStage(error), "event-json");
+    assert.equal(publicControlPlaneFailureStage(new Error(error.message)), null);
+    assert.equal(JSON.stringify(error).includes("private malformed log contents"), false);
+    return true;
+  });
+});
+
+test("AWS CLI control plane exposes fixed public-log validation stages only", async () => {
+  const timestamp = Date.now();
+  const cases = [
+    [{ events: "not-an-array" }, "logs-envelope"],
+    [{ events: [], nextToken: "opaque" }, "logs-pagination"],
+    [{ events: [{ timestamp: "not-an-integer", message: "{}" }] }, "event-timestamp"],
+    [{ events: [{ timestamp, message: 7 }] }, "event-message"],
+    [{ events: [{ timestamp, message: "Mechanics proof party failed safely. stage=private" }] }, "party-failure-stage"],
+    [{ events: [{ timestamp, message: JSON.stringify({ schema: "clockchain.mechanics-proof-ecs-attestation/v1" }) }] }, "attestation-shape"],
+    [{ events: [{ timestamp, message: JSON.stringify({ schema: "clockchain.mechanics-proof-party-event/v1" }) }] }, "progress-shape"],
+    [{ events: [{ timestamp, message: JSON.stringify({ schema: "clockchain.mechanics-proof-party-evidence/v1" }) }] }, "evidence-shape"],
+  ];
+
+  for (const [body, expectedStage] of cases) {
+    const control = createAwsCliControlPlane({
+      region: "us-west-2",
+      executor: async () => ({ stdout: JSON.stringify(body), stderr: "", exitCode: 0 }),
+    });
+    await assert.rejects(() => control.pollPublicEvents({
+      logGroupNames: ["/clockchain/mechanics-proof/run/initiator", "/clockchain/mechanics-proof/run/responder"],
+      runId: "11111111-2222-4333-8444-555555555555",
+      startTimeMs: 0,
+      deadlineMs: Date.now() + 1000,
+    }), (error) => {
+      assert.equal(publicControlPlaneFailureStage(error), expectedStage);
+      assert.equal(JSON.stringify(error).includes("opaque"), false);
+      return true;
+    });
+  }
 });
 
 test("AWS CLI control plane excludes stale same-run failures from a later cloud attempt", async () => {

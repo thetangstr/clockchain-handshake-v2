@@ -449,6 +449,32 @@ test("live Fargate adapter returns failed-clean after protocol failure with conf
   assert.equal(retained.length, 0);
 });
 
+test("live Fargate adapter reports a secret-free public-log validation substage", async () => {
+  const plan = await livePlan();
+  const controlPlane = fakeControlPlane(plan);
+  const diagnostic = createAwsCliControlPlane({
+    region: REGION,
+    executor: async () => ({
+      stdout: JSON.stringify({ events: [{ timestamp: Date.now(), message: "private malformed log contents" }] }),
+      stderr: "",
+      exitCode: 0,
+    }),
+  });
+  controlPlane.pollPublicEvents = (input) => diagnostic.pollPublicEvents(input);
+
+  const result = await runFargateLiveMechanicsProof({
+    plan,
+    controlPlane,
+    mcpGate: async () => ({ healthy: true, checkpointTool: true, endpoint: "https://mcp.clockchain.network/handshake/mcp" }),
+    retainEvidence: async () => { throw new Error("must not retain"); },
+  });
+
+  assert.equal(result.status, PROTOCOL_FAILED_CLEAN);
+  assert.equal(result.controllerFailureStage, "poll-events");
+  assert.equal(result.controllerFailureDetail, "event-json");
+  assert.equal(JSON.stringify(result).includes("private malformed log contents"), false);
+});
+
 test("live Fargate adapter reports only fixed cleanup step codes when cleanup is unconfirmed", async () => {
   const plan = await livePlan();
   const controlPlane = fakeControlPlane(plan, { failAt: "stop-initiator" });
