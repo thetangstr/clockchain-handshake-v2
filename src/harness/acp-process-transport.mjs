@@ -1328,9 +1328,14 @@ export function createAcpProcessTransport(optionsInput = {}) {
             role: session.role,
             sessionId: retainedSessionId,
           });
-          latestHelperOperation = extractedHelperSteps.length === 0
-            ? null
-            : extractedHelperSteps[extractedHelperSteps.length - 1].operation;
+          if (extractedHelperSteps.length > 0) {
+            latestHelperOperation = extractedHelperSteps[extractedHelperSteps.length - 1].operation;
+          } else if (
+            latestHelperOperation !== "sign" ||
+            toolResult.toolName === "agent_handshake_submit"
+          ) {
+            latestHelperOperation = null;
+          }
           failureStage = "retained-record";
           const extractedRetainedActions = extractedHelperSteps.map((step) => validateRetainedLocalAction(actionRecorder.record(step)));
           failureStage = "retained-register";

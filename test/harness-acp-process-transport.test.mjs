@@ -1865,6 +1865,90 @@ test("ACP continuation submits the exact result of a completed signing helper", 
   assert.doesNotMatch(prompts[1][1].prompt[0].text, /agent_handshake_join|agent_handshake_status|agent_handshake_next/);
 });
 
+test("ACP continuation preserves a completed signature until Clockchain acknowledges its submit", async () => {
+  const action = retainedAction({ operation: "sign", commandSha256: "6".repeat(64) });
+  const calls = [];
+  let completionChecks = 0;
+  const transport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({
+      calls,
+      permissionCommand: `clockchain-agent-authorize ${action.commandSha256}`,
+      helperCompletionOutput: {
+        formatted_output: JSON.stringify({
+          address: "0x1111111111111111111111111111111111111111",
+          bytesSha256: "5".repeat(64),
+          helperVersion: "2.1.2",
+          operation: "sign",
+          schema: "clockchain.agent-handshake-cli-result/v1",
+          signatureHex: `0x${"a".repeat(130)}`,
+        }),
+        exit_code: 0,
+      },
+      sessionUpdates: (promptCount) => promptCount === 0 ? [{
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-join-before-sign",
+        kind: "other",
+        title: "agent_handshake_join",
+        status: "completed",
+        rawInput: { server: "clockchain-handshake", tool: "agent_handshake_join", arguments: {} },
+        rawOutput: { result: { sessionId: SESSION }, error: null },
+      }, {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-next-sign",
+        kind: "other",
+        title: "agent_handshake_next",
+        status: "completed",
+        rawInput: { server: "clockchain-handshake", tool: "agent_handshake_next", arguments: {} },
+        rawOutput: { result: { sessionId: SESSION, helperStep: helperStepForAction(action) }, error: null },
+      }, {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-status-after-sign",
+        kind: "other",
+        title: "agent_handshake_status",
+        status: "completed",
+        rawInput: { server: "clockchain-handshake", tool: "agent_handshake_status", arguments: {} },
+        rawOutput: { result: { sessionId: SESSION, stage: "sign_proposal" }, error: null },
+      }] : promptCount === 1 ? [{
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-submit-signature",
+        kind: "other",
+        title: "agent_handshake_submit",
+        status: "completed",
+        rawInput: { server: "clockchain-handshake", tool: "agent_handshake_submit", arguments: {} },
+        rawOutput: { result: { sessionId: SESSION, stage: "proposal_submitted" }, error: null },
+      }] : [],
+    }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    nowMs: () => 1786337001000,
+    actionRecorder: actionRecorderFor([action], calls),
+    partyBridge: partyBridgeFor(calls, {
+      completionStatus() {
+        completionChecks += 1;
+        return { complete: completionChecks >= 3, protocolSessionId: SESSION };
+      },
+    }),
+    env: {},
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  }).catch((error) => assert.fail(`unexpected stage ${acpProcessTransportFailureStage(error)}`));
+  const prompts = calls.filter((entry) => entry[0] === "prompt");
+  assert.equal(prompts.length, 3);
+  assert.match(prompts[1][1].prompt[0].text, /latest retained signing helper has completed/i);
+  assert.match(prompts[1][1].prompt[0].text, /Call agent_handshake_submit now/i);
+  assert.doesNotMatch(prompts[1][1].prompt[0].text, /agent_handshake_next/);
+  assert.match(prompts[2][1].prompt[0].text, /Call agent_handshake_next now/i);
+  assert.doesNotMatch(prompts[2][1].prompt[0].text, /agent_handshake_submit/);
+});
+
 test("ACP continuation retains validated public helper output for the exact join call", async () => {
   const action = retainedAction({ operation: "inspect", commandSha256: "8".repeat(64) });
   const access = `${"q".repeat(96)}.${"r".repeat(43)}`;
