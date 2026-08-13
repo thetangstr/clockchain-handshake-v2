@@ -37,6 +37,9 @@ const MAX_PROVISIONAL_TOOL_UPDATES = 16;
 const MAX_COMPLETION_PROMPTS = 24;
 const MAX_PERMISSION_DENIALS = 16;
 const INVITATION = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+const SIGNATURE = /^0x[0-9a-fA-F]{130}$/;
+const SHA256 = /^[0-9a-f]{64}$/;
 const PERMISSION_REGISTRATION_GRACE_MS = 5_000;
 const PROCESS_TERM_GRACE_MS = 50;
 const PROCESS_KILL_GRACE_MS = 50;
@@ -399,7 +402,7 @@ function promptText({ role, sessionId, mandate, a2aConfig }) {
 
 function continuationPromptText({
   role, protocolSessionId, mandate, a2aConfig, bridgeProgress, joined, latestHelperOperation, roleAccess,
-  pendingApprovals,
+  helperPublic, pendingApprovals,
 }) {
   const approvals = snapshotArray(pendingApprovals, { max: 3 });
   if (
@@ -449,22 +452,25 @@ function continuationPromptText({
   }
   if (joined !== true) {
     const accessField = role === "initiator" ? "initiatorAccess" : "responderAccess";
+    const inspect = helperPublic.inspect;
     return [
       `Continue the existing Clockchain handshake in protocol session ${protocolSessionId}; do not create or accept another invitation.`,
       "You have not joined this Clockchain protocol session.",
       `Use the exact ${accessField} returned by Clockchain as the join argument named access: ${roleAccess ?? accessField}.`,
-      "Call agent_handshake_join now using that access plus the exact helperVersion, sessionKeyAddress, and policyDigest from the retained-helper results.",
+      `Call agent_handshake_join now with exactly: ${JSON.stringify({ access: roleAccess, helperVersion: inspect?.helperVersion, sessionKeyAddress: inspect?.address, policyDigest: inspect?.policyDigest })}.`,
       "Call no other tool before agent_handshake_join returns.",
       "Do not end your turn before agent_handshake_join returns or a non-retryable tool error makes completion impossible.",
     ].join("\n");
   }
   if (latestHelperOperation === "sign") {
     const accessField = role === "initiator" ? "initiatorAccess" : "responderAccess";
+    const signed = helperPublic.sign;
+    const policyDigest = helperPublic.inspect?.policyDigest;
     return [
       `Continue the existing Clockchain handshake in protocol session ${protocolSessionId}; do not create or accept another invitation.`,
       "The latest retained signing helper has completed.",
       `Use the exact unchanged ${accessField} returned by Clockchain as the submit argument named access: ${roleAccess ?? accessField}.`,
-      "Call agent_handshake_submit now using that access and the exact policyDigest plus signatureHex from the completed helper output.",
+      `Call agent_handshake_submit now with exactly: ${JSON.stringify({ access: roleAccess, policyDigest, signatureHex: signed?.signatureHex })}.`,
       "Call no other tool before agent_handshake_submit returns.",
       "Do not end your turn before agent_handshake_submit returns or a non-retryable tool error makes completion impossible.",
     ].join("\n");
@@ -842,6 +848,45 @@ function roleAccessFromToolResult(value, role, depth = 0, found = new Set()) {
   return found;
 }
 
+function retainedHelperPublicResult(value, operation) {
+  let text;
+  if (typeof value === "string") text = value;
+  else {
+    const output = exactObject(value, ["exit_code", "formatted_output"]);
+    if (output.exit_code !== 0 || typeof output.formatted_output !== "string") fail();
+    text = output.formatted_output;
+  }
+  let parsed;
+  try { parsed = JSON.parse(text.trim()); } catch { fail(); }
+  if (parsed?.schema !== "clockchain.agent-handshake-cli-result/v1" || parsed?.helperVersion !== "2.1.2" || parsed?.operation !== operation) fail();
+  if (operation === "init") {
+    const item = exactObject(parsed, ["address", "helperVersion", "operation", "schema"]);
+    if (!ADDRESS.test(item.address)) fail();
+    return Object.freeze({ address: item.address.toLowerCase(), helperVersion: item.helperVersion, operation });
+  }
+  if (operation === "policy") {
+    const item = exactObject(parsed, ["helperVersion", "operation", "policyDigest", "schema"]);
+    if (!SHA256.test(item.policyDigest)) fail();
+    return Object.freeze({ helperVersion: item.helperVersion, operation, policyDigest: item.policyDigest });
+  }
+  if (operation === "inspect") {
+    const item = exactObject(parsed, ["address", "helperVersion", "operation", "policyDigest", "registration", "schema"]);
+    if (!ADDRESS.test(item.address) || !SHA256.test(item.policyDigest)) fail();
+    return Object.freeze({ address: item.address.toLowerCase(), helperVersion: item.helperVersion, operation, policyDigest: item.policyDigest });
+  }
+  if (operation === "register") {
+    const item = exactObject(parsed, ["address", "helperVersion", "operation", "registration", "schema"]);
+    if (!ADDRESS.test(item.address)) fail();
+    return Object.freeze({ address: item.address.toLowerCase(), helperVersion: item.helperVersion, operation });
+  }
+  if (operation === "sign") {
+    const item = exactObject(parsed, ["address", "bytesSha256", "helperVersion", "operation", "schema", "signatureHex"]);
+    if (!ADDRESS.test(item.address) || !SHA256.test(item.bytesSha256) || !SIGNATURE.test(item.signatureHex)) fail();
+    return Object.freeze({ address: item.address.toLowerCase(), helperVersion: item.helperVersion, operation, signatureHex: item.signatureHex });
+  }
+  return null;
+}
+
 function wait(ms) {
   return new Promise((resolve) => { setTimeout(resolve, ms); });
 }
@@ -943,6 +988,8 @@ export function createAcpProcessTransport(optionsInput = {}) {
   const observedClockchainTools = new Set();
   let latestHelperOperation = null;
   let retainedRoleAccess = null;
+  const authorizedHelperCalls = new Map();
+  const helperPublic = {};
   let protocolFailure = false;
   let protocolFailureStage = null;
   let sessionUpdateBarrier = Promise.resolve();
@@ -1113,6 +1160,8 @@ export function createAcpProcessTransport(optionsInput = {}) {
       denialStage = "options";
       const allowOnce = allowOnceOption(params);
       entry.state = "authorized";
+      if (typeof params?.toolCall?.toolCallId !== "string" || params.toolCall.toolCallId.length === 0) fail();
+      authorizedHelperCalls.set(params.toolCall.toolCallId, digestValue);
       permissionAuthorized = true;
       event("acp.permission.authorized", "authorized retained local action", digestValue);
       return Object.freeze({ outcome: Object.freeze({ outcome: "selected", optionId: allowOnce }) });
@@ -1186,6 +1235,16 @@ export function createAcpProcessTransport(optionsInput = {}) {
       }
       if (updateType === "tool_call" || updateType === "tool_call_update") {
         failureStage = "tool-result";
+        const helperDigest = typeof params.update.toolCallId === "string"
+          ? authorizedHelperCalls.get(params.update.toolCallId)
+          : undefined;
+        if (helperDigest !== undefined && params.update.status === "completed") {
+          const entry = retainedByCommand.get(helperDigest);
+          if (entry === undefined || entry.state !== "authorized") fail();
+          const publicResult = retainedHelperPublicResult(params.update.rawOutput, entry.action.operation);
+          if (publicResult !== null) helperPublic[entry.action.operation] = publicResult;
+          authorizedHelperCalls.delete(params.update.toolCallId);
+        }
         const clockchainToolName = parseToolName(params.update);
         if (clockchainToolName !== null) clockchainToolUpdates += 1;
         if (clockchainToolName !== null && params.update.status === "failed") failedClockchainToolResults += 1;
@@ -1290,6 +1349,8 @@ export function createAcpProcessTransport(optionsInput = {}) {
       observedClockchainTools.clear();
       latestHelperOperation = null;
       retainedRoleAccess = null;
+      authorizedHelperCalls.clear();
+      for (const key of Object.keys(helperPublic)) delete helperPublic[key];
       sessionUpdateBarrier = Promise.resolve();
       cancelRetainedRegistrationWaiters();
       retainedByCommand.clear();
@@ -1374,6 +1435,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
                   joined: observedClockchainTools.has("agent_handshake_join"),
                   latestHelperOperation,
                   roleAccess: retainedRoleAccess,
+                  helperPublic,
                   pendingApprovals: [...retainedByCommand.values()]
                     .filter((entry) => entry.state === "pending")
                     .map((entry) => `clockchain-agent-authorize ${entry.action.commandSha256}`),

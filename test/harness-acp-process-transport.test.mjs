@@ -112,6 +112,7 @@ function acpFixtureSpawn({
   concurrentHelperPermission = false,
   helperUpdateAfterPermissionRequest = false,
   helperAction = null,
+  helperCompletionOutput = null,
   newSessionUpdates = null,
   newSessionResolvedMarker = false,
   newSessionUpdateSessionId = `acp-${SESSION}`,
@@ -272,6 +273,17 @@ function acpFixtureSpawn({
           if (typeof helperUpdate === "function") helperUpdate = helperUpdate();
           const permission = await permissionRequest;
           calls.push(["permission", permission]);
+          if (helperCompletionOutput !== null && permission.outcome.outcome === "selected") {
+            await connection.sessionUpdate({
+              sessionId: params.sessionId,
+              update: {
+                sessionUpdate: "tool_call_update",
+                toolCallId: permissionToolCall?.toolCallId ?? "tool-1",
+                status: "completed",
+                rawOutput: helperCompletionOutput,
+              },
+            });
+          }
           if (duplicatePermissionAfterHelper) {
             const duplicatePermission = await connection.requestPermission({
               sessionId: params.sessionId,
@@ -1633,6 +1645,64 @@ test("ACP continuation submits the exact result of a completed signing helper", 
   assert.match(prompts[1][1].prompt[0].text, /initiatorAccess.*submit argument named access/i);
   assert.match(prompts[1][1].prompt[0].text, /Call agent_handshake_submit now/i);
   assert.doesNotMatch(prompts[1][1].prompt[0].text, /agent_handshake_join|agent_handshake_status|agent_handshake_next/);
+});
+
+test("ACP continuation retains validated public helper output for the exact join call", async () => {
+  const action = retainedAction({ operation: "inspect", commandSha256: "8".repeat(64) });
+  const access = `${"q".repeat(96)}.${"r".repeat(43)}`;
+  const address = "0x1111111111111111111111111111111111111111";
+  const policyDigest = "7".repeat(64);
+  const calls = [];
+  let completionChecks = 0;
+  const transport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({
+      calls,
+      helperAction: action,
+      permissionCommand: `clockchain-agent-authorize ${action.commandSha256}`,
+      helperCompletionOutput: {
+        formatted_output: JSON.stringify({
+          schema: "clockchain.agent-handshake-cli-result/v1", helperVersion: "2.1.2", operation: "inspect",
+          address, policyDigest, registration: null,
+        }),
+        exit_code: 0,
+      },
+      sessionUpdates: (promptCount) => promptCount === 0 ? [{
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tool-invite-inspect",
+        kind: "other",
+        title: "agent_handshake_invite",
+        status: "completed",
+        rawInput: { server: "clockchain-handshake", tool: "agent_handshake_invite", arguments: {} },
+        rawOutput: { result: { sessionId: SESSION, initiatorAccess: access, helperStep: helperStepForAction(action) }, error: null },
+      }] : [],
+    }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    nowMs: () => 1786337001000,
+    actionRecorder: actionRecorderFor([action], calls),
+    partyBridge: partyBridgeFor(calls, {
+      completionStatus() {
+        completionChecks += 1;
+        return { complete: completionChecks >= 2, protocolSessionId: SESSION };
+      },
+    }),
+    env: {},
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  });
+  const continuation = calls.filter((entry) => entry[0] === "prompt")[1][1].prompt[0].text;
+  assert.match(continuation, new RegExp(access.replace(".", "\\.")));
+  assert.match(continuation, new RegExp(address));
+  assert.match(continuation, new RegExp(policyDigest));
+  assert.match(continuation, /"helperVersion":"2\.1\.2"/);
 });
 
 test("ACP completion loop leaves headroom to verify a certificate after sixteen protocol turns", async () => {
