@@ -86,11 +86,12 @@ function actionRecorderFor(actions, calls = []) {
   });
 }
 
-function partyBridgeFor(calls, { reject = false, completionStatus = () => ({ complete: true, protocolSessionId: SESSION }) } = {}) {
+function partyBridgeFor(calls, { delayMs = 0, reject = false, completionStatus = () => ({ complete: true, protocolSessionId: SESSION }) } = {}) {
   return Object.freeze({
     completionStatus,
     async observeToolResult(input) {
       calls.push(["partyBridge", input]);
+      if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
       if (reject) throw new Error("party bridge rejected secret-canary /Users/alice/secret");
       return { observed: true, protocolSessionId: SESSION, toolResultDigest: "f".repeat(64) };
     },
@@ -100,6 +101,7 @@ function partyBridgeFor(calls, { reject = false, completionStatus = () => ({ com
 function acpFixtureSpawn({
   calls,
   closeState = null,
+  concurrentHelperPermission = false,
   helperAction = null,
   newSessionUpdates = null,
   newSessionResolvedMarker = false,
@@ -154,12 +156,13 @@ function acpFixtureSpawn({
       async prompt(params) {
         calls.push(["prompt", params]);
         const updateSessionId = promptUpdateSessionId ?? params.sessionId;
+        let helperUpdate = null;
         if (sessionUpdates !== null) {
           for (const update of sessionUpdates) {
             await connection.sessionUpdate({ sessionId: updateSessionId, update });
           }
         } else if (helperAction !== null) {
-          await connection.sessionUpdate({
+          helperUpdate = connection.sessionUpdate({
             sessionId: params.sessionId,
             update: {
               sessionUpdate: "tool_call_update",
@@ -182,6 +185,7 @@ function acpFixtureSpawn({
               },
             },
           });
+          if (!concurrentHelperPermission) await helperUpdate;
         }
         if (!skipPermission) {
           await connection.sessionUpdate({
@@ -220,6 +224,7 @@ function acpFixtureSpawn({
           });
           calls.push(["permission", permission]);
         }
+        if (helperUpdate !== null) await helperUpdate;
         await connection.sessionUpdate({
           sessionId: params.sessionId,
           update: { sessionUpdate: "usage_update", used: 7, size: 100000 },
@@ -755,6 +760,43 @@ test("ACP process transport performs real ACP lifecycle with unauthenticated ded
   assert.equal(evidence.usage.outputTokens, "4");
   assert.equal(evidence.teardown.completed, true);
   assert.doesNotMatch(JSON.stringify(evidence), /cc_secret|CLOCKCHAIN_MCP_BEARER|transcript|reasoning|\/workspace/i);
+});
+
+test("ACP process transport waits for an in-flight authoritative MCP result before approving its retained command", async () => {
+  const action = retainedAction({ role: "initiator", requestDigest: "d".repeat(64), commandSha256: DIGEST });
+  const calls = [];
+  const transport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({
+      calls,
+      concurrentHelperPermission: true,
+      helperAction: action,
+      permissionCwd: "/workspace/initiator",
+    }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    nowMs: () => 1786337001000,
+    actionRecorder: actionRecorderFor([action], calls),
+    env: {},
+    retainedActions: [],
+    partyBridge: partyBridgeFor(calls, { delayMs: 20 }),
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+
+  await transport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  });
+
+  assert.deepEqual(calls.find((entry) => entry[0] === "permission")[1], {
+    outcome: { outcome: "selected", optionId: "allow_once" },
+  });
+  assert.ok(calls.findIndex((entry) => entry[0] === "partyBridge") < calls.findIndex((entry) => entry[0] === "record"));
+  await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
 });
 
 test("ACP process transport re-prompts an end-turning agent until the Clockchain bridge is complete", async () => {

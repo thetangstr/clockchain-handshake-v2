@@ -733,6 +733,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
   let permissionDenied = false;
   let protocolFailure = false;
   let protocolFailureStage = null;
+  let sessionUpdateBarrier = Promise.resolve();
   let usage = Object.freeze({ inputTokens: "0", outputTokens: "0" });
   const events = [];
   const retainedByCommand = new Map();
@@ -777,6 +778,9 @@ export function createAcpProcessTransport(optionsInput = {}) {
     try {
       if (session === null || params?.sessionId !== acpSessionId) fail();
       const digestValue = permissionCommand(params);
+      const barrier = sessionUpdateBarrier;
+      await barrier;
+      if (protocolFailure) fail();
       const entry = retainedByCommand.get(digestValue);
       if (entry === undefined || entry.state !== "pending") fail();
       const optionsList = params?.options;
@@ -789,7 +793,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
       return Object.freeze({ outcome: Object.freeze({ outcome: "cancelled" }) });
     }
   }
-  async function sessionUpdate(params) {
+  async function processSessionUpdate(params) {
     let failureStage = "envelope-runtime";
     try {
       if (session === null) fail();
@@ -880,6 +884,11 @@ export function createAcpProcessTransport(optionsInput = {}) {
       protocolFailureStage ??= failureStage;
     }
   }
+  function sessionUpdate(params) {
+    const current = sessionUpdateBarrier.then(() => processSessionUpdate(params));
+    sessionUpdateBarrier = current;
+    return current;
+  }
   return Object.freeze({
     async launch(input) {
       const launchOptions = exactObject(input, ["a2aConfig", "acp", "mandate", "mcpEndpoint", "runtime"]);
@@ -900,6 +909,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
       provisionalAcpSessionId = null;
       provisionalToolUpdates.length = 0;
       sessionEstablishing = false;
+      sessionUpdateBarrier = Promise.resolve();
       retainedByCommand.clear();
       for (const action of retainedActions) {
         if (partyBridge === null && action.sessionId === clean.sessionId && action.role === clean.role) registerRetainedAction(action);
