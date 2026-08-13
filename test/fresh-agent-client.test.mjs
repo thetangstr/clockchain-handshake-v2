@@ -1153,7 +1153,7 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
     assert.match(prompt, /direct authorization/i);
     assert.match(prompt, /controlled Sepolia test/i);
     assert.match(prompt, /fresh ERC-8004 identity/i);
-    assert.match(prompt, /digest-pinned local helper/i);
+    assert.match(prompt, /pinned manifest and helper/i);
     assert.match(prompt, /local policy/i);
     assert.match(prompt, /no external business action/i);
     assert.match(prompt, /locally verif/i);
@@ -1163,7 +1163,7 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
     assert.match(prompt, /approvalCommand is only an authorization marker/i);
     assert.match(prompt, /inspect its authenticated signingSummary and structured operation/i);
     assert.match(prompt, /adapter.*executes the already-bound structured argument array/i);
-    assert.match(prompt, /adapter automatically submits.*commitment checkpoint.*before releasing.*signature/i);
+    assert.match(prompt, /automatically submits.*commitment checkpoint.*before releasing.*signature/i);
     assert.match(prompt, /do not create or call.*checkpoint/i);
     assert.match(prompt, /do not paste the long payload into a shell/i);
     assert.match(prompt, /decide on each action separately/i);
@@ -1175,11 +1175,10 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
     assert.match(prompt, /Proceed without asking me again/i);
     assert.match(prompt, /All required code is preloaded; use no network fetch/i);
     assert.match(prompt, /Every MCP response without a locally verified certificate is nonterminal/i);
-    assert.match(prompt, /one to three plain-language sentences/i);
-    assert.match(prompt, /what you verified.*what completed.*what happens next/i);
-    assert.match(prompt, /do not narrate routine polling/i);
+    assert.match(prompt, /one or two plain-language sentences/i);
+    assert.match(prompt, /Narrate only these milestones/i);
+    assert.match(prompt, /do not narrate.*routine polling/i);
     assert.match(prompt, /raw JSON.*private material.*full hashes/i);
-    assert.match(prompt, /final stakeholder summary/i);
     assert.match(prompt, /role.*ERC-8004 identity.*agreement status.*certificate verification.*no external business action/i);
     assert.match(prompt, /Never announce success before.*locally verified/i);
     assert.match(prompt, /wait or pending.*returned bounded interval/i);
@@ -1191,10 +1190,10 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
     assert.doesNotMatch(prompt, /curl --location|retryAfterMs|localAction|mkdir -m|agent_handshake_next/);
   }
   assert.match(fixture.initiator, /First, create the one-time Responder invitation/);
-  assert.match(fixture.initiator, /may inspect the preloaded manifest and helper source/i);
+  assert.match(fixture.initiator, /harness already verified the pinned manifest and helper/i);
   assert.match(fixture.initiator, /copy it from the MCP result/);
   assert.match(fixture.responder, /First, accept this invitation exactly once/);
-  assert.match(fixture.responder, /may inspect the preloaded manifest and helper source/i);
+  assert.match(fixture.responder, /harness already verified the pinned manifest and helper/i);
   assert.match(fixture.responder, /opaque bearer capability/i);
   assert.match(fixture.responder, /do not decode, copy, or write it to disk/i);
   assert.match(fixture.responder, /after your own policy check/i);
@@ -1445,7 +1444,8 @@ test("harness adapter rejects a release helper that does not match the pinned ma
 test("stakeholder prompts leave mechanics to MCP and use only preloaded verified assets", async () => {
   const fixture = JSON.parse(await readFile(new URL("./fixtures/fresh-agent/prompts.json", import.meta.url), "utf8"));
   for (const prompt of [fixture.initiator, fixture.responder]) {
-    assert.match(prompt, /may inspect the preloaded manifest and helper source/i);
+    assert.match(prompt, /harness already verified the pinned manifest and helper/i);
+    assert.match(prompt, /do not reread or narrate helper setup mechanics/i);
     assert.doesNotMatch(prompt, /inspect the public manifest/i);
     assert.doesNotMatch(prompt, /download(?:ing|ed)? .*helper/i);
   }
@@ -1455,6 +1455,8 @@ test("stakeholder prompts leave mechanics to MCP and use only preloaded verified
   assert.match(fixture.responder, /Never run approvalCommand .* in Bash/i);
   assert.match(fixture.initiator, /copy it from the MCP result/i);
   assert.match(fixture.initiator, /continue the Initiator side without waiting for another prompt/i);
+  assert.match(fixture.actionDecision, /Narrate only these milestones/i);
+  assert.match(fixture.actionDecision, /Do not narrate helper setup, routine polling, or implementation details/i);
 });
 
 test("unwraps Codex's canonical shell display before binding the exact helper command", () => {
