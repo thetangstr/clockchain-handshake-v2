@@ -8,6 +8,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { A2A_AGENT_CARD_SCHEMA, a2aAgentCardDigest, signA2AAgentCard } from "../src/a2a/agent-card.mjs";
 import { a2aCanonicalBytes } from "../src/a2a/auth.mjs";
 import { createA2ACardBootstrap } from "../src/a2a/card-bootstrap.mjs";
+import { digestHex } from "../src/core/canonical.mjs";
 import {
   createInvitationBootstrapTransport,
   invitationBootstrapFailureStage,
@@ -270,6 +271,8 @@ test("invitation bootstrap sends one opaque invitation directly and exposes dige
     assert.match(evidence.peerCertificateSha256, /^[0-9a-f]{64}$/);
     assert.equal(evidence.invitations.length, 1);
     assert.equal(evidence.invitations[0].invitationDigest, sha256(INVITATION));
+    assert.equal(evidence.invitations[0].timestampMs, String(NOW));
+    assert.match(digestHex(evidence), /^[0-9a-f]{64}$/);
     assert.doesNotMatch(JSON.stringify(evidence), /roleAccess|invitation_live_secret|private reasoning|\/Users\/alice/i);
   }
   assert.throws(() => responder.takeInvitation(), /Invitation bootstrap transport failed safely/);

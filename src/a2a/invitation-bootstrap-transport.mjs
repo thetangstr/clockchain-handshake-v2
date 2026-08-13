@@ -412,7 +412,8 @@ function signedEnvelope({ artifactKind = "invitation", bootstrapSigner, body, ex
 }
 
 function publicInvitation({ direction, invitationDigest, sessionId, timestampMs }) {
-  return Object.freeze({ direction, invitationDigest, sessionId, timestampMs });
+  if (!Number.isSafeInteger(timestampMs)) fail();
+  return Object.freeze({ direction, invitationDigest, sessionId, timestampMs: String(timestampMs) });
 }
 
 export async function createInvitationBootstrapTransport(optionsInput = {}) {

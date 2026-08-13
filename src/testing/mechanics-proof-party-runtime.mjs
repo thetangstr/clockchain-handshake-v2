@@ -55,7 +55,8 @@ const AWS_CREDENTIAL_OVERRIDE_ENV = Object.freeze([
 ]);
 const RUNTIME_FAILURE_STAGES = Object.freeze([
   "peer-validate", "listener-create", "listener-ready", "invitation-await", "invitation-await-observe",
-  "invitation-await-take", "invitation-await-sleep", "invitation-await-timeout", "invitation-received-event", "recorder-create",
+  "invitation-await-take", "invitation-await-sleep", "invitation-await-timeout", "invitation-received-evidence",
+  "invitation-received-event-prepare", "invitation-received-event-publish", "recorder-create",
   "recorder-construction-options", "recorder-construction-room", "recorder-construction-paths",
   "recorder-construction-platform",
   "recorder-release-manifest-fetch", "recorder-release-helper-fetch", "recorder-release-assets",
@@ -482,17 +483,27 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
           const onPublicEvent = runInput.onPublicEvent ?? (() => undefined);
           if (typeof onPublicEvent !== "function") fail();
           let eventSequence = 0;
-          async function emit(type, evidence) {
-            eventSequence += 1;
-            const event = Object.freeze({
-              schema: "clockchain.mechanics-proof-party-event/v1",
-              runId: options.runId,
-              role: options.role,
-              sequence: String(eventSequence),
-              type,
-              evidenceDigest: digestHex(publicData(evidence)),
-            });
-            await onPublicEvent(event);
+          async function emit(type, evidence, setStage = () => {}) {
+            let event;
+            try {
+              eventSequence += 1;
+              event = Object.freeze({
+                schema: "clockchain.mechanics-proof-party-event/v1",
+                runId: options.runId,
+                role: options.role,
+                sequence: String(eventSequence),
+                type,
+                evidenceDigest: digestHex(publicData(evidence)),
+              });
+            } catch {
+              setStage("prepare");
+              throw new Error(ERROR);
+            }
+            try { await onPublicEvent(event); }
+            catch {
+              setStage("publish");
+              throw new Error(ERROR);
+            }
           }
           const peer = descriptor(runInput.peerDescriptor);
           if (
@@ -532,8 +543,11 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
           if (options.role === "responder") {
             runStage = "invitation-await";
             privateInvitation = await deps.waitForInvitation(invitationTransport);
-            runStage = "invitation-received-event";
-            await emit("a2a.invitation.received", invitationTransport.publicEvidence());
+            runStage = "invitation-received-evidence";
+            const invitationEvidence = invitationTransport.publicEvidence();
+            await emit("a2a.invitation.received", invitationEvidence, (suffix) => {
+              runStage = `invitation-received-event-${suffix}`;
+            });
           }
           runStage = "recorder-create";
           actionRecorder = await deps.createActionRecorder({

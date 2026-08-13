@@ -253,7 +253,7 @@ test("invitation wait brands observation, consumption, sleep, and timeout bounda
   }
 });
 
-test("party runtime distinguishes invitation receipt event publication from invitation waiting", async (t) => {
+test("party runtime brands invitation receipt progress publication without retaining sink errors", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-invitation-event-"));
   const root = join(parent, "responder");
   t.after(() => rm(parent, { recursive: true, force: true }));
@@ -266,10 +266,40 @@ test("party runtime distinguishes invitation receipt event publication from invi
       if (events === 2) throw new Error("private event sink");
     },
   }), (error) => {
-    assert.equal(mechanicsProofPartyRuntimeFailureStage(error), "invitation-received-event");
+    assert.equal(mechanicsProofPartyRuntimeFailureStage(error), "invitation-received-event-publish");
     assert.doesNotMatch(JSON.stringify(error), /private/i);
     return true;
   });
+});
+
+test("party runtime distinguishes invitation evidence read and event preparation failures", async (t) => {
+  for (const candidate of [
+    { stage: "invitation-received-evidence", evidence() { throw new Error("private evidence"); } },
+    { stage: "invitation-received-event-prepare", evidence() { return Symbol("private evidence"); } },
+  ]) {
+    const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-invitation-progress-"));
+    const root = join(parent, "responder");
+    t.after(() => rm(parent, { recursive: true, force: true }));
+    let evidenceReads = 0;
+    const runtime = await createMechanicsProofPartyRuntime(options(root), dependencies([], {
+      async createInvitationTransport() {
+        return {
+          async close() { return { closed: true }; },
+          publicEvidence() {
+            evidenceReads += 1;
+            return evidenceReads === 1 ? { invitations: [] } : candidate.evidence();
+          },
+          takeInvitation() {},
+        };
+      },
+      async waitForInvitation() { return { invitation: "private-invitation", sessionId: PROTOCOL_SESSION_ID }; },
+    }));
+    await assert.rejects(runtime.run({ peerDescriptor: peerDescriptor() }), (error) => {
+      assert.equal(mechanicsProofPartyRuntimeFailureStage(error), candidate.stage);
+      assert.doesNotMatch(JSON.stringify(error), /private/i);
+      return true;
+    });
+  }
 });
 
 function initiatorBridgeEvidence() {
