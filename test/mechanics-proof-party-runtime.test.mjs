@@ -19,6 +19,7 @@ const RUN_ID = "11111111-2222-4333-8444-555555555555";
 const PROTOCOL_SESSION_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const DIGEST = "a".repeat(64);
 const OTHER_DIGEST = "b".repeat(64);
+const MCP_ENDPOINT = "https://mcp.clockchain.network/handshake/mcp";
 const CERTIFICATE = "-----BEGIN CERTIFICATE-----\npublic-test-certificate\n-----END CERTIFICATE-----\n";
 const PRIVATE_INVITATION = `${"a".repeat(96)}.${"b".repeat(43)}`;
 
@@ -37,7 +38,7 @@ function options(root, overrides = {}) {
       validForSeconds: "10",
       identityPolicy: { erc8004: "required_fresh", chainId: "eip155:11155111", registryAddress: "0x8004a818bfb912233c491871b3d84c89a494bd9e" },
     },
-    mcpEndpoint: "https://mcp.clockchain.network/handshake/mcp",
+    mcpEndpoint: MCP_ENDPOINT,
     opensslPath: "/usr/bin/openssl",
     port: 8443,
     publicEndpoint: "https://responder.task.local:8443",
@@ -471,6 +472,8 @@ test("initiator runtime installs serialized Codex subscription auth into isolate
         assert.equal(readFileSync(join(root, "home", ".codex", "config.toml"), "utf8"), [
           "model = \"gpt-5.6-terra\"",
           "model_reasoning_effort = \"low\"",
+          "[mcp_servers.clockchain-handshake]",
+          `url = \"${MCP_ENDPOINT}\"`,
           "",
         ].join("\n"));
         return {};

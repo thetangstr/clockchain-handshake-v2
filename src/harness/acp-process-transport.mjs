@@ -1432,7 +1432,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
         sessionEstablishing = true;
         const created = await connection.newSession({
           cwd: options.workspace,
-          mcpServers: [mcpServer()],
+          mcpServers: harness === "codex" ? [] : [mcpServer()],
           ...(harness === "claude" ? {
             _meta: Object.freeze({
               claudeCode: Object.freeze({

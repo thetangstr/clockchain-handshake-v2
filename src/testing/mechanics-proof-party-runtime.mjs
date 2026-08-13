@@ -383,6 +383,8 @@ async function installCodexRuntimeConfig(home, setStage) {
   const content = [
     "model = \"gpt-5.6-terra\"",
     "model_reasoning_effort = \"low\"",
+    "[mcp_servers.clockchain-handshake]",
+    `url = \"${MCP_ENDPOINT}\"`,
     "",
   ].join("\n");
   const destination = join(directory, "config.toml");
