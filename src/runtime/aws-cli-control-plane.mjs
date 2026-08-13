@@ -374,9 +374,21 @@ export function createAwsCliControlPlane(optionsInput = {}) {
       if (typeof cluster !== "string" || !Array.isArray(taskArns) || taskArns.length > 2 || taskArns.length < 1) fail();
       return callAws(["ecs", "wait", "tasks-stopped", "--cluster", cluster, "--tasks", ...taskArns, "--region", region, "--output", "json"], { timeoutMs: 300_000 });
     },
-    waitTasksRunning({ cluster, taskArns }) {
-      if (typeof cluster !== "string" || !Array.isArray(taskArns) || taskArns.length !== 2) fail();
-      return callAws(["ecs", "wait", "tasks-running", "--cluster", cluster, "--tasks", ...taskArns, "--region", region, "--output", "json"], { timeoutMs: 300_000 });
+    async waitTasksRunning({ cluster, taskArns }) {
+      if (typeof cluster !== "string" || !Array.isArray(taskArns) || taskArns.length !== 2 || new Set(taskArns).size !== 2) fail();
+      string(cluster);
+      taskArns.forEach(string);
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        const response = await callAws(["ecs", "describe-tasks", "--cluster", cluster, "--tasks", ...taskArns, "--region", region, "--output", "json"]);
+        if (!Array.isArray(response.tasks) || response.tasks.length !== 2 || !Array.isArray(response.failures) || response.failures.length !== 0) fail();
+        const observed = new Map(response.tasks.map((task) => [task?.taskArn, task]));
+        if (observed.size !== 2 || taskArns.some((taskArn) => !observed.has(taskArn))) fail();
+        const tasks = taskArns.map((taskArn) => observed.get(taskArn));
+        if (tasks.some((task) => task.desiredStatus !== "RUNNING" || !["PROVISIONING", "PENDING", "ACTIVATING", "RUNNING"].includes(task.lastStatus))) fail();
+        if (tasks.every((task) => task.lastStatus === "RUNNING")) return Object.freeze({ taskArns: Object.freeze([...taskArns]) });
+        if (attempt < 59) await sleepFn(5_000);
+      }
+      fail();
     },
     stopTask({ cluster, taskArn, role }) {
       if (!["initiator", "responder"].includes(role) || typeof cluster !== "string" || typeof taskArn !== "string") fail();

@@ -125,9 +125,62 @@ test("AWS CLI control plane gives bounded CloudFormation waiters enough time for
   });
   await control.waitStackCreateComplete({ stackName: "clockchain-11111111-2222-4333-8444-555555555555" });
   await control.waitStackDeleteComplete({ stackName: "clockchain-11111111-2222-4333-8444-555555555555" });
-  await control.waitTasksRunning({ cluster: "cluster", taskArns: ["task-a", "task-b"] });
   await control.waitTasksStopped({ cluster: "cluster", taskArns: ["task-a", "task-b"] });
-  assert.deepEqual(observedTimeouts, [300_000, 300_000, 300_000, 300_000]);
+  assert.deepEqual(observedTimeouts, [300_000, 300_000, 300_000]);
+});
+
+test("AWS CLI control plane owns the cold-task running deadline instead of trusting CLI waiter attempt counts", async () => {
+  const calls = [];
+  const sleeps = [];
+  let observation = 0;
+  const taskArns = ["task-a", "task-b"];
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    sleep: async (ms) => { sleeps.push(ms); },
+    executor: async (_file, argv) => {
+      calls.push(argv);
+      assert.deepEqual(argv, ["ecs", "describe-tasks", "--cluster", "cluster", "--tasks", ...taskArns, "--region", "us-west-2", "--output", "json"]);
+      observation += 1;
+      const lastStatus = observation < 9 ? "PENDING" : "RUNNING";
+      return {
+        stdout: JSON.stringify({
+          tasks: taskArns.map((taskArn) => ({ taskArn, desiredStatus: "RUNNING", lastStatus })),
+          failures: [],
+        }),
+        stderr: "",
+        exitCode: 0,
+      };
+    },
+  });
+
+  await control.waitTasksRunning({ cluster: "cluster", taskArns });
+  assert.equal(calls.length, 9);
+  assert.deepEqual(sleeps, Array(8).fill(5_000));
+  assert.equal(calls.some((argv) => argv[0] === "ecs" && argv[1] === "wait"), false);
+});
+
+test("AWS CLI control plane fails closed when a task stops before running", async () => {
+  const taskArns = ["task-a", "task-b"];
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    sleep: async () => {},
+    executor: async () => ({
+      stdout: JSON.stringify({
+        tasks: [
+          { taskArn: "task-a", desiredStatus: "RUNNING", lastStatus: "PENDING" },
+          { taskArn: "task-b", desiredStatus: "STOPPED", lastStatus: "STOPPED" },
+        ],
+        failures: [],
+      }),
+      stderr: "",
+      exitCode: 0,
+    }),
+  });
+
+  await assert.rejects(
+    () => control.waitTasksRunning({ cluster: "cluster", taskArns }),
+    /AWS CLI control-plane validation failed safely/,
+  );
 });
 
 test("AWS CLI control plane waits for newly-created execution role policies before starting tasks", async () => {
@@ -155,6 +208,14 @@ test("AWS CLI control plane has exact allowlisted argv shapes for Task 4 actions
     if (key === "cloudformation list-stack-resources") return { StackResourceSummaries: [{ LogicalResourceId: "Cluster", PhysicalResourceId: "cluster", ResourceType: "AWS::ECS::Cluster" }] };
     if (key === "ecs register-task-definition") return { taskDefinition: { taskDefinitionArn: "arn:aws:ecs:us-west-2:123456789012:task-definition/x:1" } };
     if (key === "ecs run-task") return { tasks: [{ taskArn: "arn:aws:ecs:us-west-2:123456789012:task/c/t" }], failures: [] };
+    if (key === "ecs describe-tasks") {
+      const taskIndex = argv.indexOf("--tasks");
+      const regionIndex = argv.indexOf("--region");
+      return {
+        tasks: argv.slice(taskIndex + 1, regionIndex).map((taskArn) => ({ taskArn, desiredStatus: "RUNNING", lastStatus: "RUNNING" })),
+        failures: [],
+      };
+    }
     if (key === "logs filter-log-events") {
       const role = argv.includes("/clockchain/mechanics-proof/run/responder") ? "responder" : "initiator";
       return { events: [
