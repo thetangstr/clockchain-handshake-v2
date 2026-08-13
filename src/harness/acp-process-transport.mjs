@@ -38,7 +38,8 @@ const PROCESS_TERM_GRACE_MS = 50;
 const PROCESS_KILL_GRACE_MS = 50;
 const PERMISSION_COMMAND_FAILURES = new WeakMap();
 const PERMISSION_COMMAND_STAGES = Object.freeze([
-  "tool", "input", "cwd", "approval", "approval-double-quoted", "approval-whitespace", "approval-wrapped",
+  "tool", "input", "input-shape", "input-description", "input-timeout", "input-background", "input-sandbox",
+  "cwd", "approval", "approval-double-quoted", "approval-whitespace", "approval-wrapped",
 ]);
 const PERMISSION_FAILURE_STAGES = Object.freeze([
   "session", "protocol", "registration", "state", "options", "unknown",
@@ -392,6 +393,7 @@ function continuationPromptText({ role, protocolSessionId, mandate, a2aConfig, b
       "Complete the already-registered Clockchain helper actions before another MCP call.",
       "Request these exact retained approval commands one at a time, in this order:",
       ...approvals.map((approval, index) => `${index + 1}. ${approval}`),
+      "Run every command in the foreground: run_in_background must be false.",
       "Do not alter, wrap, quote, or replace any command. Do not call another MCP tool until every command above completes.",
     ].join("\n");
   }
@@ -909,25 +911,25 @@ export function createAcpProcessTransport(optionsInput = {}) {
           : ["cwd", "description"],
       );
     }
-    catch { throw permissionCommandFailure("input"); }
+    catch { throw permissionCommandFailure("input-shape"); }
     if (
       rawInput.description !== undefined &&
       (harness !== "claude" || typeof rawInput.description !== "string" || rawInput.description.length < 1 ||
         rawInput.description.length > 256 || /[\u0000-\u001f\u007f]/.test(rawInput.description))
-    ) throw permissionCommandFailure("input");
+    ) throw permissionCommandFailure("input-description");
     if (rawInput.cwd !== undefined && rawInput.cwd !== options.workspace) throw permissionCommandFailure("cwd");
     if (
       rawInput.timeout !== undefined &&
       (!Number.isSafeInteger(rawInput.timeout) || rawInput.timeout < 1 || rawInput.timeout > 600_000)
-    ) throw permissionCommandFailure("input");
+    ) throw permissionCommandFailure("input-timeout");
     if (rawInput.run_in_background !== undefined && rawInput.run_in_background !== false) {
-      throw permissionCommandFailure("input");
+      throw permissionCommandFailure("input-background");
     }
     // The disposable Fargate task is the filesystem/process isolation boundary.
     // Claude may request its exact retained shim outside Claude's nested sandbox;
     // the registered command digest still gates authorization below.
     if (rawInput.dangerouslyDisableSandbox !== undefined && typeof rawInput.dangerouslyDisableSandbox !== "boolean") {
-      throw permissionCommandFailure("input");
+      throw permissionCommandFailure("input-sandbox");
     }
     try { return retainedCommand(rawInput.command); }
     catch {
@@ -1000,11 +1002,14 @@ export function createAcpProcessTransport(optionsInput = {}) {
       const publicStage = PERMISSION_FAILURE_STAGES.includes(fixedStage) ? fixedStage : "unknown";
       if (!retainedReplay) permissionDenials += 1;
       let unrelatedRejection = null;
-      if (["approval", "input", "tool"].includes(commandStage) || retainedReplay) {
+      const rejectableCommandStage = commandStage === "approval" || commandStage === "tool" ||
+        commandStage?.startsWith("input") === true;
+      if (rejectableCommandStage || retainedReplay) {
         try { unrelatedRejection = rejectOnceOption(params); } catch {}
       }
       const recoverableCancellation = unrelatedRejection === null && (
-        retainedReplay || (["input", "tool"].includes(commandStage) && permissionDenials <= MAX_PERMISSION_DENIALS)
+        retainedReplay || ((commandStage === "tool" || commandStage?.startsWith("input") === true) &&
+          permissionDenials <= MAX_PERMISSION_DENIALS)
       );
       if (recoverableCancellation) {
         recoverablePermissionCancellation = true;

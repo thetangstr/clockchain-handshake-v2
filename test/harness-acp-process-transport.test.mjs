@@ -1259,6 +1259,7 @@ test("ACP continuation restates every exact pending retained approval before ano
   assert.match(continuation, new RegExp(`clockchain-agent-authorize ${actions[1].commandSha256}`));
   assert.match(continuation, new RegExp(`clockchain-agent-authorize ${actions[2].commandSha256}`));
   assert.match(continuation, /one at a time, in this order/i);
+  assert.match(continuation, /run_in_background must be false/i);
   assert.match(continuation, /Do not call another MCP tool/i);
   await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
 });
