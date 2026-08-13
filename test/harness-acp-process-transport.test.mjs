@@ -121,6 +121,7 @@ function acpFixtureSpawn({
   promptUpdateSessionId = null,
   unrelatedPermissionBeforeHelper = false,
   unrelatedPermissionOptions = null,
+  duplicatePermissionAfterHelper = false,
 }) {
   return (command, args, options) => {
     calls.push({ command, args, options });
@@ -251,6 +252,26 @@ function acpFixtureSpawn({
           if (typeof helperUpdate === "function") helperUpdate = helperUpdate();
           const permission = await permissionRequest;
           calls.push(["permission", permission]);
+          if (duplicatePermissionAfterHelper) {
+            const duplicatePermission = await connection.requestPermission({
+              sessionId: params.sessionId,
+              toolCall: {
+                toolCallId: "tool-1-duplicate",
+                kind: "execute",
+                status: "pending",
+                rawInput: {
+                  command: permissionCommand,
+                  ...(permissionCwd === undefined ? {} : { cwd: permissionCwd }),
+                },
+              },
+              options: [
+                { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
+                { optionId: "reject_once", name: "Reject", kind: "reject_once" },
+              ],
+            });
+            calls.push(["duplicatePermission", duplicatePermission]);
+            if (duplicatePermission.outcome.outcome === "cancelled") effectiveStopReason = "cancelled";
+          }
         }
         if (helperUpdate !== null) await helperUpdate;
         await connection.sessionUpdate({
@@ -942,6 +963,43 @@ test("ACP process transport fails closed when an unrelated command lacks one exa
       return true;
     });
   }
+});
+
+test("ACP process transport declines a replay of an already authorized retained action without cancelling the turn", async () => {
+  const action = retainedAction({ role: "initiator", requestDigest: "d".repeat(64), commandSha256: DIGEST });
+  const calls = [];
+  const transport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({
+      calls,
+      duplicatePermissionAfterHelper: true,
+      helperAction: action,
+      permissionCwd: "/workspace/initiator",
+    }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    nowMs: () => 1786337001000,
+    actionRecorder: actionRecorderFor([action], calls),
+    env: {},
+    retainedActions: [],
+    partyBridge: partyBridgeFor(calls),
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  });
+  assert.deepEqual(calls.find((entry) => entry[0] === "permission")[1], {
+    outcome: { outcome: "selected", optionId: "allow_once" },
+  });
+  assert.deepEqual(calls.find((entry) => entry[0] === "duplicatePermission")[1], {
+    outcome: { outcome: "selected", optionId: "reject_once" },
+  });
+  await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
 });
 
 test("ACP process transport re-prompts an end-turning agent until the Clockchain bridge is complete", async () => {

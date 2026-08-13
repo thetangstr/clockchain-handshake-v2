@@ -854,6 +854,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
   }
   async function requestPermission(params) {
     let denialStage = "session";
+    let retainedReplay = false;
     try {
       if (session === null || params?.sessionId !== acpSessionId) fail();
       denialStage = "command";
@@ -872,7 +873,11 @@ export function createAcpProcessTransport(optionsInput = {}) {
       }
       denialStage = "state";
       const entry = retainedByCommand.get(digestValue);
-      if (entry === undefined || entry.state !== "pending") fail();
+      if (entry === undefined) fail();
+      if (entry.state !== "pending") {
+        retainedReplay = entry.state === "authorized" || entry.state === "consumed";
+        fail();
+      }
       denialStage = "options";
       const optionsList = params?.options;
       if (!Array.isArray(optionsList) || !optionsList.some((option) => option?.optionId === "allow_once" && option?.kind === "allow_once")) fail();
@@ -888,7 +893,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
       const publicStage = PERMISSION_FAILURE_STAGES.includes(fixedStage) ? fixedStage : "unknown";
       permissionDenials += 1;
       let unrelatedRejection = null;
-      if (commandStage === "approval") {
+      if (commandStage === "approval" || retainedReplay) {
         try { unrelatedRejection = rejectOnceOption(params); } catch {}
       }
       if (unrelatedRejection === null || permissionDenials > MAX_PERMISSION_DENIALS) {
