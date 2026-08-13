@@ -102,6 +102,7 @@ function acpFixtureSpawn({
   calls,
   closeState = null,
   concurrentHelperPermission = false,
+  helperUpdateAfterPermissionRequest = false,
   helperAction = null,
   newSessionUpdates = null,
   newSessionResolvedMarker = false,
@@ -162,7 +163,7 @@ function acpFixtureSpawn({
             await connection.sessionUpdate({ sessionId: updateSessionId, update });
           }
         } else if (helperAction !== null) {
-          helperUpdate = connection.sessionUpdate({
+          const sendHelperUpdate = () => connection.sessionUpdate({
             sessionId: params.sessionId,
             update: {
               sessionUpdate: "tool_call_update",
@@ -185,7 +186,12 @@ function acpFixtureSpawn({
               },
             },
           });
-          if (!concurrentHelperPermission) await helperUpdate;
+          if (!helperUpdateAfterPermissionRequest) {
+            helperUpdate = sendHelperUpdate();
+            if (!concurrentHelperPermission) await helperUpdate;
+          } else {
+            helperUpdate = sendHelperUpdate;
+          }
         }
         if (!skipPermission) {
           await connection.sessionUpdate({
@@ -204,7 +210,7 @@ function acpFixtureSpawn({
               },
             },
           });
-          const permission = await connection.requestPermission({
+          const permissionRequest = connection.requestPermission({
             sessionId: params.sessionId,
             toolCall: {
               toolCallId: "tool-1",
@@ -222,6 +228,8 @@ function acpFixtureSpawn({
               { optionId: "reject_once", name: "Reject", kind: "reject_once" },
             ],
           });
+          if (typeof helperUpdate === "function") helperUpdate = helperUpdate();
+          const permission = await permissionRequest;
           calls.push(["permission", permission]);
         }
         if (helperUpdate !== null) await helperUpdate;
@@ -796,6 +804,42 @@ test("ACP process transport waits for an in-flight authoritative MCP result befo
     outcome: { outcome: "selected", optionId: "allow_once" },
   });
   assert.ok(calls.findIndex((entry) => entry[0] === "partyBridge") < calls.findIndex((entry) => entry[0] === "record"));
+  await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
+});
+
+test("ACP process transport waits for a matching authoritative MCP result that arrives after its permission request", async () => {
+  const action = retainedAction({ role: "initiator", requestDigest: "d".repeat(64), commandSha256: DIGEST });
+  const calls = [];
+  const transport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({
+      calls,
+      helperAction: action,
+      helperUpdateAfterPermissionRequest: true,
+      permissionCwd: "/workspace/initiator",
+    }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    nowMs: () => 1786337001000,
+    actionRecorder: actionRecorderFor([action], calls),
+    env: {},
+    retainedActions: [],
+    partyBridge: partyBridgeFor(calls, { delayMs: 20 }),
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+
+  await transport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  });
+
+  assert.deepEqual(calls.find((entry) => entry[0] === "permission")[1], {
+    outcome: { outcome: "selected", optionId: "allow_once" },
+  });
   await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
 });
 

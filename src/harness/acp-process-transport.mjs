@@ -31,6 +31,7 @@ const MAX_STRING = 4096;
 const MAX_HELPER_COMMAND = 64 * 1024;
 const MAX_PROVISIONAL_TOOL_UPDATES = 16;
 const MAX_COMPLETION_PROMPTS = 16;
+const PERMISSION_REGISTRATION_GRACE_MS = 5_000;
 const PROCESS_TERM_GRACE_MS = 50;
 const PROCESS_KILL_GRACE_MS = 50;
 const CODEX_MODEL = "gpt-5.6-terra";
@@ -737,6 +738,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
   let usage = Object.freeze({ inputTokens: "0", outputTokens: "0" });
   const events = [];
   const retainedByCommand = new Map();
+  const retainedRegistrationWaiters = new Map();
   let sequence = 0;
   function event(type, publicSummary, ref) {
     sequence += 1;
@@ -764,8 +766,36 @@ export function createAcpProcessTransport(optionsInput = {}) {
     if (now() > action.expiresAtMs) fail();
     if (retainedByCommand.has(action.commandSha256)) fail();
     retainedByCommand.set(action.commandSha256, { action, state: "pending" });
+    const waiters = retainedRegistrationWaiters.get(action.commandSha256);
+    if (waiters !== undefined) {
+      retainedRegistrationWaiters.delete(action.commandSha256);
+      for (const waiter of waiters) waiter(true);
+    }
     event("acp.retained_action.registered", "registered retained local action", action.commandSha256);
     return action;
+  }
+  function waitForRetainedRegistration(commandSha256) {
+    if (retainedByCommand.has(commandSha256)) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      const finish = (registered) => {
+        clearTimeout(timer);
+        const current = retainedRegistrationWaiters.get(commandSha256);
+        current?.delete(finish);
+        if (current?.size === 0) retainedRegistrationWaiters.delete(commandSha256);
+        resolve(registered);
+      };
+      const timer = setTimeout(() => finish(false), PERMISSION_REGISTRATION_GRACE_MS);
+      const waiters = retainedRegistrationWaiters.get(commandSha256) ?? new Set();
+      waiters.add(finish);
+      retainedRegistrationWaiters.set(commandSha256, waiters);
+      if (retainedByCommand.has(commandSha256)) finish(true);
+    });
+  }
+  function cancelRetainedRegistrationWaiters() {
+    for (const waiters of retainedRegistrationWaiters.values()) {
+      for (const waiter of waiters) waiter(false);
+    }
+    retainedRegistrationWaiters.clear();
   }
   function permissionCommand(params) {
     const toolCall = params?.toolCall;
@@ -781,6 +811,12 @@ export function createAcpProcessTransport(optionsInput = {}) {
       const barrier = sessionUpdateBarrier;
       await barrier;
       if (protocolFailure) fail();
+      if (!retainedByCommand.has(digestValue)) {
+        if (!await waitForRetainedRegistration(digestValue)) fail();
+        const registrationBarrier = sessionUpdateBarrier;
+        await registrationBarrier;
+        if (protocolFailure) fail();
+      }
       const entry = retainedByCommand.get(digestValue);
       if (entry === undefined || entry.state !== "pending") fail();
       const optionsList = params?.options;
@@ -882,6 +918,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
     } catch {
       protocolFailure = true;
       protocolFailureStage ??= failureStage;
+      cancelRetainedRegistrationWaiters();
     }
   }
   function sessionUpdate(params) {
@@ -910,6 +947,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
       provisionalToolUpdates.length = 0;
       sessionEstablishing = false;
       sessionUpdateBarrier = Promise.resolve();
+      cancelRetainedRegistrationWaiters();
       retainedByCommand.clear();
       for (const action of retainedActions) {
         if (partyBridge === null && action.sessionId === clean.sessionId && action.role === clean.role) registerRetainedAction(action);
@@ -1021,6 +1059,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
         event("acp.prompt.end_turn", "ACP prompt completed end_turn", digestJson(usage));
         return Object.freeze({ sessionId: clean.sessionId, role: clean.role, harness });
       } catch {
+        cancelRetainedRegistrationWaiters();
         try {
           if (!childExited(child, childMonitor) && typeof child?.kill === "function") {
             child.kill("SIGTERM");
@@ -1051,6 +1090,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
     async terminate(input) {
       const { sessionId, reason = "terminated" } = optionalObject(input, ["sessionId"], ["reason"]);
       if (session === null || session.sessionId !== sessionId || typeof reason !== "string") fail();
+      cancelRetainedRegistrationWaiters();
       if (!childExited(child, childMonitor)) {
         if (typeof child?.kill !== "function") fail();
         child.kill("SIGTERM");
