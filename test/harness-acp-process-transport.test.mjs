@@ -119,6 +119,7 @@ function acpFixtureSpawn({
   permissionCwd = undefined,
   permissionTitle = "display-only approval label",
   promptUpdateSessionId = null,
+  unrelatedPermissionBeforeHelper = false,
 }) {
   return (command, args, options) => {
     calls.push({ command, args, options });
@@ -157,6 +158,22 @@ function acpFixtureSpawn({
       async prompt(params) {
         calls.push(["prompt", params]);
         const updateSessionId = promptUpdateSessionId ?? params.sessionId;
+        if (unrelatedPermissionBeforeHelper) {
+          const denied = await connection.requestPermission({
+            sessionId: params.sessionId,
+            toolCall: {
+              toolCallId: "tool-unrelated",
+              kind: "execute",
+              status: "pending",
+              rawInput: { command: "pwd", cwd: permissionCwd },
+            },
+            options: [
+              { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
+              { optionId: "reject_once", name: "Reject", kind: "reject_once" },
+            ],
+          });
+          calls.push(["unrelatedPermission", denied]);
+        }
         let helperUpdate = null;
         if (sessionUpdates !== null) {
           for (const update of sessionUpdates) {
@@ -837,6 +854,42 @@ test("ACP process transport waits for a matching authoritative MCP result that a
     a2aConfig: a2aConfig("initiator"),
   });
 
+  assert.deepEqual(calls.find((entry) => entry[0] === "permission")[1], {
+    outcome: { outcome: "selected", optionId: "allow_once" },
+  });
+  await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
+});
+
+test("ACP process transport denies an unrelated command without poisoning a later authoritative retained action", async () => {
+  const action = retainedAction({ role: "initiator", requestDigest: "d".repeat(64), commandSha256: DIGEST });
+  const calls = [];
+  const transport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({
+      calls,
+      helperAction: action,
+      permissionCwd: "/workspace/initiator",
+      unrelatedPermissionBeforeHelper: true,
+    }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    nowMs: () => 1786337001000,
+    actionRecorder: actionRecorderFor([action], calls),
+    env: {},
+    retainedActions: [],
+    partyBridge: partyBridgeFor(calls),
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+
+  await transport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  });
+  assert.deepEqual(calls.find((entry) => entry[0] === "unrelatedPermission")[1], { outcome: { outcome: "cancelled" } });
   assert.deepEqual(calls.find((entry) => entry[0] === "permission")[1], {
     outcome: { outcome: "selected", optionId: "allow_once" },
   });
@@ -2001,7 +2054,7 @@ test("ACP process transport records fast child close before terminate is request
   assert.equal(evidence.teardown.completed, true);
 });
 
-test("ACP process transport rejects broad shell permission and non-end-turn completion", async () => {
+test("ACP process transport denies broad shell permission and rejects malformed retained or non-end-turn completion", async () => {
   const action = retainedAction({ role: "initiator", requestDigest: "d".repeat(64), commandSha256: DIGEST });
   const badPermissionTransport = createAcpProcessTransport({
     harness: "codex",
@@ -2015,16 +2068,16 @@ test("ACP process transport rejects broad shell permission and non-end-turn comp
     retainedActions: [],
     trustedAdapterPublicKeys: [action.adapterPublicKey],
   });
-  await assert.rejects(() => badPermissionTransport.launch({
+  await badPermissionTransport.launch({
     acp: ACP_VERSION_PINS.codex,
     runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
     mandate: VALID_MANDATE,
     mcpEndpoint: MCP_ENDPOINT,
     a2aConfig: a2aConfig("initiator"),
-  }), (error) => {
-    assert.equal(acpProcessTransportFailureStage(error), "completion-permission-command-approval");
-    return true;
   });
+  const denialEvents = await badPermissionTransport.streamEvents({ sessionId: SESSION });
+  assert.equal(denialEvents.some((event) => event.type === "acp.permission.denied"), true);
+  await badPermissionTransport.terminate({ sessionId: SESSION, reason: "test-complete" });
 
   const wrongCwdTransport = createAcpProcessTransport({
     harness: "codex",

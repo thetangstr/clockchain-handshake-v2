@@ -31,6 +31,7 @@ const MAX_STRING = 4096;
 const MAX_HELPER_COMMAND = 64 * 1024;
 const MAX_PROVISIONAL_TOOL_UPDATES = 16;
 const MAX_COMPLETION_PROMPTS = 16;
+const MAX_PERMISSION_DENIALS = 16;
 const PERMISSION_REGISTRATION_GRACE_MS = 5_000;
 const PROCESS_TERM_GRACE_MS = 50;
 const PROCESS_KILL_GRACE_MS = 50;
@@ -746,9 +747,10 @@ export function createAcpProcessTransport(optionsInput = {}) {
   let connection = null;
   let completed = false;
   let terminated = false;
-  let permissionDenied = false;
-  let permissionFailureStage = null;
   let permissionAuthorized = false;
+  let fatalPermissionDenied = false;
+  let permissionFailureStage = null;
+  let permissionDenials = 0;
   let protocolFailure = false;
   let protocolFailureStage = null;
   let sessionUpdateBarrier = Promise.resolve();
@@ -865,12 +867,18 @@ export function createAcpProcessTransport(optionsInput = {}) {
       event("acp.permission.authorized", "authorized retained local action", digestValue);
       return Object.freeze({ outcome: Object.freeze({ outcome: "selected", optionId: "allow_once" }) });
     } catch (error) {
-      permissionDenied = true;
       const commandStage = denialStage === "command" ? PERMISSION_COMMAND_FAILURES.get(error) : null;
       const fixedStage = commandStage === null || commandStage === undefined
         ? denialStage
         : `command-${commandStage}${permissionAuthorized ? "-after-authorization" : ""}`;
-      permissionFailureStage ??= PERMISSION_FAILURE_STAGES.includes(fixedStage) ? fixedStage : "unknown";
+      const publicStage = PERMISSION_FAILURE_STAGES.includes(fixedStage) ? fixedStage : "unknown";
+      permissionDenials += 1;
+      const unrelatedCommand = commandStage === "approval";
+      if (!unrelatedCommand || permissionDenials > MAX_PERMISSION_DENIALS) {
+        fatalPermissionDenied = true;
+        permissionFailureStage ??= publicStage;
+      }
+      event("acp.permission.denied", `denied ACP permission at ${publicStage}`, publicStage);
       return Object.freeze({ outcome: Object.freeze({ outcome: "cancelled" }) });
     }
   }
@@ -991,9 +999,10 @@ export function createAcpProcessTransport(optionsInput = {}) {
       provisionalAcpSessionId = null;
       provisionalToolUpdates.length = 0;
       sessionEstablishing = false;
-      permissionDenied = false;
-      permissionFailureStage = null;
       permissionAuthorized = false;
+      fatalPermissionDenied = false;
+      permissionFailureStage = null;
+      permissionDenials = 0;
       sessionUpdateBarrier = Promise.resolve();
       cancelRetainedRegistrationWaiters();
       retainedByCommand.clear();
@@ -1072,7 +1081,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
             launchStage = `completion-protocol-${protocolFailureStage ?? "envelope"}`;
             fail();
           }
-      if (permissionDenied) {
+          if (fatalPermissionDenied) {
             launchStage = `completion-permission-${permissionFailureStage ?? "unknown"}`;
             fail();
           }
