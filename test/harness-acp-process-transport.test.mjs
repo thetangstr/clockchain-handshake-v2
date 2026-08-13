@@ -520,7 +520,7 @@ test("ACP process transport authorizes the exact safe Claude Bash input envelope
       permissionRawInputExtras: {
         timeout: 120_000,
         run_in_background: false,
-        dangerouslyDisableSandbox: false,
+        dangerouslyDisableSandbox: true,
       },
     }),
     workspace: "/workspace/responder",
@@ -549,7 +549,7 @@ test("ACP process transport rejects unsafe Claude Bash execution controls", asyn
     { timeout: 600_001 },
     { timeout: 1.5 },
     { run_in_background: true },
-    { dangerouslyDisableSandbox: true },
+    { dangerouslyDisableSandbox: "true" },
   ];
   for (const permissionRawInputExtras of unsafeInputs) {
     const calls = [];

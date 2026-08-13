@@ -923,7 +923,10 @@ export function createAcpProcessTransport(optionsInput = {}) {
     if (rawInput.run_in_background !== undefined && rawInput.run_in_background !== false) {
       throw permissionCommandFailure("input");
     }
-    if (rawInput.dangerouslyDisableSandbox !== undefined && rawInput.dangerouslyDisableSandbox !== false) {
+    // The disposable Fargate task is the filesystem/process isolation boundary.
+    // Claude may request its exact retained shim outside Claude's nested sandbox;
+    // the registered command digest still gates authorization below.
+    if (rawInput.dangerouslyDisableSandbox !== undefined && typeof rawInput.dangerouslyDisableSandbox !== "boolean") {
       throw permissionCommandFailure("input");
     }
     try { return retainedCommand(rawInput.command); }
