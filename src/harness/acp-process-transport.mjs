@@ -840,6 +840,18 @@ export function createAcpProcessTransport(optionsInput = {}) {
       throw permissionCommandFailure("approval");
     }
   }
+  function rejectOnceOption(params) {
+    const matches = snapshotArray(params?.options, { min: 1 }).filter((candidate) => {
+      const option = optionalObject(candidate, ["kind", "name", "optionId"], ["_meta"]);
+      if (
+        typeof option.kind !== "string" || typeof option.name !== "string" ||
+        typeof option.optionId !== "string"
+      ) fail();
+      return option.kind === "reject_once" && option.optionId === "reject_once";
+    });
+    if (matches.length !== 1) fail();
+    return "reject_once";
+  }
   async function requestPermission(params) {
     let denialStage = "session";
     try {
@@ -875,12 +887,18 @@ export function createAcpProcessTransport(optionsInput = {}) {
         : `command-${commandStage}${permissionAuthorized ? "-after-authorization" : ""}`;
       const publicStage = PERMISSION_FAILURE_STAGES.includes(fixedStage) ? fixedStage : "unknown";
       permissionDenials += 1;
-      const unrelatedCommand = commandStage === "approval";
-      if (!unrelatedCommand || permissionDenials > MAX_PERMISSION_DENIALS) {
+      let unrelatedRejection = null;
+      if (commandStage === "approval") {
+        try { unrelatedRejection = rejectOnceOption(params); } catch {}
+      }
+      if (unrelatedRejection === null || permissionDenials > MAX_PERMISSION_DENIALS) {
         fatalPermissionDenied = true;
         permissionFailureStage ??= publicStage;
       }
       event("acp.permission.denied", `denied ACP permission at ${publicStage}`, publicStage);
+      if (unrelatedRejection !== null && permissionDenials <= MAX_PERMISSION_DENIALS) {
+        return Object.freeze({ outcome: Object.freeze({ outcome: "selected", optionId: unrelatedRejection }) });
+      }
       return Object.freeze({ outcome: Object.freeze({ outcome: "cancelled" }) });
     }
   }

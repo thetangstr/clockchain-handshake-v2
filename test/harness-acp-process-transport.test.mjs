@@ -120,6 +120,7 @@ function acpFixtureSpawn({
   permissionTitle = "display-only approval label",
   promptUpdateSessionId = null,
   unrelatedPermissionBeforeHelper = false,
+  unrelatedPermissionOptions = null,
 }) {
   return (command, args, options) => {
     calls.push({ command, args, options });
@@ -158,6 +159,7 @@ function acpFixtureSpawn({
       async prompt(params) {
         calls.push(["prompt", params]);
         const updateSessionId = promptUpdateSessionId ?? params.sessionId;
+        let effectiveStopReason = stopReason;
         if (unrelatedPermissionBeforeHelper) {
           const denied = await connection.requestPermission({
             sessionId: params.sessionId,
@@ -167,12 +169,13 @@ function acpFixtureSpawn({
               status: "pending",
               rawInput: { command: "pwd", cwd: permissionCwd },
             },
-            options: [
+            options: unrelatedPermissionOptions ?? [
               { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
               { optionId: "reject_once", name: "Reject", kind: "reject_once" },
             ],
           });
           calls.push(["unrelatedPermission", denied]);
+          if (denied.outcome.outcome === "cancelled") effectiveStopReason = "cancelled";
         }
         let helperUpdate = null;
         if (sessionUpdates !== null) {
@@ -255,7 +258,7 @@ function acpFixtureSpawn({
           update: { sessionUpdate: "usage_update", used: 7, size: 100000 },
         });
         return {
-          stopReason,
+          stopReason: effectiveStopReason,
           usage: { totalTokens: 7, inputTokens: 3, outputTokens: 4 },
         };
       },
@@ -889,11 +892,56 @@ test("ACP process transport denies an unrelated command without poisoning a late
     mcpEndpoint: MCP_ENDPOINT,
     a2aConfig: a2aConfig("initiator"),
   });
-  assert.deepEqual(calls.find((entry) => entry[0] === "unrelatedPermission")[1], { outcome: { outcome: "cancelled" } });
+  assert.deepEqual(calls.find((entry) => entry[0] === "unrelatedPermission")[1], {
+    outcome: { outcome: "selected", optionId: "reject_once" },
+  });
   assert.deepEqual(calls.find((entry) => entry[0] === "permission")[1], {
     outcome: { outcome: "selected", optionId: "allow_once" },
   });
   await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
+});
+
+test("ACP process transport fails closed when an unrelated command lacks one exact rejection option", async () => {
+  const action = retainedAction({ role: "initiator", requestDigest: "d".repeat(64), commandSha256: DIGEST });
+  const invalidOptionLists = [
+    [{ optionId: "allow_once", name: "Allow once", kind: "allow_once" }],
+    [
+      { optionId: "reject_once", name: "Reject", kind: "reject_once" },
+      { optionId: "reject_once", name: "Reject duplicate", kind: "reject_once" },
+    ],
+    [{ optionId: "reject_once", name: "Reject", kind: "allow_once" }],
+  ];
+  for (const unrelatedPermissionOptions of invalidOptionLists) {
+    const transport = createAcpProcessTransport({
+      harness: "codex",
+      pin: ACP_VERSION_PINS.codex,
+      spawn: acpFixtureSpawn({
+        calls: [],
+        helperAction: action,
+        permissionCwd: "/workspace/initiator",
+        unrelatedPermissionBeforeHelper: true,
+        unrelatedPermissionOptions,
+      }),
+      workspace: "/workspace/initiator",
+      home: "/workspace/initiator/home",
+      nowMs: () => 1786337001000,
+      actionRecorder: actionRecorderFor([action]),
+      env: {},
+      retainedActions: [],
+      partyBridge: partyBridgeFor([]),
+      trustedAdapterPublicKeys: [action.adapterPublicKey],
+    });
+    await assert.rejects(() => transport.launch({
+      acp: ACP_VERSION_PINS.codex,
+      runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+      mandate: VALID_MANDATE,
+      mcpEndpoint: MCP_ENDPOINT,
+      a2aConfig: a2aConfig("initiator"),
+    }), (error) => {
+      assert.equal(acpProcessTransportFailureStage(error), "completion-permission-command-approval");
+      return true;
+    });
+  }
 });
 
 test("ACP process transport re-prompts an end-turning agent until the Clockchain bridge is complete", async () => {
