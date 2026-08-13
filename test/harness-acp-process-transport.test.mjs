@@ -766,7 +766,11 @@ test("ACP process transport rejects authority, endpoint, pin, and secret leakage
   const responderPrompt = responderCalls.find((entry) => entry[0] === "prompt")[1].prompt[0].text;
   assert.match(responderPrompt, new RegExp(INVITATION.replace(".", "\\.")));
   assert.match(responderPrompt, /agent_handshake_accept_invitation/);
+  assert.match(responderPrompt, /exactly one action now/i);
+  assert.match(responderPrompt, /Do not call any other MCP or local tool/i);
+  assert.match(responderPrompt, /After that tool returns, end this turn/i);
   assert.match(responderPrompt, /do not print/i);
+  assert.doesNotMatch(responderPrompt, /Continue until Clockchain returns a certificate/i);
   assert.doesNotMatch(responderPrompt, /read.*(?:file|path)|responder-invitation/i);
   assert.doesNotMatch(JSON.stringify(responderCalls[0]), new RegExp(INVITATION.replace(".", "\\.")));
   assert.doesNotMatch(JSON.stringify(await transport.streamEvents({ sessionId: SESSION })), new RegExp(INVITATION.replace(".", "\\.")));
@@ -826,19 +830,19 @@ test("ACP process transport performs real ACP lifecycle with unauthenticated ded
   }]);
   const prompt = calls.find((entry) => entry[0] === "prompt")[1].prompt[0].text;
   assert.match(prompt, /role: initiator/);
-  assert.match(prompt, new RegExp(SESSION));
   assert.match(prompt, /NS-1847/);
   assert.match(prompt, /"validForSeconds":"90"/);
   assert.match(prompt, /"erc8004":"required_existing_or_fresh"/);
   assert.match(prompt, /"chainId":"eip155:11155111"/);
   assert.match(prompt, /"registryAddress":"0x8004a818bfb912233c491871b3d84c89a494bd9e"/);
   assert.doesNotMatch(prompt, /validForMinutes|45/);
-  assert.match(prompt, /direct A2A endpoint/);
-  assert.match(prompt, /four mandate fields as the tool arguments themselves/);
-  assert.match(prompt, /do not nest them under mandate or terms/);
+  assert.match(prompt, /exactly one action now/i);
+  assert.match(prompt, /Call the dedicated Clockchain MCP tool agent_handshake_invite/i);
+  assert.match(prompt, /Do not call any other MCP or local tool/i);
+  assert.match(prompt, /After that tool returns, end this turn/i);
+  assert.doesNotMatch(prompt, /direct A2A endpoint:|direct A2A peer card:|direct A2A peer endpoint:/i);
   assert.match(prompt, /error field is not an invitation/);
-  assert.match(prompt, /continue until .*certificate.*verified/i);
-  assert.match(prompt, /Do not end your turn/i);
+  assert.doesNotMatch(prompt, /Continue until Clockchain returns a certificate/i);
   assert.doesNotMatch(prompt, /privateKey|secret|CLOCKCHAIN_MCP_BEARER|cc_secret|controller authority/i);
   assert.deepEqual(calls.find((entry) => entry[0] === "permission")[1], {
     outcome: { outcome: "selected", optionId: "allow_once" },
