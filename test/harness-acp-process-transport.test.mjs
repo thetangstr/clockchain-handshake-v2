@@ -1613,6 +1613,45 @@ test("ACP continuation advances a joined party with one exact next call", async 
   assert.doesNotMatch(prompts[1][1].prompt[0].text, /agent_handshake_join|agent_handshake_status|agent_handshake_submit/);
 });
 
+test("Claude continuation resolves the exact native next tool after joining", async () => {
+  const calls = [];
+  let completionChecks = 0;
+  const joinUpdate = {
+    sessionUpdate: "tool_call_update",
+    toolCallId: "tool-handshake-join-claude",
+    kind: "other",
+    title: "agent_handshake_join",
+    status: "completed",
+    rawInput: { server: "clockchain-handshake", tool: "agent_handshake_join", arguments: {} },
+    rawOutput: { result: { sessionId: SESSION }, error: null },
+  };
+  const transport = createAcpProcessTransport({
+    harness: "claude",
+    pin: ACP_VERSION_PINS.claude,
+    spawn: acpFixtureSpawn({ calls, sessionUpdates: [joinUpdate], skipPermission: true }),
+    workspace: "/workspace/responder",
+    home: "/workspace/responder/home",
+    partyBridge: partyBridgeFor(calls, {
+      completionStatus() {
+        completionChecks += 1;
+        return { complete: completionChecks >= 2, protocolSessionId: SESSION };
+      },
+    }),
+    env: {},
+    trustedAdapterPublicKeys: [retainedAction({ role: "responder" }).adapterPublicKey],
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.claude,
+    runtime: { runtimeId: "runtime-responder", sessionId: SESSION, role: "responder", harness: "claude" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("responder"),
+  });
+  const continuation = calls.filter((entry) => entry[0] === "prompt")[1][1].prompt[0].text;
+  assert.match(continuation, /mcp__clockchain-handshake__agent_handshake_next/);
+  assert.match(continuation, /ToolSearch/);
+});
+
 test("ACP continuation submits the exact result of a completed signing helper", async () => {
   const action = retainedAction({ operation: "sign", commandSha256: "9".repeat(64) });
   const calls = [];
@@ -1847,6 +1886,8 @@ test("ACP responder continuation repeats the exact private invitation while no p
   assert.equal(prompts.length, 2);
   assert.match(prompts[1][1].prompt[0].text, new RegExp(INVITATION.replace(".", "\\.")));
   assert.match(prompts[1][1].prompt[0].text, /agent_handshake_accept_invitation/);
+  assert.match(prompts[1][1].prompt[0].text, /mcp__clockchain-handshake__agent_handshake_accept_invitation/);
+  assert.match(prompts[1][1].prompt[0].text, /ToolSearch/);
   assert.doesNotMatch(prompts[1][1].prompt[0].text, /read.*(?:file|path)|responder-invitation/i);
 });
 

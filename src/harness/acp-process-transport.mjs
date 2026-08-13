@@ -367,14 +367,26 @@ function mcpServer() {
   });
 }
 
-function promptText({ role, sessionId, mandate, a2aConfig }) {
+function promptToolName(harness, tool) {
+  if (!["codex", "claude"].includes(harness) || !CLAUDE_CLOCKCHAIN_PERMISSION_TOOLS.has(tool)) fail();
+  return harness === "claude" ? CLAUDE_CLOCKCHAIN_TOOL_ALIASES[tool] : tool;
+}
+
+function deferredToolInstructions(harness, tool) {
+  return harness === "claude"
+    ? [`Use ToolSearch to load the exact native tool ${promptToolName(harness, tool)} before calling it.`]
+    : [];
+}
+
+function promptText({ role, sessionId, mandate, a2aConfig, harness }) {
   if (role === "responder") {
+    const acceptTool = promptToolName(harness, "agent_handshake_accept_invitation");
     return [
       "Clockchain fresh-agent bootstrap.",
       "role: responder",
       "Your first action now is to accept the invitation.",
-      `Call the dedicated Clockchain MCP tool agent_handshake_accept_invitation with this exact opaque invitation unchanged: ${a2aConfig.invitation}`,
-      "That exact short tool name is available through the configured Claude adapter alias; use ToolSearch to load it if Claude deferred it.",
+      `Call the dedicated Clockchain MCP tool ${acceptTool} with this exact opaque invitation unchanged: ${a2aConfig.invitation}`,
+      ...deferredToolInstructions(harness, "agent_handshake_accept_invitation"),
       "Do not print, summarize, or copy the invitation anywhere else.",
       "After that tool returns, do not end this turn.",
       "If it returns helperSteps, execute each helperStep.approvalCommand with Bash exactly as returned, one at a time, in order.",
@@ -384,6 +396,7 @@ function promptText({ role, sessionId, mandate, a2aConfig }) {
     ].join("\n");
   }
   const mandateJson = JSON.stringify(mandate);
+  const inviteTool = promptToolName(harness, "agent_handshake_invite");
   return [
     "Clockchain mechanics proof mandate.",
     `role: ${role}`,
@@ -392,7 +405,8 @@ function promptText({ role, sessionId, mandate, a2aConfig }) {
     `direct A2A endpoint: ${a2aConfig.endpoint}`,
     `direct A2A peer card: ${a2aConfig.peerCard.id}`,
     `direct A2A peer endpoint: ${a2aConfig.peerCard.endpoint}`,
-    "First call agent_handshake_invite with the four mandate fields as the tool arguments themselves; do not nest them under mandate or terms.",
+    `First call ${inviteTool} with the four mandate fields as the tool arguments themselves; do not nest them under mandate or terms.`,
+    ...deferredToolInstructions(harness, "agent_handshake_invite"),
     "After agent_handshake_invite returns, do not end this turn.",
     "If it returns helperSteps, execute each helperStep.approvalCommand with Bash exactly as returned, one at a time, in order.",
     "Then call agent_handshake_join using initiatorAccess as access and the exact helper outputs.",
@@ -405,7 +419,7 @@ function promptText({ role, sessionId, mandate, a2aConfig }) {
 }
 
 function continuationPromptText({
-  role, protocolSessionId, mandate, a2aConfig, bridgeProgress, joined, latestHelperOperation, roleAccess,
+  role, protocolSessionId, mandate, a2aConfig, bridgeProgress, harness, joined, latestHelperOperation, roleAccess,
   helperPublic, pendingApprovals,
 }) {
   const approvals = snapshotArray(pendingApprovals, { max: 3 });
@@ -425,17 +439,20 @@ function continuationPromptText({
   }
   if (protocolSessionId === null) {
     if (role === "initiator") {
+      const inviteTool = promptToolName(harness, "agent_handshake_invite");
       return [
         "No Clockchain protocol session exists yet.",
-        `Call agent_handshake_invite now with exactly this argument object: ${JSON.stringify(mandate)}.`,
+        `Call ${inviteTool} now with exactly this argument object: ${JSON.stringify(mandate)}.`,
+        ...deferredToolInstructions(harness, "agent_handshake_invite"),
         "If Clockchain returns a retryable error, follow its wait and retry instructions and call agent_handshake_invite again.",
         "Do not end your turn before the invitation succeeds or a non-retryable tool error makes completion impossible.",
       ].join("\n");
     }
+    const acceptTool = promptToolName(harness, "agent_handshake_accept_invitation");
     return [
       "No Clockchain protocol session exists yet.",
-      `Pass this exact opaque invitation unchanged to agent_handshake_accept_invitation now: ${a2aConfig.invitation}`,
-      "The exact short tool name is available through the configured Claude adapter alias; use ToolSearch to load it if Claude deferred it.",
+      `Pass this exact opaque invitation unchanged to ${acceptTool} now: ${a2aConfig.invitation}`,
+      ...deferredToolInstructions(harness, "agent_handshake_accept_invitation"),
       "Do not print, summarize, or copy the invitation anywhere else.",
       "If Clockchain returns a retryable error, follow its wait and retry instructions and call agent_handshake_accept_invitation again.",
       "Do not end your turn before the invitation is accepted or a non-retryable tool error makes completion impossible.",
@@ -448,8 +465,10 @@ function continuationPromptText({
     ].join("\n");
   }
   if (bridgeProgress?.directDeliveryComplete === true && bridgeProgress?.certificateVerified === false) {
+    const certificateTool = promptToolName(harness, "agent_handshake_get_certificate");
     return [
-      "Call agent_handshake_get_certificate now with the exact access for the existing Clockchain protocol session.",
+      `Call ${certificateTool} now with the exact access for the existing Clockchain protocol session.`,
+      ...deferredToolInstructions(harness, "agent_handshake_get_certificate"),
       "If the certificate is still pending, follow the returned wait and retry instruction and call agent_handshake_get_certificate again.",
       "When it returns a helperStep, execute its exact approvalCommand through the retained local-action approval path.",
       "Do not end your turn before the retained local certificate verification completes.",
@@ -458,11 +477,13 @@ function continuationPromptText({
   if (joined !== true) {
     const accessField = role === "initiator" ? "initiatorAccess" : "responderAccess";
     const inspect = helperPublic.inspect;
+    const joinTool = promptToolName(harness, "agent_handshake_join");
     return [
       `Continue the existing Clockchain handshake in protocol session ${protocolSessionId}; do not create or accept another invitation.`,
       "You have not joined this Clockchain protocol session.",
       `Use the exact ${accessField} returned by Clockchain as the join argument named access: ${roleAccess ?? accessField}.`,
-      `Call agent_handshake_join now with exactly: ${JSON.stringify({ access: roleAccess, helperVersion: inspect?.helperVersion, sessionKeyAddress: inspect?.address, policyDigest: inspect?.policyDigest })}.`,
+      `Call ${joinTool} now with exactly: ${JSON.stringify({ access: roleAccess, helperVersion: inspect?.helperVersion, sessionKeyAddress: inspect?.address, policyDigest: inspect?.policyDigest })}.`,
+      ...deferredToolInstructions(harness, "agent_handshake_join"),
       "Call no other tool before agent_handshake_join returns.",
       "Do not end your turn before agent_handshake_join returns or a non-retryable tool error makes completion impossible.",
     ].join("\n");
@@ -471,18 +492,22 @@ function continuationPromptText({
     const accessField = role === "initiator" ? "initiatorAccess" : "responderAccess";
     const signed = helperPublic.sign;
     const policyDigest = helperPublic.inspect?.policyDigest;
+    const submitTool = promptToolName(harness, "agent_handshake_submit");
     return [
       `Continue the existing Clockchain handshake in protocol session ${protocolSessionId}; do not create or accept another invitation.`,
       "The latest retained signing helper has completed.",
       `Use the exact unchanged ${accessField} returned by Clockchain as the submit argument named access: ${roleAccess ?? accessField}.`,
-      `Call agent_handshake_submit now with exactly: ${JSON.stringify({ access: roleAccess, policyDigest, signatureHex: signed?.signatureHex })}.`,
+      `Call ${submitTool} now with exactly: ${JSON.stringify({ access: roleAccess, policyDigest, signatureHex: signed?.signatureHex })}.`,
+      ...deferredToolInstructions(harness, "agent_handshake_submit"),
       "Call no other tool before agent_handshake_submit returns.",
       "Do not end your turn before agent_handshake_submit returns or a non-retryable tool error makes completion impossible.",
     ].join("\n");
   }
+  const nextTool = promptToolName(harness, "agent_handshake_next");
   return [
     `Continue the existing Clockchain handshake in protocol session ${protocolSessionId}; do not create or accept another invitation.`,
-    `You have joined as ${role}. Call agent_handshake_next now with the exact unchanged ${role === "initiator" ? "initiatorAccess" : "responderAccess"} returned by Clockchain as the argument named access: ${roleAccess ?? "the prior role access"}.`,
+    `You have joined as ${role}. Call ${nextTool} now with the exact unchanged ${role === "initiator" ? "initiatorAccess" : "responderAccess"} returned by Clockchain as the argument named access: ${roleAccess ?? "the prior role access"}.`,
+    ...deferredToolInstructions(harness, "agent_handshake_next"),
     "Follow the returned next action exactly. If it is a retryable wait, wait and call agent_handshake_next again.",
     "Call no other tool before agent_handshake_next returns.",
     "Do not end your turn before agent_handshake_next returns or a non-retryable tool error makes completion impossible.",
@@ -1437,13 +1462,14 @@ export function createAcpProcessTransport(optionsInput = {}) {
             prompt: [{
               type: "text",
               text: promptAttempt === 0
-                ? promptText({ role: clean.role, sessionId: clean.sessionId, mandate: cleanMandateValue, a2aConfig: cleanPeer })
+                ? promptText({ role: clean.role, sessionId: clean.sessionId, mandate: cleanMandateValue, a2aConfig: cleanPeer, harness })
                 : continuationPromptText({
                   role: clean.role,
                   protocolSessionId,
                   mandate: cleanMandateValue,
                   a2aConfig: cleanPeer,
                   bridgeProgress,
+                  harness,
                   joined: observedClockchainTools.has("agent_handshake_join"),
                   latestHelperOperation,
                   roleAccess: retainedRoleAccess,
