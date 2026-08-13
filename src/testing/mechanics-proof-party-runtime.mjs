@@ -397,10 +397,10 @@ async function providerEnvFor(harness, home, env = process.env, setStage = () =>
       (hasSerializedAuth && hasBedrockAuth)
     ) fail();
     if (hasSerializedAuth) {
-      if (env.CLOCKCHAIN_CLAUDE_MODEL !== "claude-sonnet-4-6") fail();
+      if (env.CLOCKCHAIN_CLAUDE_MODEL !== "sonnet") fail();
       await installClaudeSerializedAuth(authJson, home, setStage);
       setStage("export");
-      result.CLOCKCHAIN_CLAUDE_MODEL = "claude-sonnet-4-6";
+      result.CLOCKCHAIN_CLAUDE_MODEL = "sonnet";
       return Object.freeze(result);
     }
     if (!hasBedrockAuth) {

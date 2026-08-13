@@ -543,7 +543,7 @@ test("responder runtime installs serialized Claude subscription auth into isolat
   const serialized = claudeSerializedAuth();
   await usingTemporaryEnv({
     CLOCKCHAIN_CLAUDE_AUTH_JSON_BASE64: Buffer.from(serialized, "utf8").toString("base64"),
-    CLOCKCHAIN_CLAUDE_MODEL: "claude-sonnet-4-6",
+    CLOCKCHAIN_CLAUDE_MODEL: "sonnet",
     CLAUDE_CODE_USE_BEDROCK: undefined,
     ANTHROPIC_MODEL: undefined,
     AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: undefined,
@@ -563,7 +563,7 @@ test("responder runtime installs serialized Claude subscription auth into isolat
       },
     }));
     await runtime.run({ peerDescriptor: peerDescriptor() });
-    assert.equal(transportEnv.CLOCKCHAIN_CLAUDE_MODEL, "claude-sonnet-4-6");
+    assert.equal(transportEnv.CLOCKCHAIN_CLAUDE_MODEL, "sonnet");
     assert.equal("CLOCKCHAIN_CLAUDE_AUTH_JSON_BASE64" in transportEnv, false);
     assert.equal("CLAUDE_CODE_USE_BEDROCK" in transportEnv, false);
     assert.doesNotMatch(JSON.stringify(transportEnv), /claude-access-secret|claude-refresh-secret/i);

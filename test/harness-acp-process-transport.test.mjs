@@ -460,7 +460,7 @@ test("ACP process transport forwards only role-specific provider auth and pins t
     }),
     workspace: "/workspace/responder",
     home: "/workspace/responder/home",
-    env: { CLOCKCHAIN_CLAUDE_MODEL: "claude-sonnet-4-6" },
+    env: { CLOCKCHAIN_CLAUDE_MODEL: "sonnet" },
     actionRecorder: actionRecorderFor([claudeAction], claudeSubscriptionCalls),
     nowMs: () => 1786337001000,
     trustedAdapterPublicKeys: [claudeAction.adapterPublicKey],
@@ -475,7 +475,7 @@ test("ACP process transport forwards only role-specific provider auth and pins t
   assert.deepEqual(claudeSubscriptionCalls.find((call) => Array.isArray(call) && call[0] === "setSessionConfigOption")?.[1], {
     sessionId: `acp-${SESSION}`,
     configId: "model",
-    value: "claude-sonnet-4-6",
+    value: "sonnet",
   });
 });
 

@@ -46,7 +46,7 @@ const PERMISSION_FAILURE_STAGES = Object.freeze([
 const ACP_STOP_REASONS = Object.freeze(["cancelled", "max_tokens", "max_turn_requests", "refusal"]);
 const CODEX_MODEL = "gpt-5.6-terra";
 const CLAUDE_BEDROCK_MODEL = "us.anthropic.claude-sonnet-4-6";
-const CLAUDE_SUBSCRIPTION_MODEL = "claude-sonnet-4-6";
+const CLAUDE_SUBSCRIPTION_MODEL = "sonnet";
 const LAUNCH_FAILURE_STAGES = Object.freeze([
   "spawn", "stream", "initialize", "session", "model", "prompt", "completion",
   "completion-protocol", "completion-protocol-envelope", "completion-protocol-usage",

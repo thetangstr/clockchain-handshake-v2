@@ -90,12 +90,12 @@ test("mechanics proof party entrypoint accepts one private Claude subscription a
       CLOCKCHAIN_A2A_PEER_ENDPOINT: "https://initiator.task.local:8443",
       CLOCKCHAIN_CODEX_AUTH_SECRET_REF: undefined,
       CLOCKCHAIN_CLAUDE_AUTH_JSON_BASE64: Buffer.from(serialized, "utf8").toString("base64"),
-      CLOCKCHAIN_CLAUDE_MODEL: "claude-sonnet-4-6",
+      CLOCKCHAIN_CLAUDE_MODEL: "sonnet",
     }),
   });
   const output = JSON.parse(stdout);
   assert.equal(output.provider, "claude-subscription-auth");
-  assert.equal(output.modelId, "claude-sonnet-4-6");
+  assert.equal(output.modelId, "sonnet");
   assert.equal(output.providerCredentialValueAccepted, false);
   assert.doesNotMatch(stdout, /claude-access-secret|claude-refresh-secret|CLOCKCHAIN_CLAUDE_AUTH_JSON_BASE64/i);
 });

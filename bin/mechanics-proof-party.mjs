@@ -109,7 +109,7 @@ function capabilityPreflight(env) {
       optional(env, "CLOCKCHAIN_BEDROCK_MODEL_ID") === "us.anthropic.claude-sonnet-4-6";
     if ((serialized !== null) === bedrock) throw new Error("bad");
     if (serialized !== null) {
-      if (!CLAUDE_AUTH_BASE64.test(serialized) || optional(env, "CLOCKCHAIN_CLAUDE_MODEL") !== "claude-sonnet-4-6") throw new Error("bad");
+      if (!CLAUDE_AUTH_BASE64.test(serialized) || optional(env, "CLOCKCHAIN_CLAUDE_MODEL") !== "sonnet") throw new Error("bad");
       provider = "claude-subscription-auth";
     } else provider = "bedrock";
   }
@@ -125,7 +125,7 @@ function capabilityPreflight(env) {
     provider,
     ...(role === "responder" ? provider === "bedrock"
       ? { bedrockModelId: "us.anthropic.claude-sonnet-4-6" }
-      : { modelId: "claude-sonnet-4-6" } : {}),
+      : { modelId: "sonnet" } : {}),
     mcpUrl,
     a2aPort: "8443",
     partySignerAddress: partySigner.address.toLowerCase(),
