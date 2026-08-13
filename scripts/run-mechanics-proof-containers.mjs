@@ -251,10 +251,7 @@ function containerConfig({ config, networkId, role, runId }) {
       CLOCKCHAIN_RUNTIME_ID: `runtime-${role}`,
       CLOCKCHAIN_TASK_ID: `task-${role}`,
       CLOCKCHAIN_WORKLOAD_ATTESTATION_DIGEST: digest({ image: config.appImage, role, runId }),
-      ...(role === "initiator" ? { CLOCKCHAIN_CODEX_MODEL: "gpt-5.6-terra" } : {
-        CLAUDE_CODE_USE_BEDROCK: "1",
-        ANTHROPIC_MODEL: "us.anthropic.claude-sonnet-4-6",
-      }),
+      ...(role === "initiator" ? { CLOCKCHAIN_CODEX_MODEL: "gpt-5.6-terra" } : {}),
     }),
   });
 }

@@ -44,6 +44,7 @@ const DEPENDENCY_KEYS = Object.freeze([
 ]);
 const CODEX_PROVIDER_ENV = Object.freeze(["CODEX_API_KEY", "OPENAI_API_KEY", "CLOCKCHAIN_CODEX_MODEL"]);
 const CODEX_AUTH_JSON_BASE64 = "CLOCKCHAIN_CODEX_AUTH_JSON_BASE64";
+const CLAUDE_AUTH_JSON_BASE64 = "CLOCKCHAIN_CLAUDE_AUTH_JSON_BASE64";
 const CLAUDE_BEDROCK_PROVIDER_ENV = Object.freeze([
   "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_MODEL", "AWS_REGION", "AWS_DEFAULT_REGION",
   "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
@@ -354,7 +355,19 @@ async function installCodexSerializedAuth(value, home, setStage) {
   await installAppleClientAuthentication({ authentication, home }).catch(fail);
 }
 
-async function providerEnvFor(harness, home, env = process.env, setStage = () => {}) {
+async function installClaudeSerializedAuth(value, home, setStage) {
+  setStage("decode");
+  if (typeof value !== "string" || value.length < 4 || value.length > 96 * 1024 || !/^[A-Za-z0-9+/=]+$/.test(value)) fail();
+  let serialized;
+  try { serialized = Buffer.from(value, "base64").toString("utf8"); } catch { fail(); }
+  if (Buffer.byteLength(serialized, "utf8") < 2 || Buffer.byteLength(serialized, "utf8") > 64 * 1024) fail();
+  setStage("parse");
+  const authentication = await loadAppleClientAuthentication({ client: "claude", nowMs: Date.now(), serialized }).catch(fail);
+  setStage("install");
+  await installAppleClientAuthentication({ authentication, home }).catch(fail);
+}
+
+async function providerEnvFor(harness, home, env = process.env, setStage = () => {}, allowMissing = false) {
   const result = {};
   setStage("input");
   if (harness === "codex") {
@@ -373,11 +386,27 @@ async function providerEnvFor(harness, home, env = process.env, setStage = () =>
       if (typeof value === "string" && value.length > 0) result[key] = value;
     }
   } else {
+    const authJson = env[CLAUDE_AUTH_JSON_BASE64];
+    const hasSerializedAuth = typeof authJson === "string" && authJson.length > 0;
+    const hasBedrockAuth = hasEnv(env, "CLAUDE_CODE_USE_BEDROCK") || hasEnv(env, "ANTHROPIC_MODEL") ||
+      hasEnv(env, "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI");
     if (
       hasEnv(env, CODEX_AUTH_JSON_BASE64) || hasEnv(env, "CODEX_API_KEY") ||
       hasEnv(env, "OPENAI_API_KEY") || hasEnv(env, "CLOCKCHAIN_CODEX_MODEL") ||
-      hasEnv(env, "ANTHROPIC_API_KEY") || AWS_CREDENTIAL_OVERRIDE_ENV.some((key) => hasEnv(env, key))
+      hasEnv(env, "ANTHROPIC_API_KEY") || AWS_CREDENTIAL_OVERRIDE_ENV.some((key) => hasEnv(env, key)) ||
+      (hasSerializedAuth && hasBedrockAuth)
     ) fail();
+    if (hasSerializedAuth) {
+      if (env.CLOCKCHAIN_CLAUDE_MODEL !== "claude-sonnet-4-6") fail();
+      await installClaudeSerializedAuth(authJson, home, setStage);
+      setStage("export");
+      result.CLOCKCHAIN_CLAUDE_MODEL = "claude-sonnet-4-6";
+      return Object.freeze(result);
+    }
+    if (!hasBedrockAuth) {
+      if (!allowMissing) fail();
+      return Object.freeze(result);
+    }
     setStage("export");
     for (const key of CLAUDE_BEDROCK_PROVIDER_ENV) {
       const value = env[key];
@@ -619,7 +648,7 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
           runStage = "provider-auth";
           const providerEnv = await providerEnvFor(options.harness, paths.home, process.env, (stage) => {
             runStage = `provider-auth-${stage}`;
-          });
+          }, deps.createProcessTransport !== DEFAULTS.createProcessTransport);
           runStage = "transport-create";
           const processTransport = deps.createProcessTransport({
             actionRecorder: actionRecorder.actionRecorder,

@@ -448,6 +448,35 @@ test("ACP process transport forwards only role-specific provider auth and pins t
   await claudeTransport.terminate({ sessionId: SESSION });
   const claudeEvidence = await claudeTransport.collectEvidence({ sessionId: SESSION });
   assert.doesNotMatch(JSON.stringify(claudeEvidence), /wrong-role|forbidden|us\.anthropic/);
+
+  const claudeSubscriptionCalls = [];
+  const claudeSubscriptionTransport = createAcpProcessTransport({
+    harness: "claude",
+    pin: ACP_VERSION_PINS.claude,
+    spawn: acpFixtureSpawn({
+      calls: claudeSubscriptionCalls,
+      helperAction: claudeAction,
+      permissionCommand: `clockchain-agent-authorize ${claudeAction.commandSha256}`,
+    }),
+    workspace: "/workspace/responder",
+    home: "/workspace/responder/home",
+    env: { CLOCKCHAIN_CLAUDE_MODEL: "claude-sonnet-4-6" },
+    actionRecorder: actionRecorderFor([claudeAction], claudeSubscriptionCalls),
+    nowMs: () => 1786337001000,
+    trustedAdapterPublicKeys: [claudeAction.adapterPublicKey],
+  });
+  await claudeSubscriptionTransport.launch({
+    acp: ACP_VERSION_PINS.claude,
+    runtime: { runtimeId: "runtime-responder", sessionId: SESSION, role: "responder", harness: "claude" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("responder"),
+  });
+  assert.deepEqual(claudeSubscriptionCalls.find((call) => Array.isArray(call) && call[0] === "setSessionConfigOption")?.[1], {
+    sessionId: `acp-${SESSION}`,
+    configId: "model",
+    value: "claude-sonnet-4-6",
+  });
 });
 
 test("Codex ACP launch fails closed when the required model pin is absent", async () => {

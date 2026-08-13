@@ -353,6 +353,16 @@ function codexSerializedAuth() {
   });
 }
 
+function claudeSerializedAuth() {
+  return JSON.stringify({
+    claudeAiOauth: {
+      accessToken: "claude-access-secret",
+      expiresAt: 1999999999999,
+      refreshToken: "claude-refresh-secret",
+    },
+  });
+}
+
 test("one responder runtime listens before launch and returns only digest-bound terminal evidence", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-"));
   const root = join(parent, "responder");
@@ -523,6 +533,40 @@ test("Claude Bedrock runtime passes only platform relative credentials and regio
     for (const key of ["AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_AUTHORIZATION_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "ANTHROPIC_API_KEY"]) {
       assert.equal(key in transportEnv, false, key);
     }
+  });
+});
+
+test("responder runtime installs serialized Claude subscription auth into isolated HOME", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "clockchain-party-runtime-claude-auth-"));
+  const root = join(parent, "responder");
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const serialized = claudeSerializedAuth();
+  await usingTemporaryEnv({
+    CLOCKCHAIN_CLAUDE_AUTH_JSON_BASE64: Buffer.from(serialized, "utf8").toString("base64"),
+    CLOCKCHAIN_CLAUDE_MODEL: "claude-sonnet-4-6",
+    CLAUDE_CODE_USE_BEDROCK: undefined,
+    ANTHROPIC_MODEL: undefined,
+    AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: undefined,
+    AWS_ACCESS_KEY_ID: undefined,
+    AWS_SECRET_ACCESS_KEY: undefined,
+    AWS_SESSION_TOKEN: undefined,
+  }, async () => {
+    let transportEnv;
+    const runtime = await createMechanicsProofPartyRuntime(options(root), dependencies([], {
+      createProcessTransport(input) {
+        transportEnv = input.env;
+        assert.deepEqual(
+          JSON.parse(readFileSync(join(root, "home", ".claude", ".credentials.json"), "utf8")),
+          JSON.parse(serialized),
+        );
+        return {};
+      },
+    }));
+    await runtime.run({ peerDescriptor: peerDescriptor() });
+    assert.equal(transportEnv.CLOCKCHAIN_CLAUDE_MODEL, "claude-sonnet-4-6");
+    assert.equal("CLOCKCHAIN_CLAUDE_AUTH_JSON_BASE64" in transportEnv, false);
+    assert.equal("CLAUDE_CODE_USE_BEDROCK" in transportEnv, false);
+    assert.doesNotMatch(JSON.stringify(transportEnv), /claude-access-secret|claude-refresh-secret/i);
   });
 });
 
@@ -788,7 +832,7 @@ test("party runtime constructs the actual ACP transport across its production bo
   const root = join(parent, "responder");
   t.after(() => rm(parent, { recursive: true, force: true }));
   const runtime = await createMechanicsProofPartyRuntime(options(root), dependencies([], {
-    createProcessTransport: createAcpProcessTransport,
+    createProcessTransport(input) { return createAcpProcessTransport(input); },
   }));
   const evidence = await runtime.run({ peerDescriptor: peerDescriptor() });
   assert.equal(evidence.terminalStatus, "completed");

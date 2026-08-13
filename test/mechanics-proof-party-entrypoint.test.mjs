@@ -74,6 +74,32 @@ test("mechanics proof party entrypoint selects Claude Bedrock identity without A
   assert.doesNotMatch(stdout, /ANTHROPIC_API_KEY|cc_secret|privateKey/i);
 });
 
+test("mechanics proof party entrypoint accepts one private Claude subscription auth channel", async () => {
+  const serialized = JSON.stringify({
+    claudeAiOauth: {
+      accessToken: "claude-access-secret",
+      expiresAt: 1999999999999,
+      refreshToken: "claude-refresh-secret",
+    },
+  });
+  const { stdout } = await execFileAsync(process.execPath, ["bin/mechanics-proof-party.mjs", "--capability-preflight"], {
+    cwd: process.cwd(),
+    env: env({
+      CLOCKCHAIN_ROLE: "responder",
+      CLOCKCHAIN_CLIENT: "claude",
+      CLOCKCHAIN_A2A_PEER_ENDPOINT: "https://initiator.task.local:8443",
+      CLOCKCHAIN_CODEX_AUTH_SECRET_REF: undefined,
+      CLOCKCHAIN_CLAUDE_AUTH_JSON_BASE64: Buffer.from(serialized, "utf8").toString("base64"),
+      CLOCKCHAIN_CLAUDE_MODEL: "claude-sonnet-4-6",
+    }),
+  });
+  const output = JSON.parse(stdout);
+  assert.equal(output.provider, "claude-subscription-auth");
+  assert.equal(output.modelId, "claude-sonnet-4-6");
+  assert.equal(output.providerCredentialValueAccepted, false);
+  assert.doesNotMatch(stdout, /claude-access-secret|claude-refresh-secret|CLOCKCHAIN_CLAUDE_AUTH_JSON_BASE64/i);
+});
+
 test("mechanics proof party entrypoint accepts one private Codex subscription auth channel only", async () => {
   const { stdout } = await execFileAsync(process.execPath, ["bin/mechanics-proof-party.mjs", "--capability-preflight"], {
     cwd: process.cwd(),

@@ -46,6 +46,7 @@ const PERMISSION_FAILURE_STAGES = Object.freeze([
 const ACP_STOP_REASONS = Object.freeze(["cancelled", "max_tokens", "max_turn_requests", "refusal"]);
 const CODEX_MODEL = "gpt-5.6-terra";
 const CLAUDE_BEDROCK_MODEL = "us.anthropic.claude-sonnet-4-6";
+const CLAUDE_SUBSCRIPTION_MODEL = "claude-sonnet-4-6";
 const LAUNCH_FAILURE_STAGES = Object.freeze([
   "spawn", "stream", "initialize", "session", "model", "prompt", "completion",
   "completion-protocol", "completion-protocol-envelope", "completion-protocol-usage",
@@ -149,6 +150,16 @@ function cleanProviderEnv(baseEnv, harness) {
     return Object.freeze({ env: Object.freeze(env), model: CODEX_MODEL });
   }
   if (baseEnv.ANTHROPIC_API_KEY !== undefined || baseEnv.CODEX_API_KEY !== undefined || baseEnv.OPENAI_API_KEY !== undefined) fail();
+  if (baseEnv.CLOCKCHAIN_CLAUDE_MODEL !== undefined) {
+    if (baseEnv.CLOCKCHAIN_CLAUDE_MODEL !== CLAUDE_SUBSCRIPTION_MODEL) fail();
+    const forbidden = [
+      "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_MODEL", "AWS_REGION", "AWS_DEFAULT_REGION",
+      "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_WEB_IDENTITY_TOKEN_FILE",
+      "AWS_ROLE_ARN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+    ];
+    if (forbidden.some((key) => baseEnv[key] !== undefined)) fail();
+    return Object.freeze({ env: Object.freeze(env), model: CLAUDE_SUBSCRIPTION_MODEL, pinModel: true });
+  }
   const hasBedrockInput = [
     "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_MODEL", "AWS_REGION", "AWS_DEFAULT_REGION",
     "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI",
@@ -174,7 +185,7 @@ function cleanProviderEnv(baseEnv, harness) {
   if ([hasContainerCredentials, hasWebIdentity, hasStaticCredentials].filter(Boolean).length !== 1) fail();
   if (hasWebIdentity && !(env.AWS_WEB_IDENTITY_TOKEN_FILE !== undefined && env.AWS_ROLE_ARN !== undefined)) fail();
   if (hasStaticCredentials && !(env.AWS_ACCESS_KEY_ID !== undefined && env.AWS_SECRET_ACCESS_KEY !== undefined)) fail();
-  return Object.freeze({ env: Object.freeze(env), model: CLAUDE_BEDROCK_MODEL });
+  return Object.freeze({ env: Object.freeze(env), model: CLAUDE_BEDROCK_MODEL, pinModel: false });
 }
 
 function executablePath(value) {
@@ -1108,14 +1119,14 @@ export function createAcpProcessTransport(optionsInput = {}) {
         if (provisionalAcpSessionId !== null && provisionalAcpSessionId !== created.sessionId) fail();
         acpSessionId = created.sessionId;
         for (const update of provisionalToolUpdates.splice(0)) await sessionUpdate(update);
-        if (harness === "codex") {
+        if (harness === "codex" || provider.pinModel === true) {
           launchStage = "model";
           await connection.setSessionConfigOption({
             sessionId: acpSessionId,
             configId: "model",
             value: provider.model,
           });
-          event("acp.model.pinned", "pinned Codex ACP model", "model:gpt-5.6-terra");
+          event("acp.model.pinned", `pinned ${harness} ACP model`, `model:${provider.model}`);
         }
         event("acp.session.new", "created ACP session", digest(created.sessionId));
         let promptUsage = Object.freeze({ inputTokens: "0", outputTokens: "0" });

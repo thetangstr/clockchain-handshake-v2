@@ -17,6 +17,7 @@ const SESSION = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 const DIGEST = /^[0-9a-f]{64}$/;
 const SECRET_REF = /^arn:aws:(?:secretsmanager|ssm):[a-z0-9-]+:[0-9]{12}:(?:secret|parameter)[:/].+/;
 const CODEX_AUTH_BASE64 = /^[A-Za-z0-9+/=]{4,98304}$/;
+const CLAUDE_AUTH_BASE64 = CODEX_AUTH_BASE64;
 const PRIVATE_DNS = /^(?:[a-z0-9-]+\.)*(?:task\.local|internal|local)$/i;
 const MANAGED_IDLE_MS = 300_000;
 
@@ -42,7 +43,7 @@ function rejectControllerAuthority(env) {
 function rejectCrossRoleProviderAuth(env, role) {
   const codexKeys = ["CLOCKCHAIN_CODEX_AUTH_SECRET_REF", "CLOCKCHAIN_CODEX_AUTH_JSON_BASE64", "CODEX_API_KEY", "OPENAI_API_KEY", "CLOCKCHAIN_CODEX_MODEL"];
   const claudeKeys = [
-    "CLOCKCHAIN_CLAUDE_PROVIDER", "CLOCKCHAIN_BEDROCK_MODEL_ID", "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_MODEL",
+    "CLOCKCHAIN_CLAUDE_PROVIDER", "CLOCKCHAIN_BEDROCK_MODEL_ID", "CLOCKCHAIN_CLAUDE_AUTH_JSON_BASE64", "CLOCKCHAIN_CLAUDE_MODEL", "CLAUDE_CODE_USE_BEDROCK", "ANTHROPIC_MODEL",
     "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
     "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN",
   ];
@@ -101,11 +102,17 @@ function capabilityPreflight(env) {
   if (role === "initiator") {
     if (client !== "codex") throw new Error("bad");
     provider = codexAuthMode(env);
-  } else if (
-    client !== "claude" || optional(env, "CLOCKCHAIN_CLAUDE_PROVIDER") !== "bedrock" ||
-    optional(env, "CLOCKCHAIN_BEDROCK_MODEL_ID") !== "us.anthropic.claude-sonnet-4-6"
-  ) throw new Error("bad");
-  else provider = "bedrock";
+  } else {
+    if (client !== "claude") throw new Error("bad");
+    const serialized = optional(env, "CLOCKCHAIN_CLAUDE_AUTH_JSON_BASE64");
+    const bedrock = optional(env, "CLOCKCHAIN_CLAUDE_PROVIDER") === "bedrock" &&
+      optional(env, "CLOCKCHAIN_BEDROCK_MODEL_ID") === "us.anthropic.claude-sonnet-4-6";
+    if ((serialized !== null) === bedrock) throw new Error("bad");
+    if (serialized !== null) {
+      if (!CLAUDE_AUTH_BASE64.test(serialized) || optional(env, "CLOCKCHAIN_CLAUDE_MODEL") !== "claude-sonnet-4-6") throw new Error("bad");
+      provider = "claude-subscription-auth";
+    } else provider = "bedrock";
+  }
   for (const name of ["CLOCKCHAIN_WORKSPACE", "CLOCKCHAIN_HOME", "CLOCKCHAIN_STATE_DIR"]) value(env, name);
   if (value(env, "CLOCKCHAIN_A2A_PORT") !== "8443") throw new Error("bad");
   const partySigner = privateKeyToAccount(generatePrivateKey());
@@ -116,7 +123,9 @@ function capabilityPreflight(env) {
     role,
     client,
     provider,
-    ...(role === "responder" ? { bedrockModelId: "us.anthropic.claude-sonnet-4-6" } : {}),
+    ...(role === "responder" ? provider === "bedrock"
+      ? { bedrockModelId: "us.anthropic.claude-sonnet-4-6" }
+      : { modelId: "claude-sonnet-4-6" } : {}),
     mcpUrl,
     a2aPort: "8443",
     partySignerAddress: partySigner.address.toLowerCase(),
