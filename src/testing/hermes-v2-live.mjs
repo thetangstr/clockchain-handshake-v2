@@ -230,6 +230,8 @@ export function createHermesDecisionPrompt({ action, policy } = {}) {
   return [
     "You are an independently controlled stakeholder agent.",
     "Evaluate this public Clockchain action against the immutable local policy below.",
+    "actionDigest is an opaque, exact binding for this specific action. It is independently checked by the adapter and is expected to differ from localPolicy.statementDigest; never compare those two digests.",
+    "Use localPolicy to judge the role, terms, time limit, identity requirement, and no-external-action boundary. The action packet establishes only the operation, role, session, and opaque binding.",
     "Identity claim is a prerequisite that binds the new local key and policy; fresh ERC-8004 registration happens only after Clockchain funds the new key. Approve that prerequisite when the policy requires a fresh identity.",
     "A proposal or acceptance may be approved only for the stated role and immutable policy. Evidence may be approved only after the matching verified handshake artifacts exist. Never authorize any external business action.",
     "Approve only when the role, reference, statement digest, time limit, identity requirement, and no-external-action boundary match.",
