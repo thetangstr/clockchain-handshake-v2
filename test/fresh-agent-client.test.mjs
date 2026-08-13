@@ -229,6 +229,7 @@ function roleAccess(role, allowedTools) {
 }
 
 const INVITATION = roleAccess("responder", ["agent_handshake_accept_invitation"]);
+const OPAQUE_INITIATOR_ACCESS = "ccra_ABCDEFGHIJKLMNOPQRSTUV";
 
 function helperProof(role) {
   const party = V2_FIXTURE.parties[role];
@@ -447,7 +448,7 @@ async function prepareTestAdapter({ room }) {
   const bin = join(root, "bin");
   await mkdir(bin, { recursive: true, mode: 0o700 });
   const executable = join(bin, "clockchain-agent-authorize");
-  return Object.freeze({ authorize: async () => {}, bin, close: async () => {}, executable, record: () => {} });
+  return Object.freeze({ authorize: async () => {}, bin, bindRoleAccess: () => {}, close: async () => {}, executable, record: () => {} });
 }
 
 async function rejectsFreshAgentRun(parent, overrides) {
@@ -1187,7 +1188,11 @@ test("harness adapter submits the private proposal checkpoint before releasing t
     room,
     runtimeExecPath: process.execPath,
   });
-  adapter.bindRoleAccess(roleAccess("initiator", CLOCKCHAIN_HANDSHAKE_TOOLS));
+  adapter.bindRoleAccess({
+    access: OPAQUE_INITIATOR_ACCESS,
+    role: "initiator",
+    sessionId: SESSION,
+  });
   adapter.record(step);
   const approved = execFileAsync(adapter.executable, [step.commandSha256], {
     cwd: room.workspace,
@@ -1570,6 +1575,71 @@ test("starts the Responder only after the Initiator emits its actual one-time in
   assert.equal(result.roles.initiator.certificateDigest, result.roles.responder.certificateDigest);
   assert.equal(JSON.stringify(result).includes(secret), false);
   assert.equal((await readdir(parent)).length, 0);
+});
+
+test("accepts the production opaque Initiator role handle from a completed invitation result", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-opaque-role-access-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const children = {};
+  const bindings = [];
+  const spawnProcess = () => {
+    const role = children.initiator === undefined ? "initiator" : "responder";
+    const child = new EventEmitter();
+    child.pid = null;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {
+      queueMicrotask(() => {
+        if (role === "initiator") {
+          const response = {
+            responderInvitation: INVITATION,
+            roleAccess: OPAQUE_INITIATOR_ACCESS,
+            sessionId: SESSION,
+          };
+          child.stdout.emit("data", Buffer.from(streamEvent({
+            type: "item.completed",
+            item: {
+              type: "mcp_tool_call",
+              tool: "agent_handshake_invite",
+              status: "completed",
+              result: {
+                content: [{ type: "text", text: JSON.stringify(response) }],
+                structuredContent: response,
+              },
+            },
+          })));
+          return;
+        }
+        children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
+        children.responder.stdout.emit("data", Buffer.from(claudeHelperProofEvent(helperProof("responder"))));
+        children.initiator.emit("close", 0, null);
+        children.responder.emit("close", 0, null);
+      });
+    } };
+    child.kill = () => {};
+    children[role] = child;
+    return child;
+  };
+  const prepareAdapter = async (options) => {
+    const adapter = await prepareTestAdapter(options);
+    return Object.freeze({
+      ...adapter,
+      bindRoleAccess: (binding) => bindings.push(binding),
+    });
+  };
+
+  const result = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, {
+    prepareAdapter,
+    spawnProcess,
+  }));
+
+  assert.equal(result.certificateVerified, true);
+  assert.deepEqual(bindings, [{
+    access: OPAQUE_INITIATOR_ACCESS,
+    role: "initiator",
+    sessionId: SESSION,
+  }]);
+  assert.deepEqual(await readdir(parent), []);
 });
 
 test("continues the same isolated client sessions when a successful turn ends before certificate proof", async (t) => {

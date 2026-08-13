@@ -63,6 +63,7 @@ const TX = /^0x[0-9a-f]{64}$/;
 const SIGNATURE = /^0x[0-9a-f]{130}$/;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
 const ROLE_TOKEN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+const ROLE_ACCESS_HANDLE = /^ccra_[A-Za-z0-9_-]{22}$/;
 const ROLE_ACCESS_KEYS = Object.freeze([
   "v", "alg", "typ", "iss", "aud", "kid", "jti", "sessionId", "role",
   "statementDigest", "allowedTools", "nbfMs", "expMs",
@@ -126,6 +127,19 @@ function roleAccessClaims(value) {
   } catch {
     fail();
   }
+}
+
+function roleAccessBinding(value) {
+  if (typeof value === "string") {
+    const claims = roleAccessClaims(value);
+    return Object.freeze({ access: value, ...claims });
+  }
+  const binding = exactObject(value, ["access", "role", "sessionId"]);
+  if (
+    typeof binding.access !== "string" || !ROLE_ACCESS_HANDLE.test(binding.access) ||
+    !ROLES.includes(binding.role) || !UUID.test(binding.sessionId)
+  ) fail();
+  return Object.freeze({ ...binding });
 }
 
 function traceEventTransportShape(line) {
@@ -984,9 +998,9 @@ export async function prepareAgentHarnessAdapter({
   let roleAccess = null;
 
   function bindRoleAccess(value) {
-    if (typeof value !== "string" || !ROLE_TOKEN.test(value)) fail();
-    if (roleAccess !== null && roleAccess !== value) fail();
-    roleAccess = value;
+    const binding = roleAccessBinding(value);
+    if (roleAccess !== null && JSON.stringify(roleAccess) !== JSON.stringify(binding)) fail();
+    roleAccess = binding;
   }
 
   function signingPayload(request) {
@@ -1004,7 +1018,7 @@ export async function prepareAgentHarnessAdapter({
     const request = extractSigningRequestFromArgv(expected.argv);
     if (!["proposal", "acceptance"].includes(request.operation)) return;
     if (checkpointState === null || getCheckpointClient === null || roleAccess === null) fail();
-    const claims = roleAccessClaims(roleAccess);
+    const claims = roleAccess;
     if (claims?.role !== request.role || claims?.sessionId !== request.sessionId) fail();
     let helperResult;
     try { helperResult = JSON.parse(output.stdout.toString("utf8").trim()); } catch { fail(); }
@@ -1036,7 +1050,7 @@ export async function prepareAgentHarnessAdapter({
     const client = await getCheckpointClient();
     if (client === null || typeof client?.callTool !== "function") fail();
     const submitted = await client.callTool("agent_handshake_submit_checkpoint", {
-      access: roleAccess,
+      access: roleAccess.access,
       artifactSignatureHex: helperResult.signatureHex,
       checkpoint,
     });
@@ -1498,7 +1512,7 @@ function completedClockchainMcpTool(event, claudeMcpToolCalls) {
   return null;
 }
 
-function roleAccessFromValue(value) {
+function roleAccessFromValue(value, expectedRole) {
   const pending = [value];
   let found = null;
   let visited = 0;
@@ -1516,9 +1530,20 @@ function roleAccessFromValue(value) {
       continue;
     }
     if (Object.hasOwn(current, "roleAccess")) {
-      if (typeof current.roleAccess !== "string" || !ROLE_TOKEN.test(current.roleAccess)) fail();
-      if (found !== null && found !== current.roleAccess) fail();
-      found = current.roleAccess;
+      let binding;
+      if (typeof current.roleAccess === "string" && ROLE_TOKEN.test(current.roleAccess)) {
+        binding = roleAccessBinding(current.roleAccess);
+        if (Object.hasOwn(current, "sessionId") && current.sessionId !== binding.sessionId) fail();
+      } else {
+        binding = roleAccessBinding({
+          access: current.roleAccess,
+          role: expectedRole,
+          sessionId: current.sessionId,
+        });
+      }
+      if (binding.role !== expectedRole) fail();
+      if (found !== null && JSON.stringify(found) !== JSON.stringify(binding)) fail();
+      found = binding;
     }
     pending.push(...Object.values(current));
   }
@@ -1540,9 +1565,8 @@ function bindCompletedRoleAccess(event, claudeMcpToolCalls, adapter, expectedRol
     }
   }
   for (const value of values) {
-    const access = roleAccessFromValue(value);
+    const access = roleAccessFromValue(value, expectedRole);
     if (access === null) continue;
-    if (roleAccessClaims(access).role !== expectedRole) fail();
     adapter.bindRoleAccess(access);
   }
 }
