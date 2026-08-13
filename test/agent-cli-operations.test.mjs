@@ -52,7 +52,7 @@ test("dispatcher exposes exactly init, policy, inspect, register, sign, and veri
     stateDir,
     payload: {
       schema: "clockchain.agent-handshake-certificate-verification/v1",
-      helperVersion: "2.1.2",
+      helperVersion: "2.1.3",
       role: "initiator",
       sessionId: fixture.request.sessionId,
       repositorySha: fixture.request.repositorySha,
@@ -83,7 +83,7 @@ test("inspect reports a committed required-fresh policy before registration", as
   const committed = await operations.dispatch({ operation: "policy", stateDir, payload: fixture.policy });
   assert.deepEqual(await operations.dispatch({ operation: "inspect", stateDir }), {
     schema: "clockchain.agent-handshake-cli-result/v1",
-    helperVersion: "2.1.2",
+    helperVersion: "2.1.3",
     operation: "inspect",
     address: address.toLowerCase(),
     policyDigest: committed.policyDigest,

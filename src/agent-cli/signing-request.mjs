@@ -13,15 +13,21 @@ import {
   agentHandshakeV2StatementDigest,
   validateAgentHandshakeV2Terms,
 } from "../agent-handshake/v2/terms.mjs";
+import {
+  agentHandshakeV2DescriptorDigest,
+  verifyAgentHandshakeV2DescriptorEnvelope,
+} from "../agent-handshake/v2/descriptor.mjs";
+import { hostSessionKeyCertificateDigest } from "../agent-handshake/v2/host-key-certificate.mjs";
 import { verifyPinnedHostSessionKey } from "./trust-roots.mjs";
 
-export const AGENT_HANDSHAKE_HELPER_VERSION = "2.1.2";
+export const AGENT_HANDSHAKE_HELPER_VERSION = "2.1.3";
 export const AGENT_SIGNING_REQUEST_SCHEMA = "clockchain.agent-handshake-signing-request/v1";
 
 const REQUEST_KEYS = Object.freeze([
   "schema", "helperVersion", "operation", "role", "sessionId", "repositorySha",
   "sessionDeadlineMs", "hostSessionKeyCertificate", "terms", "policyDigest",
-  "bytesGzipBase64Url", "bytesSha256", "externalBusinessActionPerformed",
+  "descriptorEnvelope", "bytesGzipBase64Url", "bytesSha256",
+  "externalBusinessActionPerformed",
 ]);
 const OPERATIONS = Object.freeze(["identity_claim", "proposal", "acceptance", "evidence"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -83,7 +89,32 @@ function assertPayloadBinding(payload, request, address, policy, statementDigest
   if (request.operation === "identity_claim" && (payload.sessionKeyAddress !== address || payload.policyDigest !== request.policyDigest)) invalid();
   if (request.operation === "proposal" && (request.role !== "initiator" || payload.initiator.sessionKeyAddress !== address || payload.initiator.policyDigest !== request.policyDigest)) invalid();
   if (request.operation === "acceptance" && (request.role !== "responder" || payload.responder.sessionKeyAddress !== address || payload.responder.policyDigest !== request.policyDigest)) invalid();
-  if (request.operation === "evidence" && (payload.party.sessionKeyAddress !== address || payload.policyDigest !== request.policyDigest)) invalid();
+  if (request.operation === "evidence") {
+    let descriptorEnvelope;
+    try {
+      descriptorEnvelope = verifyAgentHandshakeV2DescriptorEnvelope(request.descriptorEnvelope, {
+        expectedPublicKey: request.hostSessionKey.certificate.sessionPublicKey,
+        expectedHostSessionKeyCertificateDigest: hostSessionKeyCertificateDigest(
+          request.hostSessionKey,
+        ),
+      });
+    } catch {
+      invalid();
+    }
+    const descriptor = descriptorEnvelope.descriptor;
+    const party = descriptor[request.role];
+    if (
+      descriptor.sessionId !== request.sessionId ||
+      descriptor.repositorySha !== request.repositorySha ||
+      descriptor.reference !== policy.reference ||
+      descriptor.statementDigest !== statementDigest ||
+      agentHandshakeV2DescriptorDigest(descriptor) !== payload.sessionDigest ||
+      !same(descriptor.identityPolicy, policy.identityPolicy) ||
+      !same(party, payload.party) ||
+      payload.party.sessionKeyAddress !== address ||
+      payload.policyDigest !== request.policyDigest
+    ) invalid();
+  } else if (request.descriptorEnvelope !== null) invalid();
   if (payload.identityPolicy !== undefined && !same(payload.identityPolicy, policy.identityPolicy)) invalid();
   if (payload.reference !== undefined && payload.reference !== policy.reference) invalid();
   if (payload.issuedAtMs !== undefined) {
@@ -127,7 +158,7 @@ export function validateAgentSigningRequest({ address, localPolicy, nowMs, reque
   ) invalid();
   const statementDigest = agentHandshakeV2StatementDigest(terms);
   if (statementDigest !== policy.statementDigest) invalid();
-  verifyPinnedHostSessionKey(request.hostSessionKeyCertificate, {
+  const hostSessionKey = verifyPinnedHostSessionKey(request.hostSessionKeyCertificate, {
     expectedRepositorySha: request.repositorySha,
     expectedSessionId: request.sessionId,
     nowMs,
@@ -141,7 +172,13 @@ export function validateAgentSigningRequest({ address, localPolicy, nowMs, reque
   try { parsed = JSON.parse(raw.toString("utf8")); } catch { invalid(); }
   const payload = payloadFor(request.operation, parsed, policy.identityPolicy);
   if (!canonicalBytes(payload).equals(raw)) invalid();
-  assertPayloadBinding(payload, { ...request, nowMs }, address, policy, statementDigest);
+  assertPayloadBinding(
+    payload,
+    { ...request, hostSessionKey, nowMs },
+    address,
+    policy,
+    statementDigest,
+  );
   return Object.freeze({
     bytesGzipBase64Url: request.bytesGzipBase64Url,
     bytesSha256: request.bytesSha256,

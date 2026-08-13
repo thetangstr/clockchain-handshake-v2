@@ -46,6 +46,6 @@ test("real CLI exposes an exact public version check without creating local stat
   assert.equal(result.stderr, "");
   assert.deepEqual(JSON.parse(result.stdout), {
     schema: "clockchain.agent-handshake-cli-version/v1",
-    version: "2.1.2",
+    version: "2.1.3",
   });
 });

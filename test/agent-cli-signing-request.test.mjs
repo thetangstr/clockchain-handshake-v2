@@ -37,6 +37,7 @@ test("signs session-bound evidence whose schema binds through sessionDigest rath
   const request = {
     ...fixture.request,
     operation: "evidence",
+    descriptorEnvelope: fixture.descriptorEnvelope,
     bytesGzipBase64Url: gzipSync(bytes).toString("base64url"),
     bytesSha256: createHash("sha256").update(bytes).digest("hex"),
   };
@@ -59,6 +60,37 @@ test("signs session-bound evidence whose schema binds through sessionDigest rath
   });
 
   assert.equal(calls, 1);
+});
+
+test("rejects evidence whose session digest is not bound to the signed host descriptor", async () => {
+  const fixture = await buildAgentCliFixture();
+  const payload = {
+    ...fixture.evidence.initiator.result,
+    sessionDigest: "f".repeat(64),
+  };
+  const bytes = canonicalBytes(payload);
+  const request = {
+    ...fixture.request,
+    operation: "evidence",
+    descriptorEnvelope: fixture.descriptorEnvelope,
+    bytesGzipBase64Url: gzipSync(bytes).toString("base64url"),
+    bytesSha256: createHash("sha256").update(bytes).digest("hex"),
+  };
+  let calls = 0;
+
+  await assert.rejects(() => executeAgentSigningRequest({
+    address: fixture.parties.initiator.sessionKeyAddress,
+    localPolicy: fixture.policy,
+    nowMs: fixture.nowMs,
+    request,
+    rootKeyRing: fixture.rootKeyRing,
+    sign: async () => {
+      calls += 1;
+      return {};
+    },
+  }));
+
+  assert.equal(calls, 0);
 });
 
 test("never reaches the signer for policy, trust, schema, operation, role, session, bytes, or action drift", async () => {
