@@ -29,7 +29,7 @@ const ROLES = Object.freeze(["initiator", "responder"]);
 const HELPER_OPERATIONS = Object.freeze([
   "init", "policy", "inspect", "register", "sign", "verify-certificate",
 ]);
-const RELEASE_PREFIX = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/";
+const RELEASE_PREFIX = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.3/";
 
 export const CLOCKCHAIN_HANDSHAKE_MCP_URL = "https://mcp.clockchain.network/handshake/mcp";
 export const FRESH_AGENT_CLIENTS = Object.freeze(["codex", "claude"]);
@@ -812,7 +812,7 @@ function validateHelperProof(parsed, role) {
     "outcome", "policyDigest", "role", "schema", "sessionId", "statementDigest",
   ]);
   if (
-    parsed.schema !== HELPER_RESULT_SCHEMA || parsed.helperVersion !== "2.1.2" ||
+    parsed.schema !== HELPER_RESULT_SCHEMA || parsed.helperVersion !== "2.1.3" ||
     parsed.operation !== "verify-certificate" || parsed.outcome !== "VERIFIED" ||
     parsed.role !== role || !UUID.test(parsed.sessionId) || !SHA256.test(parsed.policyDigest) ||
     !SHA256.test(parsed.statementDigest) || typeof parsed.certificateVerified !== "boolean" ||
@@ -833,18 +833,18 @@ function validateHelperProof(parsed, role) {
 function validateNonterminalHelperResult(parsed) {
   if (parsed.operation === "init") {
     const item = exactObject(parsed, ["address", "helperVersion", "operation", "schema"]);
-    if (item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.2" || !PUBLIC_ADDRESS.test(item.address)) fail();
+    if (item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.3" || !PUBLIC_ADDRESS.test(item.address)) fail();
     return;
   }
   if (parsed.operation === "policy") {
     const item = exactObject(parsed, ["helperVersion", "operation", "policyDigest", "schema"]);
-    if (item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.2" || !SHA256.test(item.policyDigest)) fail();
+    if (item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.3" || !SHA256.test(item.policyDigest)) fail();
     return;
   }
   if (parsed.operation === "inspect") {
     const item = exactObject(parsed, ["address", "helperVersion", "operation", "policyDigest", "registration", "schema"]);
     if (
-      item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.2" ||
+      item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.3" ||
       !ADDRESS.test(item.address) || item.policyDigest !== null && !SHA256.test(item.policyDigest)
     ) fail();
     if (item.registration !== null) validateRegistration(item.registration);
@@ -852,14 +852,14 @@ function validateNonterminalHelperResult(parsed) {
   }
   if (parsed.operation === "register") {
     const item = exactObject(parsed, ["address", "helperVersion", "operation", "registration", "schema"]);
-    if (item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.2" || !ADDRESS.test(item.address)) fail();
+    if (item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.3" || !ADDRESS.test(item.address)) fail();
     validateRegistration(item.registration);
     return;
   }
   if (parsed.operation === "sign") {
     const item = exactObject(parsed, ["address", "bytesSha256", "helperVersion", "operation", "schema", "signatureHex"]);
     if (
-      item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.2" ||
+      item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.3" ||
       !ADDRESS.test(item.address) || !SHA256.test(item.bytesSha256) || !SIGNATURE.test(item.signatureHex)
     ) fail();
     return;
@@ -1255,7 +1255,7 @@ function validateVerifyCertificateCommand(value, proof, manifestDigest) {
   ]);
   if (
     payload.schema !== "clockchain.agent-handshake-certificate-verification/v1" ||
-    payload.helperVersion !== "2.1.2" || payload.role !== proof.role ||
+    payload.helperVersion !== "2.1.3" || payload.role !== proof.role ||
     payload.sessionId !== proof.sessionId || !SHA.test(payload.repositorySha) ||
     !DECIMAL.test(payload.sessionDeadlineMs) || payload.certificate === null ||
     typeof payload.certificate !== "object" || Array.isArray(payload.certificate) ||

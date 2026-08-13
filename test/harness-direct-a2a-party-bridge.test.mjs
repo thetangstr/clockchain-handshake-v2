@@ -169,7 +169,7 @@ function lifecycleStep(role, operation = "init") {
 function certificateStep(role, certificate) {
   const payload = Buffer.from(JSON.stringify({
     schema: "clockchain.agent-handshake-certificate-verification/v1",
-    helperVersion: "2.1.2",
+    helperVersion: "2.1.3",
     role,
     sessionId: SESSION_ID,
     repositorySha: REPOSITORY_SHA,
@@ -204,7 +204,7 @@ function lifecycleCompletion(role, step, result = {}) {
       ...(step.operation === "verify-certificate" ? {} : {
         address: role === "initiator" ? "0x1111111111111111111111111111111111111111" : "0x2222222222222222222222222222222222222222",
       }),
-      helperVersion: "2.1.2",
+      helperVersion: "2.1.3",
       operation: step.operation,
       schema: "clockchain.agent-handshake-cli-result/v1",
       ...result,
@@ -235,7 +235,7 @@ function signingStep({ envelope, operation, role, policyDigest }) {
   const raw = Buffer.from(JSON.stringify(envelope.payload));
   const request = {
     schema: "clockchain.agent-handshake-signing-request/v1",
-    helperVersion: "2.1.2",
+    helperVersion: "2.1.3",
     operation,
     role,
     sessionId: SESSION_ID,
@@ -275,7 +275,7 @@ function completion({ envelope, request, step, role }) {
     result: Object.freeze({
       address: envelope.signature.address,
       bytesSha256: request.bytesSha256,
-      helperVersion: "2.1.2",
+      helperVersion: "2.1.3",
       operation: "sign",
       schema: "clockchain.agent-handshake-cli-result/v1",
       signatureHex: envelope.signature.value,

@@ -25,7 +25,7 @@ const ROOT_KEYS = Object.freeze(["kid", "fingerprint"]);
 const SHA = /^[0-9a-f]{64}$/;
 const COMMIT = /^[0-9a-f]{40}$/;
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
-const VERSION = /^2\.1\.2$/;
+const VERSION = /^2\.1\.3$/;
 const KID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const RELEASE_PREFIX = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.3/";
 

@@ -874,7 +874,7 @@ function retainedHelperPublicResult(value, operation) {
   }
   let parsed;
   try { parsed = JSON.parse(text.trim()); } catch { fail(); }
-  if (parsed?.schema !== "clockchain.agent-handshake-cli-result/v1" || parsed?.helperVersion !== "2.1.2" || parsed?.operation !== operation) fail();
+  if (parsed?.schema !== "clockchain.agent-handshake-cli-result/v1" || parsed?.helperVersion !== "2.1.3" || parsed?.operation !== operation) fail();
   if (operation === "init") {
     const item = exactObject(parsed, ["address", "helperVersion", "operation", "schema"]);
     if (!ADDRESS.test(item.address)) fail();

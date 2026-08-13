@@ -17,6 +17,7 @@ import {
 } from "../src/harness/verified-release-action-recorder.mjs";
 import { ACP_VERSION_PINS } from "../src/harness/version-pins.mjs";
 import { createFreshAgentRun, VERIFIED_HELPER_BOOTSTRAP } from "../src/testing/fresh-agent-client.mjs";
+import { buildAgentCliFixture } from "./support/agent-cli-fixture.mjs";
 
 const execFileAsync = promisify(execFile);
 const SESSION = "11111111-2222-4333-8444-555555555555";
@@ -26,11 +27,11 @@ function releaseFixture(result) {
   const helperDigest = createHash("sha256").update(helperSource).digest("hex");
   const manifest = JSON.stringify({
     schema: "clockchain.agent-handshake-release-manifest/v1",
-    version: "2.1.2",
+    version: "2.1.3",
     nodeRuntime: "24.0.0",
     assets: [{
       filename: "clockchain-agent-handshake.cjs",
-      url: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/clockchain-agent-handshake.cjs",
+      url: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.3/clockchain-agent-handshake.cjs",
       sha256: helperDigest,
     }],
   });
@@ -45,17 +46,17 @@ function releaseFixture(result) {
   };
 }
 
-function helperStep({ manifestDigest, payload }) {
-  const command = `node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${manifestDigest} ./manifest.json ./clockchain-agent-handshake.cjs sign --state-dir "$TMPDIR/.clockchain/handshakes/${SESSION}/initiator" --payload-base64url ${payload}`;
+function helperStep({ manifestDigest, payload, policyDigest = "c".repeat(64), role = "initiator", sessionId = SESSION }) {
+  const command = `node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${manifestDigest} ./manifest.json ./clockchain-agent-handshake.cjs sign --state-dir "$TMPDIR/.clockchain/handshakes/${sessionId}/${role}" --payload-base64url ${payload}`;
   const commandSha256 = createHash("sha256").update(command).digest("hex");
   return {
     approvalCommand: `clockchain-agent-authorize ${commandSha256}`,
     commandLength: Buffer.byteLength(command),
     commandSha256,
     operation: "sign",
-    policyDigest: "c".repeat(64),
-    role: "initiator",
-    sessionId: SESSION,
+    policyDigest,
+    role,
+    sessionId,
     shellCommand: command,
   };
 }
@@ -94,7 +95,7 @@ test("verified release recorder exposes only the authorization command on the ag
   const run = await createFreshAgentRun({ parent });
   const fixture = releaseFixture({
     schema: "clockchain.agent-handshake-cli-result/v1",
-    helperVersion: "2.1.2",
+    helperVersion: "2.1.3",
     operation: "init",
   });
   const socketRoot = join("/tmp", `verified-path-${randomBytes(6).toString("hex")}`);
@@ -116,25 +117,26 @@ test("verified release recorder returns an ACP-valid action and privately correl
   const parent = await mkdtemp(join(tmpdir(), "verified-release-recorder-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
   const run = await createFreshAgentRun({ parent });
+  const signingFixture = await buildAgentCliFixture("initiator");
   const result = {
     schema: "clockchain.agent-handshake-cli-result/v1",
-    helperVersion: "2.1.2",
+    helperVersion: "2.1.3",
     operation: "sign",
+    address: signingFixture.parties.initiator.sessionKeyAddress,
+    bytesSha256: signingFixture.request.bytesSha256,
     signatureHex: `0x${"1".repeat(130)}`,
   };
   const fixture = releaseFixture(result);
   const socketRoot = join("/tmp", `verified-rec-${randomBytes(6).toString("hex")}`);
   t.after(() => rm(socketRoot, { recursive: true, force: true }));
-  const signingRequest = Buffer.from(JSON.stringify({
-    schema: "clockchain.agent-handshake-sign-request/v1",
-    helperVersion: "2.1.2",
-    operation: "sign",
-    role: "initiator",
-    sessionId: SESSION,
-    policyDigest: "c".repeat(64),
-    bytesSha256: "d".repeat(64),
-  }));
-  const step = helperStep({ manifestDigest: fixture.manifestDigest, payload: signingRequest.toString("base64url") });
+  const signingRequest = Buffer.from(JSON.stringify(signingFixture.request));
+  const step = helperStep({
+    manifestDigest: fixture.manifestDigest,
+    payload: signingRequest.toString("base64url"),
+    policyDigest: signingFixture.request.policyDigest,
+    role: signingFixture.request.role,
+    sessionId: signingFixture.request.sessionId,
+  });
   const recorder = await createVerifiedReleaseActionRecorder({
     fetchImpl: fixture.fetchImpl,
     manifestDigest: fixture.manifestDigest,
@@ -248,7 +250,7 @@ test("verified release recorder rejects proxy and accessor authority without inv
   });
   assert.equal(traps, 0);
 
-  const fixture = releaseFixture({ schema: "clockchain.agent-handshake-cli-result/v1", helperVersion: "2.1.2", operation: "init" });
+  const fixture = releaseFixture({ schema: "clockchain.agent-handshake-cli-result/v1", helperVersion: "2.1.3", operation: "init" });
   let getterCalls = 0;
   const room = Object.create(null, {
     workspace: { enumerable: true, get() { getterCalls += 1; throw new Error("secret-canary"); } },
@@ -267,7 +269,7 @@ test("verified release recorder brands only safe construction failure stages", a
   const classify = verifiedReleaseActionRecorderFailureStage;
   const fixture = releaseFixture({
     schema: "clockchain.agent-handshake-cli-result/v1",
-    helperVersion: "2.1.2",
+    helperVersion: "2.1.3",
     operation: "init",
   });
   const parent = await mkdtemp(join(tmpdir(), "verified-release-stage-"));
@@ -400,23 +402,24 @@ test("verified release recorder withholds helper output when the private complet
   const parent = await mkdtemp(join(tmpdir(), "verified-release-deadline-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
   const run = await createFreshAgentRun({ parent });
+  const signingFixture = await buildAgentCliFixture("initiator");
   const result = {
     schema: "clockchain.agent-handshake-cli-result/v1",
-    helperVersion: "2.1.2",
+    helperVersion: "2.1.3",
     operation: "sign",
+    address: signingFixture.parties.initiator.sessionKeyAddress,
+    bytesSha256: signingFixture.request.bytesSha256,
     signatureHex: `0x${"2".repeat(130)}`,
   };
   const fixture = releaseFixture(result);
-  const signingRequest = Buffer.from(JSON.stringify({
-    schema: "clockchain.agent-handshake-sign-request/v1",
-    helperVersion: "2.1.2",
-    operation: "sign",
-    role: "initiator",
-    sessionId: SESSION,
-    policyDigest: "c".repeat(64),
-    bytesSha256: "d".repeat(64),
-  }));
-  const step = helperStep({ manifestDigest: fixture.manifestDigest, payload: signingRequest.toString("base64url") });
+  const signingRequest = Buffer.from(JSON.stringify(signingFixture.request));
+  const step = helperStep({
+    manifestDigest: fixture.manifestDigest,
+    payload: signingRequest.toString("base64url"),
+    policyDigest: signingFixture.request.policyDigest,
+    role: signingFixture.request.role,
+    sessionId: signingFixture.request.sessionId,
+  });
   const socketRoot = join("/tmp", `verified-rec-${randomBytes(6).toString("hex")}`);
   t.after(() => rm(socketRoot, { recursive: true, force: true }));
   const recorder = await createVerifiedReleaseActionRecorder({
@@ -446,7 +449,7 @@ test("verified release recorder accepts an existing private root and rejects uns
   const parent = await mkdtemp(join(tmpdir(), "verified-release-root-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
   const run = await createFreshAgentRun({ parent });
-  const fixture = releaseFixture({ schema: "clockchain.agent-handshake-cli-result/v1", helperVersion: "2.1.2", operation: "init" });
+  const fixture = releaseFixture({ schema: "clockchain.agent-handshake-cli-result/v1", helperVersion: "2.1.3", operation: "init" });
   const privateRoot = join("/tmp", `verified-rec-${randomBytes(6).toString("hex")}`);
   await mkdir(privateRoot, { mode: 0o700 });
   t.after(() => rm(privateRoot, { recursive: true, force: true }));
@@ -487,7 +490,7 @@ test("verified release recorder accepts an existing private root and rejects uns
 });
 
 test("verified release recorder rejects unsupported completion transports", async () => {
-  const fixture = releaseFixture({ schema: "clockchain.agent-handshake-cli-result/v1", helperVersion: "2.1.2", operation: "init" });
+  const fixture = releaseFixture({ schema: "clockchain.agent-handshake-cli-result/v1", helperVersion: "2.1.3", operation: "init" });
   await assert.rejects(createVerifiedReleaseActionRecorder({
     fetchImpl: fixture.fetchImpl,
     manifestDigest: fixture.manifestDigest,

@@ -189,7 +189,7 @@ function signingRequestFromStep(step) {
       "sessionDeadlineMs", "sessionId",
     ]);
     if (
-      payload.schema !== "clockchain.agent-handshake-certificate-verification/v1" || payload.helperVersion !== "2.1.2" ||
+      payload.schema !== "clockchain.agent-handshake-certificate-verification/v1" || payload.helperVersion !== "2.1.3" ||
       payload.role !== item.role || payload.sessionId !== item.sessionId || payload.externalBusinessActionPerformed !== false ||
       typeof payload.repositorySha !== "string" || !SHA.test(payload.repositorySha) ||
       typeof payload.sessionDeadlineMs !== "string" || !/^[1-9][0-9]*$/.test(payload.sessionDeadlineMs)
@@ -245,7 +245,7 @@ function signingRequestFromStep(step) {
 function helperResult(value, expected) {
   const item = snapshot(value, ["address", "bytesSha256", "helperVersion", "operation", "schema", "signatureHex"]);
   if (
-    item.schema !== HELPER_SCHEMA || item.helperVersion !== "2.1.2" || item.operation !== "sign" ||
+    item.schema !== HELPER_SCHEMA || item.helperVersion !== "2.1.3" || item.operation !== "sign" ||
     !ADDRESS.test(item.address) || !DIGEST.test(item.bytesSha256) || !SIGNATURE.test(item.signatureHex) ||
     item.bytesSha256 !== expected.request.bytesSha256
   ) fail();
@@ -258,7 +258,7 @@ function certificateResult(value, expectedRole, expectedSessionId) {
     "outcome", "policyDigest", "role", "schema", "sessionId", "statementDigest",
   ]);
   if (
-    item.schema !== HELPER_SCHEMA || item.helperVersion !== "2.1.2" || item.operation !== "verify-certificate" ||
+    item.schema !== HELPER_SCHEMA || item.helperVersion !== "2.1.3" || item.operation !== "verify-certificate" ||
     item.certificateVerified !== true || item.externalBusinessActionPerformed !== false || item.outcome !== "VERIFIED" ||
     item.role !== expectedRole || item.sessionId !== expectedSessionId ||
     !DIGEST.test(item.policyDigest) || !DIGEST.test(item.statementDigest)

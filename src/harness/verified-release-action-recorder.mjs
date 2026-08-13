@@ -9,12 +9,13 @@ import { rawEd25519PublicKey } from "../agent-handshake/v2/host-key-certificate.
 import { localPolicyDigest, validateLocalPolicy } from "../agent-handshake/v2/policy.mjs";
 import { writePrivateFile } from "../core/private-path.mjs";
 
-const RELEASE_PREFIX = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/";
+const RELEASE_PREFIX = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.3/";
 const SHA256 = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
 const ROLES = Object.freeze(["initiator", "responder"]);
 const OPERATIONS = Object.freeze(["init", "policy", "inspect", "register", "sign", "verify-certificate"]);
+const SIGNING_OPERATIONS = Object.freeze(["identity_claim", "proposal", "acceptance", "evidence"]);
 const MAX_RESULT_BYTES = 64 * 1024;
 const MAX_SOCKET_PATH_BYTES = 96;
 const COMPLETION_SOCKET_DEADLINE_MS = 5_000;
@@ -25,7 +26,7 @@ const RECORDER_FAILURE_STAGES = Object.freeze([
 ]);
 const RECORDER_FAILURES = new WeakMap();
 
-export const VERIFIED_RELEASE_HELPER_BOOTSTRAP = 'const fs=require("node:fs");const crypto=require("node:crypto");const Module=require("node:module");const argv=process.argv.slice(1);const expected=argv.shift();const manifestPath=argv.shift();const helperPath=argv.shift();const manifestBytes=fs.readFileSync(manifestPath);const manifestDigest=crypto.createHash("sha256").update(manifestBytes).digest("hex");if(manifestDigest!==expected)process.exit(86);const manifest=JSON.parse(manifestBytes);if(manifest.schema!=="clockchain.agent-handshake-release-manifest/v1"||manifest.version!=="2.1.2"||!/^24\\./.test(manifest.nodeRuntime)||!/^24\\./.test(process.versions.node)||!Array.isArray(manifest.assets)||manifest.assets.length!==1)process.exit(86);const asset=manifest.assets[0];if(asset.filename!=="clockchain-agent-handshake.cjs"||asset.url!=="https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/clockchain-agent-handshake.cjs"||typeof asset.sha256!=="string"||!/^[0-9a-f]{64}$/.test(asset.sha256))process.exit(86);const helperBytes=fs.readFileSync(helperPath);const helperDigest=crypto.createHash("sha256").update(helperBytes).digest("hex");if(helperDigest!==asset.sha256)process.exit(86);process.argv=[process.execPath].concat(helperPath).concat(argv);const loaded=new Module(helperPath);loaded.filename=helperPath;loaded.paths=[];const compile=loaded._compile.bind(loaded);compile(...[helperBytes.toString("utf8")].concat(helperPath));';
+export const VERIFIED_RELEASE_HELPER_BOOTSTRAP = 'const fs=require("node:fs");const crypto=require("node:crypto");const Module=require("node:module");const argv=process.argv.slice(1);const expected=argv.shift();const manifestPath=argv.shift();const helperPath=argv.shift();const manifestBytes=fs.readFileSync(manifestPath);const manifestDigest=crypto.createHash("sha256").update(manifestBytes).digest("hex");if(manifestDigest!==expected)process.exit(86);const manifest=JSON.parse(manifestBytes);if(manifest.schema!=="clockchain.agent-handshake-release-manifest/v1"||manifest.version!=="2.1.3"||!/^24\\./.test(manifest.nodeRuntime)||!/^24\\./.test(process.versions.node)||!Array.isArray(manifest.assets)||manifest.assets.length!==1)process.exit(86);const asset=manifest.assets[0];if(asset.filename!=="clockchain-agent-handshake.cjs"||asset.url!=="https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.3/clockchain-agent-handshake.cjs"||typeof asset.sha256!=="string"||!/^[0-9a-f]{64}$/.test(asset.sha256))process.exit(86);const helperBytes=fs.readFileSync(helperPath);const helperDigest=crypto.createHash("sha256").update(helperBytes).digest("hex");if(helperDigest!==asset.sha256)process.exit(86);process.argv=[process.execPath].concat(helperPath).concat(argv);const loaded=new Module(helperPath);loaded.filename=helperPath;loaded.paths=[];const compile=loaded._compile.bind(loaded);compile(...[helperBytes.toString("utf8")].concat(helperPath));';
 
 function fail() {
   throw new Error("Verified release action recorder failed safely.");
@@ -203,7 +204,10 @@ function requestBinding(expected) {
   }
   if (
     record === null || typeof record !== "object" || Array.isArray(record) ||
-    record.operation !== expected.operation || record.role !== expected.role ||
+    (expected.operation === "sign"
+      ? !SIGNING_OPERATIONS.includes(record.operation)
+      : record.operation !== expected.operation) ||
+    record.role !== expected.role ||
     record.sessionId !== expected.sessionId ||
     (expected.policyDigest !== null && record.policyDigest !== expected.policyDigest)
   ) fail();
@@ -254,7 +258,7 @@ export async function preloadVerifiedReleaseAssets({ fetchImpl, manifestDigest, 
   let manifest;
   try { manifest = JSON.parse(manifestBytes.toString("utf8")); } catch { fail(); }
   if (
-    manifest?.schema !== "clockchain.agent-handshake-release-manifest/v1" || manifest?.version !== "2.1.2" ||
+    manifest?.schema !== "clockchain.agent-handshake-release-manifest/v1" || manifest?.version !== "2.1.3" ||
     typeof manifest?.nodeRuntime !== "string" || !/^24\./.test(manifest.nodeRuntime) ||
     !Array.isArray(manifest?.assets) || manifest.assets.length !== 1
   ) fail();
@@ -278,7 +282,7 @@ const SHA=/^[0-9a-f]{64}$/;const ROLES=new Set(["initiator","responder"]);const 
 function stop(code="HELPER_COMMAND_MISMATCH"){try{process.stderr.write(JSON.stringify({code})+"\n")}catch{}process.exit(86)}
 function exact(v,keys){if(!v||typeof v!=="object"||Array.isArray(v)||Object.keys(v).sort().join(",")!==keys.slice().sort().join(","))stop();return v}
 function envelope(path,digest){const e=JSON.parse(readFileSync(path,"utf8"));if(!e||Object.keys(e).sort().join(",")!=="body,schema,signature"||e.schema!=="clockchain.agent-harness-bound-action/v1")stop();const bytes=Buffer.from(JSON.stringify(e.body));const key=createPublicKey({key:Buffer.from("${publicKeyDer}","base64"),format:"der",type:"spki"});if(!verify(null,bytes,key,Buffer.from(e.signature,"base64")))stop();const b=exact(e.body,["actionId","actionNonce","args","commandLength","commandSha256","completionRequired","completionSocket","cwd","expiresAtMs","file","manifestDigest","operation","policyDigest","requestDigest","requestLength","role","schema","sessionId","stateDir"]);if(b.schema!=="clockchain.agent-harness-bound-action-body/v2"||b.commandSha256!==digest||!Number.isSafeInteger(b.commandLength)||b.commandLength<1||!SHA.test(b.manifestDigest)||!(b.policyDigest===null||SHA.test(b.policyDigest))||!SHA.test(b.requestDigest)||!Number.isSafeInteger(b.requestLength)||b.requestLength<1||!OPS.has(b.operation)||!ROLES.has(b.role)||!Number.isSafeInteger(b.expiresAtMs)||typeof b.actionId!=="string"||typeof b.actionNonce!=="string"||typeof b.completionRequired!=="boolean"||typeof b.completionSocket!=="string")stop();if(Date.now()>b.expiresAtMs)stop("HELPER_ACTION_EXPIRED");if(b.file!==process.execPath||b.cwd!==process.cwd()||!Array.isArray(b.args)||b.args.some(v=>typeof v!=="string"))stop();const tmp=resolve(process.env.TMPDIR||"");const state=resolve(b.stateDir);if(!tmp||!state.startsWith(tmp+"/"))stop();return b}
-function assets(b){const a=b.args;if(a.length<9||a[0]!=="--input-type=commonjs"||a[1]!=="--eval"||a[3]!==b.manifestDigest||a[6]!==b.operation)stop();const mb=readFileSync(a[4]);if(createHash("sha256").update(mb).digest("hex")!==b.manifestDigest)stop();const m=JSON.parse(mb);if(m.schema!=="clockchain.agent-handshake-release-manifest/v1"||m.version!=="2.1.2"||!Array.isArray(m.assets)||m.assets.length!==1)stop();const x=m.assets[0];if(x.filename!=="clockchain-agent-handshake.cjs"||!SHA.test(x.sha256))stop();if(createHash("sha256").update(readFileSync(a[5])).digest("hex")!==x.sha256)stop()}
+function assets(b){const a=b.args;if(a.length<9||a[0]!=="--input-type=commonjs"||a[1]!=="--eval"||a[3]!==b.manifestDigest||a[6]!==b.operation)stop();const mb=readFileSync(a[4]);if(createHash("sha256").update(mb).digest("hex")!==b.manifestDigest)stop();const m=JSON.parse(mb);if(m.schema!=="clockchain.agent-handshake-release-manifest/v1"||m.version!=="2.1.3"||!Array.isArray(m.assets)||m.assets.length!==1)stop();const x=m.assets[0];if(x.filename!=="clockchain-agent-handshake.cjs"||!SHA.test(x.sha256))stop();if(createHash("sha256").update(readFileSync(a[5])).digest("hex")!==x.sha256)stop()}
 function complete(b,result){return new Promise((ok,bad)=>{const s=createConnection(b.completionSocket);let out="";const timer=setTimeout(()=>{s.destroy();bad()},5000);s.setEncoding("utf8");s.on("connect",()=>s.write(JSON.stringify({actionId:b.actionId,actionNonce:b.actionNonce,commandSha256:b.commandSha256,requestDigest:b.requestDigest,result})+"\n"));s.on("data",c=>{out+=c;if(Buffer.byteLength(out)>MAX){s.destroy();bad()}});s.on("end",()=>{clearTimeout(timer);try{const a=exact(JSON.parse(out),["accepted"]);a.accepted===true?ok():bad()}catch{bad()}});s.on("error",()=>{clearTimeout(timer);bad()})})}
 async function main(){const digest=process.argv.length===3?process.argv[2]:"";if(!SHA.test(digest))stop();const root=dirname(dirname(__filename));const pending=join(root,"pending",digest+".json"),running=join(root,"running",digest+"."+process.pid+".json"),consumed=join(root,"consumed",digest+".json");let b;try{try{readFileSync(consumed);stop("HELPER_ACTION_REPLAYED")}catch(e){if(e&&e.code!=="ENOENT")stop()}b=envelope(pending,digest);assets(b);try{renameSync(pending,running)}catch{try{readFileSync(consumed);stop("HELPER_ACTION_REPLAYED")}catch{}stop()}writeFileSync(consumed,JSON.stringify({schema:"clockchain.agent-harness-consumed-action/v1",commandSha256:b.commandSha256})+"\n",{encoding:"utf8",flag:"wx",mode:0o600});mkdirSync(resolve(b.stateDir),{recursive:true,mode:0o700});const child=spawnSync(b.file,b.args,{cwd:b.cwd,env:process.env,encoding:"utf8",maxBuffer:MAX});if(child.error||!Number.isSafeInteger(child.status))stop();if(child.status!==0){try{process.stderr.write(JSON.stringify({code:"HELPER_EXECUTION_FAILED"})+"\n")}catch{}process.exit(child.status)}if(typeof child.stdout!=="string"||Buffer.byteLength(child.stdout)<2||Buffer.byteLength(child.stdout)>MAX||!child.stdout.endsWith("\n")||child.stdout.slice(0,-1).includes("\n"))stop("HELPER_EXECUTION_FAILED");let result;try{result=JSON.parse(child.stdout)}catch{stop("HELPER_EXECUTION_FAILED")}if(!result||typeof result!=="object"||Array.isArray(result))stop("HELPER_EXECUTION_FAILED");if(b.completionRequired){try{await complete(b,result)}catch{stop("HELPER_EXECUTION_FAILED")}}process.stdout.write(child.stdout)}catch{stop()}finally{try{rmSync(running,{force:true})}catch{}}}
 main();

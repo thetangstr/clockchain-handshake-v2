@@ -1877,7 +1877,7 @@ test("ACP continuation does not ask the model to courier a completed signature",
         formatted_output: JSON.stringify({
           address: "0x1111111111111111111111111111111111111111",
           bytesSha256: "5".repeat(64),
-          helperVersion: "2.1.2",
+          helperVersion: "2.1.3",
           operation: "sign",
           schema: "clockchain.agent-handshake-cli-result/v1",
           signatureHex: `0x${"a".repeat(130)}`,
@@ -1952,7 +1952,7 @@ test("ACP continuation retains validated public helper output for the exact join
       permissionCommand: `clockchain-agent-authorize ${action.commandSha256}`,
       helperCompletionOutput: {
         formatted_output: JSON.stringify({
-          schema: "clockchain.agent-handshake-cli-result/v1", helperVersion: "2.1.2", operation: "inspect",
+          schema: "clockchain.agent-handshake-cli-result/v1", helperVersion: "2.1.3", operation: "inspect",
           address, policyDigest, registration: null,
         }),
         exit_code: 0,
@@ -1991,7 +1991,7 @@ test("ACP continuation retains validated public helper output for the exact join
   assert.match(continuation, new RegExp(access.replace(".", "\\.")));
   assert.match(continuation, new RegExp(address));
   assert.match(continuation, new RegExp(policyDigest));
-  assert.match(continuation, /"helperVersion":"2\.1\.2"/);
+  assert.match(continuation, /"helperVersion":"2\.1\.3"/);
 });
 
 test("ACP completion loop leaves headroom to verify a certificate after sixteen protocol turns", async () => {
