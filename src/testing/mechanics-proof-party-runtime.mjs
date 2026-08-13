@@ -64,7 +64,7 @@ const RUNTIME_FAILURE_STAGES = Object.freeze([
   "recorder-adapter-layout", "recorder-completion-socket",
   "checkpoint-client-create",
   "bridge-create", "provider-auth", "provider-auth-input", "provider-auth-decode", "provider-auth-parse",
-  "provider-auth-install", "provider-auth-export", "transport-create", "adapter-create", "agent-starting",
+  "provider-auth-install", "provider-auth-export", "transport-create", "adapter-create", "agent-starting", "agent-trace",
   "agent-launch", "agent-launch-spawn", "agent-launch-stream", "agent-launch-initialize", "agent-launch-session",
   "agent-launch-model", "agent-launch-prompt", "agent-launch-completion", "agent-launch-completion-protocol",
   "agent-launch-completion-protocol-envelope", "agent-launch-completion-protocol-usage",
@@ -105,6 +105,19 @@ const RUNTIME_FAILURE_STAGES = Object.freeze([
   "listener-listen-eacces", "listener-listen-eaddrinuse", "listener-listen-eaddrnotavail",
   "listener-listen-eperm", "listener-listen-other",
 ]);
+const PUBLIC_ACP_TRACE_TYPES = Object.freeze(new Map([
+  ["acp.process.launch", "agent.client.started"],
+  ["acp.initialize", "agent.client.connected"],
+  ["acp.session.new", "agent.session.ready"],
+  ["acp.model.pinned", "agent.model.ready"],
+  ["acp.tool_call", "agent.tool.called"],
+  ["acp.tool_call_update", "agent.tool.updated"],
+  ["acp.permission.authorized", "agent.action.authorized"],
+  ["acp.permission.denied", "agent.action.denied"],
+  ["acp.retained_action.registered", "agent.action.registered"],
+  ["acp.handshake.continue", "agent.handshake.continued"],
+  ["acp.prompt.end_turn", "agent.completed"],
+]));
 const RUNTIME_FAILURES = new WeakMap();
 const INVITATION_WAIT_FAILURES = new WeakMap();
 
@@ -510,6 +523,7 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
         let runFailed = false;
         let runFailureStage = null;
         let runStage = "peer-validate";
+        let publicTraceQueue = Promise.resolve();
         try {
           const runInput = optionalExact(input, ["peerDescriptor"], ["onPublicEvent"]);
           const onPublicEvent = runInput.onPublicEvent ?? (() => undefined);
@@ -663,6 +677,15 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
               completionStatus() { return bridge.completionStatus(); },
               observeToolResult(input) { return bridge.observeToolResult(input); },
             }),
+            publicEventSink(event) {
+              const traceType = PUBLIC_ACP_TRACE_TYPES.get(event?.type);
+              if (traceType === undefined || typeof event?.evidenceRef !== "string" || !/^sha256:[0-9a-f]{64}$/.test(event.evidenceRef)) return;
+              publicTraceQueue = publicTraceQueue.then(() => emit(traceType, {
+                evidenceRef: event.evidenceRef,
+                sourceType: event.type,
+              }));
+              publicTraceQueue.catch(() => undefined);
+            },
             trustedAdapterPublicKeys: [actionRecorder.trustedAdapterPublicKey],
             workspace: paths.workspace,
           });
@@ -765,6 +788,7 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
             : recorderStage !== null ? `recorder-${recorderStage}`
               : launchStage !== null ? `agent-launch-${launchStage}` : runStage;
         }
+        try { await publicTraceQueue; } catch { runFailed = true; runFailureStage ??= "agent-trace"; }
         let teardownResult;
         try { teardownResult = await teardown(); } catch { runFailed = true; runFailureStage ??= "teardown"; }
         if (runFailed || terminalEvidence === null || teardownResult?.completed !== true) {

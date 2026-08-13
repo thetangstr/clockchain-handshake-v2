@@ -18,7 +18,7 @@ const ACTION_KEYS = Object.freeze([
 ]);
 const OPTION_KEYS = Object.freeze([
   "actionRecorder", "env", "harness", "home", "nowMs", "pin", "retainedActions",
-  "partyBridge", "spawn", "trustedAdapterPublicKeys", "workspace",
+  "partyBridge", "publicEventSink", "spawn", "trustedAdapterPublicKeys", "workspace",
 ]);
 const TOOL_SERVER = "clockchain-handshake";
 const TOOL_PREFIX = "agent_handshake_";
@@ -781,6 +781,8 @@ export function createAcpProcessTransport(optionsInput = {}) {
   const trustedKeys = trustedKeySet(options.trustedAdapterPublicKeys);
   const actionRecorder = cleanActionRecorder(options.actionRecorder);
   const partyBridge = cleanPartyBridge(options.partyBridge);
+  const publicEventSink = options.publicEventSink ?? (() => undefined);
+  if (typeof publicEventSink !== "function") fail();
   for (const action of retainedActions) {
     if (!trustedKeys.has(action.adapterPublicKey)) fail();
   }
@@ -833,6 +835,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
       evidenceRef: `sha256:${digest(ref)}`,
     });
     events.push(record);
+    try { publicEventSink(record); } catch { fail(); }
     return record;
   }
   function registerRetainedAction(candidate) {

@@ -370,7 +370,34 @@ test("one responder runtime listens before launch and returns only digest-bound 
   const root = join(parent, "responder");
   t.after(() => rm(parent, { recursive: true, force: true }));
   const calls = [];
-  const runtime = await createMechanicsProofPartyRuntime(options(root), dependencies(calls));
+  let publicEventSink;
+  const runtime = await createMechanicsProofPartyRuntime(options(root), dependencies(calls, {
+    createProcessTransport(input) {
+      publicEventSink = input.publicEventSink;
+      return {};
+    },
+    createHarnessAdapter() {
+      const base = dependencies(calls).createHarnessAdapter();
+      return {
+        ...base,
+        async launchSession(input) {
+          publicEventSink({
+            schema: "clockchain.harness-event/v1",
+            sessionId: RUN_ID,
+            role: "responder",
+            harness: "claude",
+            sequence: "1",
+            type: "acp.process.launch",
+            timestampMs: 1786337000000,
+            redacted: true,
+            publicSummary: "launched claude ACP process",
+            evidenceRef: `sha256:${DIGEST}`,
+          });
+          return base.launchSession(input);
+        },
+      };
+    },
+  }));
   const descriptor = runtime.bootstrapDescriptor();
   assert.equal(descriptor.schema, "clockchain.mechanics-proof-party-bootstrap/v1");
   assert.equal(descriptor.runtime.tlsCertificateSha256, DIGEST);
@@ -401,6 +428,7 @@ test("one responder runtime listens before launch and returns only digest-bound 
   assert.ok(calls.indexOf("invitation.take") < calls.indexOf("agent.launch"));
   assert.equal(events[0].schema, "clockchain.mechanics-proof-party-event/v1");
   assert.equal(events[0].type, "a2a.listener.ready");
+  assert.equal(events.some((event) => event.type === "agent.client.started"), true);
   assert.match(events[0].evidenceDigest, /^[0-9a-f]{64}$/);
   assert.doesNotMatch(JSON.stringify(events), /private-invitation|BEGIN|bootstrapPublicKey/i);
   for (const expected of ["agent.terminate", "bridge.destroy", "recorder.close", "invitation.close", "bootstrap.destroy", "tls.destroy"]) {

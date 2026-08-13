@@ -776,6 +776,7 @@ test("ACP process transport rejects authority, endpoint, pin, and secret leakage
 test("ACP process transport performs real ACP lifecycle with unauthenticated dedicated MCP config", async () => {
   const action = retainedAction({ role: "initiator", requestDigest: "d".repeat(64), commandSha256: DIGEST });
   const calls = [];
+  const publicEvents = [];
   const closeState = { killed: false, closed: false };
   let now = 1786337001000;
   const transport = createAcpProcessTransport({
@@ -791,6 +792,7 @@ test("ACP process transport performs real ACP lifecycle with unauthenticated ded
       HTTP_PROXY: "http://proxy.local:8080",
     },
     retainedActions: [],
+    publicEventSink(event) { publicEvents.push(event); },
     trustedAdapterPublicKeys: [action.adapterPublicKey],
   });
   const launched = await transport.launch({
@@ -838,6 +840,7 @@ test("ACP process transport performs real ACP lifecycle with unauthenticated ded
     outcome: { outcome: "selected", optionId: "allow_once" },
   });
   const events = await transport.streamEvents({ sessionId: SESSION });
+  assert.deepEqual(publicEvents, events);
   assert.equal(events.length >= 2, true);
   assert.equal(events[0].timestampMs, 1786337001000);
   assert.ok(events.every((event) => event.timestampMs >= 1786337001000));
