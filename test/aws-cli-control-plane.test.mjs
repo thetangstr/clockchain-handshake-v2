@@ -118,9 +118,11 @@ test("AWS CLI control plane owns the live stack creation deadline instead of tru
   const observedTimeouts = [];
   const sleeps = [];
   let createObservations = 0;
+  let observedNow = 0;
   const control = createAwsCliControlPlane({
     region: "us-west-2",
-    sleep: async (ms) => { sleeps.push(ms); },
+    now: () => observedNow,
+    sleep: async (ms) => { sleeps.push(ms); observedNow += ms; },
     executor: async (_file, argv, options) => {
       observedTimeouts.push(options.timeoutMs);
       if (argv[0] === "cloudformation" && argv[1] === "describe-stacks") {
@@ -162,6 +164,34 @@ test("AWS CLI control plane fails closed on a terminal stack creation state", as
     () => control.waitStackCreateComplete({ stackName: "clockchain-11111111-2222-4333-8444-555555555555" }),
     /AWS CLI control-plane validation failed safely/,
   );
+});
+
+test("AWS CLI control plane uses elapsed time so early timer wakeups cannot delete a healthy cold stack", async () => {
+  let observedNow = 0;
+  let observations = 0;
+  const sleeps = [];
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    now: () => observedNow,
+    sleep: async (ms) => {
+      sleeps.push(ms);
+      observedNow += 1_000;
+    },
+    executor: async () => {
+      observations += 1;
+      return {
+        stdout: JSON.stringify({ Stacks: [{
+          StackName: "clockchain-11111111-2222-4333-8444-555555555555",
+          StackStatus: observedNow < 360_000 ? "CREATE_IN_PROGRESS" : "CREATE_COMPLETE",
+        }] }),
+        stderr: "",
+        exitCode: 0,
+      };
+    },
+  });
+  await control.waitStackCreateComplete({ stackName: "clockchain-11111111-2222-4333-8444-555555555555" });
+  assert.equal(observations, 361);
+  assert.deepEqual(sleeps, Array(360).fill(5_000));
 });
 
 test("AWS CLI control plane owns the cold-task running deadline instead of trusting CLI waiter attempt counts", async () => {

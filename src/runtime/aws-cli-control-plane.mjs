@@ -74,6 +74,8 @@ export function publicPartyProgressStages(error) {
 
 const STACK = /^clockchain-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ROLES = Object.freeze(["initiator", "responder"]);
+const STACK_CREATE_DEADLINE_MS = 15 * 60_000;
+const STACK_CREATE_POLL_MS = 5_000;
 
 function fail() {
   throw new Error("AWS CLI control-plane validation failed safely.");
@@ -329,7 +331,9 @@ export function createAwsCliControlPlane(optionsInput = {}) {
     async waitStackCreateComplete({ stackName: name, stackId = null }) {
       stackName(name);
       const identifier = stackId === null ? name : stackIdArn(stackId, { stackName: name, region, accountId });
-      for (let attempt = 0; attempt < 60; attempt += 1) {
+      const startedAtMs = now();
+      if (!Number.isSafeInteger(startedAtMs) || startedAtMs < 0) fail();
+      for (;;) {
         const response = await callAws(["cloudformation", "describe-stacks", "--stack-name", identifier, "--region", region, "--output", "json"]);
         if (!Array.isArray(response.Stacks) || response.Stacks.length !== 1) fail();
         const stack = response.Stacks[0];
@@ -341,9 +345,10 @@ export function createAwsCliControlPlane(optionsInput = {}) {
         ) fail();
         if (stack.StackStatus === "CREATE_COMPLETE") return Object.freeze({ stackId: stack.StackId ?? null, stackName: name });
         if (stack.StackStatus !== "CREATE_IN_PROGRESS") fail();
-        if (attempt < 59) await sleepFn(5_000);
+        const observedNowMs = now();
+        if (!Number.isSafeInteger(observedNowMs) || observedNowMs < startedAtMs || observedNowMs - startedAtMs >= STACK_CREATE_DEADLINE_MS) fail();
+        await sleepFn(STACK_CREATE_POLL_MS);
       }
-      fail();
     },
     async describeStackOutputs({ stackName: name, stackId = null }) {
       stackName(name);
