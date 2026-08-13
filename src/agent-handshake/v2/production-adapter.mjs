@@ -75,6 +75,14 @@ function fundingAlertCents(value, fallback) {
   return cents;
 }
 
+function fundingMaximumCents(value, fallback) {
+  const cents = fundingAlertCents(value, fallback);
+  if (cents < 4 || cents > 40) {
+    throw new Error("AGENT_HANDSHAKE_V2_FUNDING_CONFIGURATION_INVALID");
+  }
+  return cents;
+}
+
 export async function loadAgentHandshakeV2Session({
   env = process.env,
   loadRoot = loadHostRoot,
@@ -218,6 +226,10 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
     alertHourCents: fundingAlertCents(
       process.env.AGENT_HANDSHAKE_V2_FUNDING_ALERT_HOURLY_ETH,
       "0.16",
+    ),
+    maxHourCents: fundingMaximumCents(
+      process.env.AGENT_HANDSHAKE_V2_FUNDING_MAX_HOURLY_ETH,
+      "0.20",
     ),
     onAlert: (usage) => console.warn(JSON.stringify({
       event: "agent_handshake_v2_funding_budget_alert",

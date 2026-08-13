@@ -73,6 +73,32 @@ test("restart state enforces rolling-hour and UTC-day ceilings", async () => {
   assert.deepEqual(records, before);
 });
 
+test("a bounded hourly override admits one controlled test run without disabling the ledger", async () => {
+  const now = Date.UTC(2026, 7, 10, 12, 0, 0);
+  let records = Array.from({ length: 10 }, (_, index) => ({
+    address: "0x" + (index + 10).toString(16).padStart(40, "0"),
+    amountEth: "0.02",
+    atMs: now - 1,
+    sessionId: "00000000-0000-4000-8000-" + String(index).padStart(12, "0"),
+  }));
+  const budget = createFundingBudget({
+    load: async () => records,
+    maxHourCents: 24,
+    save: async (next) => { records = structuredClone(next); },
+    now: () => now,
+  });
+  assert.equal((await budget.reserve({
+    addresses: [A, B],
+    identityMode: "required_fresh",
+    sessionId: "22222222-3333-4444-8555-666666666666",
+  })).totalEth, "0.04");
+  await assert.rejects(() => budget.reserve({
+    addresses: ["0x" + "3".repeat(40)],
+    identityMode: "required_existing_or_fresh",
+    sessionId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+  }));
+});
+
 test("funding budget emits threshold-only alerts without exposing reserved addresses", async () => {
   const now = Date.UTC(2026, 7, 10, 12, 0, 0);
   let records = Array.from({ length: 14 }, (_, index) => ({

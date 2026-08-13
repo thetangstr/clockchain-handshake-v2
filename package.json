@@ -13,6 +13,7 @@
     "demo:local": "CLOCKCHAIN_FUNDING_PASSWORD_FILE=\"${CLOCKCHAIN_FUNDING_PASSWORD_FILE:-$PWD/keys/funding.password}\" node scripts/run-local-demo.mjs",
     "demo:hermes": "node bin/hermes-demo.mjs",
     "canary:fresh": "node scripts/run-fresh-agent-handshake.mjs",
+    "canary:hermes-v2": "PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/run-hermes-v2-live.mjs",
     "negative": "node scripts/negative-checks.mjs",
     "agent-cli:bundle": "node scripts/build-agent-handshake-release.mjs bundle dist/clockchain-agent-handshake.cjs",
     "agent-cli:sea": "node scripts/build-agent-handshake-release.mjs sea dist/clockchain-agent-handshake",

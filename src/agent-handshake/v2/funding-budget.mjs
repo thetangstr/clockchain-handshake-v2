@@ -6,6 +6,7 @@ const SEAT_CENTS = 2;
 const SESSION_CENTS = 4;
 const HOUR_CENTS = 20;
 const DAY_CENTS = 100;
+export const AGENT_HANDSHAKE_V2_MAX_HOURLY_FUNDING_CENTS = 40;
 
 export class FundingBudgetError extends Error {
   constructor() {
@@ -51,6 +52,7 @@ export function createFundingBudget({
   alertDayCents = 80,
   alertHourCents = 16,
   load,
+  maxHourCents = HOUR_CENTS,
   now = Date.now,
   onAlert = () => {},
   queueLimit = 16,
@@ -61,9 +63,12 @@ export function createFundingBudget({
     typeof save !== "function" ||
     typeof now !== "function" ||
     typeof onAlert !== "function" ||
+    !Number.isSafeInteger(maxHourCents) ||
+    maxHourCents < SESSION_CENTS ||
+    maxHourCents > AGENT_HANDSHAKE_V2_MAX_HOURLY_FUNDING_CENTS ||
     !Number.isSafeInteger(alertHourCents) ||
     alertHourCents < 1 ||
-    alertHourCents > HOUR_CENTS ||
+    alertHourCents > maxHourCents ||
     !Number.isSafeInteger(alertDayCents) ||
     alertDayCents < 1 ||
     alertDayCents > DAY_CENTS ||
@@ -123,7 +128,7 @@ export function createFundingBudget({
         .reduce((sum, entry) => sum + amountCents(entry.amountEth), 0);
       if (
         sessionCents + newCents > SESSION_CENTS ||
-        hourCents + newCents > HOUR_CENTS ||
+        hourCents + newCents > maxHourCents ||
         dayCents + newCents > DAY_CENTS
       ) invalid();
       const additions = addresses.map((address) => Object.freeze({
