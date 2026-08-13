@@ -20,7 +20,7 @@ test("the live producer publishes only the artifact just observed", async () => 
   const fixture = await buildV2Fixture();
   const session = {
     hostSessionKeyCertificate: fixture.hostSessionKeyCertificate,
-    invitationExpiresAtMs: Number(SESSION_OPENED_AT_MS) + 120_000,
+    invitationExpiresAtMs: Number(SESSION_OPENED_AT_MS) + 5 * 60_000,
     protocol: "clockchain.agent-handshake/v2",
     repositorySha: REPOSITORY_SHA,
     sessionDeadlineMs: Number(SESSION_DEADLINE_MS),
@@ -90,7 +90,7 @@ test("a checker failure is visible without fabricating a certificate", async () 
     publish: async (snapshot) => published.push(snapshot),
     session: {
       hostSessionKeyCertificate: fixture.hostSessionKeyCertificate,
-      invitationExpiresAtMs: 1786337120000,
+      invitationExpiresAtMs: 1786337300000,
       protocol: "clockchain.agent-handshake/v2",
       repositorySha: REPOSITORY_SHA,
       sessionDeadlineMs: Number(SESSION_DEADLINE_MS),

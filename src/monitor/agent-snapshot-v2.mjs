@@ -114,7 +114,7 @@ function timing(value) {
   if (
     item.invitationExpiresAtMs <= item.createdAtMs ||
     item.sessionDeadlineMs <= item.invitationExpiresAtMs ||
-    item.invitationExpiresAtMs - item.createdAtMs !== 120_000 ||
+    item.invitationExpiresAtMs - item.createdAtMs !== 5 * 60_000 ||
     item.sessionDeadlineMs - item.createdAtMs !== 10 * 60_000 ||
     item.agreementValidForSeconds !== "90"
   ) invalid();

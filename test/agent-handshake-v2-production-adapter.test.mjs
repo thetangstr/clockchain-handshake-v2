@@ -92,7 +92,7 @@ test("production ports map only role-tagged v2 messages and reserve before fundi
     relayUrl: "https://relay.test",
     repositorySha: REPOSITORY_SHA,
     sessionOpenedAtMs: 1786337000000,
-    invitationExpiresAtMs: 1786337120000,
+    invitationExpiresAtMs: 1786337300000,
     sessionDeadlineMs: Date.now() + 60_000,
     sessionId: SESSION_ID,
     terms: TERMS,
@@ -114,12 +114,12 @@ test("production ports map only role-tagged v2 messages and reserve before fundi
   });
   assert.equal(await ports.awaitInvitationCreated(), 1786337000001);
   assert.deepEqual(seen.slice(0, 2), [
-    ["wait", "agent_v2_invitation_created", "initiator", 1786337120000],
+    ["wait", "agent_v2_invitation_created", "initiator", 1786337300000],
     ["created", 1786337000001],
   ]);
   assert.equal(await ports.awaitInvitationClaimed(), 1786337000002);
   assert.deepEqual(seen.slice(2, 4), [
-    ["wait", "agent_v2_invitation_claimed", "responder", 1786337120000],
+    ["wait", "agent_v2_invitation_claimed", "responder", 1786337300000],
     ["invitation", 1786337000002],
   ]);
   assert.equal((await ports.awaitIdentityClaim("initiator")).policyDigest, "a".repeat(64));
