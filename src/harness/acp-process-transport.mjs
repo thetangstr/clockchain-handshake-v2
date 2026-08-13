@@ -391,7 +391,9 @@ function promptText({ role, sessionId, mandate, a2aConfig }) {
   ].join("\n");
 }
 
-function continuationPromptText({ role, protocolSessionId, mandate, a2aConfig, bridgeProgress, pendingApprovals }) {
+function continuationPromptText({
+  role, protocolSessionId, mandate, a2aConfig, bridgeProgress, joined, latestHelperOperation, pendingApprovals,
+}) {
   const approvals = snapshotArray(pendingApprovals, { max: 3 });
   if (
     approvals.some((value) => typeof value !== "string" || !/^clockchain-agent-authorize [0-9a-f]{64}$/.test(value)) ||
@@ -437,13 +439,30 @@ function continuationPromptText({ role, protocolSessionId, mandate, a2aConfig, b
       "Do not end your turn before the retained local certificate verification completes.",
     ].join("\n");
   }
+  if (joined !== true) {
+    return [
+      `Continue the existing Clockchain handshake in protocol session ${protocolSessionId}; do not create or accept another invitation.`,
+      "You have not joined this Clockchain protocol session.",
+      "Call agent_handshake_join now using the exact access, helperVersion, sessionKeyAddress, and policyDigest from the prior Clockchain and retained-helper results.",
+      "Call no other tool before agent_handshake_join returns.",
+      "Do not end your turn before agent_handshake_join returns or a non-retryable tool error makes completion impossible.",
+    ].join("\n");
+  }
+  if (latestHelperOperation === "sign") {
+    return [
+      `Continue the existing Clockchain handshake in protocol session ${protocolSessionId}; do not create or accept another invitation.`,
+      "The latest retained signing helper has completed.",
+      "Call agent_handshake_submit now using the exact unchanged access and policyDigest from Clockchain plus the exact signatureHex from the completed helper output.",
+      "Call no other tool before agent_handshake_submit returns.",
+      "Do not end your turn before agent_handshake_submit returns or a non-retryable tool error makes completion impossible.",
+    ].join("\n");
+  }
   return [
     `Continue the existing Clockchain handshake in protocol session ${protocolSessionId}; do not create or accept another invitation.`,
-    `If ${role} has not joined, call agent_handshake_join using the exact access, helperVersion, sessionKeyAddress, and policyDigest from the prior Clockchain and retained-helper results.`,
-    "Then call agent_handshake_status and agent_handshake_next with the exact access returned by Clockchain and follow the returned next action.",
-    "As soon as Clockchain reports that the certificate is available, call agent_handshake_get_certificate and execute its retained local verification helper.",
-    "Whenever an MCP result includes helperStep or helperSteps, request each exact helperStep.approvalCommand through the retained local-action approval path before the next MCP call.",
-    "Do not end your turn until the local certificate verification is complete, unless a non-retryable tool error makes completion impossible.",
+    `You have joined as ${role}. Call agent_handshake_next now with the exact unchanged access returned by Clockchain.`,
+    "Follow the returned next action exactly. If it is a retryable wait, wait and call agent_handshake_next again.",
+    "Call no other tool before agent_handshake_next returns.",
+    "Do not end your turn before agent_handshake_next returns or a non-retryable tool error makes completion impossible.",
   ].join("\n");
 }
 
@@ -876,6 +895,8 @@ export function createAcpProcessTransport(optionsInput = {}) {
   let failedClockchainToolResults = 0;
   let completedClockchainToolResults = 0;
   let authoritativeClockchainToolResults = 0;
+  const observedClockchainTools = new Set();
+  let latestHelperOperation = null;
   let protocolFailure = false;
   let protocolFailureStage = null;
   let sessionUpdateBarrier = Promise.resolve();
@@ -1127,6 +1148,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
         const toolResult = authoritativeToolResult(params.update);
         if (toolResult !== null) {
           authoritativeClockchainToolResults += 1;
+          observedClockchainTools.add(toolResult.toolName);
           if (partyBridge !== null) {
             failureStage = "bridge";
             let bridgeResult;
@@ -1158,6 +1180,9 @@ export function createAcpProcessTransport(optionsInput = {}) {
             role: session.role,
             sessionId: retainedSessionId,
           });
+          latestHelperOperation = extractedHelperSteps.length === 0
+            ? null
+            : extractedHelperSteps[extractedHelperSteps.length - 1].operation;
           failureStage = "retained-record";
           const extractedRetainedActions = extractedHelperSteps.map((step) => validateRetainedLocalAction(actionRecorder.record(step)));
           failureStage = "retained-register";
@@ -1209,6 +1234,8 @@ export function createAcpProcessTransport(optionsInput = {}) {
       failedClockchainToolResults = 0;
       completedClockchainToolResults = 0;
       authoritativeClockchainToolResults = 0;
+      observedClockchainTools.clear();
+      latestHelperOperation = null;
       sessionUpdateBarrier = Promise.resolve();
       cancelRetainedRegistrationWaiters();
       retainedByCommand.clear();
@@ -1290,6 +1317,8 @@ export function createAcpProcessTransport(optionsInput = {}) {
                   mandate: cleanMandateValue,
                   a2aConfig: cleanPeer,
                   bridgeProgress,
+                  joined: observedClockchainTools.has("agent_handshake_join"),
+                  latestHelperOperation,
                   pendingApprovals: [...retainedByCommand.values()]
                     .filter((entry) => entry.state === "pending")
                     .map((entry) => `clockchain-agent-authorize ${entry.action.commandSha256}`),
