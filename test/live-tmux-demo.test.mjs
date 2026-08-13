@@ -144,6 +144,7 @@ test("funding watcher never creates an invitation before the two-seat threshold"
   assert.match(source, /REQUIRED_WEI=.*25000000000000000/);
   assert.match(source, /eth_getBalance/);
   assert.match(source, /if \(\( current_wei >= REQUIRED_WEI \)\)/);
+  assert.match(source, /wait-for-live-invitation-window\.mjs/);
   assert.match(source, /RUNNER=.*run-live-tmux-demo\.zsh/);
   assert.match(source, /exec "\$RUNNER"/);
 });

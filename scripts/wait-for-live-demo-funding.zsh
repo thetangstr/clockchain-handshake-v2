@@ -38,7 +38,9 @@ while true; do
   print "$(date '+%H:%M:%S')  Current balance: $(format_eth "$current_wei") Sepolia ETH"
   if (( current_wei >= REQUIRED_WEI )); then
     print
-    print 'Funding ready. Starting both fresh agents now.'
+    print 'Funding ready. Waiting for a fresh Clockchain session.'
+    "$NODE_BIN" "$SCRIPT_DIR/wait-for-live-invitation-window.mjs"
+    print 'Invitation window ready. Starting both fresh agents now.'
     exec "$RUNNER"
   fi
   sleep 15
