@@ -113,6 +113,7 @@ function acpFixtureSpawn({
   stopReason = "end_turn",
   skipPermission = false,
   permissionCommand = `clockchain-agent-authorize ${DIGEST}`,
+  permissionCwd = undefined,
   permissionTitle = "display-only approval label",
   promptUpdateSessionId = null,
 }) {
@@ -192,7 +193,11 @@ function acpFixtureSpawn({
               name: "Bash",
               kind: "execute",
               status: "pending",
-              rawInput: { command: permissionCommand, transcript: "secret-canary /Users/alice/secret" },
+              rawInput: {
+                command: permissionCommand,
+                ...(permissionCwd === undefined ? {} : { cwd: permissionCwd }),
+                transcript: "secret-canary /Users/alice/secret",
+              },
             },
           });
           const permission = await connection.requestPermission({
@@ -203,7 +208,10 @@ function acpFixtureSpawn({
               name: "Bash",
               kind: "execute",
               status: "pending",
-              rawInput: { command: permissionCommand },
+              rawInput: {
+                command: permissionCommand,
+                ...(permissionCwd === undefined ? {} : { cwd: permissionCwd }),
+              },
             },
             options: [
               { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
@@ -676,7 +684,7 @@ test("ACP process transport performs real ACP lifecycle with unauthenticated ded
   const transport = createAcpProcessTransport({
     harness: "codex",
     pin: ACP_VERSION_PINS.codex,
-    spawn: acpFixtureSpawn({ calls, closeState, helperAction: action }),
+    spawn: acpFixtureSpawn({ calls, closeState, helperAction: action, permissionCwd: "/workspace/initiator" }),
     workspace: "/workspace/initiator",
     home: "/workspace/initiator/home",
     nowMs: () => now++,
@@ -1922,6 +1930,33 @@ test("ACP process transport rejects broad shell permission and non-end-turn comp
     trustedAdapterPublicKeys: [action.adapterPublicKey],
   });
   await assert.rejects(() => badPermissionTransport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  }), (error) => {
+    assert.equal(acpProcessTransportFailureStage(error), "completion-permission");
+    return true;
+  });
+
+  const wrongCwdTransport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({
+      calls: [],
+      helperAction: action,
+      permissionCwd: "/workspace/other",
+    }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    nowMs: () => 1786337001000,
+    actionRecorder: actionRecorderFor([action]),
+    env: {},
+    retainedActions: [],
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+  await assert.rejects(() => wrongCwdTransport.launch({
     acp: ACP_VERSION_PINS.codex,
     runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
     mandate: VALID_MANDATE,

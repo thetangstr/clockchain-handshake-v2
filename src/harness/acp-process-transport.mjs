@@ -769,7 +769,8 @@ export function createAcpProcessTransport(optionsInput = {}) {
   function permissionCommand(params) {
     const toolCall = params?.toolCall;
     if (toolCall === null || typeof toolCall !== "object" || Array.isArray(toolCall) || types.isProxy(toolCall)) fail();
-    const rawInput = exactObject(toolCall.rawInput, ["command"]);
+    const rawInput = optionalObject(toolCall.rawInput, ["command"], ["cwd"]);
+    if (rawInput.cwd !== undefined && rawInput.cwd !== options.workspace) fail();
     return retainedCommand(rawInput.command);
   }
   async function requestPermission(params) {
