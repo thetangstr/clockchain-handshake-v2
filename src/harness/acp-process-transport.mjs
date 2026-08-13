@@ -358,6 +358,17 @@ function mcpServer() {
 }
 
 function promptText({ role, sessionId, mandate, a2aConfig }) {
+  if (role === "responder") {
+    return [
+      "Clockchain fresh-agent bootstrap.",
+      "role: responder",
+      "You have exactly one action now.",
+      `Call the dedicated Clockchain MCP tool agent_handshake_accept_invitation with this exact opaque invitation unchanged: ${a2aConfig.invitation}`,
+      "Do not print, summarize, or copy the invitation anywhere else.",
+      "Do not call any other MCP or local tool.",
+      "After that tool returns, end this turn. The adapter will give you the exact next action.",
+    ].join("\n");
+  }
   const mandateJson = JSON.stringify(mandate);
   return [
     "Clockchain mechanics proof mandate.",
@@ -367,14 +378,8 @@ function promptText({ role, sessionId, mandate, a2aConfig }) {
     `direct A2A endpoint: ${a2aConfig.endpoint}`,
     `direct A2A peer card: ${a2aConfig.peerCard.id}`,
     `direct A2A peer endpoint: ${a2aConfig.peerCard.endpoint}`,
-    ...(role === "responder" ? [
-      `Before your first MCP call, pass this exact opaque invitation unchanged to agent_handshake_accept_invitation: ${a2aConfig.invitation}`,
-      "Do not print, summarize, or copy the invitation anywhere else.",
-    ] : []),
-    ...(role === "initiator" ? [
-      "First call agent_handshake_invite with the four mandate fields as the tool arguments themselves; do not nest them under mandate or terms.",
-      "A result whose public body has an error field is not an invitation and must never be copied or used as role access.",
-    ] : []),
+    "First call agent_handshake_invite with the four mandate fields as the tool arguments themselves; do not nest them under mandate or terms.",
+    "A result whose public body has an error field is not an invitation and must never be copied or used as role access.",
     "Continue until Clockchain returns a certificate and the retained local verification reports that the certificate is verified.",
     "Whenever an MCP result includes helperStep or helperSteps, request each exact helperStep.approvalCommand through the retained local-action approval path before the next MCP call.",
     "Follow each MCP result's next action, including waits or retries. Do not end your turn before the verified certificate unless a non-retryable tool error makes completion impossible.",
