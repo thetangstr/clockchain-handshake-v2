@@ -30,7 +30,7 @@ const MAX_ARRAY = 64;
 const MAX_STRING = 4096;
 const MAX_HELPER_COMMAND = 64 * 1024;
 const MAX_PROVISIONAL_TOOL_UPDATES = 16;
-const MAX_COMPLETION_PROMPTS = 16;
+const MAX_COMPLETION_PROMPTS = 24;
 const MAX_PERMISSION_DENIALS = 16;
 const PERMISSION_REGISTRATION_GRACE_MS = 5_000;
 const PROCESS_TERM_GRACE_MS = 50;
@@ -397,6 +397,7 @@ function continuationPromptText({ role, protocolSessionId, mandate, a2aConfig })
     `Continue the existing Clockchain handshake in protocol session ${protocolSessionId}; do not create or accept another invitation.`,
     `If ${role} has not joined, call agent_handshake_join using the exact access, helperVersion, sessionKeyAddress, and policyDigest from the prior Clockchain and retained-helper results.`,
     "Then call agent_handshake_status and agent_handshake_next with the exact access returned by Clockchain and follow the returned next action.",
+    "As soon as Clockchain reports that the certificate is available, call agent_handshake_get_certificate and execute its retained local verification helper.",
     "Whenever an MCP result includes helperStep or helperSteps, request each exact helperStep.approvalCommand through the retained local-action approval path before the next MCP call.",
     "Do not end your turn until the local certificate verification is complete, unless a non-retryable tool error makes completion impossible.",
   ].join("\n");

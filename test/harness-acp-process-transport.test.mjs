@@ -1071,8 +1071,38 @@ test("ACP process transport re-prompts an end-turning agent until the Clockchain
   assert.match(prompts[1][1].prompt[0].text, new RegExp(SESSION));
   assert.match(prompts[1][1].prompt[0].text, /agent_handshake_join/);
   assert.match(prompts[1][1].prompt[0].text, /agent_handshake_next/);
+  assert.match(prompts[1][1].prompt[0].text, /agent_handshake_get_certificate/);
   assert.doesNotMatch(prompts[1][1].prompt[0].text, /agent_handshake_invite/);
   assert.equal(completionChecks, 2);
+});
+
+test("ACP completion loop leaves headroom to verify a certificate after sixteen protocol turns", async () => {
+  const calls = [];
+  let completionChecks = 0;
+  const transport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({ calls, sessionUpdates: [], skipPermission: true }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    partyBridge: partyBridgeFor(calls, {
+      completionStatus() {
+        completionChecks += 1;
+        return { complete: completionChecks >= 17, protocolSessionId: SESSION };
+      },
+    }),
+    env: {},
+    trustedAdapterPublicKeys: [retainedAction({ role: "initiator" }).adapterPublicKey],
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  });
+  assert.equal(calls.filter((entry) => entry[0] === "prompt").length, 17);
+  assert.equal(completionChecks, 17);
 });
 
 test("ACP continuation repeats the exact role bootstrap while no protocol session exists", async () => {
