@@ -22,6 +22,10 @@ const OPTION_KEYS = Object.freeze([
 ]);
 const TOOL_SERVER = "clockchain-handshake";
 const TOOL_PREFIX = "agent_handshake_";
+const CLAUDE_CLOCKCHAIN_PERMISSION_TOOLS = Object.freeze(new Set([
+  "agent_handshake_accept_invitation", "agent_handshake_get_certificate", "agent_handshake_invite",
+  "agent_handshake_join", "agent_handshake_next", "agent_handshake_status", "agent_handshake_submit",
+]));
 const ROLES = Object.freeze(["initiator", "responder"]);
 const HELPER_OPERATIONS = Object.freeze(["init", "policy", "inspect", "register", "sign", "verify-certificate"]);
 const MAX_DEPTH = 12;
@@ -470,6 +474,30 @@ function permissionCommandFailure(stage) {
   const error = new Error("ACP process transport validation failed safely.");
   PERMISSION_COMMAND_FAILURES.set(error, stage);
   return error;
+}
+
+function claudeClockchainPermissionTool(toolCall) {
+  if (toolCall === null || typeof toolCall !== "object" || Array.isArray(toolCall) || types.isProxy(toolCall)) return null;
+  let descriptors;
+  try { descriptors = Object.getOwnPropertyDescriptors(toolCall); }
+  catch { throw permissionCommandFailure("tool"); }
+  const metaDescriptor = descriptors._meta;
+  if (metaDescriptor === undefined) return null;
+  if (!metaDescriptor.enumerable || !Object.hasOwn(metaDescriptor, "value")) throw permissionCommandFailure("tool");
+  let meta;
+  let claudeCode;
+  try {
+    meta = optionalObject(metaDescriptor.value, ["claudeCode"], []);
+    claudeCode = optionalObject(meta.claudeCode, ["toolName"], []);
+  } catch { throw permissionCommandFailure("tool"); }
+  if (typeof claudeCode.toolName !== "string" || !claudeCode.toolName.startsWith(`mcp__${TOOL_SERVER}__`)) return null;
+  const toolName = claudeCode.toolName.slice(`mcp__${TOOL_SERVER}__`.length);
+  if (!CLAUDE_CLOCKCHAIN_PERMISSION_TOOLS.has(toolName) || toolCall.kind !== "other") {
+    throw permissionCommandFailure("tool");
+  }
+  try { cleanPublicData(toolCall.rawInput); }
+  catch { throw permissionCommandFailure("input-shape"); }
+  return toolName;
 }
 
 function trustedKeySet(value) {
@@ -973,6 +1001,15 @@ export function createAcpProcessTransport(optionsInput = {}) {
     try {
       if (session === null || params?.sessionId !== acpSessionId) fail();
       denialStage = "command";
+      if (harness === "claude") {
+        const clockchainTool = claudeClockchainPermissionTool(params?.toolCall);
+        if (clockchainTool !== null) {
+          denialStage = "options";
+          const allowOnce = allowOnceOption(params);
+          event("acp.mcp.permission.authorized", "authorized dedicated Clockchain MCP tool", clockchainTool);
+          return Object.freeze({ outcome: Object.freeze({ outcome: "selected", optionId: allowOnce }) });
+        }
+      }
       const digestValue = permissionCommand(params);
       const barrier = sessionUpdateBarrier;
       await barrier;

@@ -128,6 +128,7 @@ function acpFixtureSpawn({
   permissionDescription = undefined,
   permissionRawInputExtras = null,
   permissionOptions = null,
+  permissionToolCall = null,
   permissionTitle = "display-only approval label",
   promptUpdateSessionId = null,
   unrelatedPermissionBeforeHelper = false,
@@ -250,7 +251,7 @@ function acpFixtureSpawn({
           });
           const permissionRequest = connection.requestPermission({
             sessionId: params.sessionId,
-            toolCall: {
+            toolCall: permissionToolCall ?? {
               toolCallId: "tool-1",
               title: permissionTitle,
               name: "Bash",
@@ -546,6 +547,81 @@ test("ACP process transport authorizes the exact safe Claude Bash input envelope
     outcome: { outcome: "selected", optionId: "allow_once" },
   });
   await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
+});
+
+test("ACP process transport authorizes only the dedicated Clockchain MCP namespace for Claude", async () => {
+  const calls = [];
+  const transport = createAcpProcessTransport({
+    harness: "claude",
+    pin: ACP_VERSION_PINS.claude,
+    spawn: acpFixtureSpawn({
+      calls,
+      sessionUpdates: [],
+      permissionToolCall: {
+        toolCallId: "tool-clockchain-invite",
+        title: "agent_handshake_accept_invitation",
+        kind: "other",
+        status: "pending",
+        rawInput: { invitation: INVITATION },
+        _meta: { claudeCode: { toolName: "mcp__clockchain-handshake__agent_handshake_accept_invitation" } },
+      },
+    }),
+    workspace: "/workspace/responder",
+    home: "/workspace/responder/home",
+    env: {},
+    trustedAdapterPublicKeys: [retainedAction({ role: "responder" }).adapterPublicKey],
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.claude,
+    runtime: { runtimeId: "runtime-responder", sessionId: SESSION, role: "responder", harness: "claude" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("responder"),
+  });
+  assert.deepEqual(calls.find((entry) => entry[0] === "permission")[1], {
+    outcome: { outcome: "selected", optionId: "allow_once" },
+  });
+  await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
+});
+
+test("ACP process transport rejects foreign and controller-only Claude MCP permissions", async () => {
+  for (const toolName of [
+    "mcp__other-server__agent_handshake_accept_invitation",
+    "mcp__clockchain-handshake__agent_handshake_submit_checkpoint",
+  ]) {
+    const calls = [];
+    const transport = createAcpProcessTransport({
+      harness: "claude",
+      pin: ACP_VERSION_PINS.claude,
+      spawn: acpFixtureSpawn({
+        calls,
+        sessionUpdates: [],
+        permissionToolCall: {
+          toolCallId: "tool-forbidden-mcp",
+          title: "forbidden",
+          kind: "other",
+          status: "pending",
+          rawInput: {},
+          _meta: { claudeCode: { toolName } },
+        },
+      }),
+      workspace: "/workspace/responder",
+      home: "/workspace/responder/home",
+      env: {},
+      trustedAdapterPublicKeys: [retainedAction({ role: "responder" }).adapterPublicKey],
+    });
+    await transport.launch({
+      acp: ACP_VERSION_PINS.claude,
+      runtime: { runtimeId: "runtime-responder", sessionId: SESSION, role: "responder", harness: "claude" },
+      mandate: VALID_MANDATE,
+      mcpEndpoint: MCP_ENDPOINT,
+      a2aConfig: a2aConfig("responder"),
+    });
+    assert.deepEqual(calls.find((entry) => entry[0] === "permission")[1], {
+      outcome: { outcome: "selected", optionId: "reject_once" },
+    });
+    await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
+  }
 });
 
 test("ACP process transport rejects unsafe Claude Bash execution controls", async () => {
