@@ -587,9 +587,12 @@ function splitCodexCommandDisplay(value) {
 }
 
 export function unwrapCodexCommandExecution(value) {
-  if (typeof value !== "string" || value !== value.trim() || !value.startsWith("/bin/zsh -c ")) fail();
+  if (
+    typeof value !== "string" || value !== value.trim() ||
+    !(value.startsWith("/bin/zsh -c ") || value.startsWith("/bin/zsh -lc "))
+  ) fail();
   const words = splitCodexCommandDisplay(value);
-  if (words.length !== 3 || words[0] !== "/bin/zsh" || words[1] !== "-c" || words[2].length === 0) fail();
+  if (words.length !== 3 || words[0] !== "/bin/zsh" || !["-c", "-lc"].includes(words[1]) || words[2].length === 0) fail();
   return words[2];
 }
 

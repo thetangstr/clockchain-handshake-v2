@@ -1369,13 +1369,15 @@ test("stakeholder prompts leave mechanics to MCP and use only preloaded verified
 test("unwraps Codex's canonical shell display before binding the exact helper command", () => {
   const command = nonterminalHelperCommand("initiator", "init");
   const display = codexCommandExecutionDisplay(command);
+  const loginDisplay = ["/bin/zsh", "-lc", command].map(rustShlexQuote).join(" ");
   assert.equal(Buffer.byteLength(display), Buffer.byteLength(command) + 47);
   assert.equal(unwrapCodexCommandExecution(display), command);
+  assert.equal(unwrapCodexCommandExecution(loginDisplay), command);
 
   for (const unsafe of [
     command,
     `bash -lc ${rustShlexQuote(command)}`,
-    ["/bin/zsh", "-lc", command].map(rustShlexQuote).join(" "),
+    ["/bin/zsh", "-ilc", command].map(rustShlexQuote).join(" "),
     `${display} extra`,
     ` ${display}`,
     "/bin/zsh -c foo;bar",
