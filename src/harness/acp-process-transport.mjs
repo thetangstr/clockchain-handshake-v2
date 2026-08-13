@@ -375,7 +375,7 @@ function promptText({ role, sessionId, mandate, a2aConfig }) {
   ].join("\n");
 }
 
-function continuationPromptText({ role, protocolSessionId, mandate, a2aConfig }) {
+function continuationPromptText({ role, protocolSessionId, mandate, a2aConfig, bridgeProgress }) {
   if (protocolSessionId === null) {
     if (role === "initiator") {
       return [
@@ -391,6 +391,20 @@ function continuationPromptText({ role, protocolSessionId, mandate, a2aConfig })
       "Do not print, summarize, or copy the invitation anywhere else.",
       "If Clockchain returns a retryable error, follow its wait and retry instructions and call agent_handshake_accept_invitation again.",
       "Do not end your turn before the invitation is accepted or a non-retryable tool error makes completion impossible.",
+    ].join("\n");
+  }
+  if (bridgeProgress?.certificatePending === true) {
+    return [
+      "Execute the exact pending clockchain-agent-authorize command from the latest agent_handshake_get_certificate result now.",
+      "Do not call another MCP tool and do not end your turn before the retained local certificate verification completes.",
+    ].join("\n");
+  }
+  if (bridgeProgress?.directDeliveryComplete === true && bridgeProgress?.certificateVerified === false) {
+    return [
+      "Call agent_handshake_get_certificate now with the exact access for the existing Clockchain protocol session.",
+      "If the certificate is still pending, follow the returned wait and retry instruction and call agent_handshake_get_certificate again.",
+      "When it returns a helperStep, execute its exact approvalCommand through the retained local-action approval path.",
+      "Do not end your turn before the retained local certificate verification completes.",
     ].join("\n");
   }
   return [
@@ -1138,6 +1152,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
         event("acp.session.new", "created ACP session", digest(created.sessionId));
         let promptUsage = Object.freeze({ inputTokens: "0", outputTokens: "0" });
         let bridgeComplete = false;
+        let bridgeProgress = null;
         for (let promptAttempt = 0; promptAttempt < MAX_COMPLETION_PROMPTS && !bridgeComplete; promptAttempt += 1) {
           recoverableReplayCancellation = false;
           launchStage = "prompt";
@@ -1152,6 +1167,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
                   protocolSessionId,
                   mandate: cleanMandateValue,
                   a2aConfig: cleanPeer,
+                  bridgeProgress,
                 }),
             }],
           });
@@ -1175,13 +1191,25 @@ export function createAcpProcessTransport(optionsInput = {}) {
             bridgeComplete = true;
           } else {
             launchStage = "completion-protocol-bridge-incomplete";
-            const status = exactObject(partyBridge.completionStatus(), ["complete", "protocolSessionId"]);
+            const status = exactObject(partyBridge.completionStatus(), [
+              "certificatePending", "certificateVerified", "complete", "directDeliveryComplete", "protocolSessionId",
+            ]);
             if (
               typeof status.complete !== "boolean" ||
+              typeof status.certificatePending !== "boolean" ||
+              typeof status.certificateVerified !== "boolean" ||
+              typeof status.directDeliveryComplete !== "boolean" ||
+              status.certificatePending && status.certificateVerified ||
+              status.complete && (!status.certificateVerified || !status.directDeliveryComplete) ||
               !(status.protocolSessionId === null || typeof status.protocolSessionId === "string" && status.protocolSessionId.length > 0) ||
               (protocolSessionId !== null && status.protocolSessionId !== protocolSessionId)
             ) fail();
             if (status.protocolSessionId !== null) protocolSessionId = status.protocolSessionId;
+            bridgeProgress = Object.freeze({
+              certificatePending: status.certificatePending,
+              certificateVerified: status.certificateVerified,
+              directDeliveryComplete: status.directDeliveryComplete,
+            });
             bridgeComplete = status.complete;
           }
           if (!bridgeComplete && promptAttempt + 1 < MAX_COMPLETION_PROMPTS) {

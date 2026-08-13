@@ -88,7 +88,15 @@ function actionRecorderFor(actions, calls = []) {
 
 function partyBridgeFor(calls, { delayMs = 0, reject = false, completionStatus = () => ({ complete: true, protocolSessionId: SESSION }) } = {}) {
   return Object.freeze({
-    completionStatus,
+    completionStatus() {
+      const status = completionStatus();
+      return {
+        certificatePending: false,
+        certificateVerified: status.complete,
+        directDeliveryComplete: status.complete,
+        ...status,
+      };
+    },
     async observeToolResult(input) {
       calls.push(["partyBridge", input]);
       if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -1141,6 +1149,38 @@ test("ACP completion loop leaves headroom to verify a certificate after sixteen 
   assert.equal(completionChecks, 17);
 });
 
+test("ACP continuation asks only for the certificate after the direct party delivery is complete", async () => {
+  const calls = [];
+  let completionChecks = 0;
+  const transport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({ calls, sessionUpdates: [], skipPermission: true }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    partyBridge: partyBridgeFor(calls, {
+      completionStatus() {
+        completionChecks += 1;
+        return completionChecks >= 2
+          ? { complete: true, certificateVerified: true, directDeliveryComplete: true, protocolSessionId: SESSION }
+          : { complete: false, certificateVerified: false, directDeliveryComplete: true, protocolSessionId: SESSION };
+      },
+    }),
+    env: {},
+    trustedAdapterPublicKeys: [retainedAction({ role: "initiator" }).adapterPublicKey],
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  });
+  const secondPrompt = calls.filter((entry) => entry[0] === "prompt")[1][1].prompt[0].text;
+  assert.match(secondPrompt, /^Call agent_handshake_get_certificate now/);
+  assert.doesNotMatch(secondPrompt, /agent_handshake_status|agent_handshake_next|agent_handshake_invite/);
+});
+
 test("ACP continuation repeats the exact role bootstrap while no protocol session exists", async () => {
   const calls = [];
   let completionChecks = 0;
@@ -1222,7 +1262,13 @@ test("ACP process transport distinguishes each public Clockchain boundary at inc
       workspace: "/workspace/initiator",
       home: "/workspace/initiator/home",
       partyBridge: Object.freeze({
-        completionStatus: () => ({ complete: false, protocolSessionId: item.protocolSessionId }),
+        completionStatus: () => ({
+          certificatePending: false,
+          certificateVerified: false,
+          complete: false,
+          directDeliveryComplete: false,
+          protocolSessionId: item.protocolSessionId,
+        }),
         async observeToolResult(input) {
           calls.push(["partyBridge", input]);
           return { observed: true, protocolSessionId: item.protocolSessionId, toolResultDigest: "f".repeat(64) };

@@ -544,7 +544,10 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
       completionStatus() {
         active();
         return Object.freeze({
+          certificatePending: pendingCertificate !== null,
+          certificateVerified: certificate !== null,
           complete: boundSessionId !== null && certificate !== null && deliveries.length === 1,
+          directDeliveryComplete: deliveries.length === 1,
           protocolSessionId: boundSessionId,
         });
       },
