@@ -786,6 +786,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
   let terminated = false;
   let permissionAuthorized = false;
   let fatalPermissionDenied = false;
+  let recoverableReplayCancellation = false;
   let permissionFailureStage = null;
   let permissionDenials = 0;
   let completedClockchainToolResults = 0;
@@ -928,10 +929,15 @@ export function createAcpProcessTransport(optionsInput = {}) {
         ? denialStage
         : `command-${commandStage}${permissionAuthorized ? "-after-authorization" : ""}`;
       const publicStage = PERMISSION_FAILURE_STAGES.includes(fixedStage) ? fixedStage : "unknown";
-      permissionDenials += 1;
+      if (!retainedReplay) permissionDenials += 1;
       let unrelatedRejection = null;
       if (commandStage === "approval" || retainedReplay) {
         try { unrelatedRejection = rejectOnceOption(params); } catch {}
+      }
+      if (retainedReplay && unrelatedRejection === null) {
+        recoverableReplayCancellation = true;
+        event("acp.permission.denied", `denied ACP permission at ${publicStage}`, publicStage);
+        return Object.freeze({ outcome: Object.freeze({ outcome: "cancelled" }) });
       }
       if (unrelatedRejection === null || permissionDenials > MAX_PERMISSION_DENIALS) {
         fatalPermissionDenied = true;
@@ -1133,6 +1139,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
         let promptUsage = Object.freeze({ inputTokens: "0", outputTokens: "0" });
         let bridgeComplete = false;
         for (let promptAttempt = 0; promptAttempt < MAX_COMPLETION_PROMPTS && !bridgeComplete; promptAttempt += 1) {
+          recoverableReplayCancellation = false;
           launchStage = "prompt";
           const prompted = await connection.prompt({
             sessionId: acpSessionId,
@@ -1157,7 +1164,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
             launchStage = `completion-permission-${permissionFailureStage ?? "unknown"}`;
             fail();
           }
-          if (prompted?.stopReason !== "end_turn") {
+          if (prompted?.stopReason !== "end_turn" && !(prompted?.stopReason === "cancelled" && recoverableReplayCancellation)) {
             launchStage = ACP_STOP_REASONS.includes(prompted?.stopReason)
               ? `completion-stop-${prompted.stopReason}`
               : "completion-stop-unknown";

@@ -122,6 +122,7 @@ function acpFixtureSpawn({
   unrelatedPermissionBeforeHelper = false,
   unrelatedPermissionOptions = null,
   duplicatePermissionAfterHelper = false,
+  duplicatePermissionOptions = null,
 }) {
   return (command, args, options) => {
     calls.push({ command, args, options });
@@ -264,7 +265,7 @@ function acpFixtureSpawn({
                   ...(permissionCwd === undefined ? {} : { cwd: permissionCwd }),
                 },
               },
-              options: [
+              options: duplicatePermissionOptions ?? [
                 { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
                 { optionId: "reject_once", name: "Reject", kind: "reject_once" },
               ],
@@ -1027,6 +1028,41 @@ test("ACP process transport declines a replay of an already authorized retained 
   });
   assert.deepEqual(calls.find((entry) => entry[0] === "duplicatePermission")[1], {
     outcome: { outcome: "selected", optionId: "reject_once" },
+  });
+  await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
+});
+
+test("ACP process transport safely absorbs an exact retained-action replay when ACP offers no reject option", async () => {
+  const action = retainedAction({ role: "initiator", requestDigest: "d".repeat(64), commandSha256: DIGEST });
+  const calls = [];
+  const transport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({
+      calls,
+      duplicatePermissionAfterHelper: true,
+      duplicatePermissionOptions: [{ optionId: "allow_once", name: "Allow once", kind: "allow_once" }],
+      helperAction: action,
+      permissionCwd: "/workspace/initiator",
+    }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    nowMs: () => 1786337001000,
+    actionRecorder: actionRecorderFor([action], calls),
+    env: {},
+    retainedActions: [],
+    partyBridge: partyBridgeFor(calls),
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+  await transport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  });
+  assert.deepEqual(calls.find((entry) => entry[0] === "duplicatePermission")[1], {
+    outcome: { outcome: "cancelled" },
   });
   await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
 });
