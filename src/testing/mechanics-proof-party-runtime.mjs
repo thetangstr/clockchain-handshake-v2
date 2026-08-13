@@ -23,6 +23,7 @@ import {
 } from "../harness/verified-release-action-recorder.mjs";
 import { ACP_VERSION_PINS } from "../harness/version-pins.mjs";
 import { digestHex } from "../core/canonical.mjs";
+import { ACP_TRACE_TO_PARTY_PROGRESS } from "../runtime/mechanics-proof-public-events.mjs";
 import { installAppleClientAuthentication, loadAppleClientAuthentication } from "./apple-client-auth.mjs";
 import { createEphemeralTlsIdentity } from "./ephemeral-tls-identity.mjs";
 
@@ -107,19 +108,6 @@ const RUNTIME_FAILURE_STAGES = Object.freeze([
   "listener-listen-eacces", "listener-listen-eaddrinuse", "listener-listen-eaddrnotavail",
   "listener-listen-eperm", "listener-listen-other",
 ]);
-const PUBLIC_ACP_TRACE_TYPES = Object.freeze(new Map([
-  ["acp.process.launch", "agent.client.started"],
-  ["acp.initialize", "agent.client.connected"],
-  ["acp.session.new", "agent.session.ready"],
-  ["acp.model.pinned", "agent.model.ready"],
-  ["acp.tool_call", "agent.tool.called"],
-  ["acp.tool_call_update", "agent.tool.updated"],
-  ["acp.permission.authorized", "agent.action.authorized"],
-  ["acp.permission.denied", "agent.action.denied"],
-  ["acp.retained_action.registered", "agent.action.registered"],
-  ["acp.handshake.continue", "agent.handshake.continued"],
-  ["acp.prompt.end_turn", "agent.completed"],
-]));
 const RUNTIME_FAILURES = new WeakMap();
 const INVITATION_WAIT_FAILURES = new WeakMap();
 
@@ -680,7 +668,7 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
               observeToolResult(input) { return bridge.observeToolResult(input); },
             }),
             publicEventSink(event) {
-              const traceType = PUBLIC_ACP_TRACE_TYPES.get(event?.type);
+              const traceType = ACP_TRACE_TO_PARTY_PROGRESS.get(event?.type);
               if (traceType === undefined || typeof event?.evidenceRef !== "string" || !/^sha256:[0-9a-f]{64}$/.test(event.evidenceRef)) return;
               publicTraceQueue = publicTraceQueue.then(() => emit(traceType, {
                 evidenceRef: event.evidenceRef,

@@ -359,6 +359,43 @@ test("AWS CLI control plane retains only the latest exact public progress stage 
   });
 });
 
+test("AWS CLI control plane accepts the runtime's public ACP trace vocabulary", async () => {
+  let current = 0;
+  const control = createAwsCliControlPlane({
+    region: "us-west-2",
+    now: () => current,
+    sleep: async () => { current = 2000; },
+    executor: async (_file, argv) => {
+      const role = argv.some((value) => value.includes("/responder")) ? "responder" : "initiator";
+      return { stdout: JSON.stringify({ events: [{
+        timestamp: 1786565101000,
+        message: JSON.stringify({
+          schema: "clockchain.mechanics-proof-party-event/v1",
+          runId: "11111111-2222-4333-8444-555555555555",
+          role,
+          sequence: "1",
+          type: "agent.client.started",
+          evidenceDigest: "1".repeat(64),
+        }),
+      }] }), stderr: "", exitCode: 0 };
+    },
+  });
+
+  await assert.rejects(() => control.pollPublicEvents({
+    logGroupNames: ["/clockchain/mechanics-proof/run/initiator", "/clockchain/mechanics-proof/run/responder"],
+    runId: "11111111-2222-4333-8444-555555555555",
+    startTimeMs: 0,
+    deadlineMs: 1000,
+  }), (error) => {
+    assert.deepEqual(publicPartyProgressStages(error), {
+      initiator: "agent.client.started",
+      responder: "agent.client.started",
+    });
+    assert.equal(publicControlPlaneFailureStage(error), null);
+    return true;
+  });
+});
+
 test("AWS CLI control plane brands a malformed public log line without retaining its contents", async () => {
   const control = createAwsCliControlPlane({
     region: "us-west-2",

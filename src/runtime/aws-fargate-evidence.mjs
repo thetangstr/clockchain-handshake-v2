@@ -9,6 +9,7 @@ import {
   stableJson,
   validateFargateRuntimePlan,
 } from "./aws-fargate-runtime-adapter.mjs";
+import { ACP_PARTY_PROGRESS_TYPES, REQUIRED_PARTY_PROGRESS_TYPES } from "./mechanics-proof-public-events.mjs";
 import { assertSecretFree } from "../core/redact.mjs";
 
 const ROLES = Object.freeze(["initiator", "responder"]);
@@ -37,12 +38,6 @@ const RECORD_KEYS = Object.freeze({
 });
 const REQUIRED_LOG_SCHEMAS = Object.freeze([
   "clockchain.mechanics-proof-ecs-attestation/v1",
-]);
-const PARTY_EVENT_TYPES = Object.freeze([
-  "a2a.listener.ready",
-  "a2a.invitation.received",
-  "agent.starting",
-  "certificate.verified",
 ]);
 const CLOUDTRAIL_KEYS = Object.freeze([
   "account", "eventName", "eventSource", "eventTime", "requestParameters", "taskArn",
@@ -130,17 +125,18 @@ function parseLogRecords(logs, planLogGroupName, streamPrefix, runId, role, task
     if (records.has(record.schema)) fail();
     records.set(record.schema, record);
   }
-  const expectedPartyEventTypes = role === "initiator"
-    ? ["a2a.listener.ready", "agent.starting", "certificate.verified"]
-    : PARTY_EVENT_TYPES;
-  if (partyEvents.length !== expectedPartyEventTypes.length) fail();
+  const prefix = role === "initiator"
+    ? [REQUIRED_PARTY_PROGRESS_TYPES[0], REQUIRED_PARTY_PROGRESS_TYPES[2]]
+    : REQUIRED_PARTY_PROGRESS_TYPES.slice(0, 3);
+  if (partyEvents.length < prefix.length + 1) fail();
   for (let index = 0; index < partyEvents.length; index += 1) {
     const event = partyEvents[index];
-    if (
-      event.sequence !== String(index + 1) ||
-      event.type !== expectedPartyEventTypes[index] ||
-      !SHA.test(event.evidenceDigest)
-    ) fail();
+    if (event.sequence !== String(index + 1) || !SHA.test(event.evidenceDigest)) fail();
+    if (index < prefix.length) {
+      if (event.type !== prefix[index]) fail();
+    } else if (index === partyEvents.length - 1) {
+      if (event.type !== REQUIRED_PARTY_PROGRESS_TYPES[3]) fail();
+    } else if (!ACP_PARTY_PROGRESS_TYPES.includes(event.type)) fail();
   }
   for (const schema of REQUIRED_LOG_SCHEMAS) {
     if (!records.has(schema)) fail();

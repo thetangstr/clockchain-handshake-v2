@@ -463,6 +463,34 @@ test("Fargate runtime evidence is derived from control-plane responses and valid
   assert.doesNotMatch(printed, /secret-canary|raw-log|arn:aws:secretsmanager|arn:aws:ssm/i);
 });
 
+test("Fargate runtime evidence accepts allowed public ACP trace events between required milestones", async () => {
+  const plan = validateFargateRuntimePlan(await checkedPlan());
+  const aws = fakeAwsResponses(plan, "initiator");
+  const events = aws.cloudWatchLogs[0].events;
+  const certificateIndex = events.findIndex((event) => JSON.parse(event.message).type === "certificate.verified");
+  const certificate = JSON.parse(events[certificateIndex].message);
+  certificate.sequence = "4";
+  events[certificateIndex] = { ...events[certificateIndex], message: JSON.stringify(certificate) };
+  events.splice(certificateIndex, 0, {
+    timestamp: "2026-08-11T12:04:30.000Z",
+    message: JSON.stringify({
+      schema: "clockchain.mechanics-proof-party-event/v1",
+      runId: SESSION_ID,
+      role: "initiator",
+      sequence: "3",
+      type: "agent.client.started",
+      evidenceDigest: sha256Hex({ role: "initiator", type: "agent.client.started" }),
+    }),
+  });
+
+  assert.equal(validateFargateRuntimeEvidence(collectFargateRuntimeEvidence({
+    plan,
+    sessionId: SESSION_ID,
+    role: "initiator",
+    aws,
+  })).taskStatus, "STOPPED");
+});
+
 test("Fargate runtime evidence rejects self-claims and missing required control-plane proof", async () => {
   const plan = validateFargateRuntimePlan(await checkedPlan());
   const complete = fakeAwsResponses(plan, "initiator");
