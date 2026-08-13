@@ -15,6 +15,9 @@ const logs = Object.freeze({
   responder: process.env.CLOCKCHAIN_CLAUDE_LIVE_LOG || "/tmp/clockchain-claude-live.log",
 });
 const seen = new Set();
+const DEMO_REFERENCE = "NS-1847";
+const DEMO_STATEMENT = "Northstar Logistics and Harbor Supply authorize these two independently controlled agents to communicate about shipment reference NS-1847 for 90 seconds.";
+const ERC8004_REGISTRY = "0x8004A818BFB912233c491871b3d84c89A494BD9e";
 
 function say(text, role = null, key = text) {
   const identity = `${role || "both"}:${key}`;
@@ -43,6 +46,28 @@ function showAgentNarration(event, role, name) {
     const narration = safeAgentNarration(value);
     if (narration !== null) say(`${name} — Agent says: ${narration}`, role, `agent-narration-${narration}`);
   }
+}
+
+function showDemoContext(role) {
+  say([
+    `DEMO MANDATE · ${DEMO_REFERENCE}`,
+    DEMO_STATEMENT,
+    "Local policy: exact terms only · fresh ERC-8004 required · no external business action",
+  ].join("\n"), role, "demo-context");
+}
+
+function showLocalOperation(role, operation) {
+  const name = names[role] || "Agent";
+  const explanations = {
+    init: `${name} — Behind the scenes: creating a new local signing key; the private key stays inside this isolated agent session.`,
+    policy: `${name} — Decision: comparing the exact mandate, 90-second limit, identity requirement, and no-action rule with local policy.`,
+    inspect: `${name} — Behind the scenes: checking the local identity state before requesting another action.`,
+    register: `${name} — Decision: fresh ERC-8004 registration is allowed. The local helper will submit to ${ERC8004_REGISTRY} on Ethereum Sepolia using Clockchain-funded Sepolia test gas; the private key stays inside this isolated agent session.`,
+    sign: `${name} — Decision: the exact Clockchain-bound bytes match local policy, so this signature is allowed.`,
+    "verify-certificate": `${name} — Behind the scenes: verifying the signed closing certificate and all three receipt references locally.`,
+  };
+  const explanation = explanations[operation];
+  if (explanation !== undefined) say(explanation, role, `operation-${operation}`);
 }
 
 function toolMessages(event, role) {
@@ -93,12 +118,18 @@ function present(event) {
     showReceiptCopies(event);
     return;
   }
-  if (event?.phase === "configure" && event.status === "started") say(`${name}: connecting only to Clockchain MCP…`, role, "configure-start");
+  if (event?.phase === "configure" && event.status === "started") {
+    showDemoContext(role);
+    say(`${name}: connecting only to Clockchain MCP…`, role, "configure-start");
+  }
   if (event?.phase === "configure" && event.status === "completed") say(`${name}: connection ready.`, role, "configure-complete");
   if (event?.phase === "prepare" && event.status === "completed") say("Claude Code / Requestor: clean isolated session confirmed.", "responder", "prepare-complete");
   if (event?.phase === "spawn") say(`${name}: fresh agent started.`, role, "spawn");
   if (event?.phase === "continuation-spawn") say(`${name}: continuing the same isolated session (step ${event.turn}).`, role, `continue-${event.turn}`);
-  if (event?.phase === "continuation-needed" && event.pendingHelperOperation) say(`${name}: reviewing the exact ${event.pendingHelperOperation} request against local policy.`, role, `review-${event.pendingHelperOperation}`);
+  if (event?.phase === "continuation-needed" && event.pendingHelperOperation) {
+    say(`${name}: reviewing the exact ${event.pendingHelperOperation} request against local policy.`, role, `review-${event.pendingHelperOperation}`);
+    showLocalOperation(role, event.pendingHelperOperation);
+  }
   if (event?.phase === "adapter-checkpoint-submitted") say(`${name}: deterministic ${event.artifactType} checkpoint submitted after agent approval.`, role, `adapter-checkpoint-${event.artifactType}`);
   if (event?.phase === "event") {
     showAgentNarration(event, role, name);

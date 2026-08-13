@@ -38,6 +38,12 @@ function evidenceFixture() {
         },
       },
       sessionId: "c3681923-e837-4774-9ea4-38a6d9736532",
+      terms: {
+        reference: "NS-1847",
+        statement: "Northstar Logistics and Harbor Supply authorize these two independently controlled agents to communicate about shipment reference NS-1847 for 90 seconds.",
+        statementDigest: "9".repeat(64),
+        validForSeconds: "90",
+      },
     },
     roles: {
       initiator: {
@@ -77,6 +83,8 @@ test("formats separate party identities with one shared certificate and receipt 
   assert.match(payer, /HANDSHAKE COMPLETE — PAYER COPY/);
   assert.match(requestor, /HANDSHAKE COMPLETE — REQUESTOR COPY/);
   assert.match(payer, /ERC-8004 agent: #9621/);
+  assert.match(payer, /Network: Ethereum Sepolia \(eip155:11155111\)/);
+  assert.match(payer, /Registry contract: 0x8004A818BFB912233c491871b3d84c89A494BD9e/);
   assert.doesNotMatch(payer, /#9622/);
   assert.match(requestor, /ERC-8004 agent: #9622/);
   assert.doesNotMatch(requestor, /#9621/);
@@ -84,6 +92,11 @@ test("formats separate party identities with one shared certificate and receipt 
   assert.match(requestor, new RegExp(`Certificate digest: ${CERTIFICATE_DIGEST}`));
   assert.match(payer, /Issued: 2026-08-13 20:52:36 UTC/);
   assert.match(payer, /Session: c3681923-e837-4774-9ea4-38a6d9736532/);
+  assert.match(payer, /Accepted contract terms/);
+  assert.match(payer, /Reference: NS-1847/);
+  assert.match(payer, /Northstar Logistics and Harbor Supply authorize these two independently controlled agents to communicate about shipment reference NS-1847 for 90 seconds\./);
+  assert.match(payer, new RegExp(`Statement digest: ${"9".repeat(64)}`));
+  assert.match(requestor, /Accepted contract terms/);
   assert.ok(payer.indexOf("Receipt 1 — Proposal") < payer.indexOf("Receipt 2 — Acceptance"));
   assert.ok(payer.indexOf("Receipt 2 — Acceptance") < payer.indexOf("Receipt 3 — Acknowledgment"));
   for (const value of [
@@ -127,6 +140,9 @@ test("fails closed before returning partial receipt text", () => {
     ["malformed block height", (value) => { value.monitor.receipts.proposal.blockHeight = "03560023"; }, "initiator"],
     ["certificate not verified", (value) => { value.roles.initiator.certificateVerified = false; }, "initiator"],
     ["external action occurred", (value) => { value.roles.initiator.externalBusinessActionPerformed = true; }, "initiator"],
+    ["missing accepted terms", (value) => { delete value.monitor.terms; }, "initiator"],
+    ["wrong reference", (value) => { value.monitor.terms.reference = "OTHER"; }, "initiator"],
+    ["malformed statement digest", (value) => { value.monitor.terms.statementDigest = "short"; }, "initiator"],
   ];
 
   for (const [name, mutate, role] of cases) {

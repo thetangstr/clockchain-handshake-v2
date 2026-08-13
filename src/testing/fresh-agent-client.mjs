@@ -2402,10 +2402,26 @@ function validateMonitorReceipt(value, kind) {
   return Object.freeze({ ...item });
 }
 
+function validateMonitorTerms(value, expectedStatementDigest) {
+  const item = exactObject(value, ["reference", "statement", "statementDigest", "validForSeconds"]);
+  if (
+    typeof item.reference !== "string" || item.reference.length === 0 || item.reference.length > 128 ||
+    typeof item.statement !== "string" || item.statement.length === 0 || item.statement.length > 256 ||
+    item.statementDigest !== expectedStatementDigest || !SHA256.test(item.statementDigest) ||
+    item.validForSeconds !== "90"
+  ) fail();
+  return Object.freeze({
+    reference: item.reference,
+    statement: item.statement,
+    statementDigest: item.statementDigest,
+    validForSeconds: "90",
+  });
+}
+
 function validateMonitorResult(value, expectedSessionId) {
   const item = exactObject(value, [
     "certificate", "checker", "externalBusinessActionPerformed", "hostTrust", "receipts",
-    "repositorySha", "roles", "sessionId", "statementDigest", "timing",
+    "repositorySha", "roles", "sessionId", "statementDigest", "terms", "timing",
   ]);
   const certificate = exactObject(item.certificate, ["digest", "issuedAtMs", "outcome"]);
   const checker = exactObject(item.checker, ["stage", "lastSeenMs"]);
@@ -2444,6 +2460,7 @@ function validateMonitorResult(value, expectedSessionId) {
     roles: Object.freeze({ initiator: validateMonitorRole(roles.initiator), responder: validateMonitorRole(roles.responder) }),
     sessionId: item.sessionId,
     statementDigest: item.statementDigest,
+    terms: validateMonitorTerms(item.terms, item.statementDigest),
     timing: Object.freeze({ ...timing }),
   });
 }
@@ -2461,6 +2478,7 @@ export function validateFreshAgentMonitorSnapshot(value, expectedSessionId) {
     snapshot.checker.stage === "VERIFIED" && snapshot.certificate?.outcome === "VERIFIED";
   if (!complete) return null;
   const terms = { ...snapshot.terms, validForSeconds: snapshot.timing.agreementValidForSeconds };
+  const statementDigest = agentHandshakeV2StatementDigest(terms);
   return validateMonitorResult({
     certificate: snapshot.certificate,
     checker: snapshot.checker,
@@ -2474,7 +2492,13 @@ export function validateFreshAgentMonitorSnapshot(value, expectedSessionId) {
       policyDigest: snapshot.policies[role].digest,
     }])),
     sessionId: snapshot.sessionId,
-    statementDigest: agentHandshakeV2StatementDigest(terms),
+    statementDigest,
+    terms: {
+      reference: snapshot.terms.reference,
+      statement: snapshot.terms.statement,
+      statementDigest,
+      validForSeconds: snapshot.timing.agreementValidForSeconds,
+    },
     timing: snapshot.timing,
   }, expectedSessionId);
 }
@@ -2548,7 +2572,7 @@ function validatePublicRoleEvidence(value, role, expectedSessionId, expectedCert
 }
 
 function validatePublicMonitorEvidence(value, expectedSessionId, binding) {
-  const item = exactObject(value, ["certificate", "checker", "hostTrust", "receipts", "sessionId"]);
+  const item = exactObject(value, ["certificate", "checker", "hostTrust", "receipts", "sessionId", "terms"]);
   const certificate = exactObject(item.certificate, ["digest", "issuedAtMs", "outcome"]);
   const checker = exactObject(item.checker, ["stage", "lastSeenMs"]);
   const hostTrust = exactObject(item.hostTrust, [
@@ -2574,6 +2598,7 @@ function validatePublicMonitorEvidence(value, expectedSessionId, binding) {
       acknowledgment: validateMonitorReceipt(receipts.acknowledgment, "acknowledgment"),
     }),
     sessionId: item.sessionId,
+    terms: validateMonitorTerms(item.terms, binding.statementDigest),
   });
 }
 
@@ -2585,12 +2610,13 @@ function validateSuccessEvidence(value) {
   const clients = exactObject(item.clients, ROLES);
   const release = validateReleaseAgreement({ mcp: item.release, research: item.release });
   const binding = exactObject(item.binding, [
-    "certificateDigest", "hostRootFingerprint", "hostSessionKeyCertificateDigest", "repositorySha", "sessionDeadlineMs",
+    "certificateDigest", "hostRootFingerprint", "hostSessionKeyCertificateDigest", "repositorySha", "sessionDeadlineMs", "statementDigest",
   ]);
   if (
     !SHA256.test(binding.certificateDigest) || !SHA256.test(binding.hostRootFingerprint) ||
     !release.hostRoots.includes(binding.hostRootFingerprint) ||
     !SHA256.test(binding.hostSessionKeyCertificateDigest) || !SHA.test(binding.repositorySha) ||
+    !SHA256.test(binding.statementDigest) ||
     !Number.isSafeInteger(binding.sessionDeadlineMs) || binding.sessionDeadlineMs < 1
   ) fail();
   const roles = exactObject(item.roles, ROLES);
@@ -2729,6 +2755,7 @@ function verifyParentCertificateBinding({ initiatorProof, monitorResult, pin, re
       hostSessionKeyCertificateDigest: monitorResult.hostTrust.sessionKeyCertificateDigest,
       repositorySha: monitorResult.repositorySha,
       sessionDeadlineMs: monitorResult.timing.sessionDeadlineMs,
+      statementDigest: monitorResult.statementDigest,
     }),
     certificateVerified: true,
   });
@@ -3039,6 +3066,7 @@ export async function runFreshAgentHandshake({
         hostTrust: monitorResult.hostTrust,
         receipts: monitorResult.receipts,
         sessionId: monitorResult.sessionId,
+        terms: monitorResult.terms,
       }),
       cleanup: Object.freeze({ completed: true }),
     });

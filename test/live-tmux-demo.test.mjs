@@ -87,6 +87,12 @@ test("verified success appends separate detailed receipt copies to both stable p
           acknowledgment: { blockHeight: "3560037", digest: "c".repeat(64), kind: "acknowledgment", ledgerId: "b3c16c4d-f5fd-4f27-8861-556b7ff69b17" },
         },
         sessionId: "c3681923-e837-4774-9ea4-38a6d9736532",
+        terms: {
+          reference: "NS-1847",
+          statement: "Northstar Logistics and Harbor Supply authorize these two independently controlled agents to communicate about shipment reference NS-1847 for 90 seconds.",
+          statementDigest: "9".repeat(64),
+          validForSeconds: "90",
+        },
       },
       roles: {
         initiator: {
@@ -120,10 +126,15 @@ test("verified success appends separate detailed receipt copies to both stable p
     const claude = readFileSync(claudeLog, "utf8");
     assert.match(codex, /HANDSHAKE COMPLETE — PAYER COPY/);
     assert.match(codex, /ERC-8004 agent: #9621/);
+    assert.match(codex, /Network: Ethereum Sepolia \(eip155:11155111\)/);
+    assert.match(codex, /Registry contract: 0x8004A818BFB912233c491871b3d84c89A494BD9e/);
     assert.doesNotMatch(codex, /#9622/);
     assert.match(claude, /HANDSHAKE COMPLETE — REQUESTOR COPY/);
     assert.match(claude, /ERC-8004 agent: #9622/);
     assert.doesNotMatch(claude, /#9621/);
+    assert.match(codex, /Accepted contract terms/);
+    assert.match(codex, /Statement digest: 9{64}/);
+    assert.match(claude, /Accepted contract terms/);
     for (const value of [
       certificateDigest,
       "1cd46000-2a55-4d25-bf14-7e2e2109aca0",
@@ -132,6 +143,45 @@ test("verified success appends separate detailed receipt copies to both stable p
     ]) {
       assert.ok(codex.includes(value));
       assert.ok(claude.includes(value));
+    }
+  } finally {
+    rmSync(parent, { force: true, recursive: true });
+  }
+});
+
+test("stable panes explain the mandate and ERC-8004 registration without exposing signing material", () => {
+  const parent = mkdtempSync(join(tmpdir(), "clockchain-terminal-mechanics-"));
+  try {
+    const codexLog = join(parent, "codex.log");
+    const claudeLog = join(parent, "claude.log");
+    const input = [
+      { phase: "configure", role: "initiator", status: "started" },
+      { phase: "configure", role: "responder", status: "started" },
+      { phase: "continuation-needed", role: "initiator", pendingHelperOperation: "register" },
+      { phase: "continuation-needed", role: "responder", pendingHelperOperation: "register" },
+    ].map((event) => JSON.stringify(event)).join("\n");
+    const result = spawnSync(process.execPath, [presenterUrl.pathname], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CLOCKCHAIN_CLAUDE_LIVE_LOG: claudeLog,
+        CLOCKCHAIN_CODEX_LIVE_LOG: codexLog,
+      },
+      input: `${input}\n`,
+    });
+    assert.equal(result.status, 0, result.stderr);
+
+    for (const log of [readFileSync(codexLog, "utf8"), readFileSync(claudeLog, "utf8")]) {
+      for (const fact of [
+        "DEMO MANDATE · NS-1847",
+        "Northstar Logistics and Harbor Supply authorize these two independently controlled agents to communicate about shipment reference NS-1847 for 90 seconds.",
+        "Local policy: exact terms only · fresh ERC-8004 required · no external business action",
+        "Ethereum Sepolia",
+        "0x8004A818BFB912233c491871b3d84c89A494BD9e",
+        "Clockchain-funded Sepolia test gas",
+        "private key stays inside this isolated agent session",
+      ]) assert.match(log, new RegExp(fact.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      assert.doesNotMatch(log, /privateKey|roleAccess|payload-base64url/);
     }
   } finally {
     rmSync(parent, { force: true, recursive: true });

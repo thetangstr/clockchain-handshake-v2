@@ -12,6 +12,9 @@ const ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/u;
 const HASH_PATTERN = /^(?:0x)?[0-9a-fA-F]{64}$/u;
 const DECIMAL_PATTERN = /^(?:0|[1-9][0-9]*)$/u;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const DEMO_REFERENCE = "NS-1847";
+const DEMO_STATEMENT = "Northstar Logistics and Harbor Supply authorize these two independently controlled agents to communicate about shipment reference NS-1847 for 90 seconds.";
+const ERC8004_REGISTRY = "0x8004A818BFB912233c491871b3d84c89A494BD9e";
 
 export class TerminalReceiptCopyError extends Error {
   constructor() {
@@ -56,6 +59,7 @@ export function formatTerminalReceiptCopy(evidence, role) {
   const identity = record(party.erc8004);
   const certificate = record(monitor.certificate);
   const receiptMap = record(monitor.receipts);
+  const terms = record(monitor.terms);
 
   const sessionId = exactString(monitor.sessionId, UUID_PATTERN);
   const agentId = exactString(identity.agentId, DECIMAL_PATTERN);
@@ -63,6 +67,12 @@ export function formatTerminalReceiptCopy(evidence, role) {
   const registrationTx = exactString(identity.registrationTx, /^0x[0-9a-fA-F]{64}$/u);
   const registrationBlock = exactString(identity.registrationBlock, DECIMAL_PATTERN);
   const certificateDigest = exactString(certificate.digest, HASH_PATTERN);
+  if (
+    Object.keys(terms).sort().join("\0") !== ["reference", "statement", "statementDigest", "validForSeconds"].sort().join("\0") ||
+    terms.reference !== DEMO_REFERENCE || terms.statement !== DEMO_STATEMENT ||
+    terms.validForSeconds !== "90"
+  ) fail();
+  const statementDigest = exactString(terms.statementDigest, HASH_PATTERN);
   if (certificate.outcome !== "VERIFIED") fail();
   if (party.certificateVerified !== true) fail();
   if (party.externalBusinessActionPerformed !== false) fail();
@@ -89,9 +99,17 @@ export function formatTerminalReceiptCopy(evidence, role) {
     "",
     "Identity",
     `ERC-8004 agent: #${agentId}`,
+    "Network: Ethereum Sepolia (eip155:11155111)",
+    `Registry contract: ${ERC8004_REGISTRY}`,
     `Controller address: ${address}`,
     `Registration transaction: ${registrationTx}`,
     `Registration block: ${registrationBlock}`,
+    "",
+    "Accepted contract terms",
+    `Reference: ${DEMO_REFERENCE}`,
+    `Statement: ${DEMO_STATEMENT}`,
+    "Valid for: 90 seconds",
+    `Statement digest: ${statementDigest}`,
     "",
     "Signed closing certificate — VERIFIED",
     `Certificate digest: ${certificateDigest}`,
