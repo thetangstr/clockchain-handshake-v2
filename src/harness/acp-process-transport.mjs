@@ -35,7 +35,9 @@ const PERMISSION_REGISTRATION_GRACE_MS = 5_000;
 const PROCESS_TERM_GRACE_MS = 50;
 const PROCESS_KILL_GRACE_MS = 50;
 const PERMISSION_COMMAND_FAILURES = new WeakMap();
-const PERMISSION_COMMAND_STAGES = Object.freeze(["tool", "input", "cwd", "approval"]);
+const PERMISSION_COMMAND_STAGES = Object.freeze([
+  "tool", "input", "cwd", "approval", "approval-double-quoted", "approval-whitespace", "approval-wrapped",
+]);
 const PERMISSION_FAILURE_STAGES = Object.freeze([
   "session", "protocol", "registration", "state", "options", "unknown",
   ...PERMISSION_COMMAND_STAGES.flatMap((stage) => [`command-${stage}`, `command-${stage}-after-authorization`]),
@@ -822,7 +824,17 @@ export function createAcpProcessTransport(optionsInput = {}) {
     catch { throw permissionCommandFailure("input"); }
     if (rawInput.cwd !== undefined && rawInput.cwd !== options.workspace) throw permissionCommandFailure("cwd");
     try { return retainedCommand(rawInput.command); }
-    catch { throw permissionCommandFailure("approval"); }
+    catch {
+      const value = rawInput.command;
+      if (typeof value === "string") {
+        if (/^"clockchain-agent-authorize [0-9a-f]{64}"$/.test(value)) throw permissionCommandFailure("approval-double-quoted");
+        if (value.trim() !== value && /^clockchain-agent-authorize [0-9a-f]{64}$/.test(value.trim())) {
+          throw permissionCommandFailure("approval-whitespace");
+        }
+        if (value.includes("clockchain-agent-authorize ")) throw permissionCommandFailure("approval-wrapped");
+      }
+      throw permissionCommandFailure("approval");
+    }
   }
   async function requestPermission(params) {
     let denialStage = "session";
