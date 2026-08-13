@@ -31,6 +31,9 @@ test("live runner pins the production clients and retains public evidence", asyn
   assert.match(source, /Claude Code \/ Requestor — Sonnet/);
   assert.match(source, /CLOCKCHAIN_INITIATOR_MODEL=.*gpt-5\.6-terra/);
   assert.match(source, /CLOCKCHAIN_RESPONDER_MODEL=.*sonnet/);
+  assert.match(source, /ANTHROPIC_BASE_URL/);
+  assert.match(source, /ANTHROPIC_AUTH_TOKEN/);
+  assert.match(source, /\.claude\/settings\.json/);
   assert.match(source, /CLOCKCHAIN_FRESH_AGENT_RESULT_DIR/);
   assert.match(source, /CLOCKCHAIN_TRACE_LOG/);
   assert.match(source, /tee "\$TRACE_LOG"/);

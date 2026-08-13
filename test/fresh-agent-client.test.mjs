@@ -879,6 +879,70 @@ test("Claude can use an approved existing macOS Keychain login without extractin
   );
 });
 
+test("Claude existing-login probe accepts current first-party subscription status shapes only", async () => {
+  const runner = await import("../scripts/run-fresh-agent-handshake.mjs");
+  assert.equal(runner.validateClaudeExistingLoginStatus({
+    loggedIn: true,
+    authMethod: "claude.ai",
+    apiProvider: "firstParty",
+  }), true);
+  assert.equal(runner.validateClaudeExistingLoginStatus({
+    loggedIn: true,
+    authMethod: "oauth_token",
+    apiProvider: "firstParty",
+  }), true);
+  assert.equal(runner.validateClaudeExistingLoginStatus({
+    loggedIn: true,
+    authMethod: "oauth_token",
+    apiProvider: "bedrock",
+  }), false);
+  assert.equal(runner.validateClaudeExistingLoginStatus({
+    loggedIn: false,
+    authMethod: "oauth_token",
+    apiProvider: "firstParty",
+  }), false);
+});
+
+test("Claude can use a loopback local gateway without importing user settings or leaking its token", async () => {
+  const runner = await import("../scripts/run-fresh-agent-handshake.mjs");
+  const token = "test-local-gateway-token";
+  const authentication = await runner.loadFreshAgentAuthentication("claude", {
+    env: {
+      ANTHROPIC_AUTH_TOKEN: token,
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:15721",
+      CLOCKCHAIN_CLAUDE_EXISTING_LOGIN: "1",
+    },
+    home: "/Users/example",
+    existingLoginProbe: async () => true,
+  });
+  assert.deepEqual(authentication, {
+    client: "claude",
+    environment: {
+      ANTHROPIC_AUTH_TOKEN: token,
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:15721",
+    },
+    existingLoginIsolated: true,
+    secretCanaries: [token],
+    serialized: null,
+    source: null,
+  });
+  await assert.rejects(() => runner.loadFreshAgentAuthentication("claude", {
+    env: {
+      ANTHROPIC_AUTH_TOKEN: token,
+      ANTHROPIC_BASE_URL: "https://gateway.example.com",
+      CLOCKCHAIN_CLAUDE_EXISTING_LOGIN: "1",
+    },
+    existingLoginProbe: async () => true,
+  }));
+  await assert.rejects(() => runner.loadFreshAgentAuthentication("claude", {
+    env: {
+      ANTHROPIC_AUTH_TOKEN: token,
+      CLOCKCHAIN_CLAUDE_EXISTING_LOGIN: "1",
+    },
+    existingLoginProbe: async () => true,
+  }));
+});
+
 test("fresh-agent monitor retries transient 502 until a valid complete snapshot succeeds", async (t) => {
   const previousEndpoint = process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL;
   process.env.CLOCKCHAIN_RESEARCH_MONITOR_URL = "https://monitor.example.test/session";

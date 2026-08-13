@@ -22,6 +22,13 @@ export CLOCKCHAIN_RESPONDER_CLIENT=claude
 export CLOCKCHAIN_INITIATOR_MODEL
 export CLOCKCHAIN_RESPONDER_MODEL
 export CLOCKCHAIN_CLAUDE_EXISTING_LOGIN="${CLOCKCHAIN_CLAUDE_EXISTING_LOGIN:-1}"
+
+# Import only the local Claude gateway credential, never user prompts, plugins, or agent state.
+readonly CLAUDE_SETTINGS="${CLOCKCHAIN_CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
+if [[ -z "${ANTHROPIC_BASE_URL:-}" && -z "${ANTHROPIC_AUTH_TOKEN:-}" && -r "$CLAUDE_SETTINGS" ]]; then
+  export ANTHROPIC_BASE_URL="$($NODE_BIN -e 'const s=JSON.parse(require("node:fs").readFileSync(process.argv.at(-1),"utf8"));process.stdout.write(s?.env?.ANTHROPIC_BASE_URL??"")' "$CLAUDE_SETTINGS")"
+  export ANTHROPIC_AUTH_TOKEN="$($NODE_BIN -e 'const s=JSON.parse(require("node:fs").readFileSync(process.argv.at(-1),"utf8"));process.stdout.write(s?.env?.ANTHROPIC_AUTH_TOKEN??"")' "$CLAUDE_SETTINGS")"
+fi
 export CLOCKCHAIN_MCP_RELEASE_MANIFEST_DIGEST="${CLOCKCHAIN_MCP_RELEASE_MANIFEST_DIGEST:-fa3c408a3739227b5bdb71486b4d291b8f4dffdb0d1f2fa79dd59644ba5e09ad}"
 export CLOCKCHAIN_RESEARCH_RELEASE_MANIFEST_DIGEST="${CLOCKCHAIN_RESEARCH_RELEASE_MANIFEST_DIGEST:-fa3c408a3739227b5bdb71486b4d291b8f4dffdb0d1f2fa79dd59644ba5e09ad}"
 export CLOCKCHAIN_MCP_HOST_ROOT_FINGERPRINTS="${CLOCKCHAIN_MCP_HOST_ROOT_FINGERPRINTS:-da2771c36bf2298525d2bbd8351b6122bb67115e9979624e8bb56537bcf71ed8}"

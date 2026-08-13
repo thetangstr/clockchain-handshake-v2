@@ -59,6 +59,11 @@ function roots(name) {
   return result;
 }
 
+export function validateClaudeExistingLoginStatus(status) {
+  return status?.loggedIn === true && status?.apiProvider === "firstParty" &&
+    ["claude.ai", "oauth_token"].includes(status?.authMethod);
+}
+
 async function probeClaudeExistingLogin() {
   try {
     const { stdout } = await execFileAsync("claude", ["auth", "status"], {
@@ -67,8 +72,7 @@ async function probeClaudeExistingLogin() {
       timeout: 30_000,
       windowsHide: true,
     });
-    const status = JSON.parse(stdout);
-    return status?.loggedIn === true && status?.authMethod === "claude.ai";
+    return validateClaudeExistingLoginStatus(JSON.parse(stdout));
   } catch {
     return false;
   }
@@ -87,11 +91,24 @@ export async function loadFreshAgentAuthentication(client, {
   const existingLoginIsolated = client === "claude" && env.CLOCKCHAIN_CLAUDE_EXISTING_LOGIN === "1";
   if (existingLoginIsolated) {
     if (supplied.length !== 0 || typeof existingLoginProbe !== "function" || await existingLoginProbe() !== true) throw new Error("invalid");
+    const gatewayToken = env.ANTHROPIC_AUTH_TOKEN;
+    const gatewayBaseUrl = env.ANTHROPIC_BASE_URL;
+    const hasGatewayToken = typeof gatewayToken === "string" && gatewayToken.length > 0;
+    const hasGatewayBaseUrl = typeof gatewayBaseUrl === "string" && gatewayBaseUrl.length > 0;
+    if (hasGatewayToken !== hasGatewayBaseUrl) throw new Error("invalid");
+    if (hasGatewayBaseUrl) {
+      const parsed = new URL(gatewayBaseUrl);
+      if (parsed.protocol !== "http:" || !["127.0.0.1", "::1", "localhost"].includes(parsed.hostname) ||
+        parsed.username !== "" || parsed.password !== "") throw new Error("invalid");
+    }
     return Object.freeze({
       client,
-      environment: Object.freeze({}),
+      environment: Object.freeze(hasGatewayBaseUrl ? {
+        ANTHROPIC_AUTH_TOKEN: gatewayToken,
+        ANTHROPIC_BASE_URL: gatewayBaseUrl,
+      } : {}),
       existingLoginIsolated: true,
-      secretCanaries: Object.freeze([]),
+      secretCanaries: Object.freeze(hasGatewayToken ? [gatewayToken] : []),
       serialized: null,
       source: null,
     });
