@@ -1193,6 +1193,8 @@ test("harness adapter submits the private proposal checkpoint before releasing t
     role: "initiator",
     sessionId: SESSION,
   });
+  adapter.bindRoleAccess(OPAQUE_INITIATOR_ACCESS);
+  assert.throws(() => adapter.bindRoleAccess("ccra_ZYXWVUTSRQPONMLKJIHGFE"));
   adapter.record(step);
   const approved = execFileAsync(adapter.executable, [step.commandSha256], {
     cwd: room.workspace,
@@ -1608,6 +1610,29 @@ test("accepts the production opaque Initiator role handle from a completed invit
               },
             },
           })));
+          const proposal = {
+            roleAccess: OPAQUE_INITIATOR_ACCESS,
+            signingSummary: {
+              bytesSha256: "8".repeat(64),
+              operation: "proposal",
+              role: "initiator",
+              schema: "clockchain.agent-handshake-signing-summary/v1",
+              sessionId: SESSION,
+            },
+            stage: "sign_proposal",
+          };
+          child.stdout.emit("data", Buffer.from(streamEvent({
+            type: "item.completed",
+            item: {
+              type: "mcp_tool_call",
+              tool: "agent_handshake_next",
+              status: "completed",
+              result: {
+                content: [{ type: "text", text: JSON.stringify(proposal) }],
+                structuredContent: proposal,
+              },
+            },
+          })));
           return;
         }
         children.initiator.stdout.emit("data", Buffer.from(codexHelperProofEvent(helperProof("initiator"))));
@@ -1634,11 +1659,14 @@ test("accepts the production opaque Initiator role handle from a completed invit
   }));
 
   assert.equal(result.certificateVerified, true);
-  assert.deepEqual(bindings, [{
-    access: OPAQUE_INITIATOR_ACCESS,
-    role: "initiator",
-    sessionId: SESSION,
-  }]);
+  assert.deepEqual(bindings, [
+    {
+      access: OPAQUE_INITIATOR_ACCESS,
+      role: "initiator",
+      sessionId: SESSION,
+    },
+    OPAQUE_INITIATOR_ACCESS,
+  ]);
   assert.deepEqual(await readdir(parent), []);
 });
 

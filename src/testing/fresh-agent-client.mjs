@@ -131,6 +131,7 @@ function roleAccessClaims(value) {
 
 function roleAccessBinding(value) {
   if (typeof value === "string") {
+    if (ROLE_ACCESS_HANDLE.test(value)) return value;
     const claims = roleAccessClaims(value);
     return Object.freeze({ access: value, ...claims });
   }
@@ -999,6 +1000,10 @@ export async function prepareAgentHarnessAdapter({
 
   function bindRoleAccess(value) {
     const binding = roleAccessBinding(value);
+    if (typeof binding === "string") {
+      if (roleAccess === null || roleAccess.access !== binding) fail();
+      return;
+    }
     if (roleAccess !== null && JSON.stringify(roleAccess) !== JSON.stringify(binding)) fail();
     roleAccess = binding;
   }
@@ -1535,15 +1540,22 @@ function roleAccessFromValue(value, expectedRole) {
         binding = roleAccessBinding(current.roleAccess);
         if (Object.hasOwn(current, "sessionId") && current.sessionId !== binding.sessionId) fail();
       } else {
-        binding = roleAccessBinding({
-          access: current.roleAccess,
-          role: expectedRole,
-          sessionId: current.sessionId,
-        });
+        binding = Object.hasOwn(current, "sessionId")
+          ? roleAccessBinding({
+              access: current.roleAccess,
+              role: expectedRole,
+              sessionId: current.sessionId,
+            })
+          : roleAccessBinding(current.roleAccess);
       }
-      if (binding.role !== expectedRole) fail();
-      if (found !== null && JSON.stringify(found) !== JSON.stringify(binding)) fail();
-      found = binding;
+      if (typeof binding !== "string" && binding.role !== expectedRole) fail();
+      if (found !== null) {
+        const foundAccess = typeof found === "string" ? found : found.access;
+        const bindingAccess = typeof binding === "string" ? binding : binding.access;
+        if (foundAccess !== bindingAccess) fail();
+        if (typeof found !== "string" && typeof binding !== "string" && JSON.stringify(found) !== JSON.stringify(binding)) fail();
+      }
+      if (found === null || typeof found === "string" && typeof binding !== "string") found = binding;
     }
     pending.push(...Object.values(current));
   }
