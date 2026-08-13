@@ -27,7 +27,7 @@ const COMMIT = /^[0-9a-f]{40}$/;
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const VERSION = /^2\.1\.2$/;
 const KID = /^[a-z0-9][a-z0-9-]{0,63}$/;
-const RELEASE_PREFIX = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/";
+const RELEASE_PREFIX = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.3/";
 
 function invalid() { throw new Error("Agent handshake release verification failed."); }
 
@@ -102,7 +102,7 @@ export function validateAgentHandshakeReleaseManifest(value, {
     !VERSION.test(item.version) || !COMMIT.test(item.sourceCommit) ||
     item.sourceCommit !== expectedSourceCommit || !/^24\.[0-9]+\.[0-9]+$/.test(item.nodeRuntime) ||
     typeof allowedAssetPrefix !== "string" ||
-    allowedAssetPrefix !== "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/" ||
+    allowedAssetPrefix !== "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.3/" ||
     !Array.isArray(item.assets) || item.assets.length !== 1
   ) invalid();
   const assets = item.assets.map((entry) => asset(entry, { allowedAssetPrefix, bytesByUrl }));
@@ -149,13 +149,13 @@ export function validateAgentHandshakeReleasePin(value, { manifestBytes, helperB
 export function assembleAgentHandshakeReleaseManifest({ assets, bytesByUrl, nodeRuntime, sourceCommit }) {
   const value = {
     schema: "clockchain.agent-handshake-release-manifest/v1",
-    version: "2.1.2",
+    version: "2.1.3",
     sourceCommit,
     nodeRuntime,
     assets,
   };
   return validateAgentHandshakeReleaseManifest(value, {
-    allowedAssetPrefix: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/",
+    allowedAssetPrefix: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.3/",
     bytesByUrl,
     expectedSourceCommit: sourceCommit,
   });
@@ -183,7 +183,7 @@ async function main(argv) {
     const manifestBytes = await readFile(resolve(argv[1]));
     const manifest = JSON.parse(manifestBytes.toString("utf8"));
     validateAgentHandshakeReleaseManifest(manifest, {
-      allowedAssetPrefix: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/",
+      allowedAssetPrefix: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.3/",
       expectedSourceCommit: argv[3],
     });
     const canonical = canonicalBytes(manifest);

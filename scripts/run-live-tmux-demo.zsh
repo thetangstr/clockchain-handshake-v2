@@ -59,6 +59,7 @@ print 'Original monitor: https://clockchain-research.vercel.app/handshake/claude
 print
 
 cd "$REPO_ROOT"
+set +e
 "$NODE_BIN" scripts/run-fresh-agent-handshake.mjs 2>&1 | tee "$TRACE_LOG" | "$NODE_BIN" --input-type=commonjs --eval '
 const fs = require("node:fs");
 const readline = require("node:readline");
@@ -137,6 +138,7 @@ rl.on("line", (line) => {
 });
 ' | tee "$COMBINED_LOG"
 exit_status=${pipestatus[1]:-1}
+set -e
 print
 print "Live acceptance test finished with status ${exit_status}."
 print "Redacted evidence directory: ${CLOCKCHAIN_FRESH_AGENT_RESULT_DIR}"

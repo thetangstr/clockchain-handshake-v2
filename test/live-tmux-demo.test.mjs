@@ -48,6 +48,12 @@ test("live runner pins the production clients and retains public evidence", asyn
   assert.match(source, /https\?:/);
   assert.match(source, /slice\(0, 600\)/);
   assert.match(source, /Agent says:/);
+  const relaxedErrors = source.indexOf("set +e");
+  const pipeline = source.indexOf('"$NODE_BIN" scripts/run-fresh-agent-handshake.mjs');
+  const capturedStatus = source.indexOf("exit_status=${pipestatus[1]:-1}");
+  assert.ok(relaxedErrors >= 0 && relaxedErrors < pipeline);
+  assert.ok(source.indexOf("set -e", capturedStatus) > capturedStatus);
+  assert.ok(source.indexOf("Live acceptance test finished with status") > source.indexOf("exit_status=${pipestatus[1]:-1}"));
 });
 
 test("funding watcher never creates an invitation before the two-seat threshold", async () => {

@@ -254,7 +254,7 @@ export function extractSigningRequestFromArgv(argv) {
   }
   if (
     request?.schema !== "clockchain.agent-handshake-signing-request/v1" ||
-    request?.helperVersion !== "2.1.2" ||
+    request?.helperVersion !== "2.1.3" ||
     !["identity_claim", "proposal", "acceptance", "evidence"].includes(request.operation) ||
     !["initiator", "responder"].includes(request.role) ||
     !UUID.test(request.sessionId ?? "") ||

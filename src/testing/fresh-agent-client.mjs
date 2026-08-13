@@ -35,7 +35,7 @@ const ROLES = Object.freeze(["initiator", "responder"]);
 const HELPER_OPERATIONS = Object.freeze([
   "init", "policy", "inspect", "register", "sign", "verify-certificate",
 ]);
-const RELEASE_PREFIX = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/";
+const RELEASE_PREFIX = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.3/";
 
 export const CLOCKCHAIN_HANDSHAKE_MCP_URL = "https://mcp.clockchain.network/handshake/mcp";
 export const FRESH_AGENT_CLIENTS = Object.freeze(["codex", "claude"]);
@@ -50,7 +50,7 @@ export const CLOCKCHAIN_HANDSHAKE_TOOLS = Object.freeze([
   "agent_handshake_submit",
   "agent_handshake_get_certificate",
 ]);
-export const VERIFIED_HELPER_BOOTSTRAP = 'const fs=require("node:fs");const crypto=require("node:crypto");const Module=require("node:module");const argv=process.argv.slice(1);const expected=argv.shift();const manifestPath=argv.shift();const helperPath=argv.shift();const manifestBytes=fs.readFileSync(manifestPath);const manifestDigest=crypto.createHash("sha256").update(manifestBytes).digest("hex");if(manifestDigest!==expected)process.exit(86);const manifest=JSON.parse(manifestBytes);if(manifest.schema!=="clockchain.agent-handshake-release-manifest/v1"||manifest.version!=="2.1.2"||!/^24\\./.test(manifest.nodeRuntime)||!/^24\\./.test(process.versions.node)||!Array.isArray(manifest.assets)||manifest.assets.length!==1)process.exit(86);const asset=manifest.assets[0];if(asset.filename!=="clockchain-agent-handshake.cjs"||asset.url!=="https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/clockchain-agent-handshake.cjs"||typeof asset.sha256!=="string"||!/^[0-9a-f]{64}$/.test(asset.sha256))process.exit(86);const helperBytes=fs.readFileSync(helperPath);const helperDigest=crypto.createHash("sha256").update(helperBytes).digest("hex");if(helperDigest!==asset.sha256)process.exit(86);process.argv=[process.execPath].concat(helperPath).concat(argv);const loaded=new Module(helperPath);loaded.filename=helperPath;loaded.paths=[];const compile=loaded._compile.bind(loaded);compile(...[helperBytes.toString("utf8")].concat(helperPath));';
+export const VERIFIED_HELPER_BOOTSTRAP = 'const fs=require("node:fs");const crypto=require("node:crypto");const Module=require("node:module");const argv=process.argv.slice(1);const expected=argv.shift();const manifestPath=argv.shift();const helperPath=argv.shift();const manifestBytes=fs.readFileSync(manifestPath);const manifestDigest=crypto.createHash("sha256").update(manifestBytes).digest("hex");if(manifestDigest!==expected)process.exit(86);const manifest=JSON.parse(manifestBytes);if(manifest.schema!=="clockchain.agent-handshake-release-manifest/v1"||manifest.version!=="2.1.3"||!/^24\\./.test(manifest.nodeRuntime)||!/^24\\./.test(process.versions.node)||!Array.isArray(manifest.assets)||manifest.assets.length!==1)process.exit(86);const asset=manifest.assets[0];if(asset.filename!=="clockchain-agent-handshake.cjs"||asset.url!=="https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.3/clockchain-agent-handshake.cjs"||typeof asset.sha256!=="string"||!/^[0-9a-f]{64}$/.test(asset.sha256))process.exit(86);const helperBytes=fs.readFileSync(helperPath);const helperDigest=crypto.createHash("sha256").update(helperBytes).digest("hex");if(helperDigest!==asset.sha256)process.exit(86);process.argv=[process.execPath].concat(helperPath).concat(argv);const loaded=new Module(helperPath);loaded.filename=helperPath;loaded.paths=[];const compile=loaded._compile.bind(loaded);compile(...[helperBytes.toString("utf8")].concat(helperPath));';
 
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
 const SHA = /^[0-9a-f]{40}$/;
@@ -982,7 +982,7 @@ async function preloadVerifiedReleaseAssets({ fetchImpl, manifestDigest, workspa
   }
   if (
     manifest?.schema !== "clockchain.agent-handshake-release-manifest/v1" ||
-    manifest?.version !== "2.1.2" ||
+    manifest?.version !== "2.1.3" ||
     typeof manifest?.nodeRuntime !== "string" || !/^24\./.test(manifest.nodeRuntime) ||
     !Array.isArray(manifest?.assets) || manifest.assets.length !== 1
   ) fail();
@@ -1067,7 +1067,7 @@ export async function prepareAgentHarnessAdapter({
     let helperResult;
     try { helperResult = JSON.parse(output.stdout.toString("utf8").trim()); } catch { fail(); }
     if (
-      helperResult?.schema !== HELPER_RESULT_SCHEMA || helperResult?.helperVersion !== "2.1.2" ||
+      helperResult?.schema !== HELPER_RESULT_SCHEMA || helperResult?.helperVersion !== "2.1.3" ||
       helperResult.operation !== "sign" || helperResult.bytesSha256 !== request.bytesSha256 ||
       !SIGNATURE.test(helperResult.signatureHex ?? "") || !PUBLIC_ADDRESS.test(helperResult.address ?? "")
     ) fail();
@@ -1283,7 +1283,7 @@ function validateHelperProof(parsed, role) {
     "outcome", "policyDigest", "role", "schema", "sessionId", "statementDigest",
   ]);
   if (
-    parsed.schema !== HELPER_RESULT_SCHEMA || parsed.helperVersion !== "2.1.2" ||
+    parsed.schema !== HELPER_RESULT_SCHEMA || parsed.helperVersion !== "2.1.3" ||
     parsed.operation !== "verify-certificate" || parsed.outcome !== "VERIFIED" ||
     parsed.role !== role || !UUID.test(parsed.sessionId) || !SHA256.test(parsed.policyDigest) ||
     !SHA256.test(parsed.statementDigest) || typeof parsed.certificateVerified !== "boolean" ||
@@ -1304,18 +1304,18 @@ function validateHelperProof(parsed, role) {
 function validateNonterminalHelperResult(parsed) {
   if (parsed.operation === "init") {
     const item = exactObject(parsed, ["address", "helperVersion", "operation", "schema"]);
-    if (item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.2" || !PUBLIC_ADDRESS.test(item.address)) fail();
+    if (item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.3" || !PUBLIC_ADDRESS.test(item.address)) fail();
     return;
   }
   if (parsed.operation === "policy") {
     const item = exactObject(parsed, ["helperVersion", "operation", "policyDigest", "schema"]);
-    if (item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.2" || !SHA256.test(item.policyDigest)) fail();
+    if (item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.3" || !SHA256.test(item.policyDigest)) fail();
     return;
   }
   if (parsed.operation === "inspect") {
     const item = exactObject(parsed, ["address", "helperVersion", "operation", "policyDigest", "registration", "schema"]);
     if (
-      item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.2" ||
+      item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.3" ||
       !ADDRESS.test(item.address) || item.policyDigest !== null && !SHA256.test(item.policyDigest)
     ) fail();
     if (item.registration !== null) validateRegistration(item.registration);
@@ -1323,14 +1323,14 @@ function validateNonterminalHelperResult(parsed) {
   }
   if (parsed.operation === "register") {
     const item = exactObject(parsed, ["address", "helperVersion", "operation", "registration", "schema"]);
-    if (item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.2" || !ADDRESS.test(item.address)) fail();
+    if (item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.3" || !ADDRESS.test(item.address)) fail();
     validateRegistration(item.registration);
     return;
   }
   if (parsed.operation === "sign") {
     const item = exactObject(parsed, ["address", "bytesSha256", "helperVersion", "operation", "schema", "signatureHex"]);
     if (
-      item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.2" ||
+      item.schema !== HELPER_RESULT_SCHEMA || item.helperVersion !== "2.1.3" ||
       !ADDRESS.test(item.address) || !SHA256.test(item.bytesSha256) || !SIGNATURE.test(item.signatureHex)
     ) fail();
     return;
@@ -1855,7 +1855,7 @@ function validateVerifyCertificateCommand(value, proof, manifestDigest) {
   ]);
   if (
     payload.schema !== "clockchain.agent-handshake-certificate-verification/v1" ||
-    payload.helperVersion !== "2.1.2" || payload.role !== proof.role ||
+    payload.helperVersion !== "2.1.3" || payload.role !== proof.role ||
     payload.sessionId !== proof.sessionId || !SHA.test(payload.repositorySha) ||
     !DECIMAL.test(payload.sessionDeadlineMs) || payload.certificate === null ||
     typeof payload.certificate !== "object" || Array.isArray(payload.certificate) ||

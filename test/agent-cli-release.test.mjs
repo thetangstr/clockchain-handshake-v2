@@ -11,7 +11,7 @@ import {
 } from "../scripts/verify-agent-handshake-release.mjs";
 import { canonicalBytes } from "../src/core/canonical.mjs";
 
-const prefix = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.2/";
+const prefix = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.3/";
 const sourceCommit = "a".repeat(40);
 const bytes = Buffer.from("asset");
 const sha256 = createHash("sha256").update(bytes).digest("hex");
@@ -40,7 +40,7 @@ function asset() {
 function manifest() {
   return {
     schema: "clockchain.agent-handshake-release-manifest/v1",
-    version: "2.1.2",
+    version: "2.1.3",
     sourceCommit,
     nodeRuntime: "24.6.0",
     assets: [asset()],
@@ -75,7 +75,7 @@ test("binds the post-release pin to exact manifest bytes, helper bytes, and host
   const value = manifest();
   const manifestBytes = canonicalBytes(value);
   const pin = {
-    version: "2.1.2",
+    version: "2.1.3",
     sourceCommit,
     manifestDigest: createHash("sha256").update(manifestBytes).digest("hex"),
     allowedAssetPrefix: prefix,
@@ -100,7 +100,7 @@ test("binds the post-release pin to exact manifest bytes, helper bytes, and host
 test("tracks the independently published helper in a separate post-release pin", async () => {
   const pin = JSON.parse(await readFile(new URL("../release/agent-handshake/pin.json", import.meta.url), "utf8"));
   assert.deepEqual(pin, {
-    version: "2.1.2",
+    version: "2.1.3",
     sourceCommit: "583cd5091b9fabe575cecaa3a88ecce144135284",
     manifestDigest: "fa3c408a3739227b5bdb71486b4d291b8f4dffdb0d1f2fa79dd59644ba5e09ad",
     allowedAssetPrefix: prefix,
@@ -114,9 +114,9 @@ test("tracks the independently published helper in a separate post-release pin",
 test("checked-in JSON schemas describe the exact published helper release", async () => {
   const pinSchema = JSON.parse(await readFile(new URL("../release/agent-handshake/pin.schema.json", import.meta.url), "utf8"));
   const manifestSchema = JSON.parse(await readFile(new URL("../release/agent-handshake/manifest.schema.json", import.meta.url), "utf8"));
-  assert.equal(pinSchema.properties.version.const, "2.1.2");
+  assert.equal(pinSchema.properties.version.const, "2.1.3");
   assert.equal(pinSchema.properties.allowedAssetPrefix.const, prefix);
-  assert.equal(manifestSchema.properties.version.const, "2.1.2");
+  assert.equal(manifestSchema.properties.version.const, "2.1.3");
 });
 
 test("rejects unknown keys, duplicates, redirects, digest drift, and native executable substitutions", () => {
@@ -145,7 +145,7 @@ test("release workflow publishes only the portable helper without external signi
   for (const required of [
     "24.18.0", "ubuntu-24.04", "build-agent-handshake-release.mjs bundle",
     "dist/clockchain-agent-handshake.cjs", "actions/attest-build-provenance@v2",
-    "gh release create v2.1.2",
+    "gh release create v2.1.3",
   ]) assert.ok(workflow.includes(required), required);
   assert.equal(workflow.includes("self-hosted"), false);
   for (const forbidden of [
