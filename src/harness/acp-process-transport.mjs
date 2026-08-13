@@ -1215,6 +1215,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
                 }),
             }],
           });
+          await sessionUpdateBarrier;
           launchStage = "completion";
           if (protocolFailure) {
             launchStage = `completion-protocol-${protocolFailureStage ?? "envelope"}`;

@@ -948,6 +948,57 @@ test("ACP process transport waits for a matching authoritative MCP result that a
   await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
 });
 
+test("ACP completion waits for the legacy session-update callback before judging bridge state", async () => {
+  const calls = [];
+  let observed = false;
+  const update = {
+    sessionUpdate: "tool_call_update",
+    toolCallId: "tool-invite-race",
+    kind: "other",
+    title: "mcp.clockchain-handshake.agent_handshake_invite",
+    status: "completed",
+    rawInput: { server: "clockchain-handshake", tool: "agent_handshake_invite", arguments: {} },
+    rawOutput: { result: { structuredContent: { sessionId: SESSION, responderInvitation: "opaque-invitation" } }, error: null },
+  };
+  const transport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({ calls, sessionUpdates: [update], skipPermission: true }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    env: {},
+    partyBridge: {
+      async observeToolResult() {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        observed = true;
+        return { observed: true, protocolSessionId: SESSION, toolResultDigest: "f".repeat(64) };
+      },
+      completionStatus() {
+        return {
+          certificatePending: false,
+          certificateVerified: observed,
+          complete: observed,
+          directDeliveryComplete: observed,
+          protocolSessionId: observed ? SESSION : null,
+        };
+      },
+    },
+    trustedAdapterPublicKeys: [retainedAction({ role: "initiator" }).adapterPublicKey],
+  });
+
+  await transport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  });
+
+  assert.equal(observed, true);
+  assert.equal(calls.filter((entry) => Array.isArray(entry) && entry[0] === "prompt").length, 1);
+  await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
+});
+
 test("ACP process transport denies an unrelated command without poisoning a later authoritative retained action", async () => {
   const action = retainedAction({ role: "initiator", requestDigest: "d".repeat(64), commandSha256: DIGEST });
   const calls = [];
