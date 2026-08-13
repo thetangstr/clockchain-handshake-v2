@@ -453,7 +453,7 @@ test("a live v2 snapshot preserves absent proof even when a later certificate is
     },
     timing: {
       createdAtMs,
-      invitationExpiresAtMs: createdAtMs + 120_000,
+      invitationExpiresAtMs: createdAtMs + 300_000,
       sessionDeadlineMs: createdAtMs + 600_000,
       agreementValidForSeconds: "90",
     },

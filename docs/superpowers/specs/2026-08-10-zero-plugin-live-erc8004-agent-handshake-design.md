@@ -111,7 +111,7 @@ dependency installation.
 14. The only human handoff after launch is copying the invitation from the
     Initiator client to the Responder client. There are no signing, registration,
     policy, or certificate approvals.
-15. The invitation can be claimed for 120 seconds. The host session remains open
+15. The invitation can be claimed for five minutes so independently cold-started cloud agents can both reach the MCP without collapsing their runtime boundary. The host session remains open
     for at most 10 minutes to accommodate testnet funding and registration. The
     signed business agreement is valid for exactly 90 seconds beginning when the
     proposal is issued.

@@ -34,7 +34,7 @@ import { createAgentHandshakeV2Monitor } from "../../monitor/agent-snapshot-v2-p
 const DEFAULT_RELAY = "http://44.249.47.220:8080";
 const DEFAULT_REPOSITORY = "https://github.com/thetangstr/clockchain-handshake-v2.git";
 const SESSION_MILLISECONDS = 10 * 60_000;
-const INVITATION_MILLISECONDS = 120_000;
+const INVITATION_MILLISECONDS = 300_000;
 export const AGENT_HANDSHAKE_V2_FUNDING_AMOUNT_ETH = AGENT_HANDSHAKE_V2_SEAT_FUNDING_ETH;
 const FUND = parseEther(AGENT_HANDSHAKE_V2_FUNDING_AMOUNT_ETH);
 const TRANSFER_EVENT = parseAbiItem(

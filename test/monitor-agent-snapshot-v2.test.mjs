@@ -43,7 +43,7 @@ export function completeV2Snapshot() {
     },
     timing: {
       createdAtMs: 1786337000000,
-      invitationExpiresAtMs: 1786337120000,
+      invitationExpiresAtMs: 1786337300000,
       sessionDeadlineMs: 1786337600000,
       agreementValidForSeconds: "90",
     },

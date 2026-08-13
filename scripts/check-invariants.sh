@@ -84,11 +84,13 @@ printf '\n== 3. Human-paced wait sweep ==\n'
 #   DEFAULT_WAIT_MS / MAX_WAIT_MS (src/relay/server.mjs) — the relay's own
 #     long-poll hold, capped at the shared-contract's 25000ms; the relay moves
 #     bytes, it is not itself a step a human waits on
-ALLOW='DEFAULT_REQUEST_TIMEOUT_MS|MAX_CONFIGURED_TIMEOUT_MS|MAX_RETRY_AFTER_MS|MAX_BACKOFF_DELAY_MS|MAX_TOTAL_RETRY_WAIT_MS|RATE_LIMIT_FLOOR_WAIT_MS|MIN_POLL_INTERVAL_MS|MAX_POLL_DURATION_MS|WRITE_RETRY_BACKOFF_MS|ACK_WRITE_BUDGET_MS|MIN_USABLE_POLL_MS|EXPIRY_WINDOW_MS|HUMAN_PACED_MINIMUM_MS|MAX_COMPLETION_DEADLINE_MS|POLL_INTERVAL_MS|REQUEST_TIMEOUT_MS|DEFAULT_TIMEOUT_MS|DEFAULT_WAIT_MS|MAX_WAIT_MS'
+#   WAIT_MS / RUN_TIMEOUT_MS (src/testing/hermes-v2-orchestrator.mjs) — the
+#     private test orchestrator's polling cadence and whole-run machine bound
+ALLOW='DEFAULT_REQUEST_TIMEOUT_MS|MAX_CONFIGURED_TIMEOUT_MS|MAX_RETRY_AFTER_MS|MAX_BACKOFF_DELAY_MS|MAX_TOTAL_RETRY_WAIT_MS|RATE_LIMIT_FLOOR_WAIT_MS|MIN_POLL_INTERVAL_MS|MAX_POLL_DURATION_MS|WRITE_RETRY_BACKOFF_MS|ACK_WRITE_BUDGET_MS|MIN_USABLE_POLL_MS|EXPIRY_WINDOW_MS|HUMAN_PACED_MINIMUM_MS|MAX_COMPLETION_DEADLINE_MS|POLL_INTERVAL_MS|REQUEST_TIMEOUT_MS|DEFAULT_TIMEOUT_MS|DEFAULT_WAIT_MS|MAX_WAIT_MS|WAIT_MS|RUN_TIMEOUT_MS'
 SHORT=$(grep -rnE '^(export )?const [A-Z_]*(TIMEOUT|DEADLINE|WINDOW|WAIT|POLL|EXPIR)[A-Z_]*_MS *=' src 2>/dev/null \
   | grep -vE "$ALLOW" || true)
 info "scanned: src/ for (TIMEOUT|DEADLINE|WINDOW|WAIT|POLL|EXPIR)*_MS constants"
-info "allowlisted machine-paced bounds: 17 names (see script comments for why)"
+info "allowlisted machine-paced bounds: 19 names (see script comments for why)"
 if [ -n "$SHORT" ]; then
   fail "unrecognised wait constant — classify it as human- or machine-paced:"
   printf '        %s\n' "$SHORT"

@@ -316,7 +316,7 @@ function completeMonitorSnapshot() {
     },
     timing: {
       createdAtMs: 1786337000000,
-      invitationExpiresAtMs: 1786337120000,
+      invitationExpiresAtMs: 1786337300000,
       sessionDeadlineMs: Number(SESSION_DEADLINE_MS),
       agreementValidForSeconds: "90",
     },
