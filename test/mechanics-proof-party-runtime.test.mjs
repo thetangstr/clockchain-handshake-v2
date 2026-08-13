@@ -194,6 +194,24 @@ test("default invitation wait accommodates a cold agent startup beyond ninety se
   assert.equal(elapsedMs, 90_005);
 });
 
+test("invitation wait uses elapsed time instead of expiring after early timer wakeups", async () => {
+  let polls = 0;
+  let elapsedMs = 0;
+  const invitation = Object.freeze({ invitation: "private-invitation", sessionId: PROTOCOL_SESSION_ID });
+  const result = await waitForMechanicsProofInvitation({
+    publicEvidence() {
+      polls += 1;
+      return {
+        invitations: polls > 100_000 ? [{ direction: "inbound" }] : [],
+      };
+    },
+    takeInvitation() { return invitation; },
+  }, async () => { elapsedMs += 1; }, () => elapsedMs);
+
+  assert.equal(result, invitation);
+  assert.equal(elapsedMs, 100_000);
+});
+
 function initiatorBridgeEvidence() {
   const base = dependencies([]).createBridge().publicEvidence();
   return {

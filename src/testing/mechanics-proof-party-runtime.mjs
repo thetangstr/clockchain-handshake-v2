@@ -1,6 +1,7 @@
 import { createPublicKey, generateKeyPairSync, sign } from "node:crypto";
 import { chmod, lstat, mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { performance } from "node:perf_hooks";
 import { types } from "node:util";
 
 import { createA2ACardBootstrap } from "../a2a/card-bootstrap.mjs";
@@ -255,15 +256,24 @@ function createBootstrapSigner() {
 export async function waitForMechanicsProofInvitation(
   transport,
   sleep = (delayMs) => new Promise((resolveSleep) => setTimeout(resolveSleep, delayMs)),
+  nowMs = () => Math.floor(performance.now()),
 ) {
   try {
-    if (typeof transport?.publicEvidence !== "function" || typeof transport?.takeInvitation !== "function" || typeof sleep !== "function") fail();
-    for (let count = 0; count < 60_000; count += 1) {
+    if (
+      typeof transport?.publicEvidence !== "function" || typeof transport?.takeInvitation !== "function" ||
+      typeof sleep !== "function" || typeof nowMs !== "function"
+    ) fail();
+    const startedAtMs = nowMs();
+    const deadlineMs = startedAtMs + 300_000;
+    if (!Number.isSafeInteger(startedAtMs) || !Number.isSafeInteger(deadlineMs)) fail();
+    for (;;) {
       const evidence = transport.publicEvidence();
       if (Array.isArray(evidence?.invitations) && evidence.invitations.some((entry) => entry?.direction === "inbound")) {
         return transport.takeInvitation();
       }
-      await sleep(5);
+      const currentMs = nowMs();
+      if (!Number.isSafeInteger(currentMs) || currentMs < startedAtMs || currentMs >= deadlineMs) fail();
+      await sleep(Math.min(5, deadlineMs - currentMs));
     }
   } catch (error) {
     sanitize(error);
