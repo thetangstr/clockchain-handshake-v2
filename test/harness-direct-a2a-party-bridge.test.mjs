@@ -378,6 +378,23 @@ test("party-local bridges activate only from authoritative join context, then de
   }
 });
 
+test("party-local bridge accepts the exact production init-policy-inspect helper batch", async (t) => {
+  const { bridges, completionHandlers } = await setup(t);
+  const steps = ["init", "policy", "inspect"].map((operation) => lifecycleStep("initiator", operation));
+  await bridges.initiator.observeToolResult({
+    toolName: "agent_handshake_invite",
+    result: {
+      responderInvitation: "opaque.responder.invitation",
+      roleAccess: ROLE_ACCESS.initiator,
+      sessionId: SESSION_ID,
+      structuredContent: { helperSteps: steps },
+    },
+  });
+  for (const step of steps) {
+    assert.deepEqual(await completionHandlers.initiator(lifecycleCompletion("initiator", step)), { accepted: true });
+  }
+});
+
 test("bridge rejects spoofed provenance, arbitrary completion, and replay without public evidence", async (t) => {
   const { bridges, completionHandlers, fixture } = await setup(t);
   const proposal = signingStep({

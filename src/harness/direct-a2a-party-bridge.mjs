@@ -635,10 +635,18 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
             await activate();
           }
           failureStage = "helper";
-          const steps = findValues(result, "helperStep").filter((value) => value !== null && typeof value === "object");
-          if (steps.length > 1) fail();
-          if (steps.length === 1) {
-            const expected = signingRequestFromStep(steps[0]);
+          const singularSteps = findValues(result, "helperStep").filter((value) => value !== null && typeof value === "object");
+          const stepBatches = findValues(result, "helperSteps").filter(Array.isArray);
+          if (singularSteps.length > 1 || stepBatches.length > 1 || singularSteps.length + stepBatches.length > 1) fail();
+          const steps = singularSteps.length === 1
+            ? singularSteps
+            : stepBatches.length === 1 ? publicClone(stepBatches[0]) : [];
+          if (
+            steps.length > 0 && steps.length !== 1 &&
+            JSON.stringify(steps.map((step) => step?.operation)) !== JSON.stringify(["init", "policy", "inspect"])
+          ) fail();
+          for (const step of steps) {
+            const expected = signingRequestFromStep(step);
             if (boundSessionId === null || expected.sessionId !== boundSessionId) fail();
             if (expected.direct === true && (expected.request.sessionId !== boundSessionId || expected.request.role !== options.role)) fail();
             if (expected.operation === "verify-certificate") {
