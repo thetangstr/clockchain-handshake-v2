@@ -2022,7 +2022,7 @@ test("ACP process transport rejects broad shell permission and non-end-turn comp
     mcpEndpoint: MCP_ENDPOINT,
     a2aConfig: a2aConfig("initiator"),
   }), (error) => {
-    assert.equal(acpProcessTransportFailureStage(error), "completion-permission");
+    assert.equal(acpProcessTransportFailureStage(error), "completion-permission-command");
     return true;
   });
 
@@ -2049,7 +2049,7 @@ test("ACP process transport rejects broad shell permission and non-end-turn comp
     mcpEndpoint: MCP_ENDPOINT,
     a2aConfig: a2aConfig("initiator"),
   }), (error) => {
-    assert.equal(acpProcessTransportFailureStage(error), "completion-permission");
+    assert.equal(acpProcessTransportFailureStage(error), "completion-permission-command");
     return true;
   });
 

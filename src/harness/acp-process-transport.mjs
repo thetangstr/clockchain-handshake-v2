@@ -34,6 +34,7 @@ const MAX_COMPLETION_PROMPTS = 16;
 const PERMISSION_REGISTRATION_GRACE_MS = 5_000;
 const PROCESS_TERM_GRACE_MS = 50;
 const PROCESS_KILL_GRACE_MS = 50;
+const PERMISSION_FAILURE_STAGES = Object.freeze(["session", "command", "protocol", "registration", "state", "options", "unknown"]);
 const CODEX_MODEL = "gpt-5.6-terra";
 const CLAUDE_BEDROCK_MODEL = "us.anthropic.claude-sonnet-4-6";
 const LAUNCH_FAILURE_STAGES = Object.freeze([
@@ -51,7 +52,7 @@ const LAUNCH_FAILURE_STAGES = Object.freeze([
   "completion-protocol-bridge-accept", "completion-protocol-bridge-join",
   "completion-protocol-bridge-helper", "completion-protocol-bridge-digest",
   "completion-protocol-bridge-incomplete",
-  "completion-permission", "completion-stop",
+  ...PERMISSION_FAILURE_STAGES.map((stage) => `completion-permission-${stage}`), "completion-stop",
 ]);
 const LAUNCH_FAILURES = new WeakMap();
 
@@ -732,6 +733,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
   let completed = false;
   let terminated = false;
   let permissionDenied = false;
+  let permissionFailureStage = null;
   let protocolFailure = false;
   let protocolFailureStage = null;
   let sessionUpdateBarrier = Promise.resolve();
@@ -805,20 +807,27 @@ export function createAcpProcessTransport(optionsInput = {}) {
     return retainedCommand(rawInput.command);
   }
   async function requestPermission(params) {
+    let denialStage = "session";
     try {
       if (session === null || params?.sessionId !== acpSessionId) fail();
+      denialStage = "command";
       const digestValue = permissionCommand(params);
       const barrier = sessionUpdateBarrier;
       await barrier;
+      denialStage = "protocol";
       if (protocolFailure) fail();
       if (!retainedByCommand.has(digestValue)) {
+        denialStage = "registration";
         if (!await waitForRetainedRegistration(digestValue)) fail();
         const registrationBarrier = sessionUpdateBarrier;
         await registrationBarrier;
+        denialStage = "protocol";
         if (protocolFailure) fail();
       }
+      denialStage = "state";
       const entry = retainedByCommand.get(digestValue);
       if (entry === undefined || entry.state !== "pending") fail();
+      denialStage = "options";
       const optionsList = params?.options;
       if (!Array.isArray(optionsList) || !optionsList.some((option) => option?.optionId === "allow_once" && option?.kind === "allow_once")) fail();
       entry.state = "authorized";
@@ -826,6 +835,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
       return Object.freeze({ outcome: Object.freeze({ outcome: "selected", optionId: "allow_once" }) });
     } catch {
       permissionDenied = true;
+      permissionFailureStage ??= PERMISSION_FAILURE_STAGES.includes(denialStage) ? denialStage : "unknown";
       return Object.freeze({ outcome: Object.freeze({ outcome: "cancelled" }) });
     }
   }
@@ -946,6 +956,8 @@ export function createAcpProcessTransport(optionsInput = {}) {
       provisionalAcpSessionId = null;
       provisionalToolUpdates.length = 0;
       sessionEstablishing = false;
+      permissionDenied = false;
+      permissionFailureStage = null;
       sessionUpdateBarrier = Promise.resolve();
       cancelRetainedRegistrationWaiters();
       retainedByCommand.clear();
@@ -1024,8 +1036,8 @@ export function createAcpProcessTransport(optionsInput = {}) {
             launchStage = `completion-protocol-${protocolFailureStage ?? "envelope"}`;
             fail();
           }
-          if (permissionDenied) {
-            launchStage = "completion-permission";
+      if (permissionDenied) {
+            launchStage = `completion-permission-${permissionFailureStage ?? "unknown"}`;
             fail();
           }
           if (prompted?.stopReason !== "end_turn") {
