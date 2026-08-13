@@ -101,8 +101,8 @@ test("tracks the independently published helper in a separate post-release pin",
   const pin = JSON.parse(await readFile(new URL("../release/agent-handshake/pin.json", import.meta.url), "utf8"));
   assert.deepEqual(pin, {
     version: "2.1.3",
-    sourceCommit: "583cd5091b9fabe575cecaa3a88ecce144135284",
-    manifestDigest: "fa3c408a3739227b5bdb71486b4d291b8f4dffdb0d1f2fa79dd59644ba5e09ad",
+    sourceCommit: "edea81c48ad443bc2b46e1a3c4c953e2f6bd752c",
+    manifestDigest: "cc744e287f2f1dfc4b4b67ed460611543fc44c00c2385120cac1b37e28a56342",
     allowedAssetPrefix: prefix,
     hostRoots: [{
       kid: "root-2026-08",
