@@ -96,7 +96,7 @@ test("production MCP gate accepts bounded JSON or one SSE message with exact eig
       assert.equal(url, "https://mcp.clockchain.network/handshake/mcp");
       const body = JSON.parse(options.body);
       return bodyResponse(JSON.stringify(body.method === "initialize"
-        ? (assert.equal(body.params.protocolVersion, "2025-06-18"), { jsonrpc: "2.0", id: "clockchain-fargate-initialize", result: { serverInfo: { name: "clockchain-agent-handshake", version: "2.1.2" }, protocolVersion: "2025-06-18" } })
+        ? (assert.equal(body.params.protocolVersion, "2025-06-18"), { jsonrpc: "2.0", id: "clockchain-fargate-initialize", result: { serverInfo: { name: "clockchain-agent-handshake", version: "2.1.3" }, protocolVersion: "2025-06-18" } })
         : { jsonrpc: "2.0", id: "clockchain-fargate-tools/list", result: { tools: tools.map((name) => ({ name })) } }));
     },
   });
@@ -115,7 +115,7 @@ test("production MCP gate accepts bounded JSON or one SSE message with exact eig
       }
       const body = JSON.parse(options.body);
       return bodyResponse(`event: message\ndata: ${JSON.stringify(body.method === "initialize"
-        ? { jsonrpc: "2.0", id: "clockchain-fargate-initialize", result: { serverInfo: { name: "clockchain-agent-handshake", version: "2.1.2" }, protocolVersion: "2025-06-18" } }
+        ? { jsonrpc: "2.0", id: "clockchain-fargate-initialize", result: { serverInfo: { name: "clockchain-agent-handshake", version: "2.1.3" }, protocolVersion: "2025-06-18" } }
         : { jsonrpc: "2.0", id: "clockchain-fargate-tools/list", result: { tools: tools.map((name) => ({ name })) } })}\n\n`, { contentType: "text/event-stream" });
     },
   });
@@ -173,7 +173,7 @@ test("production MCP gate rejects seven-tool deployment and unsafe response form
       call += 1;
       if (call === 1) return bodyResponse(JSON.stringify({ status: "ok" }));
       return bodyResponse(`event: message\ndata: ${JSON.stringify(call === 2
-        ? { jsonrpc: "2.0", id: "clockchain-fargate-initialize", result: { serverInfo: { name: "clockchain-agent-handshake", version: "2.1.2" }, protocolVersion: "2025-06-18" } }
+        ? { jsonrpc: "2.0", id: "clockchain-fargate-initialize", result: { serverInfo: { name: "clockchain-agent-handshake", version: "2.1.3" }, protocolVersion: "2025-06-18" } }
         : { jsonrpc: "2.0", id: "clockchain-fargate-tools/list", result: { tools: sevenTools.map((name) => ({ name })) } })}\n\n`, { contentType: "text/event-stream" });
     },
   }), /Fargate mechanics proof runner failed safely/);
@@ -186,7 +186,7 @@ test("production MCP gate rejects seven-tool deployment and unsafe response form
 
 test("production MCP gate rejects oversized, ambiguous, timed out, and hostile responses", async () => {
   const okHealth = bodyResponse(JSON.stringify({ status: "ok" }));
-  const init = { jsonrpc: "2.0", id: "clockchain-fargate-initialize", result: { serverInfo: { name: "clockchain-agent-handshake", version: "2.1.2" }, protocolVersion: "2025-06-18" } };
+  const init = { jsonrpc: "2.0", id: "clockchain-fargate-initialize", result: { serverInfo: { name: "clockchain-agent-handshake", version: "2.1.3" }, protocolVersion: "2025-06-18" } };
   const tools = { jsonrpc: "2.0", id: "clockchain-fargate-tools/list", result: { tools: [
     "agent_handshake_accept_invitation", "agent_handshake_get_certificate", "agent_handshake_invite", "agent_handshake_join",
     "agent_handshake_next", "agent_handshake_status", "agent_handshake_submit", "agent_handshake_submit_checkpoint",
@@ -235,7 +235,7 @@ test("production MCP gate rejects oversized, ambiguous, timed out, and hostile r
 });
 
 test("production MCP gate reads response bodies through a capped stream and rejects malformed lengths", async () => {
-  const init = { jsonrpc: "2.0", id: "clockchain-fargate-initialize", result: { serverInfo: { name: "clockchain-agent-handshake", version: "2.1.2" }, protocolVersion: "2025-06-18" } };
+  const init = { jsonrpc: "2.0", id: "clockchain-fargate-initialize", result: { serverInfo: { name: "clockchain-agent-handshake", version: "2.1.3" }, protocolVersion: "2025-06-18" } };
   const tools = { jsonrpc: "2.0", id: "clockchain-fargate-tools/list", result: { tools: [
     "agent_handshake_accept_invitation", "agent_handshake_get_certificate", "agent_handshake_invite", "agent_handshake_join",
     "agent_handshake_next", "agent_handshake_status", "agent_handshake_submit", "agent_handshake_submit_checkpoint",

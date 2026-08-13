@@ -131,7 +131,7 @@ async function rpc(fetchImpl, url, method) {
     method: "POST",
     redirect: "error",
     headers: Object.freeze({ "content-type": "application/json", accept: "application/json, text/event-stream" }),
-    body: JSON.stringify({ jsonrpc: "2.0", id, method, params: method === "initialize" ? { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "clockchain-fargate-controller", version: "2.1.2" } } : {} }),
+    body: JSON.stringify({ jsonrpc: "2.0", id, method, params: method === "initialize" ? { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "clockchain-fargate-controller", version: "2.1.3" } } : {} }),
     signal: AbortSignal.timeout(5000),
   });
   if (response?.ok !== true) fail();
@@ -174,7 +174,7 @@ export async function checkProductionMcpGate(options = {}) {
   if (
     initialize.jsonrpc !== "2.0" ||
     initResult?.serverInfo?.name !== "clockchain-agent-handshake" ||
-    initResult.serverInfo.version !== "2.1.2" ||
+    initResult.serverInfo.version !== "2.1.3" ||
     initResult.protocolVersion !== "2025-06-18"
   ) fail();
   const toolsEnvelope = await rpc(fetchImpl, url, "tools/list");
