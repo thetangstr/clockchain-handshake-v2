@@ -2024,7 +2024,7 @@ function diagnosticPayload(error) {
     ? error.diagnostic
     : diagnostic("unknown", "unknown", "UNKNOWN").diagnostic;
   const code = cleanDiagnosticCode(clean.code);
-  const details = cleanHelperDiagnosticDetails(code, clean.details);
+  const details = cleanDiagnosticDetails(code, clean.details);
   return Object.freeze({
     phase: cleanDiagnosticPhase(clean.phase),
     category: cleanDiagnosticCategory(clean.category),
