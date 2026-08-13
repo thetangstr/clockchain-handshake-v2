@@ -1369,9 +1369,9 @@ test("ACP continuation gives the agent exactly one pending retained action", asy
   assert.doesNotMatch(continuation, new RegExp(actions[0].commandSha256));
   assert.match(continuation, new RegExp(`clockchain-agent-authorize ${actions[1].commandSha256}`));
   assert.doesNotMatch(continuation, new RegExp(actions[2].commandSha256));
-  assert.match(continuation, /exactly one local command/i);
-  assert.match(continuation, /run_in_background must be false/i);
-  assert.match(continuation, /Execute exactly one local command now with the Bash tool/i);
+  assert.match(continuation, /exactly one already-registered/i);
+  assert.match(continuation, /run_in_background to false/i);
+  assert.match(continuation, /Use the Bash tool now/i);
   assert.doesNotMatch(continuation, /approval|authorize.*person|AskUserQuestion|request these/i);
   assert.match(continuation, /Do not call another MCP tool/i);
   await transport.terminate({ sessionId: SESSION, reason: "test-complete" });
@@ -1495,6 +1495,7 @@ test("ACP process transport safely absorbs an exact retained-action replay when 
 test("ACP process transport re-prompts an end-turning agent until the Clockchain bridge is complete", async () => {
   const calls = [];
   let completionChecks = 0;
+  const initiatorAccess = `${"x".repeat(96)}.${"y".repeat(43)}`;
   const statusUpdate = {
     sessionUpdate: "tool_call_update",
     toolCallId: "tool-handshake-status",
@@ -1502,7 +1503,7 @@ test("ACP process transport re-prompts an end-turning agent until the Clockchain
     title: "agent_handshake_status",
     status: "completed",
     rawInput: { server: "clockchain-handshake", tool: "agent_handshake_status", arguments: {} },
-    rawOutput: { result: { sessionId: SESSION }, error: null },
+    rawOutput: { result: { sessionId: SESSION, initiatorAccess }, error: null },
   };
   const transport = createAcpProcessTransport({
     harness: "codex",
@@ -1533,6 +1534,7 @@ test("ACP process transport re-prompts an end-turning agent until the Clockchain
   assert.match(prompts[1][1].prompt[0].text, /You have not joined this Clockchain protocol session/i);
   assert.match(prompts[1][1].prompt[0].text, /Call agent_handshake_join now/i);
   assert.match(prompts[1][1].prompt[0].text, /initiatorAccess.*join argument named access/i);
+  assert.match(prompts[1][1].prompt[0].text, new RegExp(initiatorAccess.replace(".", "\\.")));
   assert.doesNotMatch(prompts[1][1].prompt[0].text, /If .* has not joined/i);
   assert.doesNotMatch(prompts[1][1].prompt[0].text, /agent_handshake_status|agent_handshake_next|agent_handshake_get_certificate/);
   assert.doesNotMatch(prompts[1][1].prompt[0].text, /agent_handshake_invite/);

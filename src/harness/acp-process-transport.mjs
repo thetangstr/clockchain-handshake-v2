@@ -392,7 +392,8 @@ function promptText({ role, sessionId, mandate, a2aConfig }) {
 }
 
 function continuationPromptText({
-  role, protocolSessionId, mandate, a2aConfig, bridgeProgress, joined, latestHelperOperation, pendingApprovals,
+  role, protocolSessionId, mandate, a2aConfig, bridgeProgress, joined, latestHelperOperation, roleAccess,
+  pendingApprovals,
 }) {
   const approvals = snapshotArray(pendingApprovals, { max: 3 });
   if (
@@ -402,11 +403,11 @@ function continuationPromptText({
   if (approvals.length > 0) {
     const approval = approvals[0];
     return [
-      "Complete exactly one already-registered Clockchain helper action.",
-      "Execute exactly one local command now with the Bash tool:",
+      "Use the Bash tool now for exactly one already-registered Clockchain helper action.",
+      "Set Bash input command to this exact value:",
       approval,
-      "Run it in the foreground: run_in_background must be false.",
-      "Do not alter, wrap, quote, or replace the command. Do not call another MCP tool before it completes.",
+      "Set run_in_background to false. Do not explain, inspect, alter, wrap, quote, or replace the command.",
+      "End this turn only after Bash returns. Do not call another MCP tool first.",
     ].join("\n");
   }
   if (protocolSessionId === null) {
@@ -445,7 +446,7 @@ function continuationPromptText({
     return [
       `Continue the existing Clockchain handshake in protocol session ${protocolSessionId}; do not create or accept another invitation.`,
       "You have not joined this Clockchain protocol session.",
-      `Use the exact ${accessField} returned by Clockchain as the join argument named access.`,
+      `Use the exact ${accessField} returned by Clockchain as the join argument named access: ${roleAccess ?? accessField}.`,
       "Call agent_handshake_join now using that access plus the exact helperVersion, sessionKeyAddress, and policyDigest from the retained-helper results.",
       "Call no other tool before agent_handshake_join returns.",
       "Do not end your turn before agent_handshake_join returns or a non-retryable tool error makes completion impossible.",
@@ -456,7 +457,7 @@ function continuationPromptText({
     return [
       `Continue the existing Clockchain handshake in protocol session ${protocolSessionId}; do not create or accept another invitation.`,
       "The latest retained signing helper has completed.",
-      `Use the exact unchanged ${accessField} returned by Clockchain as the submit argument named access.`,
+      `Use the exact unchanged ${accessField} returned by Clockchain as the submit argument named access: ${roleAccess ?? accessField}.`,
       "Call agent_handshake_submit now using that access and the exact policyDigest plus signatureHex from the completed helper output.",
       "Call no other tool before agent_handshake_submit returns.",
       "Do not end your turn before agent_handshake_submit returns or a non-retryable tool error makes completion impossible.",
@@ -464,7 +465,7 @@ function continuationPromptText({
   }
   return [
     `Continue the existing Clockchain handshake in protocol session ${protocolSessionId}; do not create or accept another invitation.`,
-    `You have joined as ${role}. Call agent_handshake_next now with the exact unchanged ${role === "initiator" ? "initiatorAccess" : "responderAccess"} returned by Clockchain as the argument named access.`,
+    `You have joined as ${role}. Call agent_handshake_next now with the exact unchanged ${role === "initiator" ? "initiatorAccess" : "responderAccess"} returned by Clockchain as the argument named access: ${roleAccess ?? "the prior role access"}.`,
     "Follow the returned next action exactly. If it is a retryable wait, wait and call agent_handshake_next again.",
     "Call no other tool before agent_handshake_next returns.",
     "Do not end your turn before agent_handshake_next returns or a non-retryable tool error makes completion impossible.",
@@ -802,6 +803,39 @@ function helperStepsFromToolResult(result, actionRecorder, binding) {
   return [...unique.values()][0];
 }
 
+function roleAccessFromToolResult(value, role, depth = 0, found = new Set()) {
+  if (depth > 8 || !ROLES.includes(role)) fail();
+  if (value === null || value === undefined || typeof value === "boolean" || typeof value === "number") return found;
+  if (typeof value === "string") {
+    if (value.length > MAX_STRING) fail();
+    let parsed;
+    try { parsed = JSON.parse(value); }
+    catch { return found; }
+    return roleAccessFromToolResult(parsed, role, depth + 1, found);
+  }
+  if (typeof value !== "object" || types.isProxy(value)) fail();
+  if (Array.isArray(value)) {
+    for (const entry of snapshotArray(value)) roleAccessFromToolResult(entry, role, depth + 1, found);
+    return found;
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors);
+  if (keys.some((key) => typeof key !== "string")) fail();
+  const accessKey = role === "initiator" ? "initiatorAccess" : "responderAccess";
+  for (const key of keys) {
+    const descriptor = descriptors[key];
+    if (!descriptor.enumerable || !Object.hasOwn(descriptor, "value")) fail();
+    if (key === accessKey) {
+      const access = descriptor.value;
+      if (typeof access !== "string" || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(access) || access.length > MAX_STRING) fail();
+      found.add(access);
+    } else if (["content", "structuredContent"].includes(key)) {
+      roleAccessFromToolResult(descriptor.value, role, depth + 1, found);
+    }
+  }
+  return found;
+}
+
 function wait(ms) {
   return new Promise((resolve) => { setTimeout(resolve, ms); });
 }
@@ -902,6 +936,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
   let authoritativeClockchainToolResults = 0;
   const observedClockchainTools = new Set();
   let latestHelperOperation = null;
+  let retainedRoleAccess = null;
   let protocolFailure = false;
   let protocolFailureStage = null;
   let sessionUpdateBarrier = Promise.resolve();
@@ -1154,6 +1189,13 @@ export function createAcpProcessTransport(optionsInput = {}) {
         if (toolResult !== null) {
           authoritativeClockchainToolResults += 1;
           observedClockchainTools.add(toolResult.toolName);
+          const discoveredAccess = roleAccessFromToolResult(toolResult.result, session.role);
+          if (discoveredAccess.size > 1) fail();
+          if (discoveredAccess.size === 1) {
+            const [access] = discoveredAccess;
+            if (retainedRoleAccess !== null && retainedRoleAccess !== access) fail();
+            retainedRoleAccess = access;
+          }
           if (partyBridge !== null) {
             failureStage = "bridge";
             let bridgeResult;
@@ -1241,6 +1283,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
       authoritativeClockchainToolResults = 0;
       observedClockchainTools.clear();
       latestHelperOperation = null;
+      retainedRoleAccess = null;
       sessionUpdateBarrier = Promise.resolve();
       cancelRetainedRegistrationWaiters();
       retainedByCommand.clear();
@@ -1324,6 +1367,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
                   bridgeProgress,
                   joined: observedClockchainTools.has("agent_handshake_join"),
                   latestHelperOperation,
+                  roleAccess: retainedRoleAccess,
                   pendingApprovals: [...retainedByCommand.values()]
                     .filter((entry) => entry.state === "pending")
                     .map((entry) => `clockchain-agent-authorize ${entry.action.commandSha256}`),
