@@ -38,6 +38,13 @@ test("live runner pins the production clients and retains public evidence", asyn
   assert.match(source, /run-fresh-agent-handshake\.mjs/);
   assert.match(source, /adapter-checkpoint-submitted/);
   assert.match(source, /verified its closing certificate/);
+  assert.match(source, /function safeAgentNarration/);
+  assert.match(source, /event\.codexItem\?\.type === "agent_message"/);
+  assert.match(source, /Array\.isArray\(event\.texts\)/);
+  assert.match(source, /\[ROLE_ACCESS\].*\[SECRET\].*\[HEX_32\]/s);
+  assert.match(source, /https\?:/);
+  assert.match(source, /slice\(0, 600\)/);
+  assert.match(source, /Agent says:/);
 });
 
 test("funding watcher never creates an invitation before the two-seat threshold", async () => {

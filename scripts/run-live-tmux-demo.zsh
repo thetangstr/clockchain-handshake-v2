@@ -70,6 +70,24 @@ function say(text, role = null, key = text) {
   const targets = role === null ? Object.values(logs) : [logs[role]];
   for (const target of targets) fs.appendFileSync(target, `${text}\n`);
 }
+function safeAgentNarration(value) {
+  if (typeof value !== "string") return null;
+  const text = value.replace(/\s+/gu, " ").trim();
+  if (text.length === 0) return null;
+  if (["[ROLE_ACCESS]", "[SECRET]", "[HEX_32]"].some((marker) => text.includes(marker))) return null;
+  if (/https?:/iu.test(text) || /\b[0-9a-f]{64}\b/iu.test(text) || /[A-Za-z0-9_-]{80,}/u.test(text)) return null;
+  if (/^[\[{]/u.test(text) || /"schema"\s*:/iu.test(text)) return null;
+  return text.slice(0, 600);
+}
+function showAgentNarration(event, role, name) {
+  const values = [];
+  if (event.codexItem?.type === "agent_message") values.push(event.codexItem.text);
+  if (Array.isArray(event.texts)) values.push(...event.texts);
+  for (const value of values) {
+    const narration = safeAgentNarration(value);
+    if (narration !== null) say(`${name} — Agent says: ${narration}`, role, `agent-narration-${narration}`);
+  }
+}
 function toolMessages(event, role) {
   const blocks = Array.isArray(event.blocks) ? event.blocks : [event.codexItem];
   for (const block of blocks) {
@@ -103,6 +121,7 @@ rl.on("line", (line) => {
   if (event?.phase === "continuation-needed" && event.pendingHelperOperation) say(`${name}: reviewing the exact ${event.pendingHelperOperation} request against local policy.`, role, `review-${event.pendingHelperOperation}`);
   if (event?.phase === "adapter-checkpoint-submitted") say(`${name}: deterministic ${event.artifactType} checkpoint submitted after agent approval.`, role, `adapter-checkpoint-${event.artifactType}`);
   if (event?.phase === "event") {
+    showAgentNarration(event, role, name);
     if (event.invitationObserved) say("Codex / Payer: invitation ready for Claude Code / Requestor.", "initiator", "invitation-ready");
     if (event.terminalObserved) say(`${name}: verified its closing certificate locally.`, role, "certificate-verified");
     toolMessages(event, role);

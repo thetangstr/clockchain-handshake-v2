@@ -1082,7 +1082,7 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
   const fixture = JSON.parse(await readFile(new URL("./fixtures/fresh-agent/prompts.json", import.meta.url), "utf8"));
   assert.equal(fixture.endpoint, CLOCKCHAIN_HANDSHAKE_MCP_URL);
   for (const prompt of [fixture.initiator, fixture.responder].map((value) => `${value}\n\n${fixture.actionDecision}`)) {
-    assert.ok(prompt.length < 3_000);
+    assert.ok(prompt.length < 3_250);
     assert.match(prompt, /direct authorization/i);
     assert.match(prompt, /controlled Sepolia test/i);
     assert.match(prompt, /fresh ERC-8004 identity/i);
@@ -1096,6 +1096,8 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
     assert.match(prompt, /approvalCommand is only an authorization marker/i);
     assert.match(prompt, /inspect its authenticated signingSummary and structured operation/i);
     assert.match(prompt, /adapter.*executes the already-bound structured argument array/i);
+    assert.match(prompt, /adapter automatically submits.*commitment checkpoint.*before releasing.*signature/i);
+    assert.match(prompt, /do not create or call.*checkpoint/i);
     assert.match(prompt, /do not paste the long payload into a shell/i);
     assert.match(prompt, /decide on each action separately/i);
     assert.match(prompt, /authorization marker for that digest-bound action/i);
@@ -1827,7 +1829,10 @@ test("continuation tells the agent to decide the exact pending action before pol
   assert.match(continuation, /Clockchain has an exact pending sign action/);
   assert.match(continuation, /make your own policy decision now/i);
   assert.match(continuation, /execute only the exact approvalCommand already returned by Clockchain/i);
-  assert.match(continuation, /submit the required commitment checkpoint before the artifact signature/i);
+  assert.match(continuation, /adapter automatically submits.*commitment checkpoint.*before releasing.*signature/i);
+  assert.match(continuation, /do not create or call.*checkpoint/i);
+  assert.match(continuation, /submit the exact returned signature with agent_handshake_submit/i);
+  assert.doesNotMatch(continuation, /submit the required commitment checkpoint before the artifact signature/i);
   assert.match(continuation, /Do not call agent_handshake_next again until/i);
 });
 
