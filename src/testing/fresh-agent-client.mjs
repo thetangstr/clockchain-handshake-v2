@@ -21,6 +21,7 @@ import {
   AGENT_HANDSHAKE_V2_SNAPSHOT_SCHEMA,
   buildAgentHandshakeV2Snapshot,
 } from "../monitor/agent-snapshot-v2.mjs";
+import { createStreamableMcpClient } from "./hermes-v2-live.mjs";
 
 const ROLES = Object.freeze(["initiator", "responder"]);
 const HELPER_OPERATIONS = Object.freeze([
@@ -79,7 +80,7 @@ const DIAGNOSTIC_CODES = Object.freeze(new Set([
   "AGENT_EXIT", "AGENT_FAILED", "AGENT_OUTPUT_INVALID", "CONFIGURE_FAILED", "HELPER_PROOF_MISSING",
   "HELPER_COMMAND_MISMATCH", "HELPER_EXECUTION_FAILED",
   "INVALID_RETRY_DELAY", "INVALID_TIMEOUT", "INVITATION_MISSING", "INVITATION_UNAVAILABLE", "MONITOR_FAILED", "MONITOR_RESULT_INVALID",
-  "NODE24_REQUIRED", "PREPARE_FAILED", "AUTHENTICATION_FAILED", "TIMEOUT", "UNKNOWN",
+  "MCP_CONTRACT_MISMATCH", "NODE24_REQUIRED", "PREPARE_FAILED", "AUTHENTICATION_FAILED", "TIMEOUT", "UNKNOWN",
 ]));
 
 function traceLifecycle(value) {
@@ -2659,6 +2660,7 @@ export async function runFreshAgentHandshake({
   authenticationModes = { initiator: "disposable", responder: "disposable" },
   clients,
   configureClient,
+  contractClientFactory = () => createStreamableMcpClient({ endpoint: CLOCKCHAIN_HANDSHAKE_MCP_URL }),
   modelEnvironment = {},
   secretCanaries = { initiator: [], responder: [] },
   monitor,
@@ -2680,7 +2682,7 @@ export async function runFreshAgentHandshake({
   exactObject(modelEnvironment, ROLES);
   exactObject(secretCanaries, ROLES);
   if (
-    typeof configureClient !== "function" || typeof monitor !== "function" ||
+    typeof configureClient !== "function" || typeof contractClientFactory !== "function" || typeof monitor !== "function" ||
     typeof prepareAdapter !== "function" || typeof prepareClient !== "function"
   ) fail();
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60 * 60 * 1000) fail();
@@ -2697,6 +2699,25 @@ export async function runFreshAgentHandshake({
   const adapters = [];
   let timer;
   try {
+    let contractTools;
+    try {
+      const contractClient = contractClientFactory();
+      if (
+        contractClient === null || typeof contractClient !== "object" ||
+        typeof contractClient.connect !== "function" || typeof contractClient.listTools !== "function"
+      ) fail("preflight", "service", "MCP_CONTRACT_MISMATCH");
+      await contractClient.connect();
+      contractTools = await contractClient.listTools();
+    } catch (error) {
+      throw diagnosticFrom(error, "preflight", "service", "MCP_CONTRACT_MISMATCH");
+    }
+    if (
+      !Array.isArray(contractTools) ||
+      contractTools.length !== CLOCKCHAIN_HANDSHAKE_TOOLS.length ||
+      new Set(contractTools).size !== contractTools.length ||
+      JSON.stringify([...contractTools].sort()) !== JSON.stringify([...CLOCKCHAIN_HANDSHAKE_TOOLS].sort())
+    ) fail("preflight", "service", "MCP_CONTRACT_MISMATCH");
+    traceLifecycle({ phase: "preflight", service: "mcp", status: "completed", toolCount: contractTools.length });
     run = await createFreshAgentRun({ parent });
     const prepared = {};
     for (const role of ROLES) {

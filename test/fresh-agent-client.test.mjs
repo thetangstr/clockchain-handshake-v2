@@ -417,6 +417,13 @@ function successfulFreshAgentSpawn(calls = [], { command = verifyCertificateComm
   };
 }
 
+function exactContractClientFactory() {
+  return {
+    connect: async () => {},
+    listTools: async () => CLOCKCHAIN_HANDSHAKE_TOOLS,
+  };
+}
+
 function baseFreshAgentRunOptions(parent, overrides = {}) {
   return {
     clients: { initiator: "codex", responder: "claude" },
@@ -425,6 +432,7 @@ function baseFreshAgentRunOptions(parent, overrides = {}) {
     modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
     secretCanaries: { initiator: ["canary-initiator-secret"], responder: ["canary-responder-secret"] },
     monitor: async () => monitorProjection(),
+    contractClientFactory: exactContractClientFactory,
     hostEnvironment: {
       LOGNAME: "tester",
       PATH: "/usr/bin:/bin",
@@ -441,6 +449,32 @@ function baseFreshAgentRunOptions(parent, overrides = {}) {
     ...overrides,
   };
 }
+
+test("fails before preparing either agent when the live MCP tool contract drifts", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-mcp-contract-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  let prepared = 0;
+  let configured = 0;
+  let spawned = 0;
+
+  const error = await rejectsFreshAgentRun(parent, {
+    contractClientFactory: () => ({
+      connect: async () => {},
+      listTools: async () => [...CLOCKCHAIN_HANDSHAKE_TOOLS, "agent_handshake_submit_checkpoint"],
+    }),
+    configureClient: async () => { configured += 1; },
+    prepareClient: async () => { prepared += 1; return true; },
+    spawnProcess: () => { spawned += 1; throw new Error("must not spawn"); },
+  });
+
+  assert.equal(error.diagnostic?.phase, "preflight");
+  assert.equal(error.diagnostic?.category, "service");
+  assert.equal(error.diagnostic?.code, "MCP_CONTRACT_MISMATCH");
+  assert.equal(prepared, 0);
+  assert.equal(configured, 0);
+  assert.equal(spawned, 0);
+  assert.deepEqual(await readdir(parent), []);
+});
 
 async function prepareTestAdapter({ room }) {
   const root = join(room.workspace, ".clockchain-adapter");
@@ -1670,6 +1704,7 @@ test("starts the Responder only after the Initiator emits its actual one-time in
   const result = await runFreshAgentHandshake({
     authenticationModes: { initiator: "disposable", responder: "existing_login_isolated" },
     clients: { initiator: "codex", responder: "claude" },
+    contractClientFactory: exactContractClientFactory,
     configureClient: async (entry) => calls.push({ configure: entry.client }),
     prepareClient: async (entry) => { calls.push({ prepare: entry.client }); return true; },
     prepareAdapter: prepareTestAdapter,
@@ -2271,6 +2306,7 @@ test("rejects helper-shaped output not produced by the exact pinned verification
       };
       await assert.rejects(() => runFreshAgentHandshake({
         clients: { initiator: "codex", responder: "claude" },
+        contractClientFactory: exactContractClientFactory,
         configureClient: async () => {}, prepareClient: async () => true,
         modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
         monitor: async () => monitorProjection(), parent,
@@ -3296,6 +3332,7 @@ test("times out both process groups and removes both clean rooms", async (t) => 
   };
   await assert.rejects(() => runFreshAgentHandshake({
     clients: { initiator: "codex", responder: "claude" },
+    contractClientFactory: exactContractClientFactory,
     configureClient: async () => {},
     prepareClient: async () => true,
     prepareAdapter: prepareTestAdapter,
@@ -3331,6 +3368,7 @@ test("rejects a three-segment invitation lookalike before starting the Responder
   };
   await assert.rejects(() => runFreshAgentHandshake({
     clients: { initiator: "codex", responder: "claude" },
+    contractClientFactory: exactContractClientFactory,
     configureClient: async () => {},
     prepareClient: async () => true,
     prepareAdapter: prepareTestAdapter,
@@ -3374,6 +3412,7 @@ test("rejects an Initiator role capability when an agent prints it as the invita
   };
   await assert.rejects(() => runFreshAgentHandshake({
     clients: { initiator: "codex", responder: "claude" },
+    contractClientFactory: exactContractClientFactory,
     configureClient: async () => {},
     prepareClient: async () => true,
     prepareAdapter: prepareTestAdapter,
