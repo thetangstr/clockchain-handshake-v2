@@ -371,6 +371,7 @@ test("ACP process transport launches exact pinned stdio executable with isolated
   assert.deepEqual(calls[0].args, []);
   assert.equal(calls[0].options.cwd, "/workspace/initiator");
   assert.equal(calls[0].options.env.HOME, "/workspace/initiator/home");
+  assert.equal(calls[0].options.env.TMPDIR, "/workspace/initiator/tmp");
   assert.equal(calls[0].options.env.CLOCKCHAIN_MCP_URL, MCP_ENDPOINT);
   assert.equal(calls[0].options.env.CLOCKCHAIN_MCP_AUTH_HEADER, undefined);
   assert.equal(calls[0].options.env.PATH, "/app/node_modules/.bin:/usr/local/bin:/usr/bin:/bin");
@@ -456,6 +457,7 @@ test("ACP process transport forwards only role-specific provider auth and pins t
   assert.equal(claudeCalls[0].options.env.AWS_ACCESS_KEY_ID, "ASIAEXAMPLE");
   assert.equal(claudeCalls[0].options.env.AWS_SECRET_ACCESS_KEY, "aws-secret-value");
   assert.equal(claudeCalls[0].options.env.AWS_SESSION_TOKEN, "aws-session-token");
+  assert.equal(claudeCalls[0].options.env.TMPDIR, "/workspace/responder/tmp");
   assert.equal(claudeCalls[0].options.env.ANTHROPIC_API_KEY, undefined);
   assert.equal(claudeCalls[0].options.env.CODEX_API_KEY, undefined);
   assert.equal(claudeCalls.find((call) => Array.isArray(call) && call[0] === "setSessionConfigOption"), undefined);

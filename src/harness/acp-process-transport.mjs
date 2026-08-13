@@ -1128,6 +1128,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
         NODE_ENV: "production",
         HOME: options.home,
         XDG_CACHE_HOME: `${options.home}/.cache`,
+        TMPDIR: `${options.workspace}/tmp`,
         CLOCKCHAIN_MCP_URL: MCP_ENDPOINT,
         ...provider.env,
         ...(baseEnv.HTTP_PROXY ? { HTTP_PROXY: baseEnv.HTTP_PROXY } : {}),
