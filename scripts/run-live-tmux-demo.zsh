@@ -7,6 +7,7 @@ readonly NODE_BIN="${CLOCKCHAIN_NODE_BIN:-/opt/homebrew/opt/node@24/bin/node}"
 readonly CODEX_LOG="${CLOCKCHAIN_CODEX_LIVE_LOG:-/tmp/clockchain-codex-live.log}"
 readonly CLAUDE_LOG="${CLOCKCHAIN_CLAUDE_LIVE_LOG:-/tmp/clockchain-claude-live.log}"
 readonly COMBINED_LOG="${CLOCKCHAIN_COMBINED_LIVE_LOG:-/tmp/clockchain-codex-claude-live.log}"
+readonly TRACE_LOG="${CLOCKCHAIN_TRACE_LOG:-/tmp/clockchain-fresh-agent-trace.jsonl}"
 readonly CLOCKCHAIN_INITIATOR_MODEL="${CLOCKCHAIN_INITIATOR_MODEL:-gpt-5.6-terra}"
 readonly CLOCKCHAIN_RESPONDER_MODEL="${CLOCKCHAIN_RESPONDER_MODEL:-sonnet}"
 
@@ -41,6 +42,8 @@ print 'Claude Code / Requestor — Sonnet' >| "$CLAUDE_LOG"
 print 'Waiting for the one-time invitation…' >> "$CLAUDE_LOG"
 print >> "$CLAUDE_LOG"
 chmod 600 "$CLAUDE_LOG"
+: >| "$TRACE_LOG"
+chmod 600 "$TRACE_LOG"
 
 clear
 print 'Clockchain live production handshake'
@@ -49,7 +52,7 @@ print 'Original monitor: https://clockchain-research.vercel.app/handshake/claude
 print
 
 cd "$REPO_ROOT"
-"$NODE_BIN" scripts/run-fresh-agent-handshake.mjs 2>&1 | "$NODE_BIN" --input-type=commonjs --eval '
+"$NODE_BIN" scripts/run-fresh-agent-handshake.mjs 2>&1 | tee "$TRACE_LOG" | "$NODE_BIN" --input-type=commonjs --eval '
 const fs = require("node:fs");
 const readline = require("node:readline");
 const rl = readline.createInterface({ input: process.stdin });

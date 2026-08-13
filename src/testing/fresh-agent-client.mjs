@@ -99,6 +99,7 @@ function traceText(value, canaries) {
   if (!TRACE_LIFECYCLE || typeof value !== "string") return null;
   let redacted = value
     .replace(/[A-Za-z0-9_-]{80,}\.[A-Za-z0-9_-]{40,}/gu, "[ROLE_ACCESS]")
+    .replace(/ccra_[A-Za-z0-9_-]{22}/gu, "[ROLE_ACCESS]")
     .replace(/0x[0-9a-fA-F]{64}/gu, "[HEX_32]");
   for (const canary of canaries) redacted = redacted.replaceAll(canary, "[SECRET]");
   return redacted.slice(0, 2_000);
@@ -150,12 +151,22 @@ function traceEventTransportShape(line) {
     return Object.freeze({ lineBytes, parseable: false });
   }
   const content = Array.isArray(event?.message?.content) ? event.message.content : [];
+  const command = event?.item?.type === "command_execution" && typeof event.item.command === "string"
+    ? event.item.command
+    : null;
   return Object.freeze({
     lineBytes,
     parseable: true,
     type: typeof event?.type === "string" ? event.type.slice(0, 64) : null,
     subtype: typeof event?.subtype === "string" ? event.subtype.slice(0, 64) : null,
     itemType: typeof event?.item?.type === "string" ? event.item.type.slice(0, 64) : null,
+    command: command === null ? null : Object.freeze({
+      bytes: Buffer.byteLength(command),
+      sha256: createHash("sha256").update(command).digest("hex"),
+      zshC: command.startsWith("/bin/zsh -c "),
+      zshLoginC: command.startsWith("/bin/zsh -lc "),
+      approvalMarkerPresent: command.includes("clockchain-agent-authorize"),
+    }),
     blockTypes: Object.freeze(content.slice(0, 32).map((block) => typeof block?.type === "string" ? block.type.slice(0, 64) : null)),
     toolNames: Object.freeze(content.slice(0, 32).map((block) => typeof block?.name === "string" ? block.name.slice(0, 64) : null)),
   });

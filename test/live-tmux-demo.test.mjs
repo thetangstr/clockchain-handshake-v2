@@ -32,6 +32,8 @@ test("live runner pins the production clients and retains public evidence", asyn
   assert.match(source, /CLOCKCHAIN_INITIATOR_MODEL=.*gpt-5\.6-terra/);
   assert.match(source, /CLOCKCHAIN_RESPONDER_MODEL=.*sonnet/);
   assert.match(source, /CLOCKCHAIN_FRESH_AGENT_RESULT_DIR/);
+  assert.match(source, /CLOCKCHAIN_TRACE_LOG/);
+  assert.match(source, /tee "\$TRACE_LOG"/);
   assert.match(source, /export CLOCKCHAIN_RESEARCH_MONITOR_URL="http:\/\/44\.249\.47\.220:8080\/v1\/sessions\/\{sessionId\}\/snapshot"/);
   assert.match(source, /run-fresh-agent-handshake\.mjs/);
   assert.match(source, /adapter-checkpoint-submitted/);
