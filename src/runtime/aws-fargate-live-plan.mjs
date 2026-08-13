@@ -3,10 +3,11 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { types } from "node:util";
 
+import { AGENT_HANDSHAKE_RELEASE_PIN } from "../harness/agent-handshake-release-pin.mjs";
+
 export const FARGATE_LIVE_PLAN_SCHEMA = "clockchain.fargate-live-plan/v1";
 
 const PRODUCTION_MCP_URL = "https://mcp.clockchain.network/handshake/mcp";
-const HELPER_MANIFEST_DIGEST = "fa3c408a3739227b5bdb71486b4d291b8f4dffdb0d1f2fa79dd59644ba5e09ad";
 const DEMO_MANDATE = Object.freeze({
   identityPolicy: Object.freeze({
     chainId: "eip155:11155111",
@@ -367,7 +368,7 @@ function taskDefinition(plan, outputs, role) {
     CLOCKCHAIN_BOOTSTRAP_OWN_QUEUE_URL: outputs[`${own}QueueUrl`],
     CLOCKCHAIN_BOOTSTRAP_PEER_QUEUE_URL: outputs[`${peer}QueueUrl`],
     CLOCKCHAIN_CLIENT: initiator ? "codex" : "claude",
-    CLOCKCHAIN_HELPER_MANIFEST_DIGEST: HELPER_MANIFEST_DIGEST,
+    CLOCKCHAIN_HELPER_MANIFEST_DIGEST: AGENT_HANDSHAKE_RELEASE_PIN.manifestDigest,
     CLOCKCHAIN_HOME: "/workspace/home",
     CLOCKCHAIN_MANDATE_JSON: JSON.stringify(DEMO_MANDATE),
     CLOCKCHAIN_MCP_URL: plan.mcpUrl,

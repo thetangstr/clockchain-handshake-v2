@@ -7,6 +7,8 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 
+import { AGENT_HANDSHAKE_RELEASE_PIN } from "../src/harness/agent-handshake-release-pin.mjs";
+
 const ERROR = "Mechanics proof container runner failed safely.";
 const MCP_ENDPOINT = "https://mcp.clockchain.network/handshake/mcp";
 const DIGEST = /^[0-9a-f]{64}$/;
@@ -15,7 +17,6 @@ const IMAGE = /^[a-z0-9./:_-]+@sha256:[0-9a-f]{64}$/;
 const MAX_ENV_FILE_BYTES = 64 * 1024;
 const ROLES = Object.freeze(["initiator", "responder"]);
 const HARNESSES = Object.freeze({ initiator: "codex", responder: "claude" });
-const MANIFEST_DIGEST = "fa3c408a3739227b5bdb71486b4d291b8f4dffdb0d1f2fa79dd59644ba5e09ad";
 
 function fail() { throw new Error(ERROR); }
 function sanitize(error) { if (error?.message === ERROR) throw error; fail(); }
@@ -232,7 +233,7 @@ function containerConfig({ config, networkId, role, runId }) {
       CLOCKCHAIN_A2A_PUBLIC_ENDPOINT: `https://${role}.task.local:8443`,
       CLOCKCHAIN_A2A_PEER_ENDPOINT: `https://${peer}.task.local:8443`,
       CLOCKCHAIN_CLIENT: HARNESSES[role],
-      CLOCKCHAIN_HELPER_MANIFEST_DIGEST: MANIFEST_DIGEST,
+      CLOCKCHAIN_HELPER_MANIFEST_DIGEST: AGENT_HANDSHAKE_RELEASE_PIN.manifestDigest,
       CLOCKCHAIN_MANDATE_JSON: JSON.stringify({
         reference: "northstar-harbor-demo",
         statement: "Confirm both agents agree to the same operational terms.",

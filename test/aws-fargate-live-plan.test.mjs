@@ -281,7 +281,7 @@ test("live task definitions use stack outputs and keep party authority inside is
   assert.equal(responderEnv.CLOCKCHAIN_BOOTSTRAP_PEER_QUEUE_URL, outputs().InitiatorQueueUrl);
   assert.equal(responderEnv.CLOCKCHAIN_CLAUDE_PROVIDER, "bedrock");
   assert.equal(responderEnv.CLOCKCHAIN_BEDROCK_MODEL_ID, "us.anthropic.claude-sonnet-4-6");
-  assert.equal(initiatorEnv.CLOCKCHAIN_HELPER_MANIFEST_DIGEST, "fa3c408a3739227b5bdb71486b4d291b8f4dffdb0d1f2fa79dd59644ba5e09ad");
+  assert.equal(initiatorEnv.CLOCKCHAIN_HELPER_MANIFEST_DIGEST, "cc744e287f2f1dfc4b4b67ed460611543fc44c00c2385120cac1b37e28a56342");
   assert.equal(responderEnv.CLOCKCHAIN_HELPER_MANIFEST_DIGEST, initiatorEnv.CLOCKCHAIN_HELPER_MANIFEST_DIGEST);
   assert.deepEqual(JSON.parse(initiatorEnv.CLOCKCHAIN_MANDATE_JSON), JSON.parse(responderEnv.CLOCKCHAIN_MANDATE_JSON));
   assert.equal(initiatorEnv.CLOCKCHAIN_OPENSSL_PATH, "/usr/bin/openssl");
