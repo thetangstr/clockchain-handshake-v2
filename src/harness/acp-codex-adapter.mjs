@@ -20,9 +20,21 @@ const MAX_ARRAY_LENGTH = 32;
 const MAX_OBJECT_KEYS = 64;
 const MAX_STRING_LENGTH = 4096;
 const INVITATION = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+const ADAPTER_FAILURE_STAGES = Object.freeze(["transport", "local"]);
+const ADAPTER_FAILURES = new WeakMap();
 
 function fail() {
   throw new Error("ACP harness adapter validation failed safely.");
+}
+
+function markAdapterFailure(error, stage) {
+  if (!ADAPTER_FAILURE_STAGES.includes(stage) || error === null || typeof error !== "object") fail();
+  ADAPTER_FAILURES.set(error, stage);
+  throw error;
+}
+
+export function acpHarnessAdapterFailureStage(error) {
+  return ADAPTER_FAILURES.get(error) ?? null;
 }
 
 function rejectAuthorityFields(value) {
@@ -262,19 +274,24 @@ export function createAcpHarnessAdapter(options = {}) {
       if (mcpEndpoint !== MCP_ENDPOINT) fail();
       const cleanRuntime = validateRuntime(runtime, harness);
       const cleanA2aConfig = a2aConfig(suppliedA2aConfig);
-      await launchViaTransport({
-        acp: cleanPin,
-        runtime: cleanRuntime,
-        mandate: cleanMandate,
-        mcpEndpoint,
-        a2aConfig: cleanA2aConfig,
-      });
-      const launched = await local.launchSession({
-        runtime: cleanRuntime,
-        mandate: cleanMandate,
-        mcpEndpoint,
-        a2aConfig: cleanA2aConfig,
-      });
+      try {
+        await launchViaTransport({
+          acp: cleanPin,
+          runtime: cleanRuntime,
+          mandate: cleanMandate,
+          mcpEndpoint,
+          a2aConfig: cleanA2aConfig,
+        });
+      } catch (error) { markAdapterFailure(error, "transport"); }
+      let launched;
+      try {
+        launched = await local.launchSession({
+          runtime: cleanRuntime,
+          mandate: cleanMandate,
+          mcpEndpoint,
+          a2aConfig: cleanA2aConfig,
+        });
+      } catch (error) { markAdapterFailure(error, "local"); }
       sessions.set(launched.sessionId, { role: cleanRuntime.role });
       return Object.freeze({ sessionId: launched.sessionId, role: cleanRuntime.role, harness });
     },

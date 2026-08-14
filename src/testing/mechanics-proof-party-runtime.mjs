@@ -18,7 +18,7 @@ import {
 } from "../harness/party-signed-channel-bootstrap.mjs";
 import { createAgentHandshakeCheckpointClient } from "../harness/agent-handshake-mcp-client.mjs";
 import { createAcpClaudeHarnessAdapter } from "../harness/acp-claude-adapter.mjs";
-import { createAcpCodexHarnessAdapter } from "../harness/acp-codex-adapter.mjs";
+import { acpHarnessAdapterFailureStage, createAcpCodexHarnessAdapter } from "../harness/acp-codex-adapter.mjs";
 import { acpProcessTransportFailureStage, createAcpProcessTransport } from "../harness/acp-process-transport.mjs";
 import { createDirectA2APartyBridge } from "../harness/direct-a2a-party-bridge.mjs";
 import {
@@ -71,6 +71,7 @@ const RUNTIME_FAILURE_STAGES = Object.freeze([
   "bridge-create", "provider-auth", "provider-auth-input", "provider-auth-decode", "provider-auth-parse",
   "provider-auth-install", "provider-auth-config", "provider-auth-export", "transport-create", "adapter-create", "agent-starting", "agent-trace",
   "agent-launch", "agent-launch-spawn", "agent-launch-stream", "agent-launch-initialize", "agent-launch-session",
+  "agent-launch-adapter-transport", "agent-launch-adapter-local",
   "agent-launch-model", "agent-launch-prompt", "agent-launch-completion", "agent-launch-completion-protocol",
   "agent-launch-completion-protocol-envelope", "agent-launch-completion-protocol-usage",
   "agent-launch-completion-protocol-tool-result", "agent-launch-completion-protocol-bridge",
@@ -818,11 +819,13 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
           const invitationWaitStage = runStage === "invitation-await" ? mechanicsProofInvitationWaitFailureStage(error) : null;
           const recorderStage = runStage === "recorder-create" ? verifiedReleaseActionRecorderFailureStage(error) : null;
           const launchStage = runStage === "agent-launch" ? acpProcessTransportFailureStage(error) : null;
+          const adapterStage = runStage === "agent-launch" ? acpHarnessAdapterFailureStage(error) : null;
           runFailureStage = listenerStage !== null
             ? `listener-${listenerStage}`
             : invitationWaitStage !== null ? `invitation-await-${invitationWaitStage}`
             : recorderStage !== null ? `recorder-${recorderStage}`
-              : launchStage !== null ? `agent-launch-${launchStage}` : runStage;
+              : launchStage !== null ? `agent-launch-${launchStage}`
+                : adapterStage !== null ? `agent-launch-adapter-${adapterStage}` : runStage;
         }
         try { await publicTraceQueue; } catch { runFailed = true; runFailureStage ??= "agent-trace"; }
         let teardownResult;

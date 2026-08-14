@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createAcpCodexHarnessAdapter } from "../src/harness/acp-codex-adapter.mjs";
+import { acpHarnessAdapterFailureStage, createAcpCodexHarnessAdapter } from "../src/harness/acp-codex-adapter.mjs";
 import { ACP_VERSION_PINS } from "../src/harness/version-pins.mjs";
 import { retainedAction, runAcpAdapterBehavior } from "./harness-acp-fixtures.mjs";
 
@@ -29,5 +29,24 @@ test("Codex ACP adapter satisfies retained-action harness conformance", async ()
     harness: "codex",
     pin: ACP_VERSION_PINS.codex,
     role: "initiator",
+  });
+});
+
+test("Codex ACP adapter preserves a transport failure for the runtime boundary", async () => {
+  const cause = new Error("transport failed safely");
+  const adapter = createAcpCodexHarnessAdapter({
+    retainedActions: [],
+    transport: { async launch() { throw cause; } },
+    trustedAdapterPublicKeys: [retainedAction().adapterPublicKey],
+  });
+  await assert.rejects(() => adapter.launchSession({
+    runtime: { runtimeId: "runtime-initiator", sessionId: "11111111-2222-4333-8444-555555555555", role: "initiator", harness: "codex" },
+    mandate: { reference: "NS-1847" },
+    mcpEndpoint: "https://mcp.clockchain.network/handshake/mcp",
+    a2aConfig: { endpoint: "https://10.0.2.10:8443", peerCard: { id: "runtime-responder", endpoint: "https://10.0.3.10:8443" } },
+  }), (error) => {
+    assert.equal(error, cause);
+    assert.equal(acpHarnessAdapterFailureStage(error), "transport");
+    return true;
   });
 });
