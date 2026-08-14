@@ -3,12 +3,25 @@ import test from "node:test";
 
 import {
   createAwsCliControlPlane,
+  MECHANICS_PROOF_PARTY_FAILURE_STAGES,
   publicControlPlaneFailureStage,
   publicPartyFailureStages,
   publicPartyProgressStages,
 } from "../src/runtime/aws-cli-control-plane.mjs";
+import { MECHANICS_PROOF_PARTY_RUNTIME_FAILURE_STAGES } from "../src/testing/mechanics-proof-party-runtime.mjs";
 import { loadFargateLiveRuntimeTemplate } from "../src/runtime/aws-fargate-live-plan.mjs";
 import { stableJson } from "../src/runtime/aws-fargate-runtime-adapter.mjs";
+
+test("AWS public failure parser derives every runtime stage from the canonical party vocabulary", () => {
+  assert.equal(new Set(MECHANICS_PROOF_PARTY_FAILURE_STAGES).size, MECHANICS_PROOF_PARTY_FAILURE_STAGES.length);
+  for (const stage of MECHANICS_PROOF_PARTY_RUNTIME_FAILURE_STAGES) {
+    assert.equal(MECHANICS_PROOF_PARTY_FAILURE_STAGES.includes(`runtime-run.${stage}`), true, stage);
+  }
+  assert.equal(
+    MECHANICS_PROOF_PARTY_FAILURE_STAGES.includes("runtime-run.agent-launch-completion-protocol-bridge-join-policy"),
+    true,
+  );
+});
 
 test("AWS CLI control plane uses only execFile aws argv and parses JSON responses", async () => {
   const calls = [];
@@ -438,7 +451,7 @@ test("AWS CLI control plane brands only exact allowlisted party failure stages",
       return { stdout: JSON.stringify({ events: [{
         timestamp: 1786565101000,
         message: role === "initiator"
-          ? "Mechanics proof party failed safely. stage=runtime-run.agent-launch-completion-protocol-bridge-incomplete-no-tool-result"
+          ? "Mechanics proof party failed safely. stage=runtime-run.agent-launch-completion-protocol-bridge-join-policy"
           : "Mechanics proof party failed safely. stage=runtime-run.evidence-validate-session",
       }] }), stderr: "", exitCode: 0 };
     },
@@ -450,7 +463,7 @@ test("AWS CLI control plane brands only exact allowlisted party failure stages",
     deadlineMs: Date.now() + 1000,
   }), (error) => {
     assert.deepEqual(publicPartyFailureStages(error), {
-      initiator: "runtime-run.agent-launch-completion-protocol-bridge-incomplete-no-tool-result",
+      initiator: "runtime-run.agent-launch-completion-protocol-bridge-join-policy",
       responder: "runtime-run.evidence-validate-session",
     });
     assert.equal(publicPartyFailureStages(new Error(error.message)), null);

@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { types } from "node:util";
 
+import { MECHANICS_PROOF_PARTY_RUNTIME_FAILURE_STAGES } from "../testing/mechanics-proof-party-runtime.mjs";
 import { PARTY_PROGRESS_TYPES } from "./mechanics-proof-public-events.mjs";
 
 const ALLOWED = new Set([
@@ -32,7 +33,11 @@ const ALLOWED = new Set([
   "sqs list-queues",
 ]);
 const PARTY_FAILURE_PREFIX = "Mechanics proof party failed safely. stage=";
-const PARTY_FAILURE_STAGE = /^(?:runtime-create|exchange-create|bootstrap-publish|bootstrap-await|exchange-destroy|managed-hold|runtime-run(?:\.(?:peer-validate|listener-create|listener-ready|invitation-await(?:-(?:observe|take|sleep|timeout))?|invitation-received-(?:evidence|event-(?:prepare|publish))|recorder-create|recorder-(?:construction-(?:options|room|paths|platform)|release-(?:manifest|helper)-fetch|release-assets|adapter-layout|completion-socket)|checkpoint-client-create|bridge-create|provider-auth(?:-(?:input|decode|parse|install|export))?|transport-create|adapter-create|agent-starting|agent-launch(?:-(?:adapter-(?:transport|local)|spawn|stream|initialize|session|model|prompt|completion(?:-(?:protocol(?:-(?:envelope(?:-(?:runtime|session-id|update-type|before-session|early-tool|provisional-session|active-session))?|usage|tool-result|bridge(?:-(?:input|tool-name|clone|role-access|session|invite-shape|invite-send|accept|join|helper|digest|incomplete(?:-(?:no-tool-result|mcp-failure|open-session))?))?|retained(?:-(?:extract|record|register|authorize|execute(?:-(?:construction-(?:options|room|paths|platform)|release-(?:manifest|helper)-fetch|release-assets|adapter-layout|completion-socket|execution-(?:launch|output|public-result)))?))?|event))?|permission-(?:session|command-(?:tool|input|cwd|approval(?:-(?:double-quoted|whitespace|wrapped))?)(?:-after-authorization)?|protocol|registration|state|options|unknown)|stop))?))?|evidence-validate(?:-(?:session|certificate|signers|anchors|deliveries|delivery))?|certificate-event|agent-terminate|evidence-collect|teardown|listener-listen-(?:eacces|eaddrinuse|eaddrnotavail|eperm|other)))?)$/;
+export const MECHANICS_PROOF_PARTY_FAILURE_STAGES = Object.freeze([
+  "runtime-create", "exchange-create", "bootstrap-publish", "bootstrap-await", "exchange-destroy", "managed-hold",
+  ...MECHANICS_PROOF_PARTY_RUNTIME_FAILURE_STAGES.map((stage) => `runtime-run.${stage}`),
+]);
+const PARTY_FAILURE_STAGES = new Set(MECHANICS_PROOF_PARTY_FAILURE_STAGES);
 const ECS_ATTESTATION_KEYS = Object.freeze([
   "accountId", "availabilityZone", "containerArn", "family", "imageId", "launchType", "privateIp", "region",
   "revision", "role", "schema", "stsArn", "stsUserId", "taskArn", "taskId", "workloadAttestationDigest",
@@ -466,7 +471,7 @@ export function createAwsCliControlPlane(optionsInput = {}) {
             if (typeof event.message !== "string") throw controlPlaneFailureError("event-message");
             if (event.message.startsWith(PARTY_FAILURE_PREFIX)) {
               const stage = event.message.slice(PARTY_FAILURE_PREFIX.length);
-              if (!PARTY_FAILURE_STAGE.test(stage)) throw controlPlaneFailureError("party-failure-stage");
+              if (!PARTY_FAILURE_STAGES.has(stage)) throw controlPlaneFailureError("party-failure-stage");
               const previousFailure = failures.get(groupRole);
               if (previousFailure !== undefined && previousFailure !== stage) throw controlPlaneFailureError("party-failure-stage");
               failures.set(groupRole, stage);

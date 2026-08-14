@@ -8,12 +8,16 @@ import test from "node:test";
 
 import {
   createMechanicsProofPartyRuntime,
+  MECHANICS_PROOF_PARTY_RUNTIME_FAILURE_STAGES,
   mechanicsProofInvitationWaitFailureStage,
   mechanicsProofPartyRuntimeFailureStage,
   waitForMechanicsProofInvitation,
 } from "../src/testing/mechanics-proof-party-runtime.mjs";
 import { createVerifiedReleaseActionRecorder } from "../src/harness/verified-release-action-recorder.mjs";
-import { createAcpProcessTransport } from "../src/harness/acp-process-transport.mjs";
+import {
+  ACP_PROCESS_TRANSPORT_FAILURE_STAGES,
+  createAcpProcessTransport,
+} from "../src/harness/acp-process-transport.mjs";
 
 const RUN_ID = "11111111-2222-4333-8444-555555555555";
 const PROTOCOL_SESSION_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
@@ -22,6 +26,18 @@ const OTHER_DIGEST = "b".repeat(64);
 const MCP_ENDPOINT = "https://mcp.clockchain.network/handshake/mcp";
 const CERTIFICATE = "-----BEGIN CERTIFICATE-----\npublic-test-certificate\n-----END CERTIFICATE-----\n";
 const PRIVATE_INVITATION = `${"a".repeat(96)}.${"b".repeat(43)}`;
+
+test("party runtime derives every agent launch stage from the canonical ACP transport vocabulary", () => {
+  assert.equal(new Set(ACP_PROCESS_TRANSPORT_FAILURE_STAGES).size, ACP_PROCESS_TRANSPORT_FAILURE_STAGES.length);
+  assert.equal(new Set(MECHANICS_PROOF_PARTY_RUNTIME_FAILURE_STAGES).size, MECHANICS_PROOF_PARTY_RUNTIME_FAILURE_STAGES.length);
+  for (const stage of ACP_PROCESS_TRANSPORT_FAILURE_STAGES) {
+    assert.equal(MECHANICS_PROOF_PARTY_RUNTIME_FAILURE_STAGES.includes(`agent-launch-${stage}`), true, stage);
+  }
+  assert.equal(
+    MECHANICS_PROOF_PARTY_RUNTIME_FAILURE_STAGES.includes("agent-launch-completion-protocol-bridge-join-policy"),
+    true,
+  );
+});
 
 function publicKey() {
   return generateKeyPairSync("ed25519").publicKey.export({ type: "spki", format: "pem" });

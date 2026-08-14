@@ -72,7 +72,7 @@ const ACP_STOP_REASONS = Object.freeze(["cancelled", "max_tokens", "max_turn_req
 const CODEX_MODEL = "gpt-5.6-terra";
 const CLAUDE_BEDROCK_MODEL = "us.anthropic.claude-sonnet-4-6";
 const CLAUDE_SUBSCRIPTION_MODEL = "sonnet";
-const LAUNCH_FAILURE_STAGES = Object.freeze([
+export const ACP_PROCESS_TRANSPORT_FAILURE_STAGES = Object.freeze([
   "spawn", "stream", "initialize", "session", "model", "prompt", "completion",
   "completion-protocol", "completion-protocol-envelope", "completion-protocol-usage",
   "completion-protocol-tool-result", "completion-protocol-bridge", "completion-protocol-retained",
@@ -111,7 +111,7 @@ function fail() {
 }
 
 function stagedLaunchFailure(stage) {
-  if (!LAUNCH_FAILURE_STAGES.includes(stage)) fail();
+  if (!ACP_PROCESS_TRANSPORT_FAILURE_STAGES.includes(stage)) fail();
   const error = new Error("ACP process transport validation failed safely.");
   LAUNCH_FAILURES.set(error, stage);
   return error;

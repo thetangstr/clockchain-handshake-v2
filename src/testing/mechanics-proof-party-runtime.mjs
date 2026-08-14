@@ -19,7 +19,11 @@ import {
 import { createAgentHandshakeCheckpointClient } from "../harness/agent-handshake-mcp-client.mjs";
 import { createAcpClaudeHarnessAdapter } from "../harness/acp-claude-adapter.mjs";
 import { acpHarnessAdapterFailureStage, createAcpCodexHarnessAdapter } from "../harness/acp-codex-adapter.mjs";
-import { acpProcessTransportFailureStage, createAcpProcessTransport } from "../harness/acp-process-transport.mjs";
+import {
+  ACP_PROCESS_TRANSPORT_FAILURE_STAGES,
+  acpProcessTransportFailureStage,
+  createAcpProcessTransport,
+} from "../harness/acp-process-transport.mjs";
 import { createDirectA2APartyBridge } from "../harness/direct-a2a-party-bridge.mjs";
 import {
   createVerifiedReleaseActionRecorder,
@@ -59,7 +63,7 @@ const AWS_CREDENTIAL_OVERRIDE_ENV = Object.freeze([
   "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
   "AWS_PROFILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_SQS",
 ]);
-const RUNTIME_FAILURE_STAGES = Object.freeze([
+export const MECHANICS_PROOF_PARTY_RUNTIME_FAILURE_STAGES = Object.freeze([
   "peer-validate", "listener-create", "listener-ready", "invitation-await", "invitation-await-observe",
   "invitation-await-take", "invitation-await-sleep", "invitation-await-timeout", "invitation-received-evidence",
   "invitation-received-event-prepare", "invitation-received-event-publish", "recorder-create",
@@ -70,61 +74,10 @@ const RUNTIME_FAILURE_STAGES = Object.freeze([
   "checkpoint-client-create",
   "bridge-create", "provider-auth", "provider-auth-input", "provider-auth-decode", "provider-auth-parse",
   "provider-auth-install", "provider-auth-config", "provider-auth-export", "transport-create", "adapter-create", "agent-starting", "agent-trace",
-  "agent-launch", "agent-launch-spawn", "agent-launch-stream", "agent-launch-initialize", "agent-launch-session",
+  "agent-launch",
   "agent-launch-adapter-transport", "agent-launch-adapter-local",
-  "agent-launch-model", "agent-launch-prompt", "agent-launch-completion", "agent-launch-completion-protocol",
-  "agent-launch-completion-protocol-envelope", "agent-launch-completion-protocol-usage",
-  "agent-launch-completion-protocol-tool-result", "agent-launch-completion-protocol-bridge",
-  "agent-launch-completion-protocol-retained", "agent-launch-completion-protocol-retained-extract",
-  "agent-launch-completion-protocol-retained-record", "agent-launch-completion-protocol-retained-register",
-  "agent-launch-completion-protocol-retained-authorize", "agent-launch-completion-protocol-retained-execute",
-  "agent-launch-completion-protocol-retained-execute-construction-options",
-  "agent-launch-completion-protocol-retained-execute-construction-room",
-  "agent-launch-completion-protocol-retained-execute-construction-paths",
-  "agent-launch-completion-protocol-retained-execute-construction-platform",
-  "agent-launch-completion-protocol-retained-execute-release-manifest-fetch",
-  "agent-launch-completion-protocol-retained-execute-release-helper-fetch",
-  "agent-launch-completion-protocol-retained-execute-release-assets",
-  "agent-launch-completion-protocol-retained-execute-adapter-layout",
-  "agent-launch-completion-protocol-retained-execute-completion-socket",
-  "agent-launch-completion-protocol-retained-execute-execution-launch",
-  "agent-launch-completion-protocol-retained-execute-execution-output",
-  "agent-launch-completion-protocol-retained-execute-execution-public-result",
-  "agent-launch-completion-protocol-event",
-  "agent-launch-completion-protocol-envelope-runtime", "agent-launch-completion-protocol-envelope-session-id",
-  "agent-launch-completion-protocol-envelope-update-type", "agent-launch-completion-protocol-envelope-before-session",
-  "agent-launch-completion-protocol-envelope-early-tool", "agent-launch-completion-protocol-envelope-provisional-session",
-  "agent-launch-completion-protocol-envelope-active-session",
-  "agent-launch-completion-protocol-bridge-input", "agent-launch-completion-protocol-bridge-tool-name",
-  "agent-launch-completion-protocol-bridge-clone", "agent-launch-completion-protocol-bridge-role-access",
-  "agent-launch-completion-protocol-bridge-session", "agent-launch-completion-protocol-bridge-invite-shape",
-  "agent-launch-completion-protocol-bridge-invite-send", "agent-launch-completion-protocol-bridge-accept",
-  "agent-launch-completion-protocol-bridge-join", "agent-launch-completion-protocol-bridge-helper",
-  "agent-launch-completion-protocol-bridge-digest", "agent-launch-completion-protocol-bridge-incomplete",
-  "agent-launch-completion-protocol-bridge-incomplete-no-clockchain-tool",
-  "agent-launch-completion-protocol-bridge-incomplete-clockchain-tool-incomplete",
-  "agent-launch-completion-protocol-bridge-incomplete-clockchain-tool-failed",
-  "agent-launch-completion-protocol-bridge-incomplete-mcp-failure",
-  "agent-launch-completion-protocol-bridge-incomplete-open-session",
-  "agent-launch-completion-permission-session",
-  "agent-launch-completion-permission-command-tool", "agent-launch-completion-permission-command-tool-after-authorization",
-  "agent-launch-completion-permission-command-input", "agent-launch-completion-permission-command-input-after-authorization",
-  "agent-launch-completion-permission-command-input-shape", "agent-launch-completion-permission-command-input-shape-after-authorization",
-  "agent-launch-completion-permission-command-input-description", "agent-launch-completion-permission-command-input-description-after-authorization",
-  "agent-launch-completion-permission-command-input-timeout", "agent-launch-completion-permission-command-input-timeout-after-authorization",
-  "agent-launch-completion-permission-command-input-background", "agent-launch-completion-permission-command-input-background-after-authorization",
-  "agent-launch-completion-permission-command-input-sandbox", "agent-launch-completion-permission-command-input-sandbox-after-authorization",
-  "agent-launch-completion-permission-command-cwd", "agent-launch-completion-permission-command-cwd-after-authorization",
-  "agent-launch-completion-permission-command-approval", "agent-launch-completion-permission-command-approval-after-authorization",
-  "agent-launch-completion-permission-command-approval-double-quoted", "agent-launch-completion-permission-command-approval-double-quoted-after-authorization",
-  "agent-launch-completion-permission-command-approval-whitespace", "agent-launch-completion-permission-command-approval-whitespace-after-authorization",
-  "agent-launch-completion-permission-command-approval-wrapped", "agent-launch-completion-permission-command-approval-wrapped-after-authorization",
-  "agent-launch-completion-permission-protocol", "agent-launch-completion-permission-registration",
-  "agent-launch-completion-permission-state", "agent-launch-completion-permission-options",
-  "agent-launch-completion-permission-unknown",
-  "agent-launch-completion-stop-cancelled", "agent-launch-completion-stop-max_tokens",
-  "agent-launch-completion-stop-max_turn_requests", "agent-launch-completion-stop-refusal",
-  "agent-launch-completion-stop-unknown", "evidence-validate",
+  ...ACP_PROCESS_TRANSPORT_FAILURE_STAGES.map((stage) => `agent-launch-${stage}`),
+  "evidence-validate",
   "evidence-validate-session", "evidence-validate-certificate", "evidence-validate-signers",
   "evidence-validate-anchors", "evidence-validate-deliveries", "evidence-validate-delivery", "certificate-event",
   "agent-terminate", "evidence-collect", "teardown",
@@ -138,7 +91,7 @@ function fail() { throw new Error(ERROR); }
 function sanitize(error) { if (error?.message === ERROR) throw error; fail(); }
 
 function stagedFailure(stage) {
-  if (!RUNTIME_FAILURE_STAGES.includes(stage)) fail();
+  if (!MECHANICS_PROOF_PARTY_RUNTIME_FAILURE_STAGES.includes(stage)) fail();
   const error = new Error(ERROR);
   RUNTIME_FAILURES.set(error, stage);
   return error;
