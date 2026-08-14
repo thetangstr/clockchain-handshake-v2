@@ -126,6 +126,7 @@ function partyBridgeFor(calls, { delayMs = 0, reject = false, completionStatus =
 }
 
 function acpFixtureSpawn({
+  agentMessageText = null,
   calls,
   closeState = null,
   concurrentHelperPermission = false,
@@ -263,6 +264,13 @@ function acpFixtureSpawn({
           } else {
             helperUpdate = sendHelperUpdate;
           }
+        }
+        if (agentMessageText !== null) {
+          const text = typeof agentMessageText === "function" ? agentMessageText(currentPromptCount) : agentMessageText;
+          await connection.sessionUpdate({
+            sessionId: params.sessionId,
+            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } },
+          });
         }
         if (!skipPermission) {
           await connection.sessionUpdate({
@@ -1524,6 +1532,159 @@ test("ACP transport executes authorized retained actions deterministically witho
   assert.doesNotMatch(continuation, /Bash|clockchain-agent-authorize/);
   assert.match(continuation, new RegExp(address));
   assert.match(continuation, new RegExp(policyDigest));
+});
+
+function deterministicWorkflowFixture({ decisionOverrides = {}, role = "initiator" } = {}) {
+  const calls = [];
+  const address = role === "initiator"
+    ? "0x1111111111111111111111111111111111111111"
+    : "0x2222222222222222222222222222222222222222";
+  const policyDigest = role === "initiator" ? "7".repeat(64) : "8".repeat(64);
+  const access = `ccra_${role === "initiator" ? "A".repeat(22) : "B".repeat(22)}`;
+  const signingOperation = role === "initiator" ? "proposal" : "acceptance";
+  const actions = ["init", "policy", "inspect", "sign"].map((operation, index) => retainedAction({
+    actionId: `${role}-bootstrap-${index}`,
+    commandSha256: String(index + (role === "initiator" ? 1 : 4)).repeat(64),
+    operation,
+    role,
+  }));
+  const outputs = {
+    init: { schema: "clockchain.agent-handshake-cli-result/v1", helperVersion: "2.1.3", operation: "init", address },
+    policy: { schema: "clockchain.agent-handshake-cli-result/v1", helperVersion: "2.1.3", operation: "policy", policyDigest },
+    inspect: { schema: "clockchain.agent-handshake-cli-result/v1", helperVersion: "2.1.3", operation: "inspect", address, policyDigest, registration: null },
+    sign: { schema: "clockchain.agent-handshake-cli-result/v1", helperVersion: "2.1.3", operation: "sign", address, bytesSha256: "9".repeat(64), signatureHex: `0x${"1".repeat(128)}1b` },
+  };
+  const setupResult = {
+    sessionId: SESSION,
+    ...(role === "initiator" ? { responderInvitation: INVITATION } : {}),
+    roleAccess: access,
+    structuredContent: { helperSteps: actions.slice(0, 3).map((action) => helperStepForAction(action)) },
+  };
+  const workflowClient = Object.freeze({
+    async invite(mandate) {
+      calls.push(["workflow.invite", mandate]);
+      return setupResult;
+    },
+    async acceptInvitation(input) {
+      calls.push(["workflow.acceptInvitation", input]);
+      return setupResult;
+    },
+    async join(input) {
+      calls.push(["workflow.join", input]);
+      return { role, sessionId: SESSION, stage: "sign_identity" };
+    },
+    async next(input) {
+      calls.push(["workflow.next", input]);
+      return {
+        stage: `sign_${signingOperation}`,
+        signingSummary: {
+          schema: "clockchain.agent-handshake-signing-summary/v1",
+          operation: signingOperation,
+          role,
+          sessionId: SESSION,
+          bytesSha256: "9".repeat(64),
+        },
+        structuredContent: { helperStep: helperStepForAction(actions[3]) },
+      };
+    },
+    async getCertificate() { throw new Error("model decision phase must not run through bootstrap"); },
+  });
+  const decision = {
+    schema: "clockchain.agent-handshake-decision/v1",
+    decision: "authorize",
+    role,
+    sessionId: SESSION,
+    operation: signingOperation,
+    mandateDigest: createHash("sha256").update(JSON.stringify(VALID_MANDATE)).digest("hex"),
+    policyDigest,
+    requestDigest: "9".repeat(64),
+    ...decisionOverrides,
+  };
+  const harness = role === "initiator" ? "codex" : "claude";
+  const pin = role === "initiator" ? ACP_VERSION_PINS.codex : ACP_VERSION_PINS.claude;
+  const transport = createAcpProcessTransport({
+    harness,
+    pin,
+    spawn: acpFixtureSpawn({ calls, skipPermission: true, agentMessageText: JSON.stringify(decision) }),
+    workspace: `/workspace/${role}`,
+    home: `/workspace/${role}/home`,
+    nowMs: () => 1786337001000,
+    actionRecorder: deterministicActionRecorderFor(actions, outputs, calls),
+    env: {},
+    partyBridge: partyBridgeFor(calls),
+    retainedActionPolicy: () => Object.freeze({ decision: "authorize" }),
+    trustedAdapterPublicKeys: actions.map((action) => action.adapterPublicKey),
+    workflowClient,
+  });
+  return Object.freeze({ access, address, calls, harness, pin, policyDigest, role, signingOperation, transport });
+}
+
+async function launchDeterministicWorkflowFixture(fixture) {
+  return fixture.transport.launch({
+    acp: fixture.pin,
+    runtime: { runtimeId: `runtime-${fixture.role}`, sessionId: SESSION, role: fixture.role, harness: fixture.harness },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig(fixture.role),
+  });
+}
+
+test("ACP transport bootstraps invite or acceptance and joins before the model receives a prompt", async () => {
+  for (const role of ["initiator", "responder"]) {
+    const fixture = deterministicWorkflowFixture({ role });
+    await launchDeterministicWorkflowFixture(fixture)
+      .catch((error) => assert.fail(`unexpected stage ${acpProcessTransportFailureStage(error)}`));
+
+    assert.deepEqual(fixture.calls.filter((entry) => Array.isArray(entry) && entry[0].startsWith("workflow.")), [
+      role === "initiator"
+        ? ["workflow.invite", VALID_MANDATE]
+        : ["workflow.acceptInvitation", { invitation: INVITATION }],
+      ["workflow.join", {
+        access: fixture.access,
+        helperVersion: "2.1.3",
+        sessionKeyAddress: fixture.address,
+        policyDigest: fixture.policyDigest,
+      }],
+      ["workflow.next", { access: fixture.access }],
+    ]);
+    const firstPrompt = fixture.calls.find((entry) => entry[0] === "prompt")[1].prompt[0].text;
+    assert.match(firstPrompt, /local policy decision/i);
+    assert.match(firstPrompt, new RegExp(fixture.signingOperation));
+    assert.doesNotMatch(firstPrompt, /agent_handshake_next|agent_handshake_invite|agent_handshake_accept_invitation/);
+    assert.doesNotMatch(firstPrompt, new RegExp(fixture.access));
+    assert.doesNotMatch(firstPrompt, new RegExp(INVITATION.replace(".", "\\.")));
+    if (role === "responder") {
+      const sessionOptions = fixture.calls.find((entry) => entry[0] === "newSession")[1]._meta.claudeCode.options;
+      assert.deepEqual(sessionOptions.tools, []);
+      assert.deepEqual(sessionOptions.mcpServers, {});
+      assert.deepEqual(sessionOptions.toolAliases, {});
+    }
+  }
+});
+
+test("ACP transport rejects denial and every mutated workflow decision binding before submission", async () => {
+  const cases = [
+    ["denial", { decision: "deny" }],
+    ["role", { role: "responder" }],
+    ["session", { sessionId: OTHER_SESSION }],
+    ["operation", { operation: "evidence" }],
+    ["mandate", { mandateDigest: "a".repeat(64) }],
+    ["policy", { policyDigest: "b".repeat(64) }],
+    ["request", { requestDigest: "c".repeat(64) }],
+  ];
+  for (const [name, decisionOverrides] of cases) {
+    const fixture = deterministicWorkflowFixture({ decisionOverrides });
+    await assert.rejects(
+      launchDeterministicWorkflowFixture(fixture),
+      (error) => acpProcessTransportFailureStage(error) === "workflow-decision",
+      name,
+    );
+    assert.equal(
+      fixture.calls.filter((entry) => Array.isArray(entry) && entry[0] === "partyBridge" && entry[1]?.toolName === "agent_handshake_next").length,
+      0,
+      `${name} must not submit the pending action`,
+    );
+  }
 });
 
 test("ACP deterministic adapter executes one exact retained action once across repeated MCP delivery", async () => {

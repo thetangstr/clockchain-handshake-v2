@@ -7,6 +7,18 @@ const ACCESS = `ccra_${"A".repeat(22)}`;
 const SIGNATURE = `0x${"1".repeat(128)}1b`;
 const DIGEST = "d".repeat(64);
 const SESSION_ID = "11111111-2222-4333-8444-555555555555";
+const INVITATION = `${"i".repeat(96)}.${"j".repeat(43)}`;
+const ADDRESS = "0x7564105e977516c53be337314c7e53838967bdac";
+const MANDATE = Object.freeze({
+  reference: "NS-1847",
+  statement: "Establish a stakeholder handshake",
+  validForSeconds: "90",
+  identityPolicy: Object.freeze({
+    erc8004: "required_existing_or_fresh",
+    chainId: "eip155:11155111",
+    registryAddress: "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+  }),
+});
 const checkpoint = Object.freeze({
   schema: "clockchain.agent-handshake-commitment-checkpoint/v1",
   version: 1,
@@ -137,4 +149,61 @@ test("private handshake client rejects malformed signature acknowledgements with
     /Clockchain checkpoint submission failed safely/,
   );
   assert.equal(calls, 1);
+});
+
+test("private handshake client owns the exact mechanical invite, accept, join, next, and certificate calls", async () => {
+  const calls = [];
+  const responses = [
+    { initiatorAccess: ACCESS, responderInvitation: INVITATION, sessionId: SESSION_ID },
+    { responderAccess: ACCESS, sessionId: SESSION_ID },
+    { role: "initiator", sessionId: SESSION_ID, stage: "sign_identity" },
+    { needed: "counterpart_identity", retryAfterMs: 5000, role: "initiator", sessionId: SESSION_ID, stage: "awaiting_counterpart" },
+    { needed: "certificate", retryAfterMs: 5000, sessionId: SESSION_ID, stage: "awaiting_certificate" },
+  ];
+  const client = createAgentHandshakeCheckpointClient({
+    endpoint: "https://mcp.clockchain.network/handshake/mcp",
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      const id = JSON.parse(init.body).id;
+      const structuredContent = responses.shift();
+      return new Response(JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        result: {
+          content: [{ type: "text", text: JSON.stringify(structuredContent) }],
+          structuredContent,
+        },
+      }), { status: 200 });
+    },
+    timeoutMs: 1_000,
+  });
+
+  assert.deepEqual(await client.invite(MANDATE), {
+    initiatorAccess: ACCESS,
+    responderInvitation: INVITATION,
+    sessionId: SESSION_ID,
+  });
+  assert.deepEqual(await client.acceptInvitation({ invitation: INVITATION }), {
+    responderAccess: ACCESS,
+    sessionId: SESSION_ID,
+  });
+  assert.deepEqual(await client.join({
+    access: ACCESS,
+    helperVersion: "2.1.3",
+    sessionKeyAddress: ADDRESS,
+    policyDigest: DIGEST,
+  }), { role: "initiator", sessionId: SESSION_ID, stage: "sign_identity" });
+  assert.equal((await client.next({ access: ACCESS })).needed, "counterpart_identity");
+  assert.equal((await client.getCertificate({ access: ACCESS })).needed, "certificate");
+
+  assert.deepEqual(calls.map(({ init }) => {
+    const body = JSON.parse(init.body);
+    return [body.params.name, body.params.arguments];
+  }), [
+    ["agent_handshake_invite", MANDATE],
+    ["agent_handshake_accept_invitation", { invitation: INVITATION }],
+    ["agent_handshake_join", { access: ACCESS, helperVersion: "2.1.3", sessionKeyAddress: ADDRESS, policyDigest: DIGEST }],
+    ["agent_handshake_next", { access: ACCESS }],
+    ["agent_handshake_get_certificate", { access: ACCESS }],
+  ]);
 });

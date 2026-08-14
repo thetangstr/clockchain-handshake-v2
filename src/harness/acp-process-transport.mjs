@@ -22,7 +22,7 @@ const ACTION_KEYS = Object.freeze([
 ]);
 const OPTION_KEYS = Object.freeze([
   "actionRecorder", "env", "harness", "home", "nowMs", "pin", "retainedActions",
-  "partyBridge", "publicEventSink", "retainedActionPolicy", "spawn", "trustedAdapterPublicKeys", "workspace",
+  "partyBridge", "publicEventSink", "retainedActionPolicy", "spawn", "trustedAdapterPublicKeys", "workflowClient", "workspace",
 ]);
 const TOOL_SERVER = "clockchain-handshake";
 const TOOL_PREFIX = "agent_handshake_";
@@ -34,6 +34,7 @@ const CLAUDE_CLOCKCHAIN_TOOL_ALIASES = Object.freeze(Object.fromEntries(
   [...CLAUDE_CLOCKCHAIN_PERMISSION_TOOLS].map((tool) => [tool, `mcp__${TOOL_SERVER}__${tool}`]),
 ));
 const CLAUDE_BUILTIN_TOOLS = Object.freeze(["Bash"]);
+const EMPTY_TOOL_CONFIGURATION = Object.freeze({});
 const CLAUDE_CLOCKCHAIN_MCP_SERVERS = Object.freeze({
   [TOOL_SERVER]: Object.freeze({
     type: "http",
@@ -52,6 +53,8 @@ const MAX_HELPER_COMMAND = 64 * 1024;
 const MAX_PROVISIONAL_TOOL_UPDATES = 16;
 const MAX_COMPLETION_PROMPTS = 24;
 const MAX_PERMISSION_DENIALS = 16;
+const MAX_AGENT_DECISION_BYTES = 4096;
+const WORKFLOW_DEADLINE_MS = 10 * 60_000;
 const INVITATION = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const SIGNATURE = /^0x[0-9a-fA-F]{130}$/;
@@ -74,6 +77,7 @@ const CLAUDE_BEDROCK_MODEL = "us.anthropic.claude-sonnet-4-6";
 const CLAUDE_SUBSCRIPTION_MODEL = "sonnet";
 export const ACP_PROCESS_TRANSPORT_FAILURE_STAGES = Object.freeze([
   "spawn", "stream", "initialize", "session", "model", "prompt", "completion",
+  "workflow-bootstrap-setup", "workflow-bootstrap-join", "workflow-next", "workflow-certificate", "workflow-decision",
   "completion-protocol", "completion-protocol-envelope", "completion-protocol-usage",
   "completion-protocol-tool-result", "completion-protocol-bridge", "completion-protocol-retained",
   "completion-protocol-retained-extract", "completion-protocol-retained-record", "completion-protocol-retained-register",
@@ -521,6 +525,52 @@ function continuationPromptText({
   ].join("\n");
 }
 
+function workflowSigningDecision(result, expectedRole, expectedSessionId, mandateDigest, policyDigest) {
+  const summary = exactObject(result?.signingSummary, ["bytesSha256", "operation", "role", "schema", "sessionId"]);
+  if (
+    summary.schema !== "clockchain.agent-handshake-signing-summary/v1" ||
+    !["proposal", "acceptance", "evidence"].includes(summary.operation) ||
+    summary.role !== expectedRole || summary.sessionId !== expectedSessionId || !SHA256.test(summary.bytesSha256)
+  ) fail();
+  return Object.freeze({
+    schema: "clockchain.agent-handshake-decision/v1",
+    decision: "authorize",
+    role: expectedRole,
+    sessionId: expectedSessionId,
+    operation: summary.operation,
+    mandateDigest,
+    policyDigest,
+    requestDigest: summary.bytesSha256,
+  });
+}
+
+function workflowDecisionPrompt(expected, mandate) {
+  return [
+    "Clockchain local policy decision.",
+    `Role: ${expected.role}`,
+    `Mandate: ${JSON.stringify(mandate)}`,
+    `Requested signed operation: ${expected.operation}`,
+    `Committed local policy digest: ${expected.policyDigest}`,
+    `The exact request bytes are already bound by the adapter; their digest is ${expected.requestDigest}.`,
+    "Evaluate this requested operation against the mandate and your local policy.",
+    `If authorized, return exactly this one-line JSON and nothing else: ${JSON.stringify(expected)}`,
+    "Otherwise return the same object with decision set to deny. Do not call tools and do not include reasoning.",
+  ].join("\n");
+}
+
+function parseWorkflowDecision(text, expected) {
+  if (typeof text !== "string" || Buffer.byteLength(text) < 2 || Buffer.byteLength(text) > MAX_AGENT_DECISION_BYTES) fail();
+  let parsed;
+  try { parsed = JSON.parse(text.trim()); } catch { fail(); }
+  const item = exactObject(parsed, ["decision", "mandateDigest", "operation", "policyDigest", "requestDigest", "role", "schema", "sessionId"]);
+  if (
+    item.schema !== expected.schema || item.decision !== "authorize" || item.mandateDigest !== expected.mandateDigest ||
+    item.operation !== expected.operation || item.policyDigest !== expected.policyDigest || item.requestDigest !== expected.requestDigest ||
+    item.role !== expected.role || item.sessionId !== expected.sessionId
+  ) fail();
+  return Object.freeze({ decision: "authorize" });
+}
+
 function safeUsage(value) {
   if (value === null || value === undefined) return Object.freeze({ inputTokens: "0", outputTokens: "0" });
   if (value === null || typeof value !== "object" || Array.isArray(value) || types.isProxy(value)) fail();
@@ -625,6 +675,18 @@ function cleanPartyBridge(value) {
   const item = exactObject(value, ["completionStatus", "observeToolResult"]);
   if (typeof item.completionStatus !== "function" || typeof item.observeToolResult !== "function") fail();
   return Object.freeze({ completionStatus: item.completionStatus, observeToolResult: item.observeToolResult });
+}
+
+function cleanWorkflowClient(value) {
+  if (value === undefined) return null;
+  if (value === null || typeof value !== "object" || Array.isArray(value) || types.isProxy(value)) fail();
+  const result = {};
+  for (const name of ["acceptInvitation", "getCertificate", "invite", "join", "next"]) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, name);
+    if (descriptor === undefined || !descriptor.enumerable || !Object.hasOwn(descriptor, "value") || typeof descriptor.value !== "function") fail();
+    result[name] = descriptor.value.bind(value);
+  }
+  return Object.freeze(result);
 }
 
 function parseToolName(update) {
@@ -875,7 +937,11 @@ function roleAccessFromToolResult(value, role, depth = 0, found = new Set()) {
   for (const key of keys) {
     const descriptor = descriptors[key];
     if (!descriptor.enumerable || !Object.hasOwn(descriptor, "value")) fail();
-    if (key === accessKey) {
+    if (key === "roleAccess") {
+      const access = descriptor.value;
+      if (typeof access !== "string" || !/^ccra_[A-Za-z0-9_-]{22}$/.test(access)) fail();
+      found.add(access);
+    } else if (key === accessKey) {
       const access = descriptor.value;
       if (typeof access !== "string" || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(access) || access.length > MAX_STRING) fail();
       found.add(access);
@@ -994,6 +1060,20 @@ export function createAcpProcessTransport(optionsInput = {}) {
   if (retainedActionPolicy !== null && typeof retainedActionPolicy !== "function") fail();
   if (actionRecorder?.executeAuthorizedAction != null && retainedActionPolicy === null) fail();
   const partyBridge = cleanPartyBridge(options.partyBridge);
+  const workflowClient = cleanWorkflowClient(options.workflowClient);
+  const claudeToolConfiguration = workflowClient === null
+    ? Object.freeze({
+      tools: CLAUDE_BUILTIN_TOOLS,
+      mcpServers: CLAUDE_CLOCKCHAIN_MCP_SERVERS,
+      strictMcpConfig: true,
+      toolAliases: CLAUDE_CLOCKCHAIN_TOOL_ALIASES,
+    })
+    : Object.freeze({
+      tools: Object.freeze([]),
+      mcpServers: EMPTY_TOOL_CONFIGURATION,
+      strictMcpConfig: true,
+      toolAliases: EMPTY_TOOL_CONFIGURATION,
+    });
   const publicEventSink = options.publicEventSink ?? (() => undefined);
   if (typeof publicEventSink !== "function") fail();
   for (const action of retainedActions) {
@@ -1036,6 +1116,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
   let protocolFailureStage = null;
   let sessionUpdateBarrier = Promise.resolve();
   let usage = Object.freeze({ inputTokens: "0", outputTokens: "0" });
+  let currentAgentMessage = "";
   const events = [];
   const retainedByCommand = new Map();
   const retainedRegistrationWaiters = new Map();
@@ -1284,6 +1365,13 @@ export function createAcpProcessTransport(optionsInput = {}) {
           usage = Object.freeze({ inputTokens: String(used), outputTokens: usage.outputTokens });
         }
       }
+      if (updateType === "agent_message_chunk") {
+        const content = exactObject(params.update.content, ["text", "type"]);
+        if (content.type !== "text" || typeof content.text !== "string" || Buffer.byteLength(content.text) < 1) fail();
+        const combined = `${currentAgentMessage}${content.text}`;
+        if (Buffer.byteLength(combined) > MAX_AGENT_DECISION_BYTES) fail();
+        currentAgentMessage = combined;
+      }
       if (updateType === "tool_call" || updateType === "tool_call_update") {
         failureStage = "tool-result";
         const helperDigest = typeof params.update.toolCallId === "string"
@@ -1300,6 +1388,10 @@ export function createAcpProcessTransport(optionsInput = {}) {
           authorizedHelperCalls.delete(params.update.toolCallId);
         }
         const clockchainToolName = parseToolName(params.update);
+        if (
+          workflowClient !== null && clockchainToolName !== null &&
+          !(typeof params.update.toolCallId === "string" && params.update.toolCallId.startsWith("clockchain-workflow-"))
+        ) fail();
         if (clockchainToolName !== null) clockchainToolUpdates += 1;
         if (clockchainToolName !== null && params.update.status === "failed") failedClockchainToolResults += 1;
         const completedClockchainToolResult = clockchainToolName !== null && params.update.status === "completed";
@@ -1419,6 +1511,23 @@ export function createAcpProcessTransport(optionsInput = {}) {
     sessionUpdateBarrier = current;
     return current;
   }
+  async function observeWorkflowResult(toolName, args, result) {
+    if (!CLAUDE_CLOCKCHAIN_PERMISSION_TOOLS.has(toolName) || acpSessionId === null) fail();
+    await sessionUpdate({
+      sessionId: acpSessionId,
+      update: {
+        sessionUpdate: "tool_call_update",
+        toolCallId: `clockchain-workflow-${toolName}`,
+        kind: "other",
+        title: toolName,
+        status: "completed",
+        rawInput: { server: TOOL_SERVER, tool: toolName, arguments: args },
+        rawOutput: { result, error: null },
+      },
+    });
+    await sessionUpdateBarrier;
+    if (protocolFailure) throw stagedLaunchFailure(`completion-protocol-${protocolFailureStage ?? "envelope"}`);
+  }
   return Object.freeze({
     async launch(input) {
       const launchOptions = exactObject(input, ["a2aConfig", "acp", "mandate", "mcpEndpoint", "runtime"]);
@@ -1449,6 +1558,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
       retainedRoleAccess = null;
       authorizedHelperCalls.clear();
       for (const key of Object.keys(helperPublic)) delete helperPublic[key];
+      currentAgentMessage = "";
       sessionUpdateBarrier = Promise.resolve();
       cancelRetainedRegistrationWaiters();
       retainedByCommand.clear();
@@ -1497,12 +1607,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
           ...(harness === "claude" ? {
             _meta: Object.freeze({
               claudeCode: Object.freeze({
-                options: Object.freeze({
-                  tools: CLAUDE_BUILTIN_TOOLS,
-                  mcpServers: CLAUDE_CLOCKCHAIN_MCP_SERVERS,
-                  strictMcpConfig: true,
-                  toolAliases: CLAUDE_CLOCKCHAIN_TOOL_ALIASES,
-                }),
+                options: claudeToolConfiguration,
               }),
             }),
           } : {}),
@@ -1524,9 +1629,63 @@ export function createAcpProcessTransport(optionsInput = {}) {
           event("acp.model.pinned", `pinned ${harness} ACP model`, `model:${provider.model}`);
         }
         event("acp.session.new", "created ACP session", digest(created.sessionId));
+        const workflowBootstrapped = workflowClient !== null;
+        if (workflowBootstrapped) {
+          launchStage = "workflow-bootstrap-setup";
+          const setupArgs = clean.role === "initiator"
+            ? cleanMandateValue
+            : Object.freeze({ invitation: cleanPeer.invitation });
+          const setupTool = clean.role === "initiator"
+            ? "agent_handshake_invite"
+            : "agent_handshake_accept_invitation";
+          const setupResult = clean.role === "initiator"
+            ? await workflowClient.invite(setupArgs)
+            : await workflowClient.acceptInvitation(setupArgs);
+          await observeWorkflowResult(setupTool, setupArgs, setupResult);
+          if (
+            protocolSessionId === null || retainedRoleAccess === null ||
+            helperPublic.inspect?.helperVersion !== "2.1.3" ||
+            !ADDRESS.test(helperPublic.inspect?.address) || !SHA256.test(helperPublic.inspect?.policyDigest)
+          ) fail();
+          launchStage = "workflow-bootstrap-join";
+          const joinArgs = Object.freeze({
+            access: retainedRoleAccess,
+            helperVersion: helperPublic.inspect.helperVersion,
+            sessionKeyAddress: helperPublic.inspect.address,
+            policyDigest: helperPublic.inspect.policyDigest,
+          });
+          const joinResult = await workflowClient.join(joinArgs);
+          await observeWorkflowResult("agent_handshake_join", joinArgs, joinResult);
+        }
         let promptUsage = Object.freeze({ inputTokens: "0", outputTokens: "0" });
         let bridgeComplete = false;
         let bridgeProgress = null;
+        const mandateDigest = digestJson(cleanMandateValue);
+        const workflowStartedAtMs = now();
+        function updateBridgeProgress() {
+          if (partyBridge === null) {
+            bridgeComplete = true;
+            return;
+          }
+          const status = exactObject(partyBridge.completionStatus(), [
+            "certificatePending", "certificateVerified", "complete", "directDeliveryComplete", "protocolSessionId",
+          ]);
+          if (
+            typeof status.complete !== "boolean" || typeof status.certificatePending !== "boolean" ||
+            typeof status.certificateVerified !== "boolean" || typeof status.directDeliveryComplete !== "boolean" ||
+            status.certificatePending && status.certificateVerified ||
+            status.complete && (!status.certificateVerified || !status.directDeliveryComplete) ||
+            !(status.protocolSessionId === null || typeof status.protocolSessionId === "string" && status.protocolSessionId.length > 0) ||
+            (protocolSessionId !== null && status.protocolSessionId !== protocolSessionId)
+          ) fail();
+          if (status.protocolSessionId !== null) protocolSessionId = status.protocolSessionId;
+          bridgeProgress = Object.freeze({
+            certificatePending: status.certificatePending,
+            certificateVerified: status.certificateVerified,
+            directDeliveryComplete: status.directDeliveryComplete,
+          });
+          bridgeComplete = status.complete;
+        }
         for (let promptAttempt = 0; promptAttempt < MAX_COMPLETION_PROMPTS && !bridgeComplete; promptAttempt += 1) {
           if (harness === "claude" && promptAttempt > 0) {
             launchStage = "session";
@@ -1540,12 +1699,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
               mcpServers: [],
               _meta: Object.freeze({
                 claudeCode: Object.freeze({
-                  options: Object.freeze({
-                    tools: CLAUDE_BUILTIN_TOOLS,
-                    mcpServers: CLAUDE_CLOCKCHAIN_MCP_SERVERS,
-                    strictMcpConfig: true,
-                    toolAliases: CLAUDE_CLOCKCHAIN_TOOL_ALIASES,
-                  }),
+                  options: claudeToolConfiguration,
                 }),
               }),
             });
@@ -1557,13 +1711,56 @@ export function createAcpProcessTransport(optionsInput = {}) {
             for (const update of provisionalToolUpdates.splice(0)) await sessionUpdate(update);
             event("acp.session.new", "created Claude continuation ACP session", digest(continuationSession.sessionId));
           }
+          let workflowPending = null;
+          let expectedDecision = null;
+          if (workflowBootstrapped) {
+            for (;;) {
+              if (now() - workflowStartedAtMs > WORKFLOW_DEADLINE_MS || retainedRoleAccess === null || protocolSessionId === null) {
+                launchStage = "workflow-next";
+                fail();
+              }
+              launchStage = "workflow-next";
+              const nextArgs = Object.freeze({ access: retainedRoleAccess });
+              const nextResult = await workflowClient.next(nextArgs);
+              if (nextResult?.signingSummary !== undefined) {
+                expectedDecision = workflowSigningDecision(
+                  nextResult,
+                  clean.role,
+                  protocolSessionId,
+                  mandateDigest,
+                  helperPublic.inspect.policyDigest,
+                );
+                workflowPending = Object.freeze({ args: nextArgs, result: nextResult, toolName: "agent_handshake_next" });
+                break;
+              }
+              if (nextResult?.certificateSummary !== undefined) {
+                launchStage = "workflow-certificate";
+                const certificateArgs = Object.freeze({ access: retainedRoleAccess });
+                const certificateResult = await workflowClient.getCertificate(certificateArgs);
+                await observeWorkflowResult("agent_handshake_get_certificate", certificateArgs, certificateResult);
+              } else {
+                await observeWorkflowResult("agent_handshake_next", nextArgs, nextResult);
+              }
+              updateBridgeProgress();
+              if (bridgeComplete) break;
+              const retryAfterMs = nextResult?.retryAfterMs;
+              if (retryAfterMs !== undefined) {
+                if (!Number.isSafeInteger(retryAfterMs) || retryAfterMs < 1 || retryAfterMs > 10_000) fail();
+                await wait(retryAfterMs);
+              }
+            }
+            if (bridgeComplete) break;
+          }
           recoverablePermissionCancellation = false;
+          currentAgentMessage = "";
           launchStage = "prompt";
           const prompted = await connection.prompt({
             sessionId: acpSessionId,
             prompt: [{
               type: "text",
-              text: promptAttempt === 0
+              text: workflowBootstrapped
+                ? workflowDecisionPrompt(expectedDecision, cleanMandateValue)
+                : promptAttempt === 0
                 ? promptText({
                   role: clean.role,
                   sessionId: clean.sessionId,
@@ -1606,31 +1803,13 @@ export function createAcpProcessTransport(optionsInput = {}) {
             fail();
           }
           promptUsage = addUsage(promptUsage, safeUsage(prompted.usage));
-          if (partyBridge === null) {
-            bridgeComplete = true;
-          } else {
-            launchStage = "completion-protocol-bridge-incomplete";
-            const status = exactObject(partyBridge.completionStatus(), [
-              "certificatePending", "certificateVerified", "complete", "directDeliveryComplete", "protocolSessionId",
-            ]);
-            if (
-              typeof status.complete !== "boolean" ||
-              typeof status.certificatePending !== "boolean" ||
-              typeof status.certificateVerified !== "boolean" ||
-              typeof status.directDeliveryComplete !== "boolean" ||
-              status.certificatePending && status.certificateVerified ||
-              status.complete && (!status.certificateVerified || !status.directDeliveryComplete) ||
-              !(status.protocolSessionId === null || typeof status.protocolSessionId === "string" && status.protocolSessionId.length > 0) ||
-              (protocolSessionId !== null && status.protocolSessionId !== protocolSessionId)
-            ) fail();
-            if (status.protocolSessionId !== null) protocolSessionId = status.protocolSessionId;
-            bridgeProgress = Object.freeze({
-              certificatePending: status.certificatePending,
-              certificateVerified: status.certificateVerified,
-              directDeliveryComplete: status.directDeliveryComplete,
-            });
-            bridgeComplete = status.complete;
+          if (workflowBootstrapped) {
+            launchStage = "workflow-decision";
+            parseWorkflowDecision(currentAgentMessage, expectedDecision);
+            await observeWorkflowResult(workflowPending.toolName, workflowPending.args, workflowPending.result);
           }
+          launchStage = "completion-protocol-bridge-incomplete";
+          updateBridgeProgress();
           if (!bridgeComplete && promptAttempt + 1 < MAX_COMPLETION_PROMPTS) {
             event("acp.handshake.continue", "continued incomplete Clockchain handshake", String(promptAttempt + 1));
           }
@@ -1651,7 +1830,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
         completed = true;
         event("acp.prompt.end_turn", "ACP prompt completed end_turn", digestJson(usage));
         return Object.freeze({ sessionId: clean.sessionId, role: clean.role, harness });
-      } catch {
+      } catch (error) {
         cancelRetainedRegistrationWaiters();
         try {
           if (!childExited(child, childMonitor) && typeof child?.kill === "function") {
@@ -1664,7 +1843,8 @@ export function createAcpProcessTransport(optionsInput = {}) {
         } catch {
           // The public failure remains generic; teardown proof is handled by collectEvidence.
         }
-        throw stagedLaunchFailure(launchStage);
+        const nestedStage = acpProcessTransportFailureStage(error);
+        throw nestedStage === null ? stagedLaunchFailure(launchStage) : error;
       }
     },
     async executeRetainedAction(input) {

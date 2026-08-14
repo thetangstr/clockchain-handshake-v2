@@ -418,9 +418,9 @@ Not-tested: Workload attestations are provider-profile responsibilities."
 - Create: `/private/tmp/ephemeral-agent-community/packages/harness-contract/src/events.mjs`
 - Create: `/private/tmp/ephemeral-agent-community/packages/harness-contract/test/contract.test.mjs`
 
-- [ ] Write RED fixtures requiring `inspect`, `createFreshSession`, `configureMcp`, `prompt`, `requestAuthorization`, `executeAuthorizedAction`, `cancel`, `collectEvidence`, and `destroy`; assert context freshness, exact tool allowlists, event order, permission correlation, and no transcript-as-success.
+- [ ] Write RED fixtures requiring `inspect`, `createFreshSession`, `configureWorkflowClient`, `promptForDecision`, `requestAuthorization`, `executeAuthorizedAction`, `cancel`, `collectEvidence`, and `destroy`; assert context freshness, event order, permission correlation, and no transcript-as-success. In deterministic workflow mode, assert the model receives an empty workflow-tool surface and never receives MCP credentials, role capabilities, invitation tokens, helper commands, signing payloads, or signatures.
 - [ ] Run focused RED.
-- [ ] Implement `defineHarnessAdapter`, CloudEvents-compatible normalization, and strict terminal result validation. An authorized action contains payload digest and state digest; the model never sees signer output.
+- [ ] Implement `defineHarnessAdapter`, CloudEvents-compatible normalization, and strict terminal result validation. The adapter owns workflow bootstrap, state reads, bounded waits/retries, idempotent submission, and certificate retrieval through an injected typed client. An authorized action contains mandate, local-policy, workflow-state, and request-byte digests; the model returns only an exact authorization or denial and never sees signer output.
 - [ ] Run GREEN and commit with Lore intent `Put deterministic action execution behind every harness`.
 
 ### Task 9: Implement workflow-state and authority contracts
@@ -432,9 +432,9 @@ Not-tested: Workload attestations are provider-profile responsibilities."
 - Create: `/private/tmp/ephemeral-agent-community/packages/workflow-contract/test/state-client.test.mjs`
 - Create: `/private/tmp/ephemeral-agent-community/packages/workflow-contract/test/authority.test.mjs`
 
-- [ ] Write RED tests for read-state, allowed-action selection, policy denial, state-digest binding, local authorization, exclusive party signing, deterministic submission, idempotency, stale/replay rejection, and controller/coordinator impersonation negatives.
+- [ ] Write RED tests for bootstrap/admission, read-state, allowed-action selection, policy denial, mandate/local-policy/state/request-digest binding, local authorization, exclusive party signing, deterministic submission, idempotency, stale/replay rejection, direct model tool-call rejection, and controller/coordinator impersonation negatives.
 - [ ] Run focused RED.
-- [ ] Implement the six-step state loop from the design. The state client accepts injected read/submit functions; the signer accepts injected `signExactBytes`; the adapter submits the returned artifact directly.
+- [ ] Implement the six-step state loop from the design. The state client accepts injected bootstrap/read/submit/certificate functions; the signer accepts injected `signExactBytes`; the adapter submits the returned artifact directly. The model-facing decision port is separate from the transport port and cannot receive private capabilities or execute workflow calls.
 - [ ] Run GREEN and commit with Lore intent `Keep decisions probabilistic and protocol actions deterministic`.
 
 ### Task 10: Implement portable bootstrap, A2A, and MCP bindings

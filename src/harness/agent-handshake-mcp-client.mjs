@@ -7,6 +7,8 @@ const ACCESS = /^ccra_[A-Za-z0-9_-]{22}$/;
 const SIGNATURE = /^0x[0-9a-f]{130}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const INVITATION = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const ROLES = Object.freeze(["initiator", "responder"]);
 const SIGNATURE_STAGES = Object.freeze(["identity_claimed", "proposal_submitted", "acceptance_submitted", "evidence_submitted"]);
 const MAX_RESPONSE_BYTES = 64 * 1024;
@@ -112,6 +114,44 @@ export function createAgentHandshakeCheckpointClient(options = {}) {
       return parseToolResult(parseSseJsonRpc(text, { expectedId: id }));
     }
     return Object.freeze({
+      async invite(input) {
+        try {
+          const mandate = exact(input, ["identityPolicy", "reference", "statement", "validForSeconds"]);
+          exact(mandate.identityPolicy, ["chainId", "erc8004", "registryAddress"]);
+          return Object.freeze(clone(await callTool("agent_handshake_invite", mandate)));
+        } catch { fail(); }
+      },
+      async acceptInvitation(input) {
+        try {
+          const supplied = exact(input, ["invitation"]);
+          if (typeof supplied.invitation !== "string" || !INVITATION.test(supplied.invitation)) fail();
+          return Object.freeze(clone(await callTool("agent_handshake_accept_invitation", supplied)));
+        } catch { fail(); }
+      },
+      async join(input) {
+        try {
+          const supplied = exact(input, ["access", "helperVersion", "policyDigest", "sessionKeyAddress"]);
+          if (
+            !ACCESS.test(supplied.access) || supplied.helperVersion !== "2.1.3" ||
+            !DIGEST.test(supplied.policyDigest) || !ADDRESS.test(supplied.sessionKeyAddress)
+          ) fail();
+          return Object.freeze(clone(await callTool("agent_handshake_join", supplied)));
+        } catch { fail(); }
+      },
+      async next(input) {
+        try {
+          const supplied = exact(input, ["access"]);
+          if (!ACCESS.test(supplied.access)) fail();
+          return Object.freeze(clone(await callTool("agent_handshake_next", supplied)));
+        } catch { fail(); }
+      },
+      async getCertificate(input) {
+        try {
+          const supplied = exact(input, ["access"]);
+          if (!ACCESS.test(supplied.access)) fail();
+          return Object.freeze(clone(await callTool("agent_handshake_get_certificate", supplied)));
+        } catch { fail(); }
+      },
       async submitCheckpoint(input) {
         try {
           const supplied = exact(input, ["access", "artifactSignatureHex", "checkpoint"]);

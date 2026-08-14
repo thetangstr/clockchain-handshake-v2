@@ -677,6 +677,7 @@ export async function createMechanicsProofPartyRuntime(optionsInput = {}, depend
             },
             retainedActionPolicy: () => Object.freeze({ decision: "authorize" }),
             trustedAdapterPublicKeys: [actionRecorder.trustedAdapterPublicKey],
+            workflowClient: checkpointClient,
             workspace: paths.workspace,
           });
           runStage = "adapter-create";

@@ -161,7 +161,13 @@ function dependencies(calls, overrides = {}) {
         async close() { calls.push("recorder.close"); },
       };
     },
-    createCheckpointClient() { calls.push("checkpoint.create"); return { submitCheckpoint() {} }; },
+    createCheckpointClient() {
+      calls.push("checkpoint.create");
+      return {
+        acceptInvitation() {}, getCertificate() {}, invite() {}, join() {}, next() {},
+        submitCheckpoint() {}, submitSignature() {},
+      };
+    },
     createBridge() {
       calls.push("bridge.create");
       return {
@@ -803,17 +809,24 @@ test("party runtime constructs the strict production checkpoint client explicitl
   const root = join(parent, "responder");
   t.after(() => rm(parent, { recursive: true, force: true }));
   let observed;
+  let observedWorkflowClient;
+  const client = Object.freeze({
+    acceptInvitation() {}, getCertificate() {}, invite() {}, join() {}, next() {},
+    submitCheckpoint() {}, submitSignature() {},
+  });
   const runtime = await createMechanicsProofPartyRuntime(options(root), dependencies([], {
     createCheckpointClient(input) {
       observed = input;
-      return { submitCheckpoint() {} };
+      return client;
     },
+    createProcessTransport(input) { observedWorkflowClient = input.workflowClient; return {}; },
   }));
   await runtime.run({ peerDescriptor: peerDescriptor() });
   assert.deepEqual(Object.keys(observed).sort(), ["endpoint", "fetchImpl", "timeoutMs"]);
   assert.equal(observed.endpoint, "https://mcp.clockchain.network/handshake/mcp");
   assert.equal(observed.fetchImpl, globalThis.fetch);
   assert.equal(observed.timeoutMs, 15_000);
+  assert.equal(observedWorkflowClient, client);
 });
 
 test("party runtime gives checkpoint construction its own failure stage", async (t) => {

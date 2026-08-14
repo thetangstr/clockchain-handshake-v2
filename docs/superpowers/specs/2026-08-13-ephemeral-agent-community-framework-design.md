@@ -110,6 +110,10 @@ A runtime adapter creates and destroys an isolated execution environment. It rep
 
 A harness adapter controls a specific agent harness. It starts a fresh session, configures allowed MCP servers and tools, submits the mandate or invitation, streams normalized events, mediates explicit permission requests, executes typed locally authorized actions, supports cancellation, and returns a normalized result.
 
+The adapter, not the model, owns workflow transport and progression. It invokes bootstrap, invitation acceptance, role admission, authoritative-state reads, retries, idempotent submissions, certificate retrieval, and terminal-state checks through a typed workflow client. In deterministic workflow mode, the model receives no MCP credential, role capability, invitation token, signer payload, helper command, or workflow tool surface. The adapter may expose only a compact decision request whose exact run, role, operation, mandate, committed local policy, workflow state, and request bytes are bound by digests.
+
+The model's response is an exact typed authorization or denial. It cannot change any binding, invoke the workflow itself, or return a signature. Setup, ephemeral party-key creation, optional identity registration, signing, submission, and certificate verification execute locally under deterministic policy and retained authorization records. A model-originated workflow tool call while this mode is active is an adapter-protocol failure.
+
 ACP is the preferred control protocol for Codex and Claude Code. Native adapters are allowed when the harness lacks ACP, provided they emit the same EACF events and satisfy the same authorization tests.
 
 ### 4.4 Workflow profile
@@ -252,6 +256,13 @@ The protocol client exposes a compact typed loop:
 The client must reject stale actions, unexpected role changes, cross-run identifiers, expired requests, duplicate non-idempotent submissions, and state transitions not permitted by the workflow profile.
 
 Prompts describe goals, local policy, and business context. They do not encode a procedural list of MCP calls, opaque payloads, provider commands, or retry loops. Recovery behavior comes from the adapter and workflow-state protocol.
+
+The portable client therefore has two distinct interfaces:
+
+- A deterministic transport interface for bootstrap, admission, state reads, waits, retries, authorized submission, and completion verification.
+- A decision interface that presents only exact digest-bound business choices to the model and accepts only a schema-valid authorization or denial.
+
+Implementations must prove by negative tests that a model cannot obtain or replay a role capability, bypass a local policy, mutate a requested action, call a workflow tool directly, or cause the adapter to submit an action twice.
 
 ## 9. Capability negotiation
 
