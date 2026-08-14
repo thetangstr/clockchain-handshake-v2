@@ -38,24 +38,6 @@ const FUND = parseEther("0.01");
 const TRANSFER_EVENT = parseAbiItem(
   "event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)",
 );
-const DEFAULT_TERMS = Object.freeze({
-  reference: "NS-1847",
-  statement: "Northstar Logistics and Harbor Supply authorize these two independently controlled agents to communicate about shipment reference NS-1847 for 90 seconds.",
-  validForSeconds: "90",
-  identityPolicy: Object.freeze({
-    erc8004: "required_fresh",
-    chainId: "eip155:11155111",
-    registryAddress: "0x8004a818bfb912233c491871b3d84c89a494bd9e",
-  }),
-});
-
-function termsFromEnvironment(env) {
-  if (!env.AGENT_HANDSHAKE_V2_TERMS) return DEFAULT_TERMS;
-  let parsed;
-  try { parsed = JSON.parse(env.AGENT_HANDSHAKE_V2_TERMS); } catch { throw new Error("AGENT_HANDSHAKE_V2_TERMS_INVALID"); }
-  return validateAgentHandshakeV2Terms(parsed);
-}
-
 function positiveInteger(value, fallback) {
   const parsed = Number(value ?? fallback);
   if (!Number.isSafeInteger(parsed) || parsed < 1) {
@@ -106,7 +88,6 @@ export async function loadAgentHandshakeV2Session({
     root,
   });
   const relayUrl = env.HANDSHAKE_RELAY ?? DEFAULT_RELAY;
-  const terms = termsFromEnvironment(env);
   const publicClient = publicClientOverride ?? createPublicClient({
     chain: sepolia,
     transport: http(env.SEPOLIA_RPC_URL ?? RPC_URL),
@@ -140,7 +121,6 @@ export async function loadAgentHandshakeV2Session({
     sessionId,
     sessionOpenedAtMs,
     sessionOpenedBlock,
-    terms,
   });
 }
 
@@ -192,16 +172,29 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
       role: "host",
       sessionId: session.sessionId,
     }));
-  const monitor = overrides.monitor ?? createAgentHandshakeV2Monitor({
-    now,
-    publish: (snapshot) => relayClient.putSnapshot({
-      relayUrl: session.relayUrl,
-      retryBudgetMs: 30_000,
-      sessionId: session.sessionId,
-      snapshot,
-    }),
-    session,
-  });
+  let monitor = overrides.monitor ?? null;
+  let selectedInvitation = null;
+  function monitorPort() {
+    if (monitor === null) throw new Error("AGENT_HANDSHAKE_V2_INVITATION_INVALID");
+    return monitor;
+  }
+  function ensureMonitor(invitation) {
+    monitor ??= createAgentHandshakeV2Monitor({
+      now,
+      publish: (snapshot) => relayClient.putSnapshot({
+        relayUrl: session.relayUrl,
+        retryBudgetMs: 30_000,
+        sessionId: session.sessionId,
+        snapshot,
+      }),
+      session: Object.freeze({
+        ...session,
+        invitationCreatedAtMs: invitation.createdAtMs,
+        terms: invitation.terms,
+      }),
+    });
+    return monitor;
+  }
 
   const store = overrides.fundingStore ?? createFileFundingBudgetStore({
     path: process.env.AGENT_HANDSHAKE_V2_FUNDING_LEDGER ??
@@ -357,6 +350,33 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
     awaitEvidence: async (role) =>
       (await waitForMessage("agent_v2_evidence", role)).body.evidenceEnvelope,
     awaitInvitationClaimed: async () => {
+      const createdMessage = await waitForMessage(
+        "agent_v2_invitation_created",
+        "initiator",
+        session.invitationExpiresAtMs,
+      );
+      const createdBody = createdMessage.body;
+      if (
+        createdBody === null || typeof createdBody !== "object" ||
+        Array.isArray(createdBody) ||
+        Object.keys(createdBody).sort().join(",") !==
+          "createdAtMs,externalBusinessActionPerformed,statementDigest,terms" ||
+        typeof createdBody.createdAtMs !== "string" ||
+        !/^(?:0|[1-9][0-9]*)$/.test(createdBody.createdAtMs) ||
+        typeof createdBody.statementDigest !== "string" ||
+        !/^[0-9a-f]{64}$/.test(createdBody.statementDigest) ||
+        createdBody.externalBusinessActionPerformed !== false
+      ) throw new Error("AGENT_HANDSHAKE_V2_INVITATION_INVALID");
+      let terms;
+      try { terms = validateAgentHandshakeV2Terms(createdBody.terms); }
+      catch { throw new Error("AGENT_HANDSHAKE_V2_INVITATION_INVALID"); }
+      const createdAtMs = Number(createdBody.createdAtMs);
+      if (
+        !Number.isSafeInteger(createdAtMs) ||
+        createdAtMs < session.sessionOpenedAtMs ||
+        createdAtMs >= session.invitationExpiresAtMs ||
+        createdBody.statementDigest !== agentHandshakeV2StatementDigest(terms)
+      ) throw new Error("AGENT_HANDSHAKE_V2_INVITATION_INVALID");
       const message = await waitForMessage(
         "agent_v2_invitation_claimed",
         "responder",
@@ -374,11 +394,16 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
       const claimedAtMs = Number(body.claimedAtMs);
       if (
         !Number.isSafeInteger(claimedAtMs) ||
-        claimedAtMs < session.sessionOpenedAtMs ||
+        claimedAtMs < createdAtMs ||
         claimedAtMs >= session.invitationExpiresAtMs
       ) throw new Error("AGENT_HANDSHAKE_V2_INVITATION_CLAIM_INVALID");
-      await monitor.invitationClaimed(claimedAtMs);
-      return claimedAtMs;
+      selectedInvitation = Object.freeze({
+        claimedAtMs,
+        createdAtMs,
+        statementDigest: createdBody.statementDigest,
+        terms,
+      });
+      return selectedInvitation;
     },
     awaitIdentityClaim: async (role) => {
       const message = await waitForMessage("agent_v2_identity_claim", role);
@@ -388,10 +413,10 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
           expectedRepositorySha: session.repositorySha,
           expectedRole: role,
           expectedSessionId: session.sessionId,
-          expectedStatementDigest: agentHandshakeV2StatementDigest(session.terms),
+          expectedStatementDigest: selectedInvitation?.statementDigest,
         },
       );
-      await monitor.identityClaimed(role, verified.claim);
+      await monitorPort().identityClaimed(role, verified.claim);
       return Object.freeze({
         policyDigest: verified.claim.policyDigest,
         sessionKeyAddress: verified.claim.sessionKeyAddress,
@@ -418,15 +443,23 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
         retryBudgetMs: 30_000,
         sessionId: session.sessionId,
       })),
-    publishInitial: () => monitor.start(),
-    partiesReady: (parties) => monitor.partiesReady(parties),
-    proposalSigned: (envelope) => monitor.proposalSigned(envelope),
-    acceptanceSigned: (envelope) => monitor.acceptanceSigned(envelope),
-    anchorsRecorded: (report) => monitor.anchorsRecorded(report),
-    evidenceReceived: (role, envelope) => monitor.evidenceReceived(role, envelope),
-    checkerStage: (stage) => monitor.checkerStage(stage),
-    failed: (reasonCode) => monitor.failed(reasonCode),
-    certificateIssued: (envelope) => monitor.certificateIssued(envelope),
+    publishInitial: async (invitation) => {
+      if (
+        selectedInvitation === null ||
+        JSON.stringify(invitation) !== JSON.stringify(selectedInvitation)
+      ) throw new Error("AGENT_HANDSHAKE_V2_INVITATION_INVALID");
+      const activeMonitor = ensureMonitor(selectedInvitation);
+      await activeMonitor.start();
+      await activeMonitor.invitationClaimed(selectedInvitation.claimedAtMs);
+    },
+    partiesReady: (parties) => monitorPort().partiesReady(parties),
+    proposalSigned: (envelope) => monitorPort().proposalSigned(envelope),
+    acceptanceSigned: (envelope) => monitorPort().acceptanceSigned(envelope),
+    anchorsRecorded: (report) => monitorPort().anchorsRecorded(report),
+    evidenceReceived: (role, envelope) => monitorPort().evidenceReceived(role, envelope),
+    checkerStage: (stage) => monitorPort().checkerStage(stage),
+    failed: (reasonCode) => monitorPort().failed(reasonCode),
+    certificateIssued: (envelope) => monitorPort().certificateIssued(envelope),
     reserveFunding: (input) => fundingBudget.reserve(input),
     resolveRegistration:
       overrides.resolveRegistration ?? defaultResolveRegistration,

@@ -38,7 +38,10 @@ export function createAgentHandshakeV2Monitor({ now = Date.now, publish, session
       sessionDeadlineMs: session.sessionDeadlineMs,
       agreementValidForSeconds: session.terms.validForSeconds,
     },
-    invitation: { createdAtMs: session.sessionOpenedAtMs, responderClaimedAtMs: null },
+    invitation: {
+      createdAtMs: session.invitationCreatedAtMs ?? session.sessionOpenedAtMs,
+      responderClaimedAtMs: null,
+    },
     terms: {
       reference: session.terms.reference,
       statement: session.terms.statement,

@@ -32,7 +32,7 @@ test("production session publishes a root-signed host key before discovery with 
   assert.equal(session.protocol, "clockchain.agent-handshake/v2");
   assert.equal(session.sessionDeadlineMs, now + 10 * 60_000);
   assert.equal(session.invitationExpiresAtMs, now + 120_000);
-  assert.equal(session.terms.validForSeconds, "90");
+  assert.equal(Object.hasOwn(session, "terms"), false);
   assert.equal(session.sessionOpenedBlock, "6999");
   assert.equal(calls.length, 1);
   assert.equal(calls[0].discovery.sessionOpenedBlock, "6999");
@@ -64,6 +64,12 @@ test("production ports map only role-tagged v2 messages and reserve before fundi
     externalBusinessActionPerformed: false,
   };
   const messages = {
+    agent_v2_invitation_created: { body: {
+      createdAtMs: "1786337000000",
+      externalBusinessActionPerformed: false,
+      statementDigest: agentHandshakeV2StatementDigest(TERMS),
+      terms: TERMS,
+    } },
     agent_v2_invitation_claimed: { body: {
       claimedAtMs: "1786337000001",
       externalBusinessActionPerformed: false,
@@ -106,8 +112,16 @@ test("production ports map only role-tagged v2 messages and reserve before fundi
       return messages[kind];
     },
   });
-  assert.equal(await ports.awaitInvitationClaimed(), 1786337000001);
-  assert.deepEqual(seen[0], ["wait", "agent_v2_invitation_claimed", "responder", 1786337120000]);
+  assert.deepEqual(await ports.awaitInvitationClaimed(), {
+    claimedAtMs: 1786337000001,
+    createdAtMs: 1786337000000,
+    statementDigest: agentHandshakeV2StatementDigest(TERMS),
+    terms: TERMS,
+  });
+  assert.deepEqual(seen.slice(0, 2), [
+    ["wait", "agent_v2_invitation_created", "initiator", 1786337120000],
+    ["wait", "agent_v2_invitation_claimed", "responder", 1786337120000],
+  ]);
   assert.deepEqual(await ports.awaitCommitmentCheckpoint("initiator"), { ok: "checkpoint" });
   assert.equal((await ports.awaitIdentityClaim("initiator")).policyDigest, "a".repeat(64));
   assert.deepEqual(await ports.awaitProposal(), { ok: "proposal" });
@@ -160,6 +174,37 @@ test("production funding configuration enforces the deployed queue cap", async (
     if (previous === undefined) delete process.env.AGENT_HANDSHAKE_V2_FUNDING_QUEUE_LIMIT;
     else process.env.AGENT_HANDSHAKE_V2_FUNDING_QUEUE_LIMIT = previous;
   }
+});
+
+test("production ports reject an invitation whose terms and digest diverge before waiting for a claim", async () => {
+  const waits = [];
+  const ports = await createAgentHandshakeV2HostPorts({
+    invitationExpiresAtMs: 1786337120000,
+    protocol: "clockchain.agent-handshake/v2",
+    relayUrl: "https://relay.test",
+    repositorySha: REPOSITORY_SHA,
+    sessionDeadlineMs: 1786337600000,
+    sessionId: SESSION_ID,
+    sessionOpenedAtMs: 1786337000000,
+  }, {
+    fundingStore: { load: async () => [], save: async () => {} },
+    publicClient: {},
+    relayClient: { generateEnvelopeKeyPair: () => ({}) },
+    waitForMessage: async (kind) => {
+      waits.push(kind);
+      return { body: {
+        createdAtMs: "1786337000001",
+        externalBusinessActionPerformed: false,
+        statementDigest: "0".repeat(64),
+        terms: TERMS,
+      } };
+    },
+  });
+  await assert.rejects(
+    () => ports.awaitInvitationClaimed(),
+    /AGENT_HANDSHAKE_V2_INVITATION_INVALID/,
+  );
+  assert.deepEqual(waits, ["agent_v2_invitation_created"]);
 });
 
 test("production registration proof uses the exact receipt instead of an unbounded log scan", async () => {

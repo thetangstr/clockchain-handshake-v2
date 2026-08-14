@@ -8,7 +8,8 @@ import {
   prepareAgentHandshakeV2Identities,
   runAgentHandshakeV2HostSession,
 } from "../src/agent-handshake/v2/host.mjs";
-import { buildV2Fixture, INITIATOR, RESPONDER, SESSION_ID, SESSION_OPENED_BLOCK, buildV2Fixture as fixtureFactory } from "./support/agent-handshake-v2-fixture.mjs";
+import { agentHandshakeV2StatementDigest } from "../src/agent-handshake/v2/terms.mjs";
+import { buildV2Fixture, INITIATOR, RESPONDER, SESSION_ID, SESSION_OPENED_BLOCK, TERMS, buildV2Fixture as fixtureFactory } from "./support/agent-handshake-v2-fixture.mjs";
 
 async function checkpoints(fixture) {
   const proposal = await signAgentHandshakeV2CommitmentCheckpoint({
@@ -130,7 +131,14 @@ test("the v2 host verifies the full artifact chain and publishes one closing cer
   const active = ports(fixture);
   const commitmentCheckpoints = await checkpoints(fixture);
   let publishedDescriptor = null;
+  let publishedInvitation = null;
   let publishedResult = null;
+  const invitation = Object.freeze({
+    claimedAtMs: 1786337000001,
+    createdAtMs: 1786337000000,
+    statementDigest: agentHandshakeV2StatementDigest(TERMS),
+    terms: TERMS,
+  });
   Object.assign(active, {
     acceptanceSigned: async () => {},
     anchorsRecorded: async () => {},
@@ -141,7 +149,7 @@ test("the v2 host verifies the full artifact chain and publishes one closing cer
     }),
     awaitCommitmentCheckpoint: async (role) => commitmentCheckpoints[role],
     awaitEvidence: async (role) => fixture.evidence[role],
-    awaitInvitationClaimed: async () => 1786337000001,
+    awaitInvitationClaimed: async () => invitation,
     awaitProposal: async () => fixture.proposalEnvelope,
     certificateIssued: async () => {},
     checkerStage: async () => {},
@@ -149,7 +157,7 @@ test("the v2 host verifies the full artifact chain and publishes one closing cer
     failed: async () => {},
     partiesReady: async () => {},
     proposalSigned: async () => {},
-    publishInitial: async () => {},
+    publishInitial: async (value) => { publishedInvitation = value; },
     publishDescriptor: async (value) => { publishedDescriptor = value; },
     publishResult: async (value) => { publishedResult = value; },
   });
@@ -163,19 +171,47 @@ test("the v2 host verifies the full artifact chain and publishes one closing cer
       privateKeyPem: fixture.host.privateKeyPem,
       protocol: "clockchain.agent-handshake/v2",
       repositorySha: "d".repeat(40),
+      invitationExpiresAtMs: 1786337120000,
       sessionDeadlineMs: 1786337600000,
       sessionId: "22222222-3333-4444-8555-666666666666",
       sessionOpenedAtMs: 1786337000000,
       sessionOpenedBlock: "6999",
-      terms: {
-        reference: "NS-1847",
-        statement: "Northstar Logistics and Harbor Supply authorize these two independently controlled agents to communicate about shipment reference NS-1847 for 90 seconds.",
-        validForSeconds: "90",
-        identityPolicy: fixture.descriptorEnvelope.descriptor.identityPolicy,
-      },
     },
   });
+  assert.deepEqual(publishedInvitation, invitation);
   assert.deepEqual(publishedDescriptor, result.descriptorEnvelope);
   assert.deepEqual(publishedResult, result.certificate);
   assert.equal(result.verdict.outcome, "VERIFIED");
+});
+
+test("the v2 host rejects a split-brain invitation mandate before identity or funding", async () => {
+  const fixture = await buildV2Fixture();
+  const active = ports(fixture);
+  let identityCalls = 0;
+  active.awaitIdentityClaim = async () => { identityCalls += 1; return {}; };
+  Object.assign(active, Object.fromEntries([
+    "acceptanceSigned", "anchorsRecorded", "awaitAcceptance", "awaitAnchors",
+    "awaitCommitmentCheckpoint", "awaitEvidence", "awaitProposal",
+    "certificateIssued", "checkerStage", "evidenceReceived", "failed",
+    "partiesReady", "proposalSigned", "publishDescriptor", "publishInitial",
+    "publishResult",
+  ].map((name) => [name, async () => {}])));
+  active.awaitInvitationClaimed = async () => ({
+    claimedAtMs: 1786337000001,
+    createdAtMs: 1786337000000,
+    statementDigest: "0".repeat(64),
+    terms: TERMS,
+  });
+  await assert.rejects(() => runAgentHandshakeV2HostSession({
+    now: () => 1786337000001,
+    ports: active,
+    session: {
+      invitationExpiresAtMs: 1786337120000,
+      protocol: "clockchain.agent-handshake/v2",
+      sessionDeadlineMs: 1786337600000,
+      sessionOpenedAtMs: 1786337000000,
+    },
+  }), (error) => error?.code === "AGENT_HANDSHAKE_V2_HOST_INVALID");
+  assert.equal(identityCalls, 0);
+  assert.equal(active.calls.length, 0);
 });

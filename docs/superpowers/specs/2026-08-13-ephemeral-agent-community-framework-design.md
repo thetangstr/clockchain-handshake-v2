@@ -126,6 +126,8 @@ ACP is the preferred control protocol for Codex and Claude Code. Native adapters
 
 A workflow profile defines roles, mandates, allowed actions, state transitions, artifacts, completion conditions, and workflow-specific verification. The core treats role identifiers and action types as opaque profile-governed strings; it does not assume two parties or Initiator/Responder semantics.
 
+Each workflow run has exactly one authoritative mandate value and canonical digest. The initiating party publishes the normalized mandate at invitation time; every admitted party signs artifacts bound to that digest, and the coordinator or checker adopts the same invitation binding rather than maintaining a separate configured copy of business terms. A host may enforce an explicit admissibility policy, but it must not silently replace or author the mandate. Any mismatch among invitation terms, invitation digest, party claims, workflow state, or final evidence fails before a side effect and is classified as a mandate-binding error.
+
 ### 4.5 Identity provider
 
 EACF distinguishes three identities:

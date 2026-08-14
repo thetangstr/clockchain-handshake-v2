@@ -1,5 +1,9 @@
 import { validateAgentHandshakeV2Party } from "./party.mjs";
-import { validateIdentityPolicy } from "./terms.mjs";
+import {
+  agentHandshakeV2StatementDigest,
+  validateAgentHandshakeV2Terms,
+  validateIdentityPolicy,
+} from "./terms.mjs";
 import {
   verifyAgentHandshakeV2Acceptance,
   verifyAgentHandshakeV2Proposal,
@@ -47,6 +51,30 @@ function claim(value) {
   return Object.freeze({
     policyDigest: value.policyDigest,
     sessionKeyAddress: value.sessionKeyAddress,
+  });
+}
+
+function invitationBinding(value, session) {
+  if (
+    value === null || typeof value !== "object" || Array.isArray(value) ||
+    Object.keys(value).sort().join(",") !==
+      "claimedAtMs,createdAtMs,statementDigest,terms"
+  ) invalid();
+  let terms;
+  try { terms = validateAgentHandshakeV2Terms(value.terms); } catch { invalid(); }
+  if (
+    !Number.isSafeInteger(value.createdAtMs) ||
+    !Number.isSafeInteger(value.claimedAtMs) ||
+    value.createdAtMs < session.sessionOpenedAtMs ||
+    value.claimedAtMs < value.createdAtMs ||
+    value.claimedAtMs >= session.invitationExpiresAtMs ||
+    value.statementDigest !== agentHandshakeV2StatementDigest(terms)
+  ) invalid();
+  return Object.freeze({
+    claimedAtMs: value.claimedAtMs,
+    createdAtMs: value.createdAtMs,
+    statementDigest: value.statementDigest,
+    terms,
   });
 }
 
@@ -180,14 +208,20 @@ export async function runAgentHandshakeV2HostSession({
   if (
     session?.protocol !== "clockchain.agent-handshake/v2" ||
     !Number.isSafeInteger(session.sessionOpenedAtMs) ||
+    !Number.isSafeInteger(session.invitationExpiresAtMs) ||
+    session.invitationExpiresAtMs !== session.sessionOpenedAtMs + 120_000 ||
     !Number.isSafeInteger(session.sessionDeadlineMs) ||
     session.sessionDeadlineMs !== session.sessionOpenedAtMs + 10 * 60_000 ||
     now() >= session.sessionDeadlineMs
   ) invalid();
-  await ports.publishInitial();
-  await ports.awaitInvitationClaimed();
+  const invitation = invitationBinding(
+    await ports.awaitInvitationClaimed(),
+    session,
+  );
+  const terms = invitation.terms;
+  await ports.publishInitial(invitation);
   const parties = await prepareAgentHandshakeV2Identities({
-    identityPolicy: session.terms.identityPolicy,
+    identityPolicy: terms.identityPolicy,
     ports,
     sessionId: session.sessionId,
     sessionOpenedBlock: session.sessionOpenedBlock,
@@ -198,7 +232,7 @@ export async function runAgentHandshakeV2HostSession({
     envelope: proposalEnvelope,
     expectedRepositorySha: session.repositorySha,
     expectedSessionId: session.sessionId,
-    expectedTerms: session.terms,
+    expectedTerms: terms,
     nowMs: now(),
   });
   await ports.proposalSigned(proposalEnvelope);
@@ -207,7 +241,7 @@ export async function runAgentHandshakeV2HostSession({
     envelope: acceptanceEnvelope,
     expectedRepositorySha: session.repositorySha,
     expectedSessionId: session.sessionId,
-    expectedTerms: session.terms,
+    expectedTerms: terms,
     nowMs: now(),
     proposalEnvelope,
   });
@@ -221,11 +255,11 @@ export async function runAgentHandshakeV2HostSession({
     externalBusinessActionPerformed: false,
     hostSessionKeyCertificateDigest:
       hostSessionKeyCertificateDigest(session.hostSessionKeyCertificate),
-    identityPolicy: session.terms.identityPolicy,
+    identityPolicy: terms.identityPolicy,
     initiator: parties.initiator,
     operatorPublicKey: session.expectedPublicKey,
     protocol: session.protocol,
-    reference: session.terms.reference,
+    reference: terms.reference,
     repositorySha: session.repositorySha,
     responder: parties.responder,
     schema: "clockchain.agent-handshake-descriptor/v2",
@@ -255,7 +289,7 @@ export async function runAgentHandshakeV2HostSession({
       expectedPublicKey: session.expectedPublicKey,
       expectedRepositorySha: session.repositorySha,
       expectedSessionId: session.sessionId,
-      expectedTerms: session.terms,
+      expectedTerms: terms,
       nowMs: now(),
       proposalEnvelope,
       receipts: anchorReport.receipts,

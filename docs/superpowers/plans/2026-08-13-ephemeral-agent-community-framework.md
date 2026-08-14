@@ -432,7 +432,7 @@ Not-tested: Workload attestations are provider-profile responsibilities."
 - Create: `/private/tmp/ephemeral-agent-community/packages/workflow-contract/test/state-client.test.mjs`
 - Create: `/private/tmp/ephemeral-agent-community/packages/workflow-contract/test/authority.test.mjs`
 
-- [ ] Write RED tests for bootstrap/admission, read-state, allowed-action selection, policy denial, mandate/local-policy/state/request-digest binding, local authorization, exclusive party signing, deterministic submission, idempotency, stale/replay rejection, direct model tool-call rejection, and controller/coordinator impersonation negatives.
+- [ ] Write RED tests for bootstrap/admission, read-state, allowed-action selection, policy denial, one authoritative invitation mandate with mandate/local-policy/state/request-digest binding, local authorization, exclusive party signing, deterministic submission, idempotency, stale/replay rejection, direct model tool-call rejection, coordinator-authored mandate rejection, and controller/coordinator impersonation negatives.
 - [ ] Run focused RED.
 - [ ] Implement the six-step state loop from the design. The state client accepts injected bootstrap/read/submit/certificate functions; the signer accepts injected `signExactBytes`; the adapter submits the returned artifact directly. The model-facing decision port is separate from the transport port and cannot receive private capabilities or execute workflow calls.
 - [ ] Run GREEN and commit with Lore intent `Keep decisions probabilistic and protocol actions deterministic`.
