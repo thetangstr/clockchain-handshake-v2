@@ -7,7 +7,10 @@ import { types } from "node:util";
 import { ClientSideConnection, PROTOCOL_VERSION, ndJsonStream } from "@agentclientprotocol/sdk";
 
 import { validateHarnessEvent, validateRetainedLocalAction } from "./harness-adapter-contract.mjs";
-import { directA2APartyBridgeFailureStage } from "./direct-a2a-party-bridge.mjs";
+import {
+  DIRECT_A2A_PARTY_BRIDGE_FAILURE_STAGES,
+  directA2APartyBridgeFailureStage,
+} from "./direct-a2a-party-bridge.mjs";
 import { verifiedReleaseActionRecorderFailureStage } from "./verified-release-action-recorder.mjs";
 import { ACP_VERSION_PINS } from "./version-pins.mjs";
 
@@ -90,12 +93,8 @@ const LAUNCH_FAILURE_STAGES = Object.freeze([
   "completion-protocol-event", "completion-protocol-envelope-runtime", "completion-protocol-envelope-session-id",
   "completion-protocol-envelope-update-type", "completion-protocol-envelope-before-session",
   "completion-protocol-envelope-early-tool", "completion-protocol-envelope-provisional-session",
-  "completion-protocol-envelope-active-session", "completion-protocol-bridge-input",
-  "completion-protocol-bridge-tool-name", "completion-protocol-bridge-clone",
-  "completion-protocol-bridge-role-access", "completion-protocol-bridge-session",
-  "completion-protocol-bridge-invite-shape", "completion-protocol-bridge-invite-send",
-  "completion-protocol-bridge-accept", "completion-protocol-bridge-join",
-  "completion-protocol-bridge-helper", "completion-protocol-bridge-digest",
+  "completion-protocol-envelope-active-session",
+  ...DIRECT_A2A_PARTY_BRIDGE_FAILURE_STAGES.map((stage) => `completion-protocol-bridge-${stage}`),
   "completion-protocol-bridge-incomplete",
   "completion-protocol-bridge-incomplete-no-clockchain-tool",
   "completion-protocol-bridge-incomplete-clockchain-tool-incomplete",

@@ -25,15 +25,15 @@ const MAX_DEPTH = 12;
 const MAX_KEYS = 96;
 const MAX_ARRAY = 96;
 const MAX_STRING = 128 * 1024;
-const ACTIVATION_FAILURE_STAGES = Object.freeze([
+export const PARTY_CHANNEL_ACTIVATION_FAILURE_STAGES = Object.freeze([
   "input", "clock", "authority-create", "authority-methods", "authority-binding",
   "card-bootstrap-create", "responder-card-sign", "responder-card-publish", "initiator-card-wait",
   "responder-card-wait", "initiator-card-sign", "initiator-card-publish", "verified-pair", "task-transport",
 ]);
-const BRIDGE_FAILURE_STAGES = Object.freeze([
+export const DIRECT_A2A_PARTY_BRIDGE_FAILURE_STAGES = Object.freeze([
   "input", "tool-name", "clone", "role-access", "session", "invite-shape", "invite-send",
   "accept", "join-role", "join-session", "join-repository", "join-policy", "join-terms", "join-activation",
-  ...ACTIVATION_FAILURE_STAGES.map((stage) => `join-activation-${stage}`),
+  ...PARTY_CHANNEL_ACTIVATION_FAILURE_STAGES.map((stage) => `join-activation-${stage}`),
   "helper", "digest",
 ]);
 const BRIDGE_FAILURES = new WeakMap();
@@ -42,7 +42,7 @@ function fail() { throw new Error(ERROR); }
 function sanitize(error) { if (error?.message === ERROR) throw error; fail(); }
 
 function stagedBridgeFailure(stage) {
-  if (!BRIDGE_FAILURE_STAGES.includes(stage)) fail();
+  if (!DIRECT_A2A_PARTY_BRIDGE_FAILURE_STAGES.includes(stage)) fail();
   const error = new Error(ERROR);
   BRIDGE_FAILURES.set(error, stage);
   return error;
@@ -648,7 +648,7 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
               await activate();
             } catch (error) {
               const stage = typeof error?.clockchainSafeStage === "string" ? error.clockchainSafeStage : null;
-              if (ACTIVATION_FAILURE_STAGES.includes(stage)) failureStage = `join-activation-${stage}`;
+              if (PARTY_CHANNEL_ACTIVATION_FAILURE_STAGES.includes(stage)) failureStage = `join-activation-${stage}`;
               throw error;
             }
           }
