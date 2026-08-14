@@ -265,9 +265,11 @@ function productionJoinResult(role, fixture) {
   });
 }
 
-function compactProductionJoinResult(role, fixture) {
+function compactProductionJoinResult(role, fixture, { descriptorEnvelope = null } = {}) {
   const legacy = productionJoinResult(role, fixture);
-  const payload = Buffer.from(JSON.stringify(legacy.signingRequest)).toString("base64url");
+  const signingRequest = { ...legacy.signingRequest, descriptorEnvelope };
+  if (descriptorEnvelope === undefined) delete signingRequest.descriptorEnvelope;
+  const payload = Buffer.from(JSON.stringify(signingRequest)).toString("base64url");
   const shellCommand = `node helper sign --state-dir "$TMPDIR/.clockchain/handshakes/${SESSION_ID}/${role}" --payload-base64url ${payload}`;
   const commandSha256 = createHash("sha256").update(shellCommand).digest("hex");
   return Object.freeze({
@@ -445,6 +447,16 @@ test("party-local bridges activate only from authoritative join context, then de
     assert.equal(evidence.schema, "clockchain.direct-a2a-party-bridge-evidence/v1");
     assert.doesNotMatch(JSON.stringify(evidence), /opaque\.responder|helperStep|shellCommand|signatureHex|bytesGzip|body|payload|private/i);
   }
+});
+
+test("party-local bridge accepts the pre-descriptor compact identity request only when the field is absent", async (t) => {
+  const { activationContexts, bridges, fixture } = await setup(t);
+  await bridges.initiator.observeToolResult({
+    toolName: "agent_handshake_join",
+    result: compactProductionJoinResult("initiator", fixture, { descriptorEnvelope: undefined }),
+  });
+  assert.equal(activationContexts.length, 1);
+  assert.equal(activationContexts[0].policyDigest, fixture.parties.initiator.policyDigest);
 });
 
 test("party-local bridge binds the exact nested production join response without requiring duplicate top-level policy or terms", async (t) => {
