@@ -74,6 +74,19 @@ const LAUNCH_FAILURE_STAGES = Object.freeze([
   "completion-protocol", "completion-protocol-envelope", "completion-protocol-usage",
   "completion-protocol-tool-result", "completion-protocol-bridge", "completion-protocol-retained",
   "completion-protocol-retained-extract", "completion-protocol-retained-record", "completion-protocol-retained-register",
+  "completion-protocol-retained-authorize", "completion-protocol-retained-execute",
+  "completion-protocol-retained-execute-construction-options",
+  "completion-protocol-retained-execute-construction-room",
+  "completion-protocol-retained-execute-construction-paths",
+  "completion-protocol-retained-execute-construction-platform",
+  "completion-protocol-retained-execute-release-manifest-fetch",
+  "completion-protocol-retained-execute-release-helper-fetch",
+  "completion-protocol-retained-execute-release-assets",
+  "completion-protocol-retained-execute-adapter-layout",
+  "completion-protocol-retained-execute-completion-socket",
+  "completion-protocol-retained-execute-execution-launch",
+  "completion-protocol-retained-execute-execution-output",
+  "completion-protocol-retained-execute-execution-public-result",
   "completion-protocol-event", "completion-protocol-envelope-runtime", "completion-protocol-envelope-session-id",
   "completion-protocol-envelope-update-type", "completion-protocol-envelope-before-session",
   "completion-protocol-envelope-early-tool", "completion-protocol-envelope-provisional-session",
@@ -1053,7 +1066,11 @@ export function createAcpProcessTransport(optionsInput = {}) {
     if (session === null || expectedSessionId === null || action.sessionId !== expectedSessionId || action.role !== session.role) fail();
     if (!trustedKeys.has(action.adapterPublicKey)) fail();
     if (now() > action.expiresAtMs) fail();
-    if (retainedByCommand.has(action.commandSha256)) fail();
+    const existing = retainedByCommand.get(action.commandSha256);
+    if (existing !== undefined) {
+      if (digestJson(existing.action) !== digestJson(action)) fail();
+      return false;
+    }
     retainedByCommand.set(action.commandSha256, { action, state: "pending" });
     const waiters = retainedRegistrationWaiters.get(action.commandSha256);
     if (waiters !== undefined) {
@@ -1061,7 +1078,7 @@ export function createAcpProcessTransport(optionsInput = {}) {
       for (const waiter of waiters) waiter(true);
     }
     event("acp.retained_action.registered", "registered retained local action", action.commandSha256);
-    return action;
+    return true;
   }
   function waitForRetainedRegistration(commandSha256) {
     if (retainedByCommand.has(commandSha256)) return Promise.resolve(true);
@@ -1338,12 +1355,13 @@ export function createAcpProcessTransport(optionsInput = {}) {
           failureStage = "retained-record";
           const extractedRetainedActions = extractedHelperSteps.map((step) => validateRetainedLocalAction(actionRecorder.record(step)));
           failureStage = "retained-register";
+          const newlyRegisteredActions = [];
           for (const retained of extractedRetainedActions) {
-            registerRetainedAction(retained);
+            if (registerRetainedAction(retained)) newlyRegisteredActions.push(retained);
           }
           if (actionRecorder?.executeAuthorizedAction != null) {
             failureStage = "retained-authorize";
-            for (const retained of extractedRetainedActions) {
+            for (const retained of newlyRegisteredActions) {
               const entry = retainedByCommand.get(retained.commandSha256);
               if (entry === undefined || entry.state !== "pending") fail();
               const decision = exactObject(await retainedActionPolicy(Object.freeze({

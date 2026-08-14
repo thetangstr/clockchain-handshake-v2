@@ -1526,6 +1526,55 @@ test("ACP transport executes authorized retained actions deterministically witho
   assert.match(continuation, new RegExp(policyDigest));
 });
 
+test("ACP deterministic adapter executes one exact retained action once across repeated MCP delivery", async () => {
+  const action = retainedAction({ operation: "init" });
+  const update = {
+    sessionUpdate: "tool_call_update",
+    toolCallId: "tool-mcp-replayed",
+    kind: "other",
+    title: "agent_handshake_invite",
+    status: "completed",
+    rawInput: { server: "clockchain-handshake", tool: "agent_handshake_invite", arguments: {} },
+    rawOutput: { result: { initiatorAccess: `${"a".repeat(32)}.${"b".repeat(32)}`, sessionId: SESSION, helperStep: helperStepForAction(action) }, error: null },
+  };
+  const calls = [];
+  let completionChecks = 0;
+  const transport = createAcpProcessTransport({
+    harness: "codex",
+    pin: ACP_VERSION_PINS.codex,
+    spawn: acpFixtureSpawn({
+      calls,
+      sessionUpdates: (promptCount) => promptCount < 2 ? [update] : [],
+      skipPermission: true,
+    }),
+    workspace: "/workspace/initiator",
+    home: "/workspace/initiator/home",
+    nowMs: () => 1786337001000,
+    actionRecorder: deterministicActionRecorderFor([action], {
+      init: { schema: "clockchain.agent-handshake-cli-result/v1", helperVersion: "2.1.3", operation: "init", address: "0x1111111111111111111111111111111111111111" },
+    }, calls),
+    env: {},
+    partyBridge: partyBridgeFor(calls, {
+      completionStatus() {
+        completionChecks += 1;
+        return { complete: completionChecks >= 2, protocolSessionId: SESSION };
+      },
+    }),
+    retainedActionPolicy: () => Object.freeze({ decision: "authorize" }),
+    trustedAdapterPublicKeys: [action.adapterPublicKey],
+  });
+
+  await transport.launch({
+    acp: ACP_VERSION_PINS.codex,
+    runtime: { runtimeId: "runtime-initiator", sessionId: SESSION, role: "initiator", harness: "codex" },
+    mandate: VALID_MANDATE,
+    mcpEndpoint: MCP_ENDPOINT,
+    a2aConfig: a2aConfig("initiator"),
+  }).catch((error) => assert.fail(`unexpected stage ${acpProcessTransportFailureStage(error)}`));
+
+  assert.equal(calls.filter((entry) => entry[0] === "executeAuthorizedAction").length, 1);
+});
+
 test("ACP transport rejects a deterministic action recorder without an explicit local policy", () => {
   const action = retainedAction();
   assert.throws(() => createAcpProcessTransport({
