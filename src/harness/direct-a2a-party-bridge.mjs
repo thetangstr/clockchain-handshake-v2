@@ -274,13 +274,14 @@ function joinSigningRequest(result, steps, role, sessionId) {
   const unique = [...new Map(requests.map((request) => [JSON.stringify(request), request])).values()];
   if (unique.length !== 1) fail();
   const request = snapshot(unique[0], [
-    "bytesGzipBase64Url", "bytesSha256", "externalBusinessActionPerformed", "helperVersion",
+    "bytesGzipBase64Url", "bytesSha256", "descriptorEnvelope", "externalBusinessActionPerformed", "helperVersion",
     "hostSessionKeyCertificate", "operation", "policyDigest", "repositorySha", "role", "schema",
     "sessionDeadlineMs", "sessionId", "terms",
   ]);
   if (
     request.schema !== REQUEST_SCHEMA || request.helperVersion !== "2.1.3" || request.operation !== "identity_claim" ||
-    request.role !== role || request.sessionId !== sessionId || request.externalBusinessActionPerformed !== false ||
+    request.role !== role || request.sessionId !== sessionId || request.descriptorEnvelope !== null ||
+    request.externalBusinessActionPerformed !== false ||
     !SHA.test(request.repositorySha) || !DIGEST.test(request.policyDigest) || !DIGEST.test(request.bytesSha256) ||
     typeof request.bytesGzipBase64Url !== "string" || request.bytesGzipBase64Url.length < 1
   ) fail();

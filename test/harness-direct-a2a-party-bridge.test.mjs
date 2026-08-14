@@ -243,6 +243,7 @@ function productionJoinResult(role, fixture) {
       hostSessionKeyCertificate: Object.freeze({}),
       terms: TERMS,
       policyDigest: party.policyDigest,
+      descriptorEnvelope: null,
       bytesGzipBase64Url: "H4sIAAAAAAAA_6tWykxRsjI0M7QwMDA0MDA0MDA0MDA0MDQyNDQxNDIyNTM3MjG0BQAA__8BAAD__w",
       bytesSha256: "f".repeat(64),
       externalBusinessActionPerformed: false,
