@@ -24,7 +24,9 @@ const EMPTY_DIGEST = createHash("sha256").update("").digest("hex");
 const RECORDER_FAILURE_STAGES = Object.freeze([
   "construction-options", "construction-room", "construction-paths", "construction-platform",
   "release-manifest-fetch", "release-helper-fetch", "release-assets", "adapter-layout", "completion-socket",
-  "execution-launch", "execution-output", "execution-public-result",
+  "execution-launch", "execution-command-mismatch", "execution-action-expired", "execution-action-replayed",
+  "execution-helper-launch", "execution-helper-failed", "execution-output-invalid", "execution-completion-failed",
+  "execution-output", "execution-public-result",
 ]);
 const RECORDER_FAILURES = new WeakMap();
 const execFileAsync = promisify(execFile);
@@ -287,9 +289,26 @@ function exact(v,keys){if(!v||typeof v!=="object"||Array.isArray(v)||Object.keys
 function envelope(path,digest){const e=JSON.parse(readFileSync(path,"utf8"));if(!e||Object.keys(e).sort().join(",")!=="body,schema,signature"||e.schema!=="clockchain.agent-harness-bound-action/v1")stop();const bytes=Buffer.from(JSON.stringify(e.body));const key=createPublicKey({key:Buffer.from("${publicKeyDer}","base64"),format:"der",type:"spki"});if(!verify(null,bytes,key,Buffer.from(e.signature,"base64")))stop();const b=exact(e.body,["actionId","actionNonce","args","commandLength","commandSha256","completionRequired","completionSocket","cwd","expiresAtMs","file","manifestDigest","operation","policyDigest","requestDigest","requestLength","role","schema","sessionId","stateDir"]);if(b.schema!=="clockchain.agent-harness-bound-action-body/v2"||b.commandSha256!==digest||!Number.isSafeInteger(b.commandLength)||b.commandLength<1||!SHA.test(b.manifestDigest)||!(b.policyDigest===null||SHA.test(b.policyDigest))||!SHA.test(b.requestDigest)||!Number.isSafeInteger(b.requestLength)||b.requestLength<1||!OPS.has(b.operation)||!ROLES.has(b.role)||!Number.isSafeInteger(b.expiresAtMs)||typeof b.actionId!=="string"||typeof b.actionNonce!=="string"||typeof b.completionRequired!=="boolean"||typeof b.completionSocket!=="string")stop();if(Date.now()>b.expiresAtMs)stop("HELPER_ACTION_EXPIRED");if(b.file!==process.execPath||b.cwd!==process.cwd()||!Array.isArray(b.args)||b.args.some(v=>typeof v!=="string"))stop();const tmp=resolve(process.env.TMPDIR||"");const state=resolve(b.stateDir);if(!tmp||!state.startsWith(tmp+"/"))stop();return b}
 function assets(b){const a=b.args;if(a.length<9||a[0]!=="--input-type=commonjs"||a[1]!=="--eval"||a[3]!==b.manifestDigest||a[6]!==b.operation)stop();const mb=readFileSync(a[4]);if(createHash("sha256").update(mb).digest("hex")!==b.manifestDigest)stop();const m=JSON.parse(mb);if(m.schema!=="clockchain.agent-handshake-release-manifest/v1"||m.version!=="2.1.3"||!Array.isArray(m.assets)||m.assets.length!==1)stop();const x=m.assets[0];if(x.filename!=="clockchain-agent-handshake.cjs"||!SHA.test(x.sha256))stop();if(createHash("sha256").update(readFileSync(a[5])).digest("hex")!==x.sha256)stop()}
 function complete(b,result){return new Promise((ok,bad)=>{const s=createConnection(b.completionSocket);let out="";const timer=setTimeout(()=>{s.destroy();bad()},5000);s.setEncoding("utf8");s.on("connect",()=>s.write(JSON.stringify({actionId:b.actionId,actionNonce:b.actionNonce,commandSha256:b.commandSha256,requestDigest:b.requestDigest,result})+"\n"));s.on("data",c=>{out+=c;if(Buffer.byteLength(out)>MAX){s.destroy();bad()}});s.on("end",()=>{clearTimeout(timer);try{const a=exact(JSON.parse(out),["accepted"]);a.accepted===true?ok():bad()}catch{bad()}});s.on("error",()=>{clearTimeout(timer);bad()})})}
-async function main(){const digest=process.argv.length===3?process.argv[2]:"";if(!SHA.test(digest))stop();const root=dirname(dirname(__filename));const pending=join(root,"pending",digest+".json"),running=join(root,"running",digest+"."+process.pid+".json"),consumed=join(root,"consumed",digest+".json");let b;try{try{readFileSync(consumed);stop("HELPER_ACTION_REPLAYED")}catch(e){if(e&&e.code!=="ENOENT")stop()}b=envelope(pending,digest);assets(b);try{renameSync(pending,running)}catch{try{readFileSync(consumed);stop("HELPER_ACTION_REPLAYED")}catch{}stop()}writeFileSync(consumed,JSON.stringify({schema:"clockchain.agent-harness-consumed-action/v1",commandSha256:b.commandSha256})+"\n",{encoding:"utf8",flag:"wx",mode:0o600});mkdirSync(resolve(b.stateDir),{recursive:true,mode:0o700});const child=spawnSync(b.file,b.args,{cwd:b.cwd,env:process.env,encoding:"utf8",maxBuffer:MAX});if(child.error||!Number.isSafeInteger(child.status))stop();if(child.status!==0){try{process.stderr.write(JSON.stringify({code:"HELPER_EXECUTION_FAILED"})+"\n")}catch{}process.exit(child.status)}if(typeof child.stdout!=="string"||Buffer.byteLength(child.stdout)<2||Buffer.byteLength(child.stdout)>MAX||!child.stdout.endsWith("\n")||child.stdout.slice(0,-1).includes("\n"))stop("HELPER_EXECUTION_FAILED");let result;try{result=JSON.parse(child.stdout)}catch{stop("HELPER_EXECUTION_FAILED")}if(!result||typeof result!=="object"||Array.isArray(result))stop("HELPER_EXECUTION_FAILED");if(b.completionRequired){try{await complete(b,result)}catch{stop("HELPER_EXECUTION_FAILED")}}process.stdout.write(child.stdout)}catch{stop()}finally{try{rmSync(running,{force:true})}catch{}}}
+async function main(){const digest=process.argv.length===3?process.argv[2]:"";if(!SHA.test(digest))stop();const root=dirname(dirname(__filename));const pending=join(root,"pending",digest+".json"),running=join(root,"running",digest+"."+process.pid+".json"),consumed=join(root,"consumed",digest+".json");let b;try{try{readFileSync(consumed);stop("HELPER_ACTION_REPLAYED")}catch(e){if(e&&e.code!=="ENOENT")stop()}b=envelope(pending,digest);assets(b);try{renameSync(pending,running)}catch{try{readFileSync(consumed);stop("HELPER_ACTION_REPLAYED")}catch{}stop()}writeFileSync(consumed,JSON.stringify({schema:"clockchain.agent-harness-consumed-action/v1",commandSha256:b.commandSha256})+"\n",{encoding:"utf8",flag:"wx",mode:0o600});mkdirSync(resolve(b.stateDir),{recursive:true,mode:0o700});const child=spawnSync(b.file,b.args,{cwd:b.cwd,env:process.env,encoding:"utf8",maxBuffer:MAX});if(child.error||!Number.isSafeInteger(child.status))stop("HELPER_EXECUTION_LAUNCH_FAILED");if(child.status!==0)stop("HELPER_OPERATION_FAILED");if(typeof child.stdout!=="string"||Buffer.byteLength(child.stdout)<2||Buffer.byteLength(child.stdout)>MAX||!child.stdout.endsWith("\n")||child.stdout.slice(0,-1).includes("\n"))stop("HELPER_OUTPUT_INVALID");let result;try{result=JSON.parse(child.stdout)}catch{stop("HELPER_OUTPUT_INVALID")}if(!result||typeof result!=="object"||Array.isArray(result))stop("HELPER_OUTPUT_INVALID");if(b.completionRequired){try{await complete(b,result)}catch{stop("HELPER_COMPLETION_FAILED")}}process.stdout.write(child.stdout)}catch{stop()}finally{try{rmSync(running,{force:true})}catch{}}}
 main();
 `;
+}
+
+function executionFailureStage(error) {
+  const stderr = error?.stderr;
+  if (typeof stderr !== "string" || Buffer.byteLength(stderr) < 2 || Buffer.byteLength(stderr) > 256) return "execution-launch";
+  let parsed;
+  try { parsed = JSON.parse(stderr.trim()); } catch { return "execution-launch"; }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed) || Object.keys(parsed).join(",") !== "code") return "execution-launch";
+  return Object.freeze({
+    HELPER_COMMAND_MISMATCH: "execution-command-mismatch",
+    HELPER_ACTION_EXPIRED: "execution-action-expired",
+    HELPER_ACTION_REPLAYED: "execution-action-replayed",
+    HELPER_EXECUTION_LAUNCH_FAILED: "execution-helper-launch",
+    HELPER_OPERATION_FAILED: "execution-helper-failed",
+    HELPER_OUTPUT_INVALID: "execution-output-invalid",
+    HELPER_COMPLETION_FAILED: "execution-completion-failed",
+  })[parsed.code] ?? "execution-launch";
 }
 
 async function createCompletionSocket({ deadlineMs, platform, socketRoot }) {
@@ -561,7 +580,7 @@ export async function createVerifiedReleaseActionRecorder(input = {}) {
         env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, TMPDIR: tmp },
         maxBuffer: MAX_RESULT_BYTES,
       }));
-    } catch { throw stagedFailure("execution-launch"); }
+    } catch (error) { throw stagedFailure(executionFailureStage(error)); }
     if (
       typeof stdout !== "string" || Buffer.byteLength(stdout) < 2 ||
       Buffer.byteLength(stdout) > MAX_RESULT_BYTES || !stdout.endsWith("\n") ||

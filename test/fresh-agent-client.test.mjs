@@ -1353,7 +1353,7 @@ test("harness adapter consumes a retained action once dispatch starts even if ex
   await assert.rejects(
     execFileAsync(join(adapter.bin, "clockchain-agent-authorize"), [retained.commandSha256], options),
     (error) => {
-      assert.match(error.stderr, /HELPER_EXECUTION_FAILED/);
+      assert.match(error.stderr, /HELPER_OPERATION_FAILED/);
       return true;
     },
   );

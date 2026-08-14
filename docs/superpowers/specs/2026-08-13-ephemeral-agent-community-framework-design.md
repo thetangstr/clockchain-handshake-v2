@@ -114,6 +114,8 @@ The adapter, not the model, owns workflow transport and progression. It invokes 
 
 The model's response is an exact typed authorization or denial. It cannot change any binding, invoke the workflow itself, or return a signature. Setup, ephemeral party-key creation, optional identity registration, signing, submission, and certificate verification execute locally under deterministic policy and retained authorization records. A model-originated workflow tool call while this mode is active is an adapter-protocol failure.
 
+Local execution failures use a secret-free boundary taxonomy rather than one generic “tool failed” result. At minimum, adapters distinguish launch failure, command-binding mismatch, expiry, replay, helper-operation failure, invalid public output, and completion-acknowledgment failure. The retained event contains the class plus public operation/action digests, never child stderr, commands, payloads, credentials, or private paths.
+
 ACP is the preferred control protocol for Codex and Claude Code. Native adapters are allowed when the harness lacks ACP, provided they emit the same EACF events and satisfy the same authorization tests.
 
 ### 4.4 Workflow profile

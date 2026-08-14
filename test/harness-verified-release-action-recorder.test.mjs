@@ -22,8 +22,7 @@ import { buildAgentCliFixture } from "./support/agent-cli-fixture.mjs";
 const execFileAsync = promisify(execFile);
 const SESSION = "11111111-2222-4333-8444-555555555555";
 
-function releaseFixture(result) {
-  const helperSource = `process.stdout.write(${JSON.stringify(`${JSON.stringify(result)}\n`)});`;
+function releaseSourceFixture(helperSource) {
   const helperDigest = createHash("sha256").update(helperSource).digest("hex");
   const manifest = JSON.stringify({
     schema: "clockchain.agent-handshake-release-manifest/v1",
@@ -44,6 +43,10 @@ function releaseFixture(result) {
       arrayBuffer: async () => Buffer.from(url.endsWith("/manifest.json") ? manifest : helperSource),
     }),
   };
+}
+
+function releaseFixture(result) {
+  return releaseSourceFixture(`process.stdout.write(${JSON.stringify(`${JSON.stringify(result)}\n`)});`);
 }
 
 function helperStep({ manifestDigest, payload, policyDigest = "c".repeat(64), role = "initiator", sessionId = SESSION }) {
@@ -305,6 +308,53 @@ test("verified release recorder exposes a fixed execution-launch stage", async (
   }), (error) => verifiedReleaseActionRecorderFailureStage(error) === "execution-launch");
 });
 
+test("verified release recorder classifies helper failure and invalid output without retaining stderr", async (t) => {
+  const signingFixture = await buildAgentCliFixture("initiator");
+  const request = Buffer.from(JSON.stringify(signingFixture.request));
+  const cases = [
+    ["execution-helper-failed", 'process.stderr.write("private helper detail\\n");process.exit(1);'],
+    ["execution-output-invalid", 'process.stdout.write("not-json\\n");'],
+  ];
+  for (const [expectedStage, helperSource] of cases) {
+    const parent = await mkdtemp(join(tmpdir(), "verified-release-classify-"));
+    t.after(() => rm(parent, { recursive: true, force: true }));
+    const run = await createFreshAgentRun({ parent });
+    const fixture = releaseSourceFixture(helperSource);
+    const socketRoot = join("/tmp", `verified-classify-${randomBytes(6).toString("hex")}`);
+    t.after(() => rm(socketRoot, { recursive: true, force: true }));
+    const recorder = await createVerifiedReleaseActionRecorder({
+      fetchImpl: fixture.fetchImpl,
+      manifestDigest: fixture.manifestDigest,
+      room: run.roles.initiator,
+      socketRoot,
+    });
+    t.after(() => recorder.close());
+    recorder.setCompletionHandler(async () => ({ accepted: true }));
+    const step = helperStep({
+      manifestDigest: fixture.manifestDigest,
+      payload: request.toString("base64url"),
+      policyDigest: signingFixture.request.policyDigest,
+      role: signingFixture.request.role,
+      sessionId: signingFixture.request.sessionId,
+    });
+    const action = recorder.recordRetainedAction(step);
+    await assert.rejects(
+      recorder.executeAuthorizedAction({
+        actionId: action.actionId,
+        commandSha256: action.commandSha256,
+        role: action.role,
+        sessionId: action.sessionId,
+      }),
+      (error) => {
+        assert.equal(verifiedReleaseActionRecorderFailureStage(error), expectedStage);
+        assert.equal(error.message, "Verified release action recorder failed safely.");
+        assert.doesNotMatch(error.message, /private helper detail|not-json/);
+        return true;
+      },
+    );
+  }
+});
+
 test("verified release recorder binds the production policy payload to its canonical digest", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "verified-release-policy-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
@@ -539,15 +589,17 @@ test("verified release recorder withholds helper output when the private complet
   });
   t.after(() => recorder.close());
   recorder.setCompletionHandler(() => new Promise(() => {}));
-  recorder.recordRetainedAction(step);
+  const action = recorder.recordRetainedAction(step);
   await assert.rejects(
-    execFileAsync(join(recorder.bin, "clockchain-agent-authorize"), [step.commandSha256], {
-      cwd: run.roles.initiator.workspace,
-      env: { ...process.env, PATH: `${recorder.bin}:${process.env.PATH}`, TMPDIR: run.roles.initiator.tmp },
+    recorder.executeAuthorizedAction({
+      actionId: action.actionId,
+      commandSha256: action.commandSha256,
+      role: action.role,
+      sessionId: action.sessionId,
     }),
     (error) => {
-      assert.equal(error.stdout, "");
-      assert.match(error.stderr, /HELPER_EXECUTION_FAILED/);
+      assert.equal(verifiedReleaseActionRecorderFailureStage(error), "execution-completion-failed");
+      assert.equal(error.message, "Verified release action recorder failed safely.");
       return true;
     },
   );
