@@ -116,6 +116,8 @@ The model's response is an exact typed authorization or denial. It cannot change
 
 Local execution failures use a secret-free boundary taxonomy rather than one generic “tool failed” result. At minimum, adapters distinguish launch failure, command-binding mismatch, expiry, replay, helper-operation failure, invalid public output, and completion-acknowledgment failure. The retained event contains the class plus public operation/action digests, never child stderr, commands, payloads, credentials, or private paths.
 
+Local execution and workflow completion are separate phases. After a helper produces one validated public result, the adapter may retry only delivery of that exact digest-bound result; it must never rerun the helper, signer, registration transaction, or workflow submission to recover an acknowledgment. The completion deadline must exceed every bounded downstream operation performed by the completion handler, exact duplicate completions must coalesce onto one in-flight commit, and an already-consumed exact completion must acknowledge idempotently. If the deadline still expires, the adapter reports an ambiguous completion boundary and reconciles authoritative workflow state before authorizing any new action.
+
 ACP is the preferred control protocol for Codex and Claude Code. Native adapters are allowed when the harness lacks ACP, provided they emit the same EACF events and satisfy the same authorization tests.
 
 ### 4.4 Workflow profile

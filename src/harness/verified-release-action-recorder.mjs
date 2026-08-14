@@ -19,7 +19,9 @@ const OPERATIONS = Object.freeze(["init", "policy", "inspect", "register", "sign
 const SIGNING_OPERATIONS = Object.freeze(["identity_claim", "proposal", "acceptance", "evidence"]);
 const MAX_RESULT_BYTES = 64 * 1024;
 const MAX_SOCKET_PATH_BYTES = 96;
-const COMPLETION_SOCKET_DEADLINE_MS = 5_000;
+// Completion can include bounded MCP/A2A commits. It must dominate the 15-second
+// workflow-client deadline and leave room for exact acknowledgment-only retry.
+const COMPLETION_SOCKET_DEADLINE_MS = 60_000;
 const EMPTY_DIGEST = createHash("sha256").update("").digest("hex");
 const RECORDER_FAILURE_STAGES = Object.freeze([
   "construction-options", "construction-room", "construction-paths", "construction-platform",
@@ -276,19 +278,20 @@ export async function preloadVerifiedReleaseAssets({ fetchImpl, manifestDigest, 
   await writeFile(join(workspace, "clockchain-agent-handshake.cjs"), helperBytes, { mode: 0o600 });
 }
 
-function adapterExecutable(runtimeExecPath, publicKeyDer) {
+function adapterExecutable(runtimeExecPath, publicKeyDer, completionDeadlineMs) {
   return `#!${runtimeExecPath}\n` + String.raw`"use strict";
 const { spawnSync }=require("node:child_process");
 const { createHash,createPublicKey,verify }=require("node:crypto");
 const { createConnection }=require("node:net");
 const { mkdirSync,readFileSync,renameSync,rmSync,writeFileSync }=require("node:fs");
 const { dirname,join,resolve }=require("node:path");
-const SHA=/^[0-9a-f]{64}$/;const ROLES=new Set(["initiator","responder"]);const OPS=new Set(["init","policy","inspect","register","sign","verify-certificate"]);const MAX=65536;
+const SHA=/^[0-9a-f]{64}$/;const ROLES=new Set(["initiator","responder"]);const OPS=new Set(["init","policy","inspect","register","sign","verify-certificate"]);const MAX=65536;const COMPLETION_DEADLINE=${completionDeadlineMs};const COMPLETION_ATTEMPT=Math.max(1000,Math.floor(COMPLETION_DEADLINE/2));
 function stop(code="HELPER_COMMAND_MISMATCH"){try{process.stderr.write(JSON.stringify({code})+"\n")}catch{}process.exit(86)}
 function exact(v,keys){if(!v||typeof v!=="object"||Array.isArray(v)||Object.keys(v).sort().join(",")!==keys.slice().sort().join(","))stop();return v}
 function envelope(path,digest){const e=JSON.parse(readFileSync(path,"utf8"));if(!e||Object.keys(e).sort().join(",")!=="body,schema,signature"||e.schema!=="clockchain.agent-harness-bound-action/v1")stop();const bytes=Buffer.from(JSON.stringify(e.body));const key=createPublicKey({key:Buffer.from("${publicKeyDer}","base64"),format:"der",type:"spki"});if(!verify(null,bytes,key,Buffer.from(e.signature,"base64")))stop();const b=exact(e.body,["actionId","actionNonce","args","commandLength","commandSha256","completionRequired","completionSocket","cwd","expiresAtMs","file","manifestDigest","operation","policyDigest","requestDigest","requestLength","role","schema","sessionId","stateDir"]);if(b.schema!=="clockchain.agent-harness-bound-action-body/v2"||b.commandSha256!==digest||!Number.isSafeInteger(b.commandLength)||b.commandLength<1||!SHA.test(b.manifestDigest)||!(b.policyDigest===null||SHA.test(b.policyDigest))||!SHA.test(b.requestDigest)||!Number.isSafeInteger(b.requestLength)||b.requestLength<1||!OPS.has(b.operation)||!ROLES.has(b.role)||!Number.isSafeInteger(b.expiresAtMs)||typeof b.actionId!=="string"||typeof b.actionNonce!=="string"||typeof b.completionRequired!=="boolean"||typeof b.completionSocket!=="string")stop();if(Date.now()>b.expiresAtMs)stop("HELPER_ACTION_EXPIRED");if(b.file!==process.execPath||b.cwd!==process.cwd()||!Array.isArray(b.args)||b.args.some(v=>typeof v!=="string"))stop();const tmp=resolve(process.env.TMPDIR||"");const state=resolve(b.stateDir);if(!tmp||!state.startsWith(tmp+"/"))stop();return b}
 function assets(b){const a=b.args;if(a.length<9||a[0]!=="--input-type=commonjs"||a[1]!=="--eval"||a[3]!==b.manifestDigest||a[6]!==b.operation)stop();const mb=readFileSync(a[4]);if(createHash("sha256").update(mb).digest("hex")!==b.manifestDigest)stop();const m=JSON.parse(mb);if(m.schema!=="clockchain.agent-handshake-release-manifest/v1"||m.version!=="2.1.3"||!Array.isArray(m.assets)||m.assets.length!==1)stop();const x=m.assets[0];if(x.filename!=="clockchain-agent-handshake.cjs"||!SHA.test(x.sha256))stop();if(createHash("sha256").update(readFileSync(a[5])).digest("hex")!==x.sha256)stop()}
-function complete(b,result){return new Promise((ok,bad)=>{const s=createConnection(b.completionSocket);let out="";const timer=setTimeout(()=>{s.destroy();bad()},5000);s.setEncoding("utf8");s.on("connect",()=>s.write(JSON.stringify({actionId:b.actionId,actionNonce:b.actionNonce,commandSha256:b.commandSha256,requestDigest:b.requestDigest,result})+"\n"));s.on("data",c=>{out+=c;if(Buffer.byteLength(out)>MAX){s.destroy();bad()}});s.on("end",()=>{clearTimeout(timer);try{const a=exact(JSON.parse(out),["accepted"]);a.accepted===true?ok():bad()}catch{bad()}});s.on("error",()=>{clearTimeout(timer);bad()})})}
+function completeOnce(b,result){return new Promise((ok,bad)=>{const s=createConnection(b.completionSocket);let out="";const timer=setTimeout(()=>{s.destroy();bad(new Error("transport"))},COMPLETION_ATTEMPT);s.setEncoding("utf8");s.on("connect",()=>s.write(JSON.stringify({actionId:b.actionId,actionNonce:b.actionNonce,commandSha256:b.commandSha256,requestDigest:b.requestDigest,result})+"\n"));s.on("data",c=>{out+=c;if(Buffer.byteLength(out)>MAX){s.destroy();bad(new Error("rejected"))}});s.on("end",()=>{clearTimeout(timer);try{const a=exact(JSON.parse(out),["accepted"]);a.accepted===true?ok():bad(new Error("rejected"))}catch{bad(new Error("rejected"))}});s.on("error",()=>{clearTimeout(timer);bad(new Error("transport"))})})}
+async function complete(b,result){const started=Date.now();for(let attempt=0;attempt<3&&Date.now()-started<COMPLETION_DEADLINE;attempt++){try{return await completeOnce(b,result)}catch(e){if(e&&e.message==="rejected")throw e}if(attempt<2)await new Promise(r=>setTimeout(r,100))}throw new Error("completion")}
 async function main(){const digest=process.argv.length===3?process.argv[2]:"";if(!SHA.test(digest))stop();const root=dirname(dirname(__filename));const pending=join(root,"pending",digest+".json"),running=join(root,"running",digest+"."+process.pid+".json"),consumed=join(root,"consumed",digest+".json");let b;try{try{readFileSync(consumed);stop("HELPER_ACTION_REPLAYED")}catch(e){if(e&&e.code!=="ENOENT")stop()}b=envelope(pending,digest);assets(b);try{renameSync(pending,running)}catch{try{readFileSync(consumed);stop("HELPER_ACTION_REPLAYED")}catch{}stop()}writeFileSync(consumed,JSON.stringify({schema:"clockchain.agent-harness-consumed-action/v1",commandSha256:b.commandSha256})+"\n",{encoding:"utf8",flag:"wx",mode:0o600});mkdirSync(resolve(b.stateDir),{recursive:true,mode:0o700});const child=spawnSync(b.file,b.args,{cwd:b.cwd,env:process.env,encoding:"utf8",maxBuffer:MAX});if(child.error||!Number.isSafeInteger(child.status))stop("HELPER_EXECUTION_LAUNCH_FAILED");if(child.status!==0)stop("HELPER_OPERATION_FAILED");if(typeof child.stdout!=="string"||Buffer.byteLength(child.stdout)<2||Buffer.byteLength(child.stdout)>MAX||!child.stdout.endsWith("\n")||child.stdout.slice(0,-1).includes("\n"))stop("HELPER_OUTPUT_INVALID");let result;try{result=JSON.parse(child.stdout)}catch{stop("HELPER_OUTPUT_INVALID")}if(!result||typeof result!=="object"||Array.isArray(result))stop("HELPER_OUTPUT_INVALID");if(b.completionRequired){try{await complete(b,result)}catch{stop("HELPER_COMPLETION_FAILED")}}process.stdout.write(child.stdout)}catch{stop()}finally{try{rmSync(running,{force:true})}catch{}}}
 main();
 `;
@@ -354,29 +357,40 @@ async function createCompletionSocket({ deadlineMs, platform, socketRoot }) {
           if (value === null || typeof value !== "object" || Array.isArray(value) ||
               JSON.stringify(Object.keys(value).sort()) !== JSON.stringify(["actionId", "actionNonce", "commandSha256", "requestDigest", "result"].sort())) fail();
           const action = actions.get(value.actionId);
-          if (!action || action.state !== "pending" || value.actionNonce !== action.actionNonce ||
+          if (!action || value.actionNonce !== action.actionNonce ||
               value.commandSha256 !== action.commandSha256 || value.requestDigest !== action.requestDigest || handler === null) fail();
-          action.state = "active";
-          let handlerTimer;
-          let accepted;
-          try {
-            accepted = await Promise.race([
-              Promise.resolve(handler(Object.freeze({
-                actionId: value.actionId,
-                commandSha256: value.commandSha256,
-                operation: action.operation,
-                requestDigest: value.requestDigest,
-                result: value.result,
-                role: action.role,
-                sessionId: action.sessionId,
-              }))),
-              new Promise((_, reject) => { handlerTimer = setTimeout(reject, deadlineMs); }),
-            ]);
-          } finally {
-            clearTimeout(handlerTimer);
+          const completionResultDigest = createHash("sha256").update(JSON.stringify(value.result)).digest("hex");
+          if (action.completionResultDigest !== null && action.completionResultDigest !== completionResultDigest) fail();
+          if (action.state === "pending") {
+            action.state = "active";
+            action.completionResultDigest = completionResultDigest;
+            action.completion = (async () => {
+              let handlerTimer;
+              try {
+                const accepted = await Promise.race([
+                  Promise.resolve(handler(Object.freeze({
+                    actionId: value.actionId,
+                    commandSha256: value.commandSha256,
+                    operation: action.operation,
+                    requestDigest: value.requestDigest,
+                    result: value.result,
+                    role: action.role,
+                    sessionId: action.sessionId,
+                  }))),
+                  new Promise((_, reject) => { handlerTimer = setTimeout(reject, deadlineMs); }),
+                ]);
+                if (accepted?.accepted !== true) fail();
+                action.state = "consumed";
+              } catch (error) {
+                action.state = "failed";
+                throw error;
+              } finally {
+                clearTimeout(handlerTimer);
+              }
+            })();
           }
-          if (accepted?.accepted !== true) fail();
-          action.state = "consumed";
+          if (action.state === "failed" || action.completion === null) fail();
+          await action.completion;
           socket.end('{"accepted":true}\n');
         } catch {
           socket.end('{"accepted":false}\n');
@@ -470,7 +484,7 @@ export async function createVerifiedReleaseActionRecorder(input = {}) {
   const publicKeyDer = publicKey.export({ type: "spki", format: "der" }).toString("base64");
   const trustedAdapterPublicKey = rawEd25519PublicKey(publicKey);
   const executable = join(bin, "clockchain-agent-authorize");
-  await writePrivateFile({ path: executable, bytes: Buffer.from(adapterExecutable(runtime, publicKeyDer), "utf8") });
+  await writePrivateFile({ path: executable, bytes: Buffer.from(adapterExecutable(runtime, publicKeyDer, completionDeadlineMs), "utf8") });
   await chmod(executable, 0o500);
   let completionHandlerSet = false;
   const retainedByCommand = new Map();
@@ -556,6 +570,8 @@ export async function createVerifiedReleaseActionRecorder(input = {}) {
       role: expected.role,
       sessionId: expected.sessionId,
       state: "pending",
+      completion: null,
+      completionResultDigest: null,
     });
     retainedByCommand.set(expected.commandSha256, action);
     return action;

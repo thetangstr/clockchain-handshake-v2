@@ -605,6 +605,178 @@ test("verified release recorder withholds helper output when the private complet
   );
 });
 
+test("verified release recorder allows a bounded remote commit to finish before acknowledging helper output", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "verified-release-remote-commit-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const run = await createFreshAgentRun({ parent });
+  const signingFixture = await buildAgentCliFixture("initiator");
+  const result = {
+    schema: "clockchain.agent-handshake-cli-result/v1",
+    helperVersion: "2.1.3",
+    operation: "sign",
+    address: signingFixture.parties.initiator.sessionKeyAddress,
+    bytesSha256: signingFixture.request.bytesSha256,
+    signatureHex: `0x${"3".repeat(130)}`,
+  };
+  const fixture = releaseFixture(result);
+  const signingRequest = Buffer.from(JSON.stringify(signingFixture.request));
+  const step = helperStep({
+    manifestDigest: fixture.manifestDigest,
+    payload: signingRequest.toString("base64url"),
+    policyDigest: signingFixture.request.policyDigest,
+    role: signingFixture.request.role,
+    sessionId: signingFixture.request.sessionId,
+  });
+  const socketRoot = join("/tmp", `verified-rec-${randomBytes(6).toString("hex")}`);
+  t.after(() => rm(socketRoot, { recursive: true, force: true }));
+  const recorder = await createVerifiedReleaseActionRecorder({
+    fetchImpl: fixture.fetchImpl,
+    manifestDigest: fixture.manifestDigest,
+    room: run.roles.initiator,
+    socketRoot,
+  });
+  t.after(() => recorder.close());
+  recorder.setCompletionHandler(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 5_250));
+    return { accepted: true };
+  });
+  const action = recorder.recordRetainedAction(step);
+
+  const executed = await recorder.executeAuthorizedAction({
+    actionId: action.actionId,
+    commandSha256: action.commandSha256,
+    role: action.role,
+    sessionId: action.sessionId,
+  });
+
+  assert.equal(executed.executed, true);
+  assert.deepEqual(executed.publicResult, result);
+});
+
+test("verified release completion socket coalesces duplicate exact acknowledgments without repeating the commit", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "verified-release-idempotent-completion-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const run = await createFreshAgentRun({ parent });
+  const result = {
+    schema: "clockchain.agent-handshake-cli-result/v1",
+    helperVersion: "2.1.3",
+    operation: "policy",
+  };
+  const fixture = releaseFixture(result);
+  const step = policyHelperStep({
+    manifestDigest: fixture.manifestDigest,
+    policy: {
+      schema: "clockchain.agent-handshake-policy/v1",
+      protocol: "clockchain.agent-handshake/v2",
+      role: "initiator",
+      mcpOrigin: "https://mcp.clockchain.network",
+      reference: "NS-1847",
+      statementDigest: "b".repeat(64),
+      maxValidForSeconds: "90",
+      identityPolicy: {
+        erc8004: "required_existing_or_fresh",
+        chainId: "eip155:11155111",
+        registryAddress: "0x8004a818bfb912233c491871b3d84c89a494bd9e",
+      },
+      externalBusinessActionsAllowed: false,
+    },
+  });
+  const socketRoot = join("/tmp", `verified-rec-${randomBytes(6).toString("hex")}`);
+  t.after(() => rm(socketRoot, { recursive: true, force: true }));
+  const recorder = await createVerifiedReleaseActionRecorder({
+    completionDeadlineMs: 1_000,
+    fetchImpl: fixture.fetchImpl,
+    manifestDigest: fixture.manifestDigest,
+    room: run.roles.initiator,
+    socketRoot,
+  });
+  t.after(() => recorder.close());
+  let commits = 0;
+  let releaseCommit;
+  recorder.setCompletionHandler(async () => {
+    commits += 1;
+    await new Promise((resolve) => { releaseCommit = resolve; });
+    return { accepted: true };
+  });
+  const action = recorder.recordRetainedAction(step);
+  const pendingEnvelope = JSON.parse(await readFile(join(recorder.pending, `${step.commandSha256}.json`), "utf8"));
+  const completion = {
+    actionId: action.actionId,
+    actionNonce: pendingEnvelope.body.actionNonce,
+    commandSha256: action.commandSha256,
+    requestDigest: action.requestDigest,
+    result,
+  };
+
+  const first = sendCompletion(pendingEnvelope.body.completionSocket, completion);
+  while (commits === 0) await new Promise((resolve) => setTimeout(resolve, 5));
+  const second = sendCompletion(pendingEnvelope.body.completionSocket, completion);
+  releaseCommit();
+
+  assert.deepEqual(await Promise.all([first, second]), [{ accepted: true }, { accepted: true }]);
+  assert.deepEqual(await sendCompletion(pendingEnvelope.body.completionSocket, completion), { accepted: true });
+  assert.deepEqual(await sendCompletion(pendingEnvelope.body.completionSocket, {
+    ...completion,
+    result: { ...result, operation: "inspect" },
+  }), { accepted: false });
+  assert.equal(commits, 1);
+});
+
+test("verified release recorder retries only the exact completion acknowledgment after a transport timeout", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "verified-release-completion-retry-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const run = await createFreshAgentRun({ parent });
+  const signingFixture = await buildAgentCliFixture("initiator");
+  const marker = join(parent, "helper-executions");
+  const result = {
+    schema: "clockchain.agent-handshake-cli-result/v1",
+    helperVersion: "2.1.3",
+    operation: "sign",
+    address: signingFixture.parties.initiator.sessionKeyAddress,
+    bytesSha256: signingFixture.request.bytesSha256,
+    signatureHex: `0x${"4".repeat(130)}`,
+  };
+  const fixture = releaseSourceFixture(
+    `require("node:fs").appendFileSync(${JSON.stringify(marker)}, "x");process.stdout.write(${JSON.stringify(`${JSON.stringify(result)}\n`)});`,
+  );
+  const signingRequest = Buffer.from(JSON.stringify(signingFixture.request));
+  const step = helperStep({
+    manifestDigest: fixture.manifestDigest,
+    payload: signingRequest.toString("base64url"),
+    policyDigest: signingFixture.request.policyDigest,
+    role: signingFixture.request.role,
+    sessionId: signingFixture.request.sessionId,
+  });
+  const socketRoot = join("/tmp", `verified-rec-${randomBytes(6).toString("hex")}`);
+  t.after(() => rm(socketRoot, { recursive: true, force: true }));
+  const recorder = await createVerifiedReleaseActionRecorder({
+    completionDeadlineMs: 3_000,
+    fetchImpl: fixture.fetchImpl,
+    manifestDigest: fixture.manifestDigest,
+    room: run.roles.initiator,
+    socketRoot,
+  });
+  t.after(() => recorder.close());
+  let commits = 0;
+  recorder.setCompletionHandler(async () => {
+    commits += 1;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    return { accepted: true };
+  });
+  const action = recorder.recordRetainedAction(step);
+
+  const executed = await recorder.executeAuthorizedAction({
+    actionId: action.actionId,
+    commandSha256: action.commandSha256,
+    role: action.role,
+    sessionId: action.sessionId,
+  });
+
+  assert.equal(executed.executed, true);
+  assert.equal(commits, 1);
+  assert.equal(await readFile(marker, "utf8"), "x");
+});
+
 test("verified release recorder accepts an existing private root and rejects unsafe socket roots", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "verified-release-root-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
