@@ -47,12 +47,13 @@ function successEnvelope(id = 1) {
 }
 
 function signatureSuccessEnvelope(id = 1) {
+  const result = { role: "initiator", sessionId: SESSION_ID, stage: "proposal_submitted", roleAccess: ACCESS };
   return {
     jsonrpc: "2.0",
     id,
     result: {
-      content: [{ type: "text", text: JSON.stringify({ role: "initiator", sessionId: SESSION_ID, stage: "proposal_submitted" }) }],
-      structuredContent: { role: "initiator", sessionId: SESSION_ID, stage: "proposal_submitted" },
+      content: [{ type: "text", text: JSON.stringify(result) }],
+      structuredContent: result,
     },
   };
 }
@@ -132,23 +133,28 @@ test("private handshake client submits one policy-bound signature without model 
 });
 
 test("private handshake client rejects malformed signature acknowledgements without retrying", async () => {
-  let calls = 0;
-  const client = createAgentHandshakeCheckpointClient({
-    endpoint: "https://mcp.clockchain.network/handshake/mcp",
-    fetchImpl: async () => {
-      calls += 1;
-      const envelope = signatureSuccessEnvelope();
-      envelope.result.structuredContent.stage = "unexpected";
-      envelope.result.content[0].text = JSON.stringify(envelope.result.structuredContent);
-      return new Response(JSON.stringify(envelope), { status: 200 });
-    },
-    timeoutMs: 1_000,
-  });
-  await assert.rejects(
-    client.submitSignature({ access: ACCESS, policyDigest: DIGEST, signatureHex: SIGNATURE }),
-    /Clockchain checkpoint submission failed safely/,
-  );
-  assert.equal(calls, 1);
+  for (const mutate of [
+    (result) => { result.stage = "unexpected"; },
+    (result) => { result.roleAccess = `ccra_${"B".repeat(22)}`; },
+  ]) {
+    let calls = 0;
+    const client = createAgentHandshakeCheckpointClient({
+      endpoint: "https://mcp.clockchain.network/handshake/mcp",
+      fetchImpl: async () => {
+        calls += 1;
+        const envelope = signatureSuccessEnvelope();
+        mutate(envelope.result.structuredContent);
+        envelope.result.content[0].text = JSON.stringify(envelope.result.structuredContent);
+        return new Response(JSON.stringify(envelope), { status: 200 });
+      },
+      timeoutMs: 1_000,
+    });
+    await assert.rejects(
+      client.submitSignature({ access: ACCESS, policyDigest: DIGEST, signatureHex: SIGNATURE }),
+      /Clockchain checkpoint submission failed safely/,
+    );
+    assert.equal(calls, 1);
+  }
 });
 
 test("private handshake client owns the exact mechanical invite, accept, join, next, and certificate calls", async () => {

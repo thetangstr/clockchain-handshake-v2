@@ -181,8 +181,11 @@ export function createAgentHandshakeCheckpointClient(options = {}) {
         try {
           const supplied = exact(input, ["access", "policyDigest", "signatureHex"]);
           if (!ACCESS.test(supplied.access) || !DIGEST.test(supplied.policyDigest) || !SIGNATURE.test(supplied.signatureHex)) fail();
-          const result = exact(await callTool("agent_handshake_submit", supplied), ["role", "sessionId", "stage"]);
-          if (!ROLES.includes(result.role) || !UUID.test(result.sessionId) || !SIGNATURE_STAGES.includes(result.stage)) fail();
+          const result = exact(await callTool("agent_handshake_submit", supplied), ["role", "roleAccess", "sessionId", "stage"]);
+          if (
+            !ROLES.includes(result.role) || !UUID.test(result.sessionId) ||
+            !SIGNATURE_STAGES.includes(result.stage) || result.roleAccess !== supplied.access
+          ) fail();
           return Object.freeze({ role: result.role, sessionId: result.sessionId, stage: result.stage });
         } catch { fail(); }
       },
