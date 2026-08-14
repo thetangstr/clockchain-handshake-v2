@@ -221,20 +221,7 @@ function lifecycleCompletion(role, step, result = {}) {
 }
 
 function joinResult(role, fixture) {
-  const party = fixture.parties[role];
-  return Object.freeze({
-    role,
-    sessionId: SESSION_ID,
-    repositorySha: REPOSITORY_SHA,
-    sessionDeadlineMs: String(NOW_MS + 30_000),
-    signingRequest: Object.freeze({
-      policyDigest: party.policyDigest,
-      repositorySha: REPOSITORY_SHA,
-      role,
-      sessionId: SESSION_ID,
-      terms: TERMS,
-    }),
-  });
+  return productionJoinResult(role, fixture);
 }
 
 function productionJoinResult(role, fixture) {
@@ -270,6 +257,41 @@ function productionJoinResult(role, fixture) {
         sessionId: SESSION_ID,
         terms: TERMS,
         policyDigest: party.policyDigest,
+      }),
+      stateDir: "reuse_exact_absolute_state_dir",
+      afterSuccess: "call_agent_handshake_submit_with_helper_output_and_unchanged_policy_digest",
+    }),
+  });
+}
+
+function compactProductionJoinResult(role, fixture) {
+  const legacy = productionJoinResult(role, fixture);
+  const payload = Buffer.from(JSON.stringify(legacy.signingRequest)).toString("base64url");
+  const shellCommand = `node helper sign --state-dir "$TMPDIR/.clockchain/handshakes/${SESSION_ID}/${role}" --payload-base64url ${payload}`;
+  const commandSha256 = createHash("sha256").update(shellCommand).digest("hex");
+  return Object.freeze({
+    role,
+    sessionId: SESSION_ID,
+    repositorySha: REPOSITORY_SHA,
+    sessionDeadlineMs: String(NOW_MS + 30_000),
+    signingSummary: Object.freeze({
+      schema: "clockchain.agent-handshake-signing-summary/v1",
+      operation: "identity_claim",
+      role,
+      sessionId: SESSION_ID,
+      bytesSha256: legacy.signingRequest.bytesSha256,
+    }),
+    localAction: Object.freeze({
+      executor: "pinned_helper",
+      operation: "sign",
+      helperStep: Object.freeze({
+        operation: "sign",
+        role,
+        sessionId: SESSION_ID,
+        approvalCommand: `clockchain-agent-authorize ${commandSha256}`,
+        commandLength: Buffer.byteLength(shellCommand),
+        commandSha256,
+        shellCommand,
       }),
       stateDir: "reuse_exact_absolute_state_dir",
       afterSuccess: "call_agent_handshake_submit_with_helper_output_and_unchanged_policy_digest",
@@ -439,6 +461,37 @@ test("party-local bridge binds the exact nested production join response without
     sessionId: SESSION_ID,
     terms: TERMS,
   }]);
+});
+
+test("party-local bridge derives join policy and terms from the compact authoritative helper payload", async (t) => {
+  const { activationContexts, bridges, fixture } = await setup(t);
+  const observed = await bridges.initiator.observeToolResult({
+    toolName: "agent_handshake_join",
+    result: compactProductionJoinResult("initiator", fixture),
+  });
+  assert.equal(observed.observed, true);
+  assert.equal(observed.protocolSessionId, SESSION_ID);
+  assert.deepEqual(activationContexts, [{
+    policyDigest: fixture.parties.initiator.policyDigest,
+    repositorySha: REPOSITORY_SHA,
+    role: "initiator",
+    sessionId: SESSION_ID,
+    terms: TERMS,
+  }]);
+});
+
+test("party-local bridge rejects compact join payload bindings that conflict with public duplicates", async (t) => {
+  const { bridges, fixture } = await setup(t);
+  await assert.rejects(
+    bridges.initiator.observeToolResult({
+      toolName: "agent_handshake_join",
+      result: { ...compactProductionJoinResult("initiator", fixture), policyDigest: "0".repeat(64) },
+    }),
+    (error) => {
+      assert.equal(directA2APartyBridgeFailureStage(error), "join-policy");
+      return true;
+    },
+  );
 });
 
 test("party-local bridge preserves an allowlisted privacy-safe signed-channel activation stage", async (t) => {

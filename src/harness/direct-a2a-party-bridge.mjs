@@ -249,6 +249,44 @@ function signingRequestFromStep(step) {
   });
 }
 
+function helperStepsFromResult(result) {
+  const singularSteps = findValues(result, "helperStep").filter((value) => value !== null && typeof value === "object");
+  const stepBatches = findValues(result, "helperSteps").filter(Array.isArray);
+  if (singularSteps.length > 1 || stepBatches.length > 1 || singularSteps.length + stepBatches.length > 1) fail();
+  const steps = singularSteps.length === 1
+    ? singularSteps
+    : stepBatches.length === 1 ? publicClone(stepBatches[0]) : [];
+  if (
+    steps.length > 0 && steps.length !== 1 &&
+    JSON.stringify(steps.map((step) => step?.operation)) !== JSON.stringify(["init", "policy", "inspect"])
+  ) fail();
+  return steps;
+}
+
+function joinSigningRequest(result, steps, role, sessionId) {
+  const requests = findValues(result, "signingRequest")
+    .filter((value) => value !== null && typeof value === "object" && !Array.isArray(value))
+    .map(publicClone);
+  for (const step of steps) {
+    const expected = signingRequestFromStep(step);
+    if (expected.operation === "sign" && expected.request?.operation === "identity_claim") requests.push(expected.request);
+  }
+  const unique = [...new Map(requests.map((request) => [JSON.stringify(request), request])).values()];
+  if (unique.length !== 1) fail();
+  const request = snapshot(unique[0], [
+    "bytesGzipBase64Url", "bytesSha256", "externalBusinessActionPerformed", "helperVersion",
+    "hostSessionKeyCertificate", "operation", "policyDigest", "repositorySha", "role", "schema",
+    "sessionDeadlineMs", "sessionId", "terms",
+  ]);
+  if (
+    request.schema !== REQUEST_SCHEMA || request.helperVersion !== "2.1.3" || request.operation !== "identity_claim" ||
+    request.role !== role || request.sessionId !== sessionId || request.externalBusinessActionPerformed !== false ||
+    !SHA.test(request.repositorySha) || !DIGEST.test(request.policyDigest) || !DIGEST.test(request.bytesSha256) ||
+    typeof request.bytesGzipBase64Url !== "string" || request.bytesGzipBase64Url.length < 1
+  ) fail();
+  return request;
+}
+
 function helperResult(value, expected) {
   const item = snapshot(value, ["address", "bytesSha256", "helperVersion", "operation", "schema", "signatureHex"]);
   if (
@@ -590,6 +628,7 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
           if (typeof item.toolName !== "string" || !item.toolName.startsWith("agent_handshake_")) fail();
           failureStage = "clone";
           const result = publicClone(item.result);
+          const steps = helperStepsFromResult(result);
           let digestInput = result;
           failureStage = "role-access";
           const roleAccessValues = findValues(result, "roleAccess").filter((value) => typeof value === "string");
@@ -634,13 +673,18 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
             const joinedRole = oneValue(result, "role", (value) => value === options.role);
             failureStage = "join-session";
             const sessionId = bindSession(oneValue(result, "sessionId", (value) => typeof value === "string" && UUID.test(value)));
+            const request = joinSigningRequest(result, steps, joinedRole, sessionId);
             failureStage = "join-repository";
             const repositorySha = oneValue(result, "repositorySha", (value) => typeof value === "string" && SHA.test(value));
+            if (repositorySha !== request.repositorySha) fail();
             failureStage = "join-policy";
-            const policyDigest = oneValue(result, "policyDigest", (value) => typeof value === "string" && DIGEST.test(value));
+            const policyDigest = request.policyDigest;
+            const publicPolicyDigests = findValues(result, "policyDigest").filter((value) => typeof value === "string" && DIGEST.test(value));
+            if (publicPolicyDigests.some((value) => value !== policyDigest)) fail();
             failureStage = "join-terms";
-            const termsInput = oneValue(result, "terms", (value) => value !== null && typeof value === "object" && !Array.isArray(value));
-            const terms = validateAgentHandshakeV2Terms(publicClone(termsInput));
+            const terms = validateAgentHandshakeV2Terms(publicClone(request.terms));
+            const publicTerms = findValues(result, "terms").filter((value) => value !== null && typeof value === "object" && !Array.isArray(value));
+            if (publicTerms.some((value) => JSON.stringify(publicClone(value)) !== JSON.stringify(terms))) fail();
             if (activationContext !== null) fail();
             activationContext = Object.freeze({ policyDigest, repositorySha, role: joinedRole, sessionId, terms });
             failureStage = "join-activation";
@@ -653,16 +697,6 @@ export function createDirectA2APartyBridge(optionsInput = {}) {
             }
           }
           failureStage = "helper";
-          const singularSteps = findValues(result, "helperStep").filter((value) => value !== null && typeof value === "object");
-          const stepBatches = findValues(result, "helperSteps").filter(Array.isArray);
-          if (singularSteps.length > 1 || stepBatches.length > 1 || singularSteps.length + stepBatches.length > 1) fail();
-          const steps = singularSteps.length === 1
-            ? singularSteps
-            : stepBatches.length === 1 ? publicClone(stepBatches[0]) : [];
-          if (
-            steps.length > 0 && steps.length !== 1 &&
-            JSON.stringify(steps.map((step) => step?.operation)) !== JSON.stringify(["init", "policy", "inspect"])
-          ) fail();
           for (const step of steps) {
             const expected = signingRequestFromStep(step);
             if (boundSessionId === null || expected.sessionId !== boundSessionId) fail();
