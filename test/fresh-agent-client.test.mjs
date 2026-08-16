@@ -860,6 +860,37 @@ test("facilitated prompts preserve the deployed 90-second Clockchain mandate exa
   assert.match(prompts.responder, /at most 90 seconds/);
 });
 
+test("same-session client reconfiguration installs authentication only once per role", async () => {
+  const runner = await import("../scripts/run-fresh-agent-handshake.mjs");
+  assert.equal(typeof runner.createAuthenticatedClientConfigurator, "function");
+
+  const calls = [];
+  const configure = runner.createAuthenticatedClientConfigurator({
+    authentication: {
+      initiator: { client: "codex" },
+      responder: { client: "claude" },
+    },
+    configureClient: async (entry) => calls.push(entry),
+  });
+  const base = {
+    client: "codex",
+    command: { file: "codex", args: [] },
+    env: {},
+    role: "initiator",
+    room: { home: "/tmp/initiator" },
+  };
+
+  await configure(base);
+  await configure(base);
+  await configure({ ...base, client: "claude", role: "responder", room: { home: "/tmp/responder" } });
+
+  assert.deepEqual(calls.map(({ role, installAuthentication }) => ({ role, installAuthentication })), [
+    { role: "initiator", installAuthentication: true },
+    { role: "initiator", installAuthentication: false },
+    { role: "responder", installAuthentication: true },
+  ]);
+});
+
 test("default post-handshake continuation resumes the same client with the A2A adapter", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "fresh-agent-default-a2a-continuation-"));
   t.after(() => rm(parent, { recursive: true, force: true }));

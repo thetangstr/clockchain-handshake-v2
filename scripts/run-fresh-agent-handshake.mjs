@@ -168,8 +168,8 @@ export async function loadFreshAgentAuthentication(client, {
   return loadAppleClientAuthentication({ client, nowMs: Date.now(), source });
 }
 
-async function configureClient({ authentication, command, env, room }) {
-  if (typeof authentication.source === "string" || typeof authentication.serialized === "string") {
+async function configureClient({ authentication, command, env, installAuthentication = true, room }) {
+  if (installAuthentication && (typeof authentication.source === "string" || typeof authentication.serialized === "string")) {
     await installAppleClientAuthentication({ authentication, home: room.home });
   }
   await execFileAsync(command.file, command.args, {
@@ -178,6 +178,18 @@ async function configureClient({ authentication, command, env, room }) {
     timeout: 30_000,
     windowsHide: true,
   });
+}
+
+export function createAuthenticatedClientConfigurator({ authentication, configureClient: configure = configureClient } = {}) {
+  if (authentication === null || typeof authentication !== "object" || typeof configure !== "function") throw new Error("invalid");
+  const installedRoles = new Set();
+  return async (entry) => {
+    const roleAuthentication = authentication[entry?.role];
+    if (roleAuthentication === undefined) throw new Error("invalid");
+    const installAuthentication = !installedRoles.has(entry.role);
+    await configure({ ...entry, authentication: roleAuthentication, installAuthentication });
+    installedRoles.add(entry.role);
+  };
 }
 
 async function prepareClient({ authentication, command, env, room }) {
@@ -330,39 +342,42 @@ async function main() {
           agentContractA2A,
         });
       },
-      runHandshake: ({ agentContractA2A, authentication, runtime }) => runFreshAgentHandshake({
-        authenticationModes: {
-          initiator: authentication.initiator.existingLoginIsolated === true ? "existing_login_isolated" : "disposable",
-          responder: authentication.responder.existingLoginIsolated === true ? "existing_login_isolated" : "disposable",
-        },
-        clients,
-        configureClient: (entry) => configureClient({ ...entry, authentication: authentication[entry.role] }),
-        prepareClient: (entry) => prepareClient({ ...entry, authentication: authentication[entry.role] }),
-        modelEnvironment: {
-          initiator: authentication.initiator.environment,
-          responder: authentication.responder.environment,
-        },
-        secretCanaries: {
-          initiator: authentication.initiator.secretCanaries,
-          responder: authentication.responder.secretCanaries,
-        },
-        monitor,
-        parent,
-        prompts: { initiator: prompts.initiator, responder: prompts.responder },
-        release: {
-          mcp: {
-            manifestDigest: value("CLOCKCHAIN_MCP_RELEASE_MANIFEST_DIGEST"),
-            hostRoots: roots("CLOCKCHAIN_MCP_HOST_ROOT_FINGERPRINTS"),
+      runHandshake: ({ agentContractA2A, authentication, runtime }) => {
+        const configureAuthenticatedClient = createAuthenticatedClientConfigurator({ authentication });
+        return runFreshAgentHandshake({
+          authenticationModes: {
+            initiator: authentication.initiator.existingLoginIsolated === true ? "existing_login_isolated" : "disposable",
+            responder: authentication.responder.existingLoginIsolated === true ? "existing_login_isolated" : "disposable",
           },
-          research: {
-            manifestDigest: value("CLOCKCHAIN_RESEARCH_RELEASE_MANIFEST_DIGEST"),
-            hostRoots: roots("CLOCKCHAIN_RESEARCH_HOST_ROOT_FINGERPRINTS"),
+          clients,
+          configureClient: configureAuthenticatedClient,
+          prepareClient: (entry) => prepareClient({ ...entry, authentication: authentication[entry.role] }),
+          modelEnvironment: {
+            initiator: authentication.initiator.environment,
+            responder: authentication.responder.environment,
           },
-        },
-        runtimeExecPath: runtime.execPath,
-        runtimeVersion: runtime.version,
-        ...(agentContractA2A === null ? {} : { postHandshakeFlow: agentContractA2A.postHandshakeFlow }),
-      }),
+          secretCanaries: {
+            initiator: authentication.initiator.secretCanaries,
+            responder: authentication.responder.secretCanaries,
+          },
+          monitor,
+          parent,
+          prompts: { initiator: prompts.initiator, responder: prompts.responder },
+          release: {
+            mcp: {
+              manifestDigest: value("CLOCKCHAIN_MCP_RELEASE_MANIFEST_DIGEST"),
+              hostRoots: roots("CLOCKCHAIN_MCP_HOST_ROOT_FINGERPRINTS"),
+            },
+            research: {
+              manifestDigest: value("CLOCKCHAIN_RESEARCH_RELEASE_MANIFEST_DIGEST"),
+              hostRoots: roots("CLOCKCHAIN_RESEARCH_HOST_ROOT_FINGERPRINTS"),
+            },
+          },
+          runtimeExecPath: runtime.execPath,
+          runtimeVersion: runtime.version,
+          ...(agentContractA2A === null ? {} : { postHandshakeFlow: agentContractA2A.postHandshakeFlow }),
+        });
+      },
     });
   } catch (error) {
     process.stderr.write(SAFE_ERROR);
