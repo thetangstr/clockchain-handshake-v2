@@ -549,9 +549,9 @@ test("builds exact endpoint configuration for Codex and Claude Code", () => {
     "--permission-mode", "dontAsk", "--setting-sources", "",
     "--settings", JSON.stringify(sandboxSettings),
     "--output-format", "stream-json", "--verbose",
-    "--tools", "Bash,Read,ToolSearch",
+    "--tools", "Read,ToolSearch",
     "--allowedTools",
-    ["ToolSearch", "Bash", "mcp__clockchain-adapter__approve_bound_action"].concat([
+    ["ToolSearch", "mcp__clockchain-adapter__approve_bound_action"].concat([
       "agent_handshake_invite", "agent_handshake_accept_invitation", "agent_handshake_join",
       "agent_handshake_status", "agent_handshake_next", "agent_handshake_submit_checkpoint",
       "agent_handshake_submit",
@@ -562,6 +562,7 @@ test("builds exact endpoint configuration for Codex and Claude Code", () => {
     ]).join(","),
   ]);
   assert.equal(claude.launch.input, "hello");
+  assert.equal(claude.launch.args[claude.launch.args.indexOf("--allowedTools") + 1].split(",").includes("Bash"), false);
 });
 
 test("builds persistent continuation turns for the same isolated Codex and Claude sessions", () => {
@@ -609,6 +610,7 @@ test("builds persistent continuation turns for the same isolated Codex and Claud
   assert.equal(mcpConfig.mcpServers["agent-contract-a2a"].type, "stdio");
   assert.equal(mcpConfig.mcpServers["agent-contract-a2a"].args.at(-1), "--stdio");
   assert.match(a2a.args[a2a.args.indexOf("--allowedTools") + 1], /mcp__agent-contract-a2a__agent_contract_send_proposal/);
+  assert.equal(a2a.args[a2a.args.indexOf("--allowedTools") + 1].split(",").includes("Bash"), false);
   const settings = JSON.parse(a2a.args[a2a.args.indexOf("--settings") + 1]);
   assert.equal(settings.sandbox.network.allowedDomains.includes("127.0.0.1"), true);
 });

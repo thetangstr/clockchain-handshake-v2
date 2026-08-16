@@ -792,8 +792,8 @@ export function buildClientCommands({
         "--settings", JSON.stringify(sandboxSettings),
         "--output-format", "stream-json",
         "--verbose",
-        "--tools", "Bash,Read,ToolSearch",
-        "--allowedTools", ["ToolSearch", "Bash", ADAPTER_APPROVAL_TOOL].concat(CLOCKCHAIN_HANDSHAKE_TOOLS
+        "--tools", "Read,ToolSearch",
+        "--allowedTools", ["ToolSearch", ADAPTER_APPROVAL_TOOL].concat(CLOCKCHAIN_HANDSHAKE_TOOLS
           .map((tool) => `mcp__clockchain-handshake__${tool}`)
           .concat(["Read(./manifest.json)", "Read(./clockchain-agent-handshake.cjs)"]))
           .join(","),
@@ -839,7 +839,7 @@ export function buildClientContinuationCommand({
       ? { "agent-contract-a2a": { type: "stdio", command: process.execPath, args: [AGENT_CONTRACT_A2A_ADAPTER, "--stdio"] } }
       : {}),
   };
-  const allowedTools = ["ToolSearch", "Bash", ADAPTER_APPROVAL_TOOL]
+  const allowedTools = ["ToolSearch", ADAPTER_APPROVAL_TOOL]
     .concat(CLOCKCHAIN_HANDSHAKE_TOOLS.map((tool) => `mcp__clockchain-handshake__${tool}`))
     .concat(agentContractA2A ? AGENT_CONTRACT_A2A_TOOL_NAMES.map((tool) => `mcp__agent-contract-a2a__${tool}`) : [])
     .concat(["Read(./manifest.json)", "Read(./clockchain-agent-handshake.cjs)"]);
@@ -854,7 +854,7 @@ export function buildClientContinuationCommand({
       "--permission-mode", "dontAsk", "--setting-sources", "",
       "--settings", JSON.stringify(sandboxSettings),
       "--output-format", "stream-json", "--verbose",
-      "--tools", "Bash,Read,ToolSearch",
+      "--tools", "Read,ToolSearch",
       "--allowedTools", allowedTools.join(","),
     ]),
     input: prompt,
