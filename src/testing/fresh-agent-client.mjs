@@ -3047,19 +3047,25 @@ export async function runFreshAgentHandshake({
       const current = prepared[request.role];
       const room = run.roles[request.role];
       const wallet = await findSingleAgentWallet(room.workspace);
-      const environment = Object.freeze({
-        ...current.env,
+      const adapterEnvironment = Object.freeze({
         ...request.environment,
         AGENT_CONTRACT_A2A_WALLET_PATH: wallet.path,
       });
+      const environment = Object.freeze({
+        ...current.env,
+        ...adapterEnvironment,
+      });
       if (current.client === "codex") {
+        const adapterEnvironmentArguments = Object.entries(adapterEnvironment)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .flatMap(([key, value]) => ["--env", `${key}=${value}`]);
         try {
           await configureClient(Object.freeze({
             client: current.client,
             command: Object.freeze({
               file: "codex",
               args: Object.freeze([
-                "mcp", "add", "agent-contract-a2a", "--",
+                "mcp", "add", "agent-contract-a2a", ...adapterEnvironmentArguments, "--",
                 runtime?.execPath ?? process.execPath,
                 AGENT_CONTRACT_A2A_ADAPTER,
                 "--stdio",

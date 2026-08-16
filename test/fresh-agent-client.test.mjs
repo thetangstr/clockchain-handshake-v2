@@ -956,7 +956,12 @@ test("default post-handshake continuation resumes the same client with the A2A a
   }));
 
   assert.equal(result.facilitatedA2A.sessionId, "public-result");
-  assert.equal(configureCalls.some((command) => command.args?.includes("agent-contract-a2a")), true);
+  const a2aConfiguration = configureCalls.find((command) => command.args?.includes("agent-contract-a2a"));
+  assert.notEqual(a2aConfiguration, undefined);
+  assert.equal(a2aConfiguration.args.includes("AGENT_CONTRACT_A2A_ROLE=buyer"), true);
+  assert.equal(a2aConfiguration.args.includes("AGENT_CONTRACT_A2A_ROLE_TOKEN=buyer-only-token"), true);
+  assert.equal(a2aConfiguration.args.some((value) => value.startsWith("AGENT_CONTRACT_A2A_WALLET_PATH=")), true);
+  assert.equal(a2aConfiguration.args.some((value) => value.startsWith("TEST_PROVIDER_KEY=")), false);
   const resumed = processCalls.filter((entry) => entry.file === "codex").at(-1);
   assert.deepEqual(resumed.args.slice(0, 4), ["exec", "--approve-for-me", "resume", "--last"]);
   assert.equal(resumed.options.env.AGENT_CONTRACT_A2A_ROLE, "buyer");
