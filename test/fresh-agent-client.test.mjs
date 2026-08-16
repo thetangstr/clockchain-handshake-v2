@@ -845,7 +845,7 @@ test("facilitated A2A CLI extension is explicit and rejects partial configuratio
   assert.deepEqual(extension.secretCanaries, ["operator-secret"]);
 });
 
-test("facilitated prompts keep the 90-second Clockchain window while authorizing one scoped platform continuation", () => {
+test("facilitated prompts preserve the deployed 90-second Clockchain mandate exactly", () => {
   const base = "Northstar Logistics and Harbor Supply authorize these two independently controlled agents to communicate about shipment reference NS-1847 for 90 seconds.";
   const prompts = {
     initiator: `Authorized statement: ${base} Enforce 90 seconds.`,
@@ -854,9 +854,8 @@ test("facilitated prompts keep the 90-second Clockchain window while authorizing
 
   applyFacilitatedA2APromptAuthorization(prompts, true);
 
-  assert.equal(prompts.initiator.includes(base), false);
-  assert.match(prompts.initiator, /activated within 90 seconds/);
-  assert.match(prompts.initiator, /one provider proposal and one nonbinding buyer acknowledgment/);
+  assert.equal(prompts.initiator.includes(base), true);
+  assert.equal(prompts.responder.includes(base), true);
   assert.match(prompts.initiator, /Enforce 90 seconds/);
   assert.match(prompts.responder, /at most 90 seconds/);
 });

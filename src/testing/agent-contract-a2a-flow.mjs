@@ -8,7 +8,7 @@ const INTEGER = /^(?:0|[1-9][0-9]*)$/;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "[::1]", "::1", "localhost"]);
 export const FACILITATED_A2A_SCOPE = "single_provider_proposal_nonbinding_buyer_acknowledgment";
 export const FACILITATED_A2A_VALID_FOR_SECONDS = "600";
-export const FACILITATED_A2A_AUTHORIZATION_STATEMENT = "Northstar Logistics and Harbor Supply authorize these two independently controlled agents to establish one Agent Contract facilitated proposal session about shipment reference NS-1847. The session must be activated within 90 seconds and may remain active for up to 10 minutes. It permits one provider proposal and one nonbinding buyer acknowledgment; it does not authorize agreement, payment, escrow, execution, or any external business action.";
+export const FACILITATED_A2A_AUTHORIZATION_STATEMENT = "Northstar Logistics and Harbor Supply authorize these two independently controlled agents to communicate about shipment reference NS-1847 for 90 seconds.";
 const VERIFICATION_KEYS = Object.freeze([
   "identityContinuity",
   "providerDiscoveredBuyerCard",

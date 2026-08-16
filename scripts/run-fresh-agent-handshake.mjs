@@ -37,10 +37,9 @@ export function applyFacilitatedA2APromptAuthorization(prompts, enabled) {
     if (typeof prompts?.[role] !== "string" || !prompts[role].includes(BASE_HANDSHAKE_STATEMENT)) {
       throw new Error("invalid");
     }
-    prompts[role] = prompts[role].replaceAll(
-      BASE_HANDSHAKE_STATEMENT,
-      FACILITATED_A2A_AUTHORIZATION_STATEMENT,
-    );
+    if (FACILITATED_A2A_AUTHORIZATION_STATEMENT !== BASE_HANDSHAKE_STATEMENT) {
+      throw new Error("Facilitated A2A must preserve the deployed handshake statement.");
+    }
   }
   return prompts;
 }

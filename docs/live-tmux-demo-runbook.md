@@ -7,15 +7,15 @@ This runbook launches two genuinely fresh local agents—Codex as the buyer-side
 1. Each agent creates a distinct wallet-backed ERC-8004 identity.
 2. Both agents use the live Clockchain Handshake MCP and independently approve their exact handshake actions.
 3. Both verify the same Clockchain closing certificate.
-4. The signed statement authorizes activation, within the 90-second Clockchain window, of one narrowly scoped Agent Contract proposal session.
+4. Agent Contract validates the fresh certificate, within the 90-second Clockchain window, and creates a separate narrowly scoped proposal session.
 5. The same Claude session resumes as provider and sends one signed proposal through its role-local A2A adapter.
 6. The same Codex session resumes as buyer and sends one signed, nonbinding `received_for_review` acknowledgment.
 
-Clockchain remains the trust path for the handshake and scoped continuation authorization. Agent Contract is the communication and verification path for the commercial messages. The proposal and acknowledgment are not represented as Clockchain anchors.
+Clockchain remains the trust path for identity and the direct handshake. Agent Contract is the separate communication and verification path for the commercial messages. The proposal and acknowledgment are not represented as authorized or anchored by Clockchain.
 
 ## Timing model
 
-- Clockchain handshake and activation boundary: 90 seconds.
+- Clockchain handshake and certificate-freshness boundary: 90 seconds.
 - Agent Contract proposal session: no more than 10 minutes from activation.
 - Proposal-session scope: provider discovery, exactly one provider proposal, and exactly one nonbinding buyer acknowledgment.
 - Excluded: negotiation, agreement, payment, escrow, execution, work verification, settlement, and external business action.
