@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
 import { createHash, generateKeyPairSync, randomUUID, sign as signBytes, verify as verifyBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { chmod, mkdir, readFile, realpath, rename, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, readdir, realpath, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 
 import { privateKeyToAccount } from "viem/accounts";
@@ -80,6 +81,13 @@ const EVIDENCE_SCHEMA = "clockchain.fresh-agent-canary-evidence/v1";
 const ATTEMPT_ARTIFACT_SCHEMA = "clockchain.fresh-agent-canary-attempt/v1";
 const RESPONDER_INVITATION_PLACEHOLDER = "<PASTE THE INITIATOR INVITATION>";
 const ADAPTER_APPROVAL_TOOL = "mcp__clockchain-adapter__approve_bound_action";
+const AGENT_CONTRACT_A2A_ADAPTER = fileURLToPath(new URL("./agent-contract-a2a-adapter.mjs", import.meta.url));
+const AGENT_CONTRACT_A2A_TOOL_NAMES = Object.freeze([
+  "agent_contract_discover_counterparty",
+  "agent_contract_send_proposal",
+  "agent_contract_read_inbox",
+  "agent_contract_acknowledge_proposal",
+]);
 const HELPER_CERTIFICATE_BINDINGS = new WeakMap();
 export const CLAUDE_CONTEXT_MARKER = "CLOCKCHAIN_CONTEXT_RECEIVED";
 export const CLAUDE_CONTEXT_PROMPT = `I am using this fresh disposable workspace for an expected Clockchain test. In my next message I will provide a concrete role-specific request. Do not perform any action now; evaluate that later request on its own exact scope and safety boundaries. Reply exactly ${CLAUDE_CONTEXT_MARKER}.`;
@@ -679,7 +687,7 @@ export function validateHelperCommand({ argv, kind, manifestDigest, workspace } 
   fail();
 }
 
-export function buildClaudeSandboxSettings({ hostHome = homedir(), hostUid = process.getuid?.(), workspace } = {}) {
+export function buildClaudeSandboxSettings({ allowLoopback = false, hostHome = homedir(), hostUid = process.getuid?.(), workspace } = {}) {
   const cleanHome = absolute(hostHome);
   const cwd = absolute(workspace);
   if (!Number.isSafeInteger(hostUid) || hostUid < 0) fail();
@@ -703,6 +711,7 @@ export function buildClaudeSandboxSettings({ hostHome = homedir(), hostUid = pro
         allowedDomains: Object.freeze([
           "11155111.rpc.thirdweb.com",
           "ethereum-sepolia-rpc.publicnode.com",
+          ...(allowLoopback ? ["127.0.0.1", "localhost"] : []),
         ]),
       }),
     }),
@@ -797,6 +806,7 @@ export function buildClientCommands({
 }
 
 export function buildClientContinuationCommand({
+  agentContractA2A = false,
   client,
   claudeSessionId,
   hostHome = homedir(),
@@ -807,6 +817,7 @@ export function buildClientContinuationCommand({
   const clean = cleanClient(client);
   const cwd = absolute(workspace);
   if (typeof prompt !== "string" || prompt.length === 0) fail();
+  if (typeof agentContractA2A !== "boolean") fail();
   if (clean === "codex") {
     return Object.freeze({
       file: "codex",
@@ -818,27 +829,32 @@ export function buildClientContinuationCommand({
     });
   }
   if (!UUID.test(claudeSessionId)) fail();
-  const sandboxSettings = buildClaudeSandboxSettings({ hostHome, hostUid, workspace: cwd });
+  const sandboxSettings = buildClaudeSandboxSettings({ allowLoopback: agentContractA2A, hostHome, hostUid, workspace: cwd });
   const adapterMcpExecutable = join(cwd, ".clockchain-adapter", "bin", "clockchain-agent-mcp");
+  const mcpServers = {
+    "clockchain-adapter": { type: "stdio", command: adapterMcpExecutable, args: [] },
+    "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL },
+    ...(agentContractA2A
+      ? { "agent-contract-a2a": { type: "stdio", command: process.execPath, args: [AGENT_CONTRACT_A2A_ADAPTER, "--stdio"] } }
+      : {}),
+  };
+  const allowedTools = ["ToolSearch", "Bash", ADAPTER_APPROVAL_TOOL]
+    .concat(CLOCKCHAIN_HANDSHAKE_TOOLS.map((tool) => `mcp__clockchain-handshake__${tool}`))
+    .concat(agentContractA2A ? AGENT_CONTRACT_A2A_TOOL_NAMES.map((tool) => `mcp__agent-contract-a2a__${tool}`) : [])
+    .concat(["Read(./manifest.json)", "Read(./clockchain-agent-handshake.cjs)"]);
   return Object.freeze({
     file: "claude",
     args: Object.freeze([
       "--print", "--resume", claudeSessionId, "--model", "sonnet", "--effort", "low",
       "--disable-slash-commands", "--no-chrome",
       "--strict-mcp-config", "--mcp-config", JSON.stringify({
-        mcpServers: {
-          "clockchain-adapter": { type: "stdio", command: adapterMcpExecutable, args: [] },
-          "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL },
-        },
+        mcpServers,
       }),
       "--permission-mode", "dontAsk", "--setting-sources", "",
       "--settings", JSON.stringify(sandboxSettings),
       "--output-format", "stream-json", "--verbose",
       "--tools", "Bash,Read,ToolSearch",
-      "--allowedTools", ["ToolSearch", "Bash", ADAPTER_APPROVAL_TOOL].concat(CLOCKCHAIN_HANDSHAKE_TOOLS
-        .map((tool) => `mcp__clockchain-handshake__${tool}`)
-        .concat(["Read(./manifest.json)", "Read(./clockchain-agent-handshake.cjs)"]))
-        .join(","),
+      "--allowedTools", allowedTools.join(","),
     ]),
     input: prompt,
   });
@@ -2324,6 +2340,74 @@ function sendPrompt(child, value) {
   child.stdin.end(value);
 }
 
+async function findSingleAgentWallet(workspace) {
+  const root = absolute(workspace);
+  const matches = [];
+  const pending = [root];
+  let visited = 0;
+  while (pending.length > 0) {
+    const current = pending.pop();
+    visited += 1;
+    if (visited > 2_048) fail();
+    for (const entry of await readdir(current, { withFileTypes: true })) {
+      const path = join(current, entry.name);
+      if (entry.isSymbolicLink()) fail();
+      if (entry.isDirectory()) pending.push(path);
+      else if (entry.isFile() && entry.name === "wallet.json") matches.push(path);
+    }
+  }
+  if (matches.length !== 1) fail();
+  const walletPath = descendant(root, await realpath(matches[0]));
+  const metadata = await lstat(walletPath);
+  if (!metadata.isFile() || (metadata.mode & 0o077) !== 0) fail();
+  let wallet;
+  try { wallet = JSON.parse(await readPrivateText({ path: walletPath, maxBytes: 16 * 1024 })); } catch { fail(); }
+  if (typeof wallet?.privateKey !== "string" || !/^0x[0-9a-f]{64}$/.test(wallet.privateKey)) fail();
+  return Object.freeze({ path: walletPath, privateKey: wallet.privateKey });
+}
+
+function observePostHandshakeChild(child, canaries, timeoutMs = 120_000) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const timer = setTimeout(() => rejectSafely(), timeoutMs);
+    const rejectSafely = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      killProcessGroup(child);
+      rejectPromise(diagnostic("agent-exit", "agent", "AGENT_FAILED"));
+    };
+    child.stdout?.on("data", (chunk) => {
+      try { stdout = append(stdout, chunk); } catch { rejectSafely(); }
+    });
+    child.stderr?.on("data", (chunk) => {
+      try { stderr = append(stderr, chunk); } catch { rejectSafely(); }
+    });
+    child.once("error", rejectSafely);
+    child.stdin?.once?.("error", rejectSafely);
+    child.once("close", (code) => {
+      child.__freshAgentClosed = true;
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        assertSecretFree(stdout, canaries);
+        assertSecretFree(stderr, canaries);
+      } catch {
+        rejectPromise(diagnostic("agent-exit", "validation", "AGENT_OUTPUT_INVALID"));
+        return;
+      }
+      if (code !== 0) {
+        rejectPromise(diagnostic("agent-exit", "process", "AGENT_EXIT"));
+        return;
+      }
+      resolvePromise(Object.freeze({ completed: true }));
+    });
+  });
+}
+
 function responderPrompt(template, value) {
   if (typeof template !== "string") fail();
   const first = template.indexOf(RESPONDER_INVITATION_PLACEHOLDER);
@@ -2807,7 +2891,6 @@ export async function runFreshAgentHandshake({
     typeof prepareAdapter !== "function" || typeof prepareClient !== "function"
   ) fail();
   if (postHandshakeFlow !== null && typeof postHandshakeFlow !== "function") fail();
-  if (postHandshakeFlow !== null && typeof postHandshakeContinuation !== "function") fail();
   if (postHandshakeContinuation !== null && typeof postHandshakeContinuation !== "function") fail();
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60 * 60 * 1000) fail();
   const pin = validateReleaseAgreement(release);
@@ -2917,6 +3000,62 @@ export async function runFreshAgentHandshake({
           recentMcpTools: [],
         },
       };
+    }
+    async function resumePostHandshakeRole(request) {
+      const current = prepared[request.role];
+      const room = run.roles[request.role];
+      const wallet = await findSingleAgentWallet(room.workspace);
+      const environment = Object.freeze({
+        ...current.env,
+        ...request.environment,
+        AGENT_CONTRACT_A2A_WALLET_PATH: wallet.path,
+      });
+      if (current.client === "codex") {
+        try {
+          await configureClient(Object.freeze({
+            client: current.client,
+            command: Object.freeze({
+              file: "codex",
+              args: Object.freeze([
+                "mcp", "add", "agent-contract-a2a", "--",
+                runtime?.execPath ?? process.execPath,
+                AGENT_CONTRACT_A2A_ADAPTER,
+                "--stdio",
+              ]),
+            }),
+            env: environment,
+            role: request.role,
+            room,
+          }));
+        } catch (error) {
+          throw diagnosticFrom(error, "configure", "client", "CONFIGURE_FAILED");
+        }
+      }
+      const command = buildClientContinuationCommand({
+        agentContractA2A: true,
+        client: current.client,
+        claudeSessionId: current.claudeSessionId,
+        hostHome,
+        hostUid: process.getuid?.(),
+        prompt: request.prompt,
+        workspace: room.workspace,
+      });
+      const child = spawnProcess(command.file, command.args, {
+        cwd: room.workspace,
+        detached: true,
+        env: environment,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      children.push(child);
+      traceLifecycle({ phase: "post-handshake-continuation-spawn", role: request.role, client: current.client });
+      const observed = observePostHandshakeChild(child, [
+        ...canaries,
+        wallet.privateKey,
+        wallet.path,
+        request.environment.AGENT_CONTRACT_A2A_ROLE_TOKEN,
+      ]);
+      sendPrompt(child, command.input);
+      return observed;
     }
     const timedOut = new Promise((_, rejectPromise) => {
       timer = setTimeout(() => {
@@ -3108,7 +3247,7 @@ export async function runFreshAgentHandshake({
                   : { claudeSessionId: prepared.responder.claudeSessionId }),
               }),
             }),
-            invoke: postHandshakeContinuation,
+            invoke: postHandshakeContinuation ?? resumePostHandshakeRole,
           }),
       secretCanaries: [...canaries, actualInvitation, run.root],
     });

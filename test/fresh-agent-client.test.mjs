@@ -35,6 +35,7 @@ import {
 import { commitmentCheckpointDigest } from "../src/testing/hermes-v2-live.mjs";
 import { buildAgentCliFixture } from "./support/agent-cli-fixture.mjs";
 import {
+  agentContractA2AExtensionFromEnvironment,
   monitor as runFreshAgentMonitor,
   runFreshAgentCliAttempt,
 } from "../scripts/run-fresh-agent-handshake.mjs";
@@ -586,6 +587,21 @@ test("builds persistent continuation turns for the same isolated Codex and Claud
   ]);
   assert.equal(claude.args.includes("--no-session-persistence"), false);
   assert.equal(claude.input, "continue");
+  const a2a = buildClientContinuationCommand({
+    agentContractA2A: true,
+    client: "claude",
+    claudeSessionId: SESSION,
+    hostHome: "/Users/tester",
+    hostUid: 501,
+    prompt: "continue commercially",
+    workspace: "/tmp/b",
+  });
+  const mcpConfig = JSON.parse(a2a.args[a2a.args.indexOf("--mcp-config") + 1]);
+  assert.equal(mcpConfig.mcpServers["agent-contract-a2a"].type, "stdio");
+  assert.equal(mcpConfig.mcpServers["agent-contract-a2a"].args.at(-1), "--stdio");
+  assert.match(a2a.args[a2a.args.indexOf("--allowedTools") + 1], /mcp__agent-contract-a2a__agent_contract_send_proposal/);
+  const settings = JSON.parse(a2a.args[a2a.args.indexOf("--settings") + 1]);
+  assert.equal(settings.sandbox.network.allowedDomains.includes("127.0.0.1"), true);
 });
 
 test("macOS Keychain Claude mode keeps authentication while explicitly disabling inherited agent state", () => {
@@ -811,6 +827,64 @@ test("handshake-only mode retains its exact public evidence shape", async (t) =>
     "schema", "runId", "release", "clients", "roles", "certificateVerified",
     "binding", "monitor", "cleanup",
   ]);
+});
+
+test("facilitated A2A CLI extension is explicit and rejects partial configuration", () => {
+  assert.equal(agentContractA2AExtensionFromEnvironment({}), null);
+  assert.throws(() => agentContractA2AExtensionFromEnvironment({
+    AGENT_CONTRACT_A2A_ENABLED: "1",
+    AGENT_CONTRACT_A2A_BASE_URL: "http://127.0.0.1:3017",
+  }));
+  const extension = agentContractA2AExtensionFromEnvironment({
+    AGENT_CONTRACT_A2A_ENABLED: "1",
+    AGENT_CONTRACT_A2A_BASE_URL: "http://127.0.0.1:3017",
+    AGENT_CONTRACT_A2A_OPERATOR_TOKEN: "operator-secret",
+  });
+  assert.equal(typeof extension.postHandshakeFlow, "function");
+  assert.deepEqual(extension.secretCanaries, ["operator-secret"]);
+});
+
+test("default post-handshake continuation resumes the same client with the A2A adapter", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-default-a2a-continuation-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const processCalls = [];
+  const configureCalls = [];
+  let walletNumber = 4;
+
+  const result = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, {
+    configureClient: async (entry) => { configureCalls.push(entry.command); },
+    prepareAdapter: async (options) => {
+      const adapter = await prepareTestAdapter(options);
+      const privateKey = `0x${String(walletNumber).repeat(64)}`;
+      walletNumber += 1;
+      const account = privateKeyToAccount(privateKey);
+      await writeFile(join(options.room.workspace, "wallet.json"), JSON.stringify({
+        address: account.address,
+        privateKey,
+      }), { mode: 0o600 });
+      return adapter;
+    },
+    postHandshakeFlow: async ({ continueRole }) => {
+      await continueRole("initiator", {
+        prompt: "Read the Agent Contract inbox.",
+        environment: {
+          AGENT_CONTRACT_A2A_ROLE: "buyer",
+          AGENT_CONTRACT_A2A_ROLE_TOKEN: "buyer-only-token",
+        },
+      });
+      return { schema: "agent-contract.facilitated-a2a-result/v1", sessionId: "public-result" };
+    },
+    spawnProcess: successfulFreshAgentSpawn(processCalls),
+  }));
+
+  assert.equal(result.facilitatedA2A.sessionId, "public-result");
+  assert.equal(configureCalls.some((command) => command.args?.includes("agent-contract-a2a")), true);
+  const resumed = processCalls.filter((entry) => entry.file === "codex").at(-1);
+  assert.deepEqual(resumed.args.slice(0, 3), ["exec", "resume", "--last"]);
+  assert.equal(resumed.options.env.AGENT_CONTRACT_A2A_ROLE, "buyer");
+  assert.equal(resumed.options.env.AGENT_CONTRACT_A2A_ROLE_TOKEN, "buyer-only-token");
+  assert.match(resumed.options.env.AGENT_CONTRACT_A2A_WALLET_PATH, /wallet\.json$/);
+  assert.deepEqual(await readdir(parent), []);
 });
 
 test("attempt artifacts are private, exclusive, secret-free, and survive clean-room cleanup", async (t) => {

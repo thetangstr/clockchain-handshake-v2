@@ -20,6 +20,7 @@ import {
   installAppleClientAuthentication,
   loadAppleClientAuthentication,
 } from "../src/testing/apple-client-auth.mjs";
+import { runAgentContractA2AFlow } from "../src/testing/agent-contract-a2a-flow.mjs";
 
 const execFileAsync = promisify(execFile);
 const SAFE_ERROR = "Fresh agent compatibility check failed safely.\n";
@@ -57,6 +58,26 @@ function roots(name) {
   const result = value(name).split(",");
   if (result.length < 1 || result.length > 2 || result.some((entry) => !SHA256.test(entry))) throw new Error("invalid");
   return result;
+}
+
+export function agentContractA2AExtensionFromEnvironment(env = process.env) {
+  const enabled = env.AGENT_CONTRACT_A2A_ENABLED;
+  const baseUrl = env.AGENT_CONTRACT_A2A_BASE_URL;
+  const operatorToken = env.AGENT_CONTRACT_A2A_OPERATOR_TOKEN;
+  if (enabled === undefined && baseUrl === undefined && operatorToken === undefined) return null;
+  if (
+    enabled !== "1" || typeof baseUrl !== "string" || baseUrl.length === 0 ||
+    typeof operatorToken !== "string" || operatorToken.length === 0
+  ) throw new Error("invalid");
+  return Object.freeze({
+    secretCanaries: Object.freeze([operatorToken]),
+    postHandshakeFlow: ({ evidence, continueRole }) => runAgentContractA2AFlow({
+      evidence,
+      continueRole,
+      baseUrl,
+      operatorToken,
+    }),
+  });
 }
 
 export function validateClaudeExistingLoginStatus(status) {
@@ -252,6 +273,16 @@ async function main() {
   const parent = process.env.CLOCKCHAIN_FRESH_AGENT_PARENT ?? await mkdtemp(join(tmpdir(), "clockchain-fresh-agent-"));
   try {
     const prompts = JSON.parse(await readFile(new URL("../test/fixtures/fresh-agent/prompts.json", import.meta.url), "utf8"));
+    const facilitatedA2AEnabled = process.env.AGENT_CONTRACT_A2A_ENABLED === "1";
+    if (!Number.isSafeInteger(prompts.facilitatedA2AValidForSeconds) || prompts.facilitatedA2AValidForSeconds !== 600) {
+      throw new Error("invalid");
+    }
+    if (facilitatedA2AEnabled) {
+      for (const role of ["initiator", "responder"]) {
+        prompts[role] = prompts[role].replaceAll("90 seconds", "10 minutes");
+      }
+    }
+    delete prompts.facilitatedA2AValidForSeconds;
     for (const role of ["initiator", "responder"]) {
       prompts[role] = `${prompts[role]}\n\n${prompts.actionDecision}`;
     }
@@ -264,6 +295,7 @@ async function main() {
       artifactDirectory,
       preflight: async () => {
         const runtime = assertFreshAgentNodeRuntime();
+        const agentContractA2A = agentContractA2AExtensionFromEnvironment();
         let authentication;
         try {
           authentication = {
@@ -280,10 +312,12 @@ async function main() {
             ...authentication.initiator.secretCanaries,
             ...authentication.responder.secretCanaries,
             parent,
+            ...(agentContractA2A?.secretCanaries ?? []),
           ],
+          agentContractA2A,
         });
       },
-      runHandshake: ({ authentication, runtime }) => runFreshAgentHandshake({
+      runHandshake: ({ agentContractA2A, authentication, runtime }) => runFreshAgentHandshake({
         authenticationModes: {
           initiator: authentication.initiator.existingLoginIsolated === true ? "existing_login_isolated" : "disposable",
           responder: authentication.responder.existingLoginIsolated === true ? "existing_login_isolated" : "disposable",
@@ -314,6 +348,7 @@ async function main() {
         },
         runtimeExecPath: runtime.execPath,
         runtimeVersion: runtime.version,
+        ...(agentContractA2A === null ? {} : { postHandshakeFlow: agentContractA2A.postHandshakeFlow }),
       }),
     });
   } catch (error) {

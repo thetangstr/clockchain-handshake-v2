@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import readline from "node:readline";
+import { fileURLToPath } from "node:url";
 
 import { getAddress, keccak256, toBytes } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
@@ -383,4 +384,39 @@ export function runAgentContractA2AMcpServer({ adapter, input = process.stdin, o
     if (id !== undefined) send({ jsonrpc: "2.0", id, error: { code: -32601, message: "method not found" } });
   });
   return lineReader;
+}
+
+export function agentContractA2AConfigFromEnvironment(env = process.env) {
+  const required = (name) => {
+    const value = env[name];
+    if (typeof value !== "string" || value.length === 0) fail(`Missing ${name}.`);
+    return value;
+  };
+  return Object.freeze({
+    role: required("AGENT_CONTRACT_A2A_ROLE"),
+    baseUrl: required("AGENT_CONTRACT_A2A_BASE_URL"),
+    sessionId: required("AGENT_CONTRACT_A2A_SESSION_ID"),
+    certificateDigest: required("AGENT_CONTRACT_A2A_CERTIFICATE_DIGEST"),
+    address: required("AGENT_CONTRACT_A2A_ADDRESS"),
+    erc8004AgentId: required("AGENT_CONTRACT_A2A_ERC8004_AGENT_ID"),
+    partyId: required("AGENT_CONTRACT_A2A_PARTY_ID"),
+    opportunityId: required("AGENT_CONTRACT_A2A_OPPORTUNITY_ID"),
+    roleCapability: required("AGENT_CONTRACT_A2A_ROLE_TOKEN"),
+    walletPath: required("AGENT_CONTRACT_A2A_WALLET_PATH"),
+    fetchImpl: globalThis.fetch,
+    now: () => new Date().toISOString(),
+  });
+}
+
+async function main() {
+  if (process.argv.length !== 3 || process.argv[2] !== "--stdio") fail("Agent Contract A2A adapter invocation invalid.");
+  const adapter = await createAgentContractA2AAdapter(agentContractA2AConfigFromEnvironment());
+  runAgentContractA2AMcpServer({ adapter });
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch(() => {
+    process.stderr.write("Agent Contract A2A adapter failed safely.\n");
+    process.exitCode = 1;
+  });
 }

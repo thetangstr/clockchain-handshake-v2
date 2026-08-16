@@ -99,7 +99,7 @@ test("Hermes decision prompt accepts only the stable four fields of an MCP signi
 test("signing request is recovered exactly from the bound helper argv", () => {
   const payload = {
     schema: "clockchain.agent-handshake-signing-request/v1",
-    helperVersion: "2.1.2",
+    helperVersion: "2.1.3",
     operation: "proposal",
     role: "initiator",
     sessionId: SESSION,
