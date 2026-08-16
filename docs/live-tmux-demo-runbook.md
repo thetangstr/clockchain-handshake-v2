@@ -13,6 +13,8 @@ This runbook launches two genuinely fresh local agents—**Codex / Payer** as th
 
 The resumed Codex buyer uses automatic approval inside the existing workspace-write sandbox so its bounded role-local MCP calls can run noninteractively. The demo never uses the combined approvals-and-sandbox bypass.
 
+The Claude provider receives no general Bash tool in this proof. Setup, registration, signing, and certificate verification can execute only through the digest-bound local approval adapter returned by Clockchain.
+
 Clockchain remains the trust path for identity and the direct handshake. Agent Contract is the separate communication and verification path for the commercial messages. The proposal and acknowledgment are not represented as authorized or anchored by Clockchain.
 
 ## Timing model
