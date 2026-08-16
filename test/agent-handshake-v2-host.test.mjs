@@ -13,11 +13,11 @@ import { buildV2Fixture, INITIATOR, RESPONDER, SESSION_ID, SESSION_OPENED_BLOCK,
 
 async function checkpoints(fixture) {
   const proposal = await signAgentHandshakeV2CommitmentCheckpoint({
-    checkpoint: { schema: "clockchain.agent-handshake-commitment-checkpoint/v1", version: 1, protocol: "clockchain.agent-handshake/v2", sessionId: SESSION_ID, role: "initiator", artifactType: "proposal", artifactDigest: digestHex(fixture.proposalEnvelope), sequence: "1", previousCheckpointDigest: null, issuedAtMs: "1786337160000", expiresAtMs: "1786337190000", signerAddress: INITIATOR.address.toLowerCase() },
+    checkpoint: { schema: "clockchain.agent-handshake-commitment-checkpoint/v1", version: "1", protocol: "clockchain.agent-handshake/v2", sessionId: SESSION_ID, role: "initiator", artifactType: "proposal", artifactDigest: digestHex(fixture.proposalEnvelope), sequence: "1", previousCheckpointDigest: null, issuedAtMs: "1786337160000", expiresAtMs: "1786337190000", signerAddress: INITIATOR.address.toLowerCase() },
     signMessage: (raw) => INITIATOR.signMessage({ message: { raw } }),
   });
   const acceptance = await signAgentHandshakeV2CommitmentCheckpoint({
-    checkpoint: { schema: "clockchain.agent-handshake-commitment-checkpoint/v1", version: 1, protocol: "clockchain.agent-handshake/v2", sessionId: SESSION_ID, role: "responder", artifactType: "acceptance", artifactDigest: digestHex(fixture.acceptanceEnvelope), sequence: "2", previousCheckpointDigest: commitmentCheckpointDigest(proposal), issuedAtMs: "1786337160000", expiresAtMs: "1786337190000", signerAddress: RESPONDER.address.toLowerCase() },
+    checkpoint: { schema: "clockchain.agent-handshake-commitment-checkpoint/v1", version: "1", protocol: "clockchain.agent-handshake/v2", sessionId: SESSION_ID, role: "responder", artifactType: "acceptance", artifactDigest: digestHex(fixture.acceptanceEnvelope), sequence: "2", previousCheckpointDigest: commitmentCheckpointDigest(proposal), issuedAtMs: "1786337160000", expiresAtMs: "1786337190000", signerAddress: RESPONDER.address.toLowerCase() },
     signMessage: (raw) => RESPONDER.signMessage({ message: { raw } }),
   });
   return { initiator: proposal, responder: acceptance };

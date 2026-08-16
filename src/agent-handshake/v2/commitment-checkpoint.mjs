@@ -114,7 +114,7 @@ function unsignedCheckpoint(value) {
   const item = exact(value, CHECKPOINT_KEYS);
   if (
     item.schema !== AGENT_HANDSHAKE_V2_COMMITMENT_CHECKPOINT_SCHEMA ||
-    item.version !== 1 ||
+    item.version !== "1" ||
     item.protocol !== AGENT_HANDSHAKE_V2_PROTOCOL ||
     typeof item.sessionId !== "string" ||
     !UUID.test(item.sessionId) ||

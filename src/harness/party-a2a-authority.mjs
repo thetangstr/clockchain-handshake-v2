@@ -261,7 +261,7 @@ export async function createPartyA2AAuthority(optionsInput = {}) {
       ensureActive();
       const checkpoint = {
         schema: "clockchain.agent-handshake-commitment-checkpoint/v1",
-        version: 1,
+        version: "1",
         protocol: "clockchain.agent-handshake/v2",
         sessionId,
         role: localRole,

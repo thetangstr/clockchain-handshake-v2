@@ -21,11 +21,11 @@ import {
 
 const DIRECTOR = privateKeyToAccount(`0x${"3".repeat(64)}`);
 
-async function checkpoint({ account, role, artifactType, artifactDigest, sequence, previousCheckpointDigest = null }) {
+async function checkpoint({ account, role, artifactType, artifactDigest, sequence, previousCheckpointDigest = null, version = "1" }) {
   return signAgentHandshakeV2CommitmentCheckpoint({
     checkpoint: {
       schema: AGENT_HANDSHAKE_V2_COMMITMENT_CHECKPOINT_SCHEMA,
-      version: 1,
+      version,
       protocol: "clockchain.agent-handshake/v2",
       sessionId: SESSION_ID,
       role,
@@ -40,6 +40,31 @@ async function checkpoint({ account, role, artifactType, artifactDigest, sequenc
     signMessage: (raw) => account.signMessage({ message: { raw } }),
   });
 }
+
+test("relay-bound commitment checkpoints use the canonical decimal-string version", async () => {
+  const fixture = await buildV2Fixture();
+  const proposed = await checkpoint({
+    account: INITIATOR,
+    role: "initiator",
+    artifactType: "proposal",
+    artifactDigest: digestHex(fixture.proposalEnvelope),
+    sequence: "1",
+    version: "1",
+  });
+
+  assert.equal(proposed.version, "1");
+  await assert.rejects(
+    () => checkpoint({
+      account: INITIATOR,
+      role: "initiator",
+      artifactType: "proposal",
+      artifactDigest: digestHex(fixture.proposalEnvelope),
+      sequence: "1",
+      version: 1,
+    }),
+    /Agent handshake v2 commitment checkpoint verification failed/,
+  );
+});
 
 test("commitment checkpoints form an additive party-signed canonical chain", async () => {
   const fixture = await buildV2Fixture();

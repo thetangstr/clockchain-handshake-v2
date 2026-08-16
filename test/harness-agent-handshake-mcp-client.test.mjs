@@ -21,7 +21,7 @@ const MANDATE = Object.freeze({
 });
 const checkpoint = Object.freeze({
   schema: "clockchain.agent-handshake-commitment-checkpoint/v1",
-  version: 1,
+  version: "1",
   protocol: "clockchain.agent-handshake/v2",
   sessionId: SESSION_ID,
   role: "initiator",

@@ -29,7 +29,7 @@ async function signedCheckpoint({ account, role, artifactType, artifactDigest, s
   return signAgentHandshakeV2CommitmentCheckpoint({
     checkpoint: {
       schema: "clockchain.agent-handshake-commitment-checkpoint/v1",
-      version: 1,
+      version: "1",
       protocol: "clockchain.agent-handshake/v2",
       sessionId: SESSION_ID,
       role,
