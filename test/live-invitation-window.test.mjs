@@ -59,3 +59,43 @@ test("fails closed when no fresh invitation window arrives before the deadline",
     /fresh invitation window/i,
   );
 });
+
+test("accepts a fresh discovery record only when the matching relay fallback is unused", async () => {
+  const nowMs = 3_000_000;
+  const sessionId = "44444444-4444-4444-8444-444444444444";
+  const discoveryUrl = "http://44.249.47.220:8080/v1/discovery/current";
+  const monitorUrl = "http://44.249.47.220:8080/v1/sessions/current/snapshot";
+  const result = await waitForFreshInvitationWindow({
+    discoveryUrl,
+    fetchFn: async (url) => ({
+      ok: true,
+      json: async () => url === discoveryUrl
+        ? {
+            sessionId,
+            invitationExpiresAtMs: String(nowMs + 80_000),
+            repositorySha: "a".repeat(40),
+          }
+        : {
+            ok: true,
+            sessionId,
+            discoverySet: true,
+            messageCount: 0,
+            lastSeq: "0",
+            paymentMoved: false,
+            evidence: { payer: false, payee: false },
+            messages: [],
+          },
+    }),
+    minRemainingMs: 60_000,
+    monitorUrl,
+    now: () => nowMs,
+    pollMs: 2_000,
+    sleep: async () => assert.fail("fresh fallback should not sleep"),
+    timeoutMs: 4_000,
+  });
+
+  assert.deepEqual(result, {
+    invitationExpiresAtMs: nowMs + 80_000,
+    sessionId,
+  });
+});

@@ -1,5 +1,6 @@
 const DEFAULT_MONITOR_URL = "http://44.249.47.220:8080/v1/sessions/current/snapshot";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const SHA = /^[0-9a-f]{40}$/;
 
 function readySnapshot(value, nowMs, minRemainingMs) {
   if (
@@ -21,7 +22,33 @@ function readySnapshot(value, nowMs, minRemainingMs) {
   });
 }
 
+function readyDiscovery(value, nowMs, minRemainingMs) {
+  const invitationExpiresAtMs = typeof value?.invitationExpiresAtMs === "string"
+    ? Number(value.invitationExpiresAtMs)
+    : value?.invitationExpiresAtMs;
+  if (
+    value === null || typeof value !== "object" || Array.isArray(value) ||
+    typeof value.sessionId !== "string" || !UUID.test(value.sessionId) ||
+    typeof value.repositorySha !== "string" || !SHA.test(value.repositorySha) ||
+    !Number.isSafeInteger(invitationExpiresAtMs) ||
+    invitationExpiresAtMs - nowMs < minRemainingMs
+  ) return null;
+  return Object.freeze({ invitationExpiresAtMs, sessionId: value.sessionId });
+}
+
+function matchingUnusedFallback(value, sessionId) {
+  const evidence = value?.evidence;
+  return value !== null && typeof value === "object" && !Array.isArray(value) &&
+    value.sessionId === sessionId && value.ok === true && value.discoverySet === true &&
+    value.messageCount === 0 && value.lastSeq === "0" && value.paymentMoved === false &&
+    evidence !== null && typeof evidence === "object" && !Array.isArray(evidence) &&
+    Object.keys(evidence).sort().join(",") === "payee,payer" &&
+    evidence.payer === false && evidence.payee === false &&
+    Array.isArray(value.messages) && value.messages.length === 0;
+}
+
 export async function waitForFreshInvitationWindow({
+  discoveryUrl = null,
   fetchFn = fetch,
   minRemainingMs = 90_000,
   monitorUrl = DEFAULT_MONITOR_URL,
@@ -32,6 +59,7 @@ export async function waitForFreshInvitationWindow({
 } = {}) {
   if (
     typeof fetchFn !== "function" || typeof now !== "function" || typeof sleep !== "function" ||
+    discoveryUrl !== null && (typeof discoveryUrl !== "string" || !discoveryUrl.startsWith("http://44.249.47.220:8080/")) ||
     typeof monitorUrl !== "string" || !monitorUrl.startsWith("http://44.249.47.220:8080/") ||
     !Number.isSafeInteger(minRemainingMs) || minRemainingMs < 30_000 || minRemainingMs > 120_000 ||
     !Number.isSafeInteger(pollMs) || pollMs < 250 || pollMs > 30_000 ||
@@ -41,6 +69,30 @@ export async function waitForFreshInvitationWindow({
   const deadlineMs = now() + timeoutMs;
   while (now() < deadlineMs) {
     try {
+      if (discoveryUrl !== null) {
+        const discoveryResponse = await fetchFn(discoveryUrl, {
+          cache: "no-store",
+          signal: AbortSignal.timeout(Math.min(pollMs, 5_000)),
+        });
+        if (discoveryResponse?.ok === true) {
+          const discovery = readyDiscovery(await discoveryResponse.json(), now(), minRemainingMs);
+          if (discovery !== null) {
+            const monitorResponse = await fetchFn(monitorUrl, {
+              cache: "no-store",
+              signal: AbortSignal.timeout(Math.min(pollMs, 5_000)),
+            });
+            if (monitorResponse?.ok === true) {
+              const monitor = await monitorResponse.json();
+              const snapshot = readySnapshot(monitor, now(), minRemainingMs);
+              if (snapshot?.sessionId === discovery.sessionId || matchingUnusedFallback(monitor, discovery.sessionId)) {
+                return discovery;
+              }
+            }
+          }
+        }
+        await sleep(pollMs);
+        continue;
+      }
       const response = await fetchFn(monitorUrl, {
         cache: "no-store",
         signal: AbortSignal.timeout(Math.min(pollMs, 5_000)),
