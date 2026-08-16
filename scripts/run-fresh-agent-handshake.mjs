@@ -20,12 +20,30 @@ import {
   installAppleClientAuthentication,
   loadAppleClientAuthentication,
 } from "../src/testing/apple-client-auth.mjs";
-import { runAgentContractA2AFlow } from "../src/testing/agent-contract-a2a-flow.mjs";
+import {
+  FACILITATED_A2A_AUTHORIZATION_STATEMENT,
+  runAgentContractA2AFlow,
+} from "../src/testing/agent-contract-a2a-flow.mjs";
 
 const execFileAsync = promisify(execFile);
 const SAFE_ERROR = "Fresh agent compatibility check failed safely.\n";
 const SHA256 = /^[0-9a-f]{64}$/;
 const TRANSIENT_MONITOR_STATUSES = new Set([429, 500, 502, 503, 504]);
+const BASE_HANDSHAKE_STATEMENT = "Northstar Logistics and Harbor Supply authorize these two independently controlled agents to communicate about shipment reference NS-1847 for 90 seconds.";
+
+export function applyFacilitatedA2APromptAuthorization(prompts, enabled) {
+  if (enabled !== true) return prompts;
+  for (const role of ["initiator", "responder"]) {
+    if (typeof prompts?.[role] !== "string" || !prompts[role].includes(BASE_HANDSHAKE_STATEMENT)) {
+      throw new Error("invalid");
+    }
+    prompts[role] = prompts[role].replaceAll(
+      BASE_HANDSHAKE_STATEMENT,
+      FACILITATED_A2A_AUTHORIZATION_STATEMENT,
+    );
+  }
+  return prompts;
+}
 
 function safeMonitorError(category, code) {
   return new FreshAgentDiagnosticError({ phase: "monitor", category, code });
@@ -277,11 +295,7 @@ async function main() {
     if (!Number.isSafeInteger(prompts.facilitatedA2AValidForSeconds) || prompts.facilitatedA2AValidForSeconds !== 600) {
       throw new Error("invalid");
     }
-    if (facilitatedA2AEnabled) {
-      for (const role of ["initiator", "responder"]) {
-        prompts[role] = prompts[role].replaceAll("90 seconds", "10 minutes");
-      }
-    }
+    applyFacilitatedA2APromptAuthorization(prompts, facilitatedA2AEnabled);
     delete prompts.facilitatedA2AValidForSeconds;
     for (const role of ["initiator", "responder"]) {
       prompts[role] = `${prompts[role]}\n\n${prompts.actionDecision}`;

@@ -36,6 +36,7 @@ import { commitmentCheckpointDigest } from "../src/testing/hermes-v2-live.mjs";
 import { buildAgentCliFixture } from "./support/agent-cli-fixture.mjs";
 import {
   agentContractA2AExtensionFromEnvironment,
+  applyFacilitatedA2APromptAuthorization,
   monitor as runFreshAgentMonitor,
   runFreshAgentCliAttempt,
 } from "../scripts/run-fresh-agent-handshake.mjs";
@@ -842,6 +843,22 @@ test("facilitated A2A CLI extension is explicit and rejects partial configuratio
   });
   assert.equal(typeof extension.postHandshakeFlow, "function");
   assert.deepEqual(extension.secretCanaries, ["operator-secret"]);
+});
+
+test("facilitated prompts keep the 90-second Clockchain window while authorizing one scoped platform continuation", () => {
+  const base = "Northstar Logistics and Harbor Supply authorize these two independently controlled agents to communicate about shipment reference NS-1847 for 90 seconds.";
+  const prompts = {
+    initiator: `Authorized statement: ${base} Enforce 90 seconds.`,
+    responder: `Accept only: ${base} Enforce at most 90 seconds.`,
+  };
+
+  applyFacilitatedA2APromptAuthorization(prompts, true);
+
+  assert.equal(prompts.initiator.includes(base), false);
+  assert.match(prompts.initiator, /activated within 90 seconds/);
+  assert.match(prompts.initiator, /one provider proposal and one nonbinding buyer acknowledgment/);
+  assert.match(prompts.initiator, /Enforce 90 seconds/);
+  assert.match(prompts.responder, /at most 90 seconds/);
 });
 
 test("default post-handshake continuation resumes the same client with the A2A adapter", async (t) => {

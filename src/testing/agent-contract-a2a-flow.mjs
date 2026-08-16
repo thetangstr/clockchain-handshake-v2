@@ -6,6 +6,9 @@ const HASH = /^[0-9a-f]{64}$/;
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 const INTEGER = /^(?:0|[1-9][0-9]*)$/;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "[::1]", "::1", "localhost"]);
+export const FACILITATED_A2A_SCOPE = "single_provider_proposal_nonbinding_buyer_acknowledgment";
+export const FACILITATED_A2A_VALID_FOR_SECONDS = "600";
+export const FACILITATED_A2A_AUTHORIZATION_STATEMENT = "Northstar Logistics and Harbor Supply authorize these two independently controlled agents to establish one Agent Contract facilitated proposal session about shipment reference NS-1847. The session must be activated within 90 seconds and may remain active for up to 10 minutes. It permits one provider proposal and one nonbinding buyer acknowledgment; it does not authorize agreement, payment, escrow, execution, or any external business action.";
 const VERIFICATION_KEYS = Object.freeze([
   "identityContinuity",
   "providerDiscoveredBuyerCard",
@@ -71,6 +74,9 @@ function validateEvidence(value) {
     !Number.isSafeInteger(value?.monitor?.certificate?.issuedAtMs) ||
     !Number.isSafeInteger(value?.binding?.sessionDeadlineMs) ||
     value.monitor.certificate.issuedAtMs >= value.binding.sessionDeadlineMs ||
+    value?.monitor?.terms?.statement !== FACILITATED_A2A_AUTHORIZATION_STATEMENT ||
+    value.monitor.terms.validForSeconds !== "90" ||
+    value.monitor.terms.statementDigest !== value.binding.statementDigest ||
     buyer.address === provider.address || buyer.erc8004.agentId === provider.erc8004.agentId
   ) fail("Continuum handshake evidence invalid for A2A continuation.");
   return Object.freeze({ value, buyer, provider });
@@ -134,6 +140,13 @@ function handshakeEvidence(validated) {
       receipts,
       externalBusinessActionPerformed: false,
     },
+    facilitatedA2AAuthorization: {
+      schema: "agent-contract.facilitated-a2a-authorization/v1",
+      scope: FACILITATED_A2A_SCOPE,
+      validForSeconds: FACILITATED_A2A_VALID_FOR_SECONDS,
+      statement: FACILITATED_A2A_AUTHORIZATION_STATEMENT,
+      statementDigest: value.binding.statementDigest,
+    },
   });
 }
 
@@ -158,17 +171,21 @@ function activation(value, expectedSessionId) {
     !isPlainObject(value) || value.sessionId !== expectedSessionId || !isPlainObject(value.capabilities) ||
     typeof value.capabilities.buyer !== "string" || value.capabilities.buyer.length === 0 ||
     typeof value.capabilities.provider !== "string" || value.capabilities.provider.length === 0 ||
-    value.capabilities.buyer === value.capabilities.provider
+    value.capabilities.buyer === value.capabilities.provider ||
+    !isPlainObject(value.authorization) || !/^0x[0-9a-f]{64}$/.test(value.authorization.digest ?? "") ||
+    value.authorization.scope !== FACILITATED_A2A_SCOPE ||
+    typeof value.authorization.expiresAt !== "string"
   ) fail("Agent Contract A2A activation invalid.");
   return value;
 }
 
-function environment({ baseUrl, sessionId, certificateDigest, role, identity, partyId, token }) {
+function environment({ baseUrl, sessionId, certificateDigest, continuationDigest, role, identity, partyId, token }) {
   return Object.freeze({
     AGENT_CONTRACT_A2A_BASE_URL: baseUrl,
     AGENT_CONTRACT_A2A_ROLE: role,
     AGENT_CONTRACT_A2A_SESSION_ID: sessionId,
     AGENT_CONTRACT_A2A_CERTIFICATE_DIGEST: certificateDigest,
+    AGENT_CONTRACT_A2A_CONTINUATION_DIGEST: continuationDigest,
     AGENT_CONTRACT_A2A_ADDRESS: identity.address,
     AGENT_CONTRACT_A2A_ERC8004_AGENT_ID: identity.erc8004.agentId,
     AGENT_CONTRACT_A2A_PARTY_ID: partyId,
@@ -187,7 +204,7 @@ function singleProposalTask(value, sessionId) {
   return proposals[0];
 }
 
-function validateExport(value, validated, proposalTaskId) {
+function validateExport(value, validated, proposalTaskId, continuationDigest) {
   const { buyer, provider } = validated;
   const session = value?.session;
   const verification = value?.verification;
@@ -195,6 +212,7 @@ function validateExport(value, validated, proposalTaskId) {
     value?.schema !== "agent-contract.facilitated-a2a-export/v1" ||
     value.provenance !== "live_a2a_facilitator" || session?.sessionId !== buyer.sessionId ||
     session?.certificate?.digest !== `0x${buyer.certificateDigest}` ||
+    session?.authorization?.digest !== continuationDigest ||
     session?.participants?.buyer?.address !== buyer.address ||
     session?.participants?.provider?.address !== provider.address ||
     session?.participants?.buyer?.erc8004AgentId !== buyer.erc8004.agentId ||
@@ -240,6 +258,7 @@ export async function runAgentContractA2AFlow({
     baseUrl: origin,
     sessionId: activated.sessionId,
     certificateDigest: certificate.certificateDigest,
+    continuationDigest: activated.authorization.digest,
     role: "provider",
     identity: validated.provider,
     partyId: "provider:proofworks",
@@ -256,6 +275,7 @@ export async function runAgentContractA2AFlow({
     baseUrl: origin,
     sessionId: activated.sessionId,
     certificateDigest: certificate.certificateDigest,
+    continuationDigest: activated.authorization.digest,
     role: "buyer",
     identity: validated.buyer,
     partyId: "buyer:co",
@@ -268,7 +288,7 @@ export async function runAgentContractA2AFlow({
     token: operatorToken,
     body: { sessionId: activated.sessionId },
   });
-  const verified = validateExport(exported, validated, proposalTask.id);
+  const verified = validateExport(exported, validated, proposalTask.id, activated.authorization.digest);
   const result = Object.freeze({
     schema: RESULT_SCHEMA,
     provenance: "live_a2a_facilitator",
@@ -279,6 +299,7 @@ export async function runAgentContractA2AFlow({
       provider: Object.freeze({ address: validated.provider.address, erc8004AgentId: validated.provider.erc8004.agentId }),
     }),
     certificateDigest: certificate.certificateDigest,
+    continuationDigest: activated.authorization.digest,
     proposalTaskId: proposalTask.id,
     acknowledgmentTaskId: verified.acknowledgmentTaskId,
     verification: verified.verification,

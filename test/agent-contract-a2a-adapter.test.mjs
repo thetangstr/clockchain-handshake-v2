@@ -14,6 +14,7 @@ import {
 
 const SESSION_ID = "11111111-2222-4333-8444-555555555555";
 const CERTIFICATE_DIGEST = `0x${"a".repeat(64)}`;
+const CONTINUATION_DIGEST = `0x${"7".repeat(64)}`;
 const PROVIDER_KEY = `0x${"4".repeat(64)}`;
 const BUYER_KEY = `0x${"5".repeat(64)}`;
 const PROVIDER = privateKeyToAccount(PROVIDER_KEY);
@@ -36,6 +37,7 @@ function baseConfig(role, walletPath, fetchImpl, overrides = {}) {
     baseUrl: "http://127.0.0.1:3017",
     sessionId: SESSION_ID,
     certificateDigest: CERTIFICATE_DIGEST,
+    continuationDigest: CONTINUATION_DIGEST,
     address: account.address,
     erc8004AgentId: role === "provider" ? "9453" : "9452",
     partyId: role === "provider" ? "provider:proofworks" : "buyer:co",
@@ -97,6 +99,7 @@ test("provider discovers the buyer and signs its own typed proposal", async (t) 
   const message = task.history[0];
   assert.equal(message.metadata.clockchainTrust.senderAddress, PROVIDER.address);
   assert.equal(message.metadata.clockchainTrust.senderErc8004AgentId, "9453");
+  assert.equal(message.metadata.clockchainTrust.continuationDigest, CONTINUATION_DIGEST);
   assert.equal(message.parts[0].data.proposal.providerPartyId, "provider:proofworks");
   const { signature, ...unsignedBinding } = message.metadata.clockchainTrust;
   assert.equal(await verifyMessage({
@@ -134,6 +137,7 @@ test("buyer derives a nonbinding acknowledgment from the exact stored proposal",
       schema: "agent-contract.a2a-trust-binding/v1",
       sessionId: SESSION_ID,
       certificateDigest: CERTIFICATE_DIGEST,
+      continuationDigest: CONTINUATION_DIGEST,
       senderRole: "provider",
       senderAddress: PROVIDER.address,
       senderErc8004AgentId: "9453",

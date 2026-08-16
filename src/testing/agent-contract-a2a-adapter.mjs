@@ -134,10 +134,12 @@ function publicJson(value, canaries) {
 
 function validateConfig(input) {
   if (!isPlainObject(input) || !ROLES.includes(input.role)) fail("Agent Contract adapter role is invalid.");
-  for (const key of ["sessionId", "certificateDigest", "address", "erc8004AgentId", "partyId", "opportunityId", "roleCapability", "walletPath"]) {
+  for (const key of ["sessionId", "certificateDigest", "continuationDigest", "address", "erc8004AgentId", "partyId", "opportunityId", "roleCapability", "walletPath"]) {
     if (typeof input[key] !== "string" || input[key].length === 0) fail(`Agent Contract adapter ${key} is required.`);
   }
-  if (!UUID.test(input.sessionId) || !DIGEST.test(input.certificateDigest) || !ADDRESS.test(input.address) || !INTEGER.test(input.erc8004AgentId)) {
+  if (!UUID.test(input.sessionId) || !DIGEST.test(input.certificateDigest) ||
+    !DIGEST.test(input.continuationDigest) || !ADDRESS.test(input.address) ||
+    !INTEGER.test(input.erc8004AgentId)) {
     fail("Agent Contract adapter trust binding is invalid.");
   }
   if (typeof input.fetchImpl !== "function" || typeof input.now !== "function") fail("Agent Contract adapter dependencies are invalid.");
@@ -217,6 +219,7 @@ async function signedMessage({ account, config, data, recipientRole, predecessor
     schema: "agent-contract.a2a-trust-binding/v1",
     sessionId: config.sessionId,
     certificateDigest: config.certificateDigest,
+    continuationDigest: config.continuationDigest,
     senderRole: config.role,
     senderAddress: config.address,
     senderErc8004AgentId: config.erc8004AgentId,
@@ -397,6 +400,7 @@ export function agentContractA2AConfigFromEnvironment(env = process.env) {
     baseUrl: required("AGENT_CONTRACT_A2A_BASE_URL"),
     sessionId: required("AGENT_CONTRACT_A2A_SESSION_ID"),
     certificateDigest: required("AGENT_CONTRACT_A2A_CERTIFICATE_DIGEST"),
+    continuationDigest: required("AGENT_CONTRACT_A2A_CONTINUATION_DIGEST"),
     address: required("AGENT_CONTRACT_A2A_ADDRESS"),
     erc8004AgentId: required("AGENT_CONTRACT_A2A_ERC8004_AGENT_ID"),
     partyId: required("AGENT_CONTRACT_A2A_PARTY_ID"),

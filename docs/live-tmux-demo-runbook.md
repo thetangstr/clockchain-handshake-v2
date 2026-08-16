@@ -1,104 +1,109 @@
-# Live two-stakeholder tmux demo
+# Live Two-Agent Handshake and Facilitated Proposal
 
-This is the facilitator runbook for the real production acceptance test. It
-uses two genuinely fresh local agents: **Codex / Payer** with Terra and
-**Claude Code / Requestor** with Sonnet. The agents remain separately visible
-from the one-time invitation through the shared closing certificate.
+This runbook launches two genuinely fresh local agents—Codex as the buyer-side Initiator and Claude Code as the provider-side Responder—and keeps the same independently controlled sessions alive for one Agent Contract-facilitated proposal exchange.
 
-## Before the stakeholders arrive
+## What is live
 
-The Mac Studio needs authenticated Codex and Claude Code CLIs, tmux, Internet
-access, and the pinned **Node 24** runtime at
-`/opt/homebrew/opt/node@24/bin/node`. The stakeholder does not clone this
-repository, install a plugin, manage a wallet, or copy a long signing command.
-The harness creates an isolated workspace and wallet for each party, while the
-agent independently decides whether each exact Clockchain request matches its
-local policy.
+1. Each agent creates a distinct wallet-backed ERC-8004 identity.
+2. Both agents use the live Clockchain Handshake MCP and independently approve their exact handshake actions.
+3. Both verify the same Clockchain closing certificate.
+4. The signed statement authorizes activation, within the 90-second Clockchain window, of one narrowly scoped Agent Contract proposal session.
+5. The same Claude session resumes as provider and sends one signed proposal through its role-local A2A adapter.
+6. The same Codex session resumes as buyer and sends one signed, nonbinding `received_for_review` acknowledgment.
 
-The production host wallet must have at least 0.025 Sepolia ETH. The launcher
-checks this before creating a session, so an invitation cannot expire while the
-demo waits for testnet funding.
+Clockchain remains the trust path for the handshake and scoped continuation authorization. Agent Contract is the communication and verification path for the commercial messages. The proposal and acknowledgment are not represented as Clockchain anchors.
 
-## Prepare the facilitator control
+## Timing model
 
-Before the audience arrives, start the loopback-only controller once from the
-repository root:
+- Clockchain handshake and activation boundary: 90 seconds.
+- Agent Contract proposal session: no more than 10 minutes from activation.
+- Proposal-session scope: provider discovery, exactly one provider proposal, and exactly one nonbinding buyer acknowledgment.
+- Excluded: negotiation, agreement, payment, escrow, execution, work verification, settlement, and external business action.
+
+## Before stakeholders arrive
+
+The machine needs authenticated Codex and Claude Code CLIs, tmux, Internet access, and Node 24 at `/opt/homebrew/opt/node@24/bin/node`. The production host wallet must have at least 0.025 Sepolia ETH.
+
+Start Agent Contract first at `http://127.0.0.1:3017` with a fresh absolute `DEMO_ROOT`, a local operator token, and a different read-only observer token.
+
+Then export these values in the shell that launches the Continuum controller:
+
+```sh
+AGENT_CONTRACT_A2A_ENABLED=1
+AGENT_CONTRACT_A2A_BASE_URL=http://127.0.0.1:3017
+AGENT_CONTRACT_A2A_OPERATOR_TOKEN=<Agent Contract operator token>
+```
+
+The controller may use the operator token only to activate and export the session. The token must not enter prompts, role environments, traces, or retained evidence. Each role receives only its own ephemeral A2A capability and the public continuation digest.
+
+## Start the facilitator controller
+
+From this worktree:
 
 ```sh
 scripts/start-facilitator-demo-controller.zsh
 ```
 
-Then open the original research monitor:
+Open the public monitor:
 
-https://clockchain-research.vercel.app/handshake/claude-v6?live=1
+`https://clockchain-research.vercel.app/handshake/claude-v6?live=1`
 
-Only this Mac Studio sees **Facilitator controller ready**. Every other viewer
-gets the same read-only monitor but cannot launch production.
-
-## Start the fresh run
-
-Open or keep these two stable terminal sessions visible for the stakeholders:
+Keep the stable panes visible:
 
 ```sh
 TMUX_TMPDIR=/tmp tmux -L clockchain-demo attach -t codex
 TMUX_TMPDIR=/tmp tmux -L clockchain-demo attach -t claude
 ```
 
-The first pane is **Codex / Payer**. The second is **Claude Code / Requestor**.
-Click **Start fresh demo** at the top of the monitor. That one click clears the
-old board, resets the two stable panes, checks the two-seat Sepolia balance,
-and starts the existing production Codex and Claude Code runner. There is no
-second start command and no stale invitation to paste. If the panes do not yet
-exist on a newly prepared machine, click Start first, then attach to them as
-soon as the button reports **Demo started**.
+Preflight the controller:
 
-While a controller run is active, the button stays locked across page reloads.
-If a local run stops while its server session is still open, the page says
-**Previous run stopped** and **Waiting for session to close** instead of
-pretending the run is live. The button unlocks automatically after that
-time-bounded session closes. Never click around the lock or restart the tmux
-controller manually; doing so would replace the evidence-producing process.
+```sh
+curl -sS -H 'Origin: https://clockchain-research.vercel.app' http://127.0.0.1:43181/control/status
+```
 
-## What the audience should see
+Proceed only when it reports `ready:true`.
 
-1. Codex opens the handshake and creates the one-time invitation.
-2. Claude Code accepts that invitation as the independent Requestor.
-3. Each isolated agent creates a different local key and a fresh ERC-8004
-   registration. The host funds only the two exact registration seats.
-4. Codex approves the proposal only if it matches the Payer policy.
-5. Claude Code independently approves the acceptance only if it matches the
-   Requestor policy.
-6. The harness transports each approved action exactly and records the ordered
-   proposal and acceptance checkpoints; the model never rewrites signing bytes.
-7. Clockchain observes the anchors, receives both evidence packages, runs the
-   independent checker, and publishes one signed closing certificate.
-8. Both agents locally verify that same certificate. The original monitor must
-   show the same session, identities, receipts, checker result, and certificate.
+## Start one fresh combined run
 
-The run is not successful merely because both identities registered. It is
-successful only after both panes say that the closing certificate was verified
-and the runner saves a redacted public evidence artifact under
-`docs/evidence/live-tmux/`.
+Use the monitor's **Start fresh demo** button or the loopback control endpoint once. The run must visibly proceed through:
 
-At completion, each stable terminal also prints a detailed stakeholder receipt
-copy. The Codex pane shows the Payer's ERC-8004 registration proof; the Claude
-pane shows the Requestor's. Both copies show the same signed certificate and
-the proposal, acceptance, and acknowledgment ledger references. These copies
-come from the verified public evidence object and never include private keys,
-role access, provider credentials, or local state paths.
+1. fresh identities and registrations;
+2. proposal, acceptance, and acknowledgment anchors;
+3. one shared certificate verified by both agents;
+4. Agent Contract activation before the certificate deadline;
+5. provider card discovery and one provider-authored proposal;
+6. buyer inbox review and one nonbinding acknowledgment; and
+7. sanitized Agent Contract export verification.
 
-## Record the tutorial master
+The models choose and sign their own messages through role-local adapters. The harness transports exact requests and enforces the lifecycle; it does not generate the commercial terms or act for a party.
 
-For the tutorial recording, use one 16:9 macOS screen recording with the
-research monitor and both stable terminal windows visible. Start recording
-before clicking **Start fresh demo** and keep recording until both terminals
-show their complete stakeholder receipt copies. The editor can crop and zoom
-this one synchronized master into monitor, Codex, and Claude Code close-ups
-without asking the protocol to run again.
+## Success evidence
 
-## If the run stops
+Success requires both terminal panes to report the same verified certificate and the combined runner to return a `result.facilitatedA2A` object with:
 
-Do not reuse an invitation or a disposed identity. The runner saves a typed,
-redacted diagnostic and removes both private clean rooms. Fix the causal defect,
-then start a new run with two new identities. Never substitute another harness,
-a shared wallet, or a host-authored party action for this acceptance test.
+- `provenance: live_a2a_facilitator`;
+- the same Codex buyer and Claude provider identities used during the handshake;
+- the exact Clockchain certificate digest;
+- one continuation digest bound to both commercial signatures;
+- one proposal task and one acknowledgment task; and
+- all six verification checks true.
+
+The redacted attempt is written under `docs/evidence/live-tmux/<UTC timestamp>/`. No raw role capability, invitation, signing key, operator token, model credential, or clean-room path may be retained.
+
+## Failure and retry
+
+If activation misses the 90-second deadline, the proposal session expires, either agent fails to resume, a signature or digest does not match, or more than the allowed messages appear, fail closed. Do not extend Clockchain's policy, backdate an event, reuse the invitation, or replay the identities. Fix the cause and start a new run.
+
+## Verification
+
+Run the complete suite with the required runtime:
+
+```sh
+/opt/homebrew/opt/node@24/bin/node --test --test-concurrency=4 test/*.test.mjs
+```
+
+The test claim is valid only when all tests pass on Node 24. Node 22 is intentionally rejected by the pinned release bootstrap.
+
+## Cleanup
+
+After the run, Continuum removes both private clean rooms. Stop or respawn the local controller before changing A2A configuration, clear the operator token from the environment, and preserve only the redacted public attempt artifact. A completed artifact is historical evidence; it cannot authorize another proposal.

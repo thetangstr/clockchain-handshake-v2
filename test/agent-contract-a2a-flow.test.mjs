@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { runAgentContractA2AFlow } from "../src/testing/agent-contract-a2a-flow.mjs";
+import { FACILITATED_A2A_AUTHORIZATION_STATEMENT } from "../src/testing/agent-contract-a2a-flow.mjs";
 
 const SESSION_ID = "11111111-2222-4333-8444-555555555555";
 const PROPOSAL_TASK_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const ACK_TASK_ID = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
 const CERTIFICATE = "a".repeat(64);
+const AUTHORIZATION = `0x${"7".repeat(64)}`;
 
 function publicHandshakeEvidence() {
   return Object.freeze({
@@ -70,7 +72,12 @@ function publicHandshakeEvidence() {
         acknowledgment: { kind: "acknowledgment", ledgerId: "10000000-0000-4000-8000-000000000003", digest: "9".repeat(64), blockHeight: "3", blockTimeRaw: "x", explorerUrl: "https://example.test/3" },
       },
       sessionId: SESSION_ID,
-      terms: { reference: "NS-1847", statement: "statement", statementDigest: "b".repeat(64), validForSeconds: "90" },
+      terms: {
+        reference: "NS-1847",
+        statement: FACILITATED_A2A_AUTHORIZATION_STATEMENT,
+        statementDigest: "b".repeat(64),
+        validForSeconds: "90",
+      },
     },
   });
 }
@@ -84,7 +91,15 @@ function exchangeFixture() {
     calls.push({ url: String(url), init });
     const path = new URL(url).pathname;
     if (path.endsWith("/activate")) {
-      return Response.json({ sessionId: SESSION_ID, capabilities: { buyer: "buyer-secret", provider: "provider-secret" } });
+      return Response.json({
+        sessionId: SESSION_ID,
+        capabilities: { buyer: "buyer-secret", provider: "provider-secret" },
+        authorization: {
+          digest: AUTHORIZATION,
+          scope: "single_provider_proposal_nonbinding_buyer_acknowledgment",
+          expiresAt: "2026-08-15T20:10:03.000Z",
+        },
+      });
     }
     if (path.endsWith("/agents/buyer/inbox")) return Response.json(proposalTask === null ? [] : [proposalTask]);
     if (path.endsWith("/agents/provider/inbox")) return Response.json(acknowledgmentTask === null ? [] : [acknowledgmentTask]);
@@ -99,6 +114,7 @@ function exchangeFixture() {
             provider: { address: `0x${"5".repeat(40)}`, erc8004AgentId: "9453", client: "claude" },
           },
           certificate: { digest: `0x${CERTIFICATE}` },
+          authorization: { digest: AUTHORIZATION },
           tasks: [proposalTask, acknowledgmentTask],
         },
         verification: {
@@ -143,6 +159,7 @@ test("activates, resumes provider then buyer, and returns a live bound export", 
   assert.equal(fixture.continuations[1].request.prompt.includes("firm_proposal"), false);
   assert.match(fixture.continuations[1].request.prompt, /exact stored proposal/i);
   assert.equal(fixture.continuations[0].request.environment.AGENT_CONTRACT_A2A_ROLE_TOKEN, "provider-secret");
+  assert.equal(fixture.continuations[0].request.environment.AGENT_CONTRACT_A2A_CONTINUATION_DIGEST, AUTHORIZATION);
   assert.equal(fixture.continuations[1].request.environment.AGENT_CONTRACT_A2A_ROLE_TOKEN, "buyer-secret");
   assert.equal(fixture.continuations[0].request.environment.AGENT_CONTRACT_A2A_ADDRESS, `0x${"5".repeat(40)}`);
   assert.equal(fixture.continuations[1].request.environment.AGENT_CONTRACT_A2A_ADDRESS, `0x${"4".repeat(40)}`);
@@ -156,6 +173,7 @@ test("activates, resumes provider then buyer, and returns a live bound export", 
       provider: { address: `0x${"5".repeat(40)}`, erc8004AgentId: "9453" },
     },
     certificateDigest: `0x${CERTIFICATE}`,
+    continuationDigest: AUTHORIZATION,
     proposalTaskId: PROPOSAL_TASK_ID,
     acknowledgmentTaskId: ACK_TASK_ID,
     verification: {
