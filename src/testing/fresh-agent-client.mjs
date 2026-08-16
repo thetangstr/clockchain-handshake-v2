@@ -30,6 +30,11 @@ import {
   createStreamableMcpClient,
   extractSigningRequestFromArgv,
 } from "./hermes-v2-live.mjs";
+import {
+  createPostHandshakeContinueRole,
+  runPostHandshakeFlow,
+  validateFacilitatedA2AResult,
+} from "./post-handshake-flow.mjs";
 
 const ROLES = Object.freeze(["initiator", "responder"]);
 const HELPER_OPERATIONS = Object.freeze([
@@ -2603,9 +2608,13 @@ function validatePublicMonitorEvidence(value, expectedSessionId, binding) {
 }
 
 function validateSuccessEvidence(value) {
-  const item = exactObject(value, [
+  const baseKeys = [
     "binding", "certificateVerified", "cleanup", "clients", "monitor", "release", "roles", "runId", "schema",
-  ]);
+  ];
+  const keys = Object.hasOwn(value ?? {}, "facilitatedA2A")
+    ? [...baseKeys, "facilitatedA2A"]
+    : baseKeys;
+  const item = exactObject(value, keys);
   if (item.schema !== EVIDENCE_SCHEMA || !SAFE_SEGMENT.test(item.runId) || item.certificateVerified !== true) fail();
   const clients = exactObject(item.clients, ROLES);
   const release = validateReleaseAgreement({ mcp: item.release, research: item.release });
@@ -2638,6 +2647,9 @@ function validateSuccessEvidence(value) {
     certificateVerified: true,
     binding: Object.freeze({ ...binding }),
     monitor: validatePublicMonitorEvidence(item.monitor, initiator.sessionId, binding),
+    ...(item.facilitatedA2A === undefined
+      ? {}
+      : { facilitatedA2A: validateFacilitatedA2AResult(item.facilitatedA2A) }),
     cleanup: Object.freeze({ completed: true }),
   });
 }
@@ -2773,6 +2785,8 @@ export async function runFreshAgentHandshake({
   hostEnvironment = process.env,
   hostHome = homedir(),
   parent,
+  postHandshakeContinuation = null,
+  postHandshakeFlow = null,
   prepareAdapter = prepareAgentHarnessAdapter,
   prepareClient,
   prompts,
@@ -2792,6 +2806,9 @@ export async function runFreshAgentHandshake({
     typeof contractClientFactory !== "function" || typeof monitor !== "function" ||
     typeof prepareAdapter !== "function" || typeof prepareClient !== "function"
   ) fail();
+  if (postHandshakeFlow !== null && typeof postHandshakeFlow !== "function") fail();
+  if (postHandshakeFlow !== null && typeof postHandshakeContinuation !== "function") fail();
+  if (postHandshakeContinuation !== null && typeof postHandshakeContinuation !== "function") fail();
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60 * 60 * 1000) fail();
   const pin = validateReleaseAgreement(release);
   const runtime = runtimeExecPath === undefined && runtimeVersion === undefined
@@ -3052,7 +3069,7 @@ export async function runFreshAgentHandshake({
     const initiator = publicRole(initiatorProof, monitorResult, binding);
     const responder = publicRole(responderProof, monitorResult, binding);
     if (initiator.address === responder.address || initiator.erc8004.agentId === responder.erc8004.agentId || initiator.policyDigest === responder.policyDigest) fail();
-    const evidence = Object.freeze({
+    const publicEvidence = Object.freeze({
       schema: EVIDENCE_SCHEMA,
       runId: run.runId,
       release: pin,
@@ -3068,6 +3085,36 @@ export async function runFreshAgentHandshake({
         sessionId: monitorResult.sessionId,
         terms: monitorResult.terms,
       }),
+    });
+    const facilitatedA2A = await runPostHandshakeFlow({
+      flow: postHandshakeFlow,
+      evidence: publicEvidence,
+      continueRole: postHandshakeFlow === null
+        ? async function continueRole() {}
+        : createPostHandshakeContinueRole({
+            roles: Object.freeze({
+              initiator: Object.freeze({
+                client: prepared.initiator.client,
+                workspace: run.roles.initiator.workspace,
+                ...(prepared.initiator.claudeSessionId === undefined
+                  ? {}
+                  : { claudeSessionId: prepared.initiator.claudeSessionId }),
+              }),
+              responder: Object.freeze({
+                client: prepared.responder.client,
+                workspace: run.roles.responder.workspace,
+                ...(prepared.responder.claudeSessionId === undefined
+                  ? {}
+                  : { claudeSessionId: prepared.responder.claudeSessionId }),
+              }),
+            }),
+            invoke: postHandshakeContinuation,
+          }),
+      secretCanaries: [...canaries, actualInvitation, run.root],
+    });
+    const evidence = Object.freeze({
+      ...publicEvidence,
+      ...(facilitatedA2A === null ? {} : { facilitatedA2A }),
       cleanup: Object.freeze({ completed: true }),
     });
     assertSecretFree(evidence, [...canaries, actualInvitation, run.root]);

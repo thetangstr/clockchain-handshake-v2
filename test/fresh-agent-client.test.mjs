@@ -732,6 +732,87 @@ test("public role certificate verification is sourced from parent binding, not h
   assert.equal(result.roles.responder.certificateVerified, result.certificateVerified);
 });
 
+test("verified agents can run a role-local post-handshake flow before cleanup", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-post-handshake-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const continuationCalls = [];
+  let hookEvidence;
+
+  const result = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, {
+    postHandshakeContinuation: async (request) => {
+      await stat(request.workspace);
+      continuationCalls.push(request);
+      return Object.freeze({ ok: true });
+    },
+    postHandshakeFlow: async ({ evidence, continueRole }) => {
+      hookEvidence = evidence;
+      await continueRole("initiator", {
+        prompt: "Send the proposal through Agent Contract.",
+        environment: { AGENT_CONTRACT_A2A_ROLE_TOKEN: "initiator-only-capability" },
+      });
+      return Object.freeze({
+        schema: "agent-contract.facilitated-a2a-result/v1",
+        sessionId: "facilitated-session",
+      });
+    },
+  }));
+
+  assert.deepEqual(result.facilitatedA2A, {
+    schema: "agent-contract.facilitated-a2a-result/v1",
+    sessionId: "facilitated-session",
+  });
+  assert.equal(hookEvidence.certificateVerified, true);
+  assert.equal(hookEvidence.binding.certificateDigest, result.binding.certificateDigest);
+  assert.equal(Object.hasOwn(hookEvidence, "facilitatedA2A"), false);
+  assert.equal(continuationCalls.length, 1);
+  assert.equal(continuationCalls[0].role, "initiator");
+  assert.equal(continuationCalls[0].client, "codex");
+  assert.deepEqual(continuationCalls[0].environment, {
+    AGENT_CONTRACT_A2A_ROLE_TOKEN: "initiator-only-capability",
+  });
+  assert.equal(Object.hasOwn(continuationCalls[0], "env"), false);
+  assert.deepEqual(await readdir(parent), []);
+});
+
+test("post-handshake flow failure still closes adapters and deletes workspaces", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-post-handshake-failure-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const closed = [];
+  let adapterNumber = 0;
+
+  await assert.rejects(
+    runFreshAgentHandshake(baseFreshAgentRunOptions(parent, {
+      prepareAdapter: async (options) => {
+        const adapter = await prepareTestAdapter(options);
+        const role = adapterNumber === 0 ? "initiator" : "responder";
+        adapterNumber += 1;
+        return Object.freeze({ ...adapter, close: async () => { closed.push(role); } });
+      },
+      postHandshakeContinuation: async () => Object.freeze({ ok: true }),
+      postHandshakeFlow: async () => {
+        throw new Error("commercial extension failed");
+      },
+    })),
+    /failed safely/,
+  );
+
+  assert.deepEqual(closed.sort(), ["initiator", "responder"]);
+  assert.deepEqual(await readdir(parent), []);
+});
+
+test("handshake-only mode retains its exact public evidence shape", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-no-post-handshake-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+
+  const result = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent));
+
+  assert.equal(Object.hasOwn(result, "facilitatedA2A"), false);
+  assert.deepEqual(Object.keys(result), [
+    "schema", "runId", "release", "clients", "roles", "certificateVerified",
+    "binding", "monitor", "cleanup",
+  ]);
+});
+
 test("attempt artifacts are private, exclusive, secret-free, and survive clean-room cleanup", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "fresh-agent-artifact-parent-"));
   const artifacts = await mkdtemp(join(tmpdir(), "fresh-agent-artifacts-"));
