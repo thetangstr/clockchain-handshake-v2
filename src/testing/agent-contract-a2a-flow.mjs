@@ -1,4 +1,5 @@
 import { assertSecretFree } from "../core/redact.mjs";
+import { getAddress } from "viem";
 
 const RESULT_SCHEMA = "agent-contract.facilitated-a2a-result/v1";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -58,7 +59,7 @@ function roleEvidence(value, role) {
     !INTEGER.test(value.erc8004.agentId ?? "") || typeof value.erc8004.reference !== "string" ||
     value.erc8004.reference.length === 0
   ) fail("Continuum role evidence invalid.");
-  return value;
+  return Object.freeze({ ...value, address: getAddress(value.address) });
 }
 
 function validateEvidence(value) {

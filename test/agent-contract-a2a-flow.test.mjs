@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { getAddress } from "viem";
 
 import { runAgentContractA2AFlow } from "../src/testing/agent-contract-a2a-flow.mjs";
 import { FACILITATED_A2A_AUTHORIZATION_STATEMENT } from "../src/testing/agent-contract-a2a-flow.mjs";
@@ -198,6 +199,36 @@ test("activates, resumes provider then buyer, and returns a live bound export", 
   assert.equal(JSON.stringify(result).includes("operator-secret"), false);
   assert.equal(JSON.stringify(result).includes("provider-secret"), false);
   assert.equal(JSON.stringify(result).includes("buyer-secret"), false);
+});
+
+test("canonicalizes lowercase Continuum identities before validating the platform export", async () => {
+  const buyerLower = "0x352d509388c88c7ff6f87127c55d96fb37bf007c";
+  const providerLower = "0xa07fde46fb84f4edebe68ea01f00a1906427646d";
+  const evidence = publicHandshakeEvidence();
+  evidence.roles.initiator.address = buyerLower;
+  evidence.roles.responder.address = providerLower;
+  const fixture = exchangeFixture();
+  const originalFetch = fixture.fetchImpl;
+  fixture.fetchImpl = async (url, init) => {
+    const response = await originalFetch(url, init);
+    if (!new URL(url).pathname.endsWith("/export")) return response;
+    const value = await response.json();
+    value.session.participants.buyer.address = getAddress(buyerLower);
+    value.session.participants.provider.address = getAddress(providerLower);
+    return Response.json(value);
+  };
+
+  const result = await runAgentContractA2AFlow({
+    evidence,
+    continueRole: fixture.continueRole,
+    baseUrl: "http://127.0.0.1:3017",
+    operatorToken: "operator-secret",
+    fetchImpl: fixture.fetchImpl,
+    now: () => "2026-08-15T20:00:03.000Z",
+  });
+
+  assert.equal(result.identities.buyer.address, getAddress(buyerLower));
+  assert.equal(result.identities.provider.address, getAddress(providerLower));
 });
 
 test("does not resume buyer if provider continuation fails", async () => {
