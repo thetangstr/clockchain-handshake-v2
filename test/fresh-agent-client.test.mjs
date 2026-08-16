@@ -891,6 +891,27 @@ test("same-session client reconfiguration installs authentication only once per 
   ]);
 });
 
+test("post-handshake diagnostics expose only allowlisted tool activity", async () => {
+  const runner = await import("../src/testing/fresh-agent-client.mjs");
+  assert.equal(typeof runner.summarizePostHandshakeOutput, "function");
+  const summary = runner.summarizePostHandshakeOutput([
+    streamEvent({ type: "item.completed", item: { type: "agent_message", text: "private agent reasoning" } }),
+    streamEvent({ type: "item.completed", item: { type: "mcp_tool_call", tool: "mcp__agent-contract-a2a__agent_contract_read_inbox", result: "private result" } }),
+    streamEvent({ type: "item.completed", item: { type: "mcp_tool_call", tool: "untrusted_private_tool", result: "private result" } }),
+    streamEvent({ type: "turn.failed", error: { message: "private failure" } }),
+  ].join(""));
+
+  assert.deepEqual(summary, {
+    agentMessageCount: 1,
+    errorEventCount: 1,
+    eventCount: 4,
+    mcpToolCallCount: 2,
+    tools: ["agent_contract_read_inbox"],
+  });
+  assert.equal(JSON.stringify(summary).includes("private"), false);
+  assert.equal(JSON.stringify(summary).includes("untrusted_private_tool"), false);
+});
+
 test("default post-handshake continuation resumes the same client with the A2A adapter", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "fresh-agent-default-a2a-continuation-"));
   t.after(() => rm(parent, { recursive: true, force: true }));

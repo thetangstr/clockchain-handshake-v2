@@ -2366,7 +2366,40 @@ async function findSingleAgentWallet(workspace) {
   return Object.freeze({ path: walletPath, privateKey: wallet.privateKey });
 }
 
-function observePostHandshakeChild(child, canaries, timeoutMs = 120_000) {
+export function summarizePostHandshakeOutput(value) {
+  if (typeof value !== "string") fail();
+  let agentMessageCount = 0;
+  let errorEventCount = 0;
+  let eventCount = 0;
+  let mcpToolCallCount = 0;
+  const tools = new Set();
+  for (const line of value.split(/\r?\n/u)) {
+    if (line.length === 0) continue;
+    let event;
+    try { event = JSON.parse(line); } catch { continue; }
+    eventCount += 1;
+    if (event?.item?.type === "agent_message") agentMessageCount += 1;
+    if (event?.item?.type === "mcp_tool_call") {
+      mcpToolCallCount += 1;
+      const tool = typeof event.item.tool === "string" ? event.item.tool : "";
+      const allowed = AGENT_CONTRACT_A2A_TOOL_NAMES.find((name) => tool === name || tool.endsWith(`__${name}`));
+      if (allowed !== undefined) tools.add(allowed);
+    }
+    if (
+      event?.type === "turn.failed" || event?.type === "error" ||
+      event?.item?.status === "failed"
+    ) errorEventCount += 1;
+  }
+  return Object.freeze({
+    agentMessageCount,
+    errorEventCount,
+    eventCount,
+    mcpToolCallCount,
+    tools: Object.freeze([...tools]),
+  });
+}
+
+function observePostHandshakeChild(child, canaries, { client, role, timeoutMs = 120_000 } = {}) {
   return new Promise((resolvePromise, rejectPromise) => {
     let stdout = "";
     let stderr = "";
@@ -2399,6 +2432,14 @@ function observePostHandshakeChild(child, canaries, timeoutMs = 120_000) {
         rejectPromise(diagnostic("agent-exit", "validation", "AGENT_OUTPUT_INVALID"));
         return;
       }
+      traceLifecycle({
+        phase: "post-handshake-continuation-result",
+        role,
+        client,
+        code,
+        stdout: summarizePostHandshakeOutput(stdout),
+        stderrBytes: Buffer.byteLength(stderr),
+      });
       if (code !== 0) {
         rejectPromise(diagnostic("agent-exit", "process", "AGENT_EXIT"));
         return;
@@ -3053,7 +3094,7 @@ export async function runFreshAgentHandshake({
         wallet.privateKey,
         wallet.path,
         request.environment.AGENT_CONTRACT_A2A_ROLE_TOKEN,
-      ]);
+      ], { client: current.client, role: request.role });
       sendPrompt(child, command.input);
       return observed;
     }
