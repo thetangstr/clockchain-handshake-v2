@@ -165,7 +165,9 @@ test("activates, resumes provider then buyer, and returns a live bound export", 
   assert.match(fixture.continuations[1].request.prompt, /delivered within 24 hours/);
   assert.match(fixture.continuations[1].request.prompt, /price no greater than 20/);
   assert.match(fixture.continuations[1].request.prompt, /checksum-and-required-sections\/v1/);
-  assert.match(fixture.continuations[1].request.prompt, /call the acknowledgment tool yourself/i);
+  assert.match(fixture.continuations[1].request.prompt, /agent_contract_read_inbox/);
+  assert.match(fixture.continuations[1].request.prompt, /agent_contract_acknowledge_proposal/);
+  assert.match(fixture.continuations[1].request.prompt, /do not finish until/i);
   assert.equal(fixture.continuations[0].request.environment.AGENT_CONTRACT_A2A_ROLE_TOKEN, "provider-secret");
   assert.equal(fixture.continuations[0].request.environment.AGENT_CONTRACT_A2A_CONTINUATION_DIGEST, AUTHORIZATION);
   assert.equal(fixture.continuations[1].request.environment.AGENT_CONTRACT_A2A_ROLE_TOKEN, "buyer-secret");
