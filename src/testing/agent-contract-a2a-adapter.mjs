@@ -31,10 +31,16 @@ export const AGENT_CONTRACT_A2A_TOOLS = Object.freeze([
       additionalProperties: false,
       properties: Object.freeze({
         deliverableSummary: Object.freeze({ type: "string", minLength: 1 }),
-        formats: Object.freeze({ type: "array", minItems: 1, items: Object.freeze({ type: "string", minLength: 1 }) }),
+        formats: Object.freeze({
+          type: "array",
+          minItems: 1,
+          maxItems: 2,
+          uniqueItems: true,
+          items: Object.freeze({ type: "string", enum: Object.freeze(["json", "markdown"]) }),
+        }),
         deliveryHours: Object.freeze({ type: "integer", minimum: 1 }),
         price: Object.freeze({ type: "string", pattern: "^(?:0|[1-9][0-9]*)$" }),
-        verificationMethod: Object.freeze({ type: "string", minLength: 1 }),
+        verificationMethod: Object.freeze({ type: "string", const: "checksum-and-required-sections/v1" }),
       }),
       required: Object.freeze(["deliverableSummary", "formats", "deliveryHours", "price", "verificationMethod"]),
     }),
@@ -193,10 +199,12 @@ function proposalFromArguments(config, value) {
   const args = exactObject(value, ["deliverableSummary", "formats", "deliveryHours", "price", "verificationMethod"], "Proposal arguments");
   if (
     typeof args.deliverableSummary !== "string" || args.deliverableSummary.trim().length === 0 ||
-    !Array.isArray(args.formats) || args.formats.length < 1 || args.formats.some((entry) => typeof entry !== "string" || entry.length === 0) ||
+    !Array.isArray(args.formats) || args.formats.length < 1 || args.formats.length > 2 ||
+    new Set(args.formats).size !== args.formats.length ||
+    args.formats.some((entry) => !["json", "markdown"].includes(entry)) ||
     !Number.isSafeInteger(args.deliveryHours) || args.deliveryHours < 1 ||
     typeof args.price !== "string" || !INTEGER.test(args.price) ||
-    typeof args.verificationMethod !== "string" || args.verificationMethod.length === 0
+    args.verificationMethod !== "checksum-and-required-sections/v1"
   ) fail("Proposal arguments are invalid.");
   return Object.freeze({
     schema: "agent-contract/v1",

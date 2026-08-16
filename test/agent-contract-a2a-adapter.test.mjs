@@ -61,6 +61,40 @@ test("advertises exactly the four role-local Agent Contract tools", () => {
     ],
   );
   assert.equal(new Set(AGENT_CONTRACT_A2A_TOOLS.map((tool) => tool.name)).size, 4);
+  const proposalTool = AGENT_CONTRACT_A2A_TOOLS.find(
+    (tool) => tool.name === "agent_contract_send_proposal",
+  );
+  assert.deepEqual(
+    proposalTool.inputSchema.properties.formats.items.enum,
+    ["json", "markdown"],
+  );
+  assert.equal(
+    proposalTool.inputSchema.properties.verificationMethod.const,
+    "checksum-and-required-sections/v1",
+  );
+});
+
+test("proposal vocabulary matches the platform schema before any request is sent", async (t) => {
+  const walletPath = await walletFile(t, PROVIDER_KEY);
+  let requests = 0;
+  const adapter = await createAgentContractA2AAdapter(
+    baseConfig("provider", walletPath, async () => {
+      requests += 1;
+      return Response.json({});
+    }),
+  );
+
+  await assert.rejects(
+    adapter.callTool("agent_contract_send_proposal", {
+      deliverableSummary: "Produce one evidence pack",
+      formats: ["JSON", "Markdown"],
+      deliveryHours: 12,
+      price: "10",
+      verificationMethod: "checksum-and-required-sections/v1",
+    }),
+    /Proposal arguments are invalid/,
+  );
+  assert.equal(requests, 0);
 });
 
 test("provider discovers the buyer and signs its own typed proposal", async (t) => {
