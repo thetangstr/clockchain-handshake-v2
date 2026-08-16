@@ -1,15 +1,17 @@
 # Live Two-Agent Handshake and Facilitated Proposal
 
-This runbook launches two genuinely fresh local agents—Codex as the buyer-side Initiator and Claude Code as the provider-side Responder—and keeps the same independently controlled sessions alive for one Agent Contract-facilitated proposal exchange.
+This runbook launches two genuinely fresh local agents—**Codex / Payer** as the buyer-side Initiator and **Claude Code / Requestor** as the provider-side Responder—and keeps the same independently controlled sessions alive for one Agent Contract-facilitated proposal exchange.
 
 ## What is live
 
-1. Each agent creates a distinct wallet-backed ERC-8004 identity.
-2. Both agents use the live Clockchain Handshake MCP and independently approve their exact handshake actions.
+1. Each agent creates a distinct fresh ERC-8004 identity backed by its own wallet.
+2. The buyer creates a one-time invitation, and both agents use the live Clockchain Handshake MCP to independently approve their exact handshake actions.
 3. Both verify the same Clockchain closing certificate.
 4. Agent Contract validates the fresh certificate, within the 90-second Clockchain window, and creates a separate narrowly scoped proposal session.
 5. The same Claude session resumes as provider and sends one signed proposal through its role-local A2A adapter.
 6. The same Codex session resumes as buyer and sends one signed, nonbinding `received_for_review` acknowledgment.
+
+The resumed Codex buyer uses automatic approval inside the existing workspace-write sandbox so its bounded role-local MCP calls can run noninteractively. The demo never uses the combined approvals-and-sandbox bypass.
 
 Clockchain remains the trust path for identity and the direct handshake. Agent Contract is the separate communication and verification path for the commercial messages. The proposal and acknowledgment are not represented as authorized or anchored by Clockchain.
 
