@@ -72,6 +72,8 @@ test("advertises exactly the four role-local Agent Contract tools", () => {
     proposalTool.inputSchema.properties.verificationMethod.const,
     "checksum-and-required-sections/v1",
   );
+  assert.equal(proposalTool.inputSchema.properties.deliveryHours.maximum, 24);
+  assert.equal(proposalTool.inputSchema.properties.price.pattern, "^(?:0|[1-9]|1[0-9]|20)$");
 });
 
 test("proposal vocabulary matches the platform schema before any request is sent", async (t) => {
@@ -90,6 +92,18 @@ test("proposal vocabulary matches the platform schema before any request is sent
       formats: ["JSON", "Markdown"],
       deliveryHours: 12,
       price: "10",
+      verificationMethod: "checksum-and-required-sections/v1",
+    }),
+    /Proposal arguments are invalid/,
+  );
+  assert.equal(requests, 0);
+
+  await assert.rejects(
+    adapter.callTool("agent_contract_send_proposal", {
+      deliverableSummary: "Produce one evidence pack",
+      formats: ["json", "markdown"],
+      deliveryHours: 48,
+      price: "100",
       verificationMethod: "checksum-and-required-sections/v1",
     }),
     /Proposal arguments are invalid/,

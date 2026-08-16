@@ -38,8 +38,8 @@ export const AGENT_CONTRACT_A2A_TOOLS = Object.freeze([
           uniqueItems: true,
           items: Object.freeze({ type: "string", enum: Object.freeze(["json", "markdown"]) }),
         }),
-        deliveryHours: Object.freeze({ type: "integer", minimum: 1 }),
-        price: Object.freeze({ type: "string", pattern: "^(?:0|[1-9][0-9]*)$" }),
+        deliveryHours: Object.freeze({ type: "integer", minimum: 1, maximum: 24 }),
+        price: Object.freeze({ type: "string", pattern: "^(?:0|[1-9]|1[0-9]|20)$" }),
         verificationMethod: Object.freeze({ type: "string", const: "checksum-and-required-sections/v1" }),
       }),
       required: Object.freeze(["deliverableSummary", "formats", "deliveryHours", "price", "verificationMethod"]),
@@ -202,8 +202,8 @@ function proposalFromArguments(config, value) {
     !Array.isArray(args.formats) || args.formats.length < 1 || args.formats.length > 2 ||
     new Set(args.formats).size !== args.formats.length ||
     args.formats.some((entry) => !["json", "markdown"].includes(entry)) ||
-    !Number.isSafeInteger(args.deliveryHours) || args.deliveryHours < 1 ||
-    typeof args.price !== "string" || !INTEGER.test(args.price) ||
+    !Number.isSafeInteger(args.deliveryHours) || args.deliveryHours < 1 || args.deliveryHours > 24 ||
+    typeof args.price !== "string" || !INTEGER.test(args.price) || BigInt(args.price) > 20n ||
     args.verificationMethod !== "checksum-and-required-sections/v1"
   ) fail("Proposal arguments are invalid.");
   return Object.freeze({

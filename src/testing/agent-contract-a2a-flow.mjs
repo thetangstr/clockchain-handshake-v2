@@ -18,7 +18,7 @@ const VERIFICATION_KEYS = Object.freeze([
   "predecessorBindingVerified",
 ]);
 
-const PROVIDER_PROMPT = `The Clockchain handshake is already verified. Continue as the provider through the configured Agent Contract A2A tools. First discover the buyer Agent Card. Then independently choose the exact commercial terms for one small, real deliverable: a signed JSON and Markdown evidence pack that can be verified by checksum and required sections. Stay within your authority and call the proposal tool yourself. Do not claim negotiation, agreement, payment, escrow, or external execution.`;
+const PROVIDER_PROMPT = `The Clockchain handshake is already verified. Continue as the provider through the configured Agent Contract A2A tools. First discover the buyer Agent Card. The buyer opportunity requests one signed evidence pack in both lowercase platform formats, json and markdown, delivered within 24 hours, at a price no greater than 20, using checksum-and-required-sections/v1 verification. Independently choose the deliverable summary, delivery time, and price within that opportunity and your mandate, then call the proposal tool yourself. Do not claim negotiation, agreement, payment, escrow, or external execution.`;
 
 const BUYER_PROMPT = `The Clockchain handshake is already verified. Continue as the buyer through the configured Agent Contract A2A tools. Read your authenticated inbox and evaluate the exact stored proposal. If it is the expected single small-deliverable proposal, acknowledge only that it was received for review. The acknowledgment must remain nonbinding. Do not accept terms, create an agreement, authorize payment, or claim escrow or execution.`;
 

@@ -156,6 +156,9 @@ test("activates, resumes provider then buyer, and returns a live bound export", 
   assert.equal(fixture.continuations[1].role, "initiator");
   assert.equal(fixture.continuations[1].proposalWasStored, true);
   assert.match(fixture.continuations[0].request.prompt, /independently choose/i);
+  assert.match(fixture.continuations[0].request.prompt, /both lowercase platform formats, json and markdown/);
+  assert.match(fixture.continuations[0].request.prompt, /price no greater than 20/);
+  assert.match(fixture.continuations[0].request.prompt, /checksum-and-required-sections\/v1/);
   assert.equal(fixture.continuations[1].request.prompt.includes("firm_proposal"), false);
   assert.match(fixture.continuations[1].request.prompt, /exact stored proposal/i);
   assert.equal(fixture.continuations[0].request.environment.AGENT_CONTRACT_A2A_ROLE_TOKEN, "provider-secret");
