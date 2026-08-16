@@ -70,6 +70,30 @@ test("restart state enforces rolling-hour and UTC-day ceilings", async () => {
   assert.deepEqual(records, before);
 });
 
+test("restart state accepts historical 0.02 seat reservations after funding policy changes", async () => {
+  const now = Date.UTC(2026, 7, 16, 1, 0, 0);
+  let records = [{
+    address: "0x" + "3".repeat(40),
+    amountEth: "0.02",
+    atMs: now - (2 * 24 * 60 * 60 * 1000),
+    sessionId: "11111111-2222-4333-8444-555555555555",
+  }];
+  const budget = createFundingBudget({
+    load: async () => records,
+    save: async (next) => { records = structuredClone(next); },
+    now: () => now,
+  });
+
+  const reservation = await budget.reserve({
+    addresses: [A, B],
+    identityMode: "required_fresh",
+    sessionId: "22222222-3333-4444-8555-666666666666",
+  });
+
+  assert.equal(reservation.totalEth, "0.02");
+  assert.deepEqual(records.map(({ amountEth }) => amountEth), ["0.02", "0.01", "0.01"]);
+});
+
 test("funding budget emits threshold-only alerts without exposing reserved addresses", async () => {
   const now = Date.UTC(2026, 7, 10, 12, 0, 0);
   let records = Array.from({ length: 14 }, (_, index) => ({

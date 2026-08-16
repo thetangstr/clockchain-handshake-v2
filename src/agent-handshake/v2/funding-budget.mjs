@@ -20,6 +20,7 @@ function invalid() {
 }
 
 function amountCents(value) {
+  if (value === "0.02") return 2;
   if (value !== "0.01") invalid();
   return SEAT_CENTS;
 }
