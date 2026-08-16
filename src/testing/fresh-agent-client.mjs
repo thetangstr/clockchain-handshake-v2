@@ -822,7 +822,8 @@ export function buildClientContinuationCommand({
     return Object.freeze({
       file: "codex",
       args: Object.freeze([
-        "exec", "resume", "--last", "--model", "gpt-5.6-terra", "--skip-git-repo-check",
+        "exec", ...(agentContractA2A ? ["--approve-for-me"] : []),
+        "resume", "--last", "--model", "gpt-5.6-terra", "--skip-git-repo-check",
         "--strict-config", "--ignore-rules", "--json", "-",
       ]),
       input: prompt,

@@ -574,6 +574,14 @@ test("builds persistent continuation turns for the same isolated Codex and Claud
     ],
     input: "continue",
   });
+  const codexA2A = buildClientContinuationCommand({
+    agentContractA2A: true,
+    client: "codex",
+    prompt: "review the stored proposal",
+    workspace: "/tmp/a",
+  });
+  assert.deepEqual(codexA2A.args.slice(0, 4), ["exec", "--approve-for-me", "resume", "--last"]);
+  assert.equal(codexA2A.args.includes("--dangerously-bypass-approvals-and-sandbox"), false);
   const claude = buildClientContinuationCommand({
     client: "claude",
     claudeSessionId: SESSION,
@@ -948,7 +956,7 @@ test("default post-handshake continuation resumes the same client with the A2A a
   assert.equal(result.facilitatedA2A.sessionId, "public-result");
   assert.equal(configureCalls.some((command) => command.args?.includes("agent-contract-a2a")), true);
   const resumed = processCalls.filter((entry) => entry.file === "codex").at(-1);
-  assert.deepEqual(resumed.args.slice(0, 3), ["exec", "resume", "--last"]);
+  assert.deepEqual(resumed.args.slice(0, 4), ["exec", "--approve-for-me", "resume", "--last"]);
   assert.equal(resumed.options.env.AGENT_CONTRACT_A2A_ROLE, "buyer");
   assert.equal(resumed.options.env.AGENT_CONTRACT_A2A_ROLE_TOKEN, "buyer-only-token");
   assert.match(resumed.options.env.AGENT_CONTRACT_A2A_WALLET_PATH, /wallet\.json$/);
