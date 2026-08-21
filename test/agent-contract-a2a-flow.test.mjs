@@ -350,6 +350,55 @@ test("assembles the exact privacy-safe live two-runtime witness", async () => {
   assert.equal(JSON.stringify(witness).includes("operator-secret"), false);
 });
 
+test("accepts co-timestamped certificate issuance and verification as the run boundary", async () => {
+  const fixture = exchangeFixture();
+  const evidence = structuredClone(publicHandshakeEvidence());
+  evidence.monitor.checker.lastSeenMs = evidence.monitor.certificate.issuedAtMs;
+  const times = ["2026-08-15T20:00:03.000Z", "2026-08-15T20:00:08.000Z"];
+
+  const result = await runAgentContractA2AFlow({
+    evidence,
+    continueRole: fixture.continueRole,
+    baseUrl: "http://127.0.0.1:3017",
+    operatorToken: "operator-secret",
+    fetchImpl: fixture.fetchImpl,
+    now: () => times.shift(),
+    witnessSource: {
+      agentContractCommit: "5058b4672ef974ea6f8138fdf6caa6a20d5f90f6",
+      continuumCommit: "8c25194000000000000000000000000000000000",
+    },
+  });
+
+  assert.equal(result.liveRuntimeWitness.events[0].occurredAt, result.liveRuntimeWitness.startedAt);
+  assert.ok(
+    Date.parse(result.liveRuntimeWitness.events[1].occurredAt) >
+      Date.parse(result.liveRuntimeWitness.events[0].occurredAt),
+  );
+});
+
+test("rejects certificate verification before the run boundary", async () => {
+  const fixture = exchangeFixture();
+  const evidence = structuredClone(publicHandshakeEvidence());
+  evidence.monitor.checker.lastSeenMs = evidence.monitor.certificate.issuedAtMs - 1;
+  const times = ["2026-08-15T20:00:03.000Z", "2026-08-15T20:00:08.000Z"];
+
+  await assert.rejects(
+    runAgentContractA2AFlow({
+      evidence,
+      continueRole: fixture.continueRole,
+      baseUrl: "http://127.0.0.1:3017",
+      operatorToken: "operator-secret",
+      fetchImpl: fixture.fetchImpl,
+      now: () => times.shift(),
+      witnessSource: {
+        agentContractCommit: "5058b4672ef974ea6f8138fdf6caa6a20d5f90f6",
+        continuumCommit: "8c25194000000000000000000000000000000000",
+      },
+    }),
+    /Live runtime witness event order invalid/,
+  );
+});
+
 test("rejects runtime and authorship substitutions before witness completion", async () => {
   const mutations = [
     (role, value) => {

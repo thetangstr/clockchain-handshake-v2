@@ -344,7 +344,11 @@ function buildLiveRuntimeWitness({
   let previous = Date.parse(startedAt);
   const events = eventInputs.map(([kind, occurredAt], index) => {
     const current = Date.parse(occurredAt);
-    if (!Number.isFinite(current) || current <= previous) {
+    if (
+      !Number.isFinite(current) ||
+      (index === 0 && current < previous) ||
+      (index > 0 && current <= previous)
+    ) {
       fail("Live runtime witness event order invalid.");
     }
     previous = current;
