@@ -342,12 +342,16 @@ function exchangeFixture({ mutateContinuation = (_role, value) => value, binding
           status: { timestamp: "2026-08-15T20:00:11.000Z" },
           history: [acceptanceMessage],
         };
-        value.activity.tools.push("agent_contract_read_inbox", "agent_contract_accept_gate_1_agreement");
+        value.activity.tools.push(
+          "agent_contract_wait_for_gate_1_agreement",
+          "agent_contract_accept_gate_1_agreement",
+        );
         value.ledger.entries.push(
           {
-            kind: "inbox_read",
-            toolName: "agent_contract_read_inbox",
+            kind: "agreement_offer_observed",
+            toolName: "agent_contract_wait_for_gate_1_agreement",
             argumentsDigest: canonicalDigest({}),
+            messageDigest: canonicalDigest(offerMessage),
             occurredAt: "2026-08-15T20:00:09.500Z",
             runtimeId: value.runtime.runtimeId,
           },
@@ -499,6 +503,10 @@ test("keeps the same two live runtimes and exact G3 lineage through one binding 
   assert.equal(fixture.continuations.length, 2);
   assert.match(fixture.continuations[0].request.prompt, /one provider runtime/i);
   assert.match(fixture.continuations[1].request.prompt, /one buyer runtime/i);
+  assert.match(
+    fixture.continuations[1].request.prompt,
+    /agent_contract_wait_for_gate_1_agreement/,
+  );
   assert.match(fixture.continuations[0].request.prompt, /do not perform execution/i);
   const activation = JSON.parse(fixture.calls.find((call) => call.url.endsWith("/activate")).init.body);
   assert.equal(activation.agreementAuthorities.buyer.approvalSource, "HUMAN_APPROVAL");

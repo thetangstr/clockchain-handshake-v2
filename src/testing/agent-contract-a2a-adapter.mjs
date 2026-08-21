@@ -68,6 +68,12 @@ export const AGENT_CONTRACT_A2A_TOOLS = Object.freeze([
     }),
   }),
   Object.freeze({
+    name: "agent_contract_wait_for_gate_1_agreement",
+    title: "Wait for the exact Gate 1 agreement offer",
+    description: "Buyer only. Hold this runtime open until the provider's one stored binding agreement offer is available.",
+    inputSchema: Object.freeze({ type: "object", additionalProperties: false, properties: {} }),
+  }),
+  Object.freeze({
     name: "agent_contract_offer_gate_1_agreement",
     title: "Offer one binding Gate 1 agreement",
     description: "Provider only. Build, authorize, sign, and send the one sandbox Gate 1 agreement from an exact stored proposal acknowledgment.",
@@ -646,6 +652,29 @@ export async function createAgentContractA2AAdapter(input = {}) {
         persistedAt: strictIso(config.now()),
       });
       return persistedTask;
+    }
+    if (name === "agent_contract_wait_for_gate_1_agreement") {
+      if (config.role !== "buyer") fail("Only the buyer role may wait for a Gate 1 agreement.");
+      exactObject(args, [], "Agreement wait arguments");
+      for (let attempt = 0; attempt < 360; attempt += 1) {
+        const inbox = await requestJson(config, path("/agents/buyer/inbox"));
+        if (!Array.isArray(inbox)) fail("Agent Contract inbox is invalid.");
+        const offers = inbox.filter((entry) => entry?.history?.[0]?.parts?.[0]?.data?.kind === "agreement_offer");
+        if (offers.length > 1) fail("Agent Contract returned multiple Gate 1 agreement offers.");
+        if (offers.length === 1) {
+          const offerMessage = taskMessage(offers[0]);
+          await ledger.record({
+            kind: "agreement_offer_observed",
+            toolName: name,
+            argumentsDigest: canonicalDigest({}),
+            messageDigest: canonicalDigest(offerMessage),
+            occurredAt: strictIso(config.now()),
+          });
+          return offers[0];
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      fail("Gate 1 agreement offer did not arrive before the bounded wait expired.");
     }
     if (name === "agent_contract_accept_gate_1_agreement") {
       if (config.role !== "buyer") fail("Only the buyer role may accept a Gate 1 agreement.");

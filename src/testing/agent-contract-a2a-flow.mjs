@@ -35,7 +35,7 @@ const BUYER_PROMPT = `The Clockchain handshake is already verified. Continue as 
 
 const INTEGRATED_PROVIDER_PROMPT = `The Clockchain handshake is already verified and the configured Agent Contract A2A session includes a scoped Gate 1 agreement authority. Stay in this one provider runtime for the complete authorized test exchange. First discover the buyer Agent Card. Then independently choose and send one firm proposal matching the opportunity: one signed evidence pack in both lowercase platform formats, json and markdown, delivered within 24 hours, at a price no greater than 20, using checksum-and-required-sections/v1 verification. After the proposal is stored, read your authenticated inbox until the buyer's exact nonbinding acknowledgment appears. Then call agent_contract_offer_gate_1_agreement yourself with that exact acknowledgmentTaskId. This creates one binding agreement for the sandbox-only Gate 1 payment-execution scenario. Do not finish before the binding offer is stored. Do not perform execution, verification, funding, escrow, settlement, or any external business action.`;
 
-const INTEGRATED_BUYER_PROMPT = `The Clockchain handshake is already verified and the configured Agent Contract A2A session includes a scoped Gate 1 agreement authority. Stay in this one buyer runtime for the complete authorized test exchange. Read your authenticated inbox and evaluate the exact stored proposal against the opportunity: one signed evidence pack in both lowercase platform formats, json and markdown, delivered within 24 hours, at a price no greater than 20, using checksum-and-required-sections/v1 verification. If it matches, call agent_contract_acknowledge_proposal with the exact taskId and decision received_for_review. Then continue reading your authenticated inbox until the provider's exact Gate 1 agreement offer appears. Inspect that stored offer and, only if it remains the same sandbox-only scenario and is within your configured authority, call agent_contract_accept_gate_1_agreement yourself with the exact offerTaskId. Do not finish before either the binding acceptance is stored or you state the concrete authority or terms mismatch. Do not perform execution, verification, funding, escrow, settlement, or any external business action.`;
+const INTEGRATED_BUYER_PROMPT = `The Clockchain handshake is already verified and the configured Agent Contract A2A session includes a scoped Gate 1 agreement authority. Stay in this one buyer runtime for the complete authorized test exchange. Read your authenticated inbox and evaluate the exact stored proposal against the opportunity: one signed evidence pack in both lowercase platform formats, json and markdown, delivered within 24 hours, at a price no greater than 20, using checksum-and-required-sections/v1 verification. If it matches, call agent_contract_acknowledge_proposal with the exact taskId and decision received_for_review. Then call agent_contract_wait_for_gate_1_agreement exactly once; this bounded tool waits for and returns the provider's exact stored Gate 1 agreement offer. Inspect the returned offer and, only if it remains the same sandbox-only scenario and is within your configured authority, call agent_contract_accept_gate_1_agreement yourself with the exact returned offerTaskId. Do not finish before either the binding acceptance is stored or you state the concrete authority or terms mismatch. Do not perform execution, verification, funding, escrow, settlement, or any external business action.`;
 
 export class AgentContractA2AFlowError extends Error {
   constructor(message) {
@@ -308,6 +308,9 @@ function validateBindingAgreement({ value, sessionId, proposalTask, acknowledgme
   const buyerAcceptanceRecord = buyerContinuation?.ledger?.entries?.find(
     (entry) => entry?.kind === "agreement_acceptance_authorship",
   );
+  const buyerOfferObservation = buyerContinuation?.ledger?.entries?.find(
+    (entry) => entry?.kind === "agreement_offer_observed",
+  );
   if (
     value?.schema !== "agent-contract.facilitated-a2a-agreement-export/v1" ||
     value.sessionId !== sessionId || offerData?.kind !== "agreement_offer" ||
@@ -327,6 +330,8 @@ function validateBindingAgreement({ value, sessionId, proposalTask, acknowledgme
     providerOfferRecord.messageDigest !== offerMessageDigest ||
     providerOfferRecord.predecessorMessageDigest !== acknowledgmentMessageDigest ||
     providerOfferRecord.authorityDecisionDigest !== value.providerAuthorityDecisionDigest ||
+    buyerOfferObservation?.toolName !== "agent_contract_wait_for_gate_1_agreement" ||
+    buyerOfferObservation.messageDigest !== offerMessageDigest ||
     buyerAcceptanceRecord?.toolName !== "agent_contract_accept_gate_1_agreement" ||
     buyerAcceptanceRecord.messageDigest !== acceptanceMessageDigest ||
     buyerAcceptanceRecord.predecessorMessageDigest !== offerMessageDigest ||
@@ -428,7 +433,12 @@ function buildLiveRuntimeWitness({
     modelId: "gpt-5.6-terra",
     requiredTools: ["agent_contract_read_inbox", "agent_contract_acknowledge_proposal"],
     requiredLedgerKinds: ["inbox_read", "acknowledgment_authorship"],
-    allowedLedgerKinds: ["inbox_read", "acknowledgment_authorship", "agreement_acceptance_authorship"],
+    allowedLedgerKinds: [
+      "inbox_read",
+      "acknowledgment_authorship",
+      "agreement_offer_observed",
+      "agreement_acceptance_authorship",
+    ],
   });
   if (
     provider.runtime.runtimeId === buyer.runtime.runtimeId ||

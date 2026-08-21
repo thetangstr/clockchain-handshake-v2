@@ -74,11 +74,12 @@ test("advertises the role-local proposal and binding-agreement tools", () => {
       "agent_contract_send_proposal",
       "agent_contract_read_inbox",
       "agent_contract_acknowledge_proposal",
+      "agent_contract_wait_for_gate_1_agreement",
       "agent_contract_offer_gate_1_agreement",
       "agent_contract_accept_gate_1_agreement",
     ],
   );
-  assert.equal(new Set(AGENT_CONTRACT_A2A_TOOLS.map((tool) => tool.name)).size, 6);
+  assert.equal(new Set(AGENT_CONTRACT_A2A_TOOLS.map((tool) => tool.name)).size, 7);
   const proposalTool = AGENT_CONTRACT_A2A_TOOLS.find(
     (tool) => tool.name === "agent_contract_send_proposal",
   );
@@ -174,6 +175,8 @@ test("provider offers and buyer accepts one exact predecessor-bound Gate 1 agree
       }, { status: 201 });
     },
   ));
+  const observedOffer = await buyer.callTool("agent_contract_wait_for_gate_1_agreement", {});
+  assert.equal(observedOffer.id, offerTask.id);
   const accepted = await buyer.callTool("agent_contract_accept_gate_1_agreement", {
     offerTaskId: offerTask.id,
   });
