@@ -389,11 +389,13 @@ function monitorProjection(overrides = {}) {
 
 function successfulFreshAgentSpawn(calls = [], { command = verifyCertificateCommand, helper = helperProof } = {}) {
   const children = {};
+  let nextPid = 4100;
   return (file, args, options) => {
     calls.push({ file, args, options });
     const role = children.initiator === undefined ? "initiator" : "responder";
     const child = new EventEmitter();
-    child.pid = null;
+    child.pid = nextPid;
+    nextPid += 1;
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
     child.stdin = { end(input) {
@@ -928,6 +930,7 @@ test("default post-handshake continuation resumes the same client with the A2A a
   const processCalls = [];
   const configureCalls = [];
   let walletNumber = 4;
+  let continuationResult;
 
   const result = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, {
     configureClient: async (entry) => { configureCalls.push(entry.command); },
@@ -943,7 +946,7 @@ test("default post-handshake continuation resumes the same client with the A2A a
       return adapter;
     },
     postHandshakeFlow: async ({ continueRole }) => {
-      await continueRole("initiator", {
+      continuationResult = await continueRole("initiator", {
         prompt: "Read the Agent Contract inbox.",
         environment: {
           AGENT_CONTRACT_A2A_ROLE: "buyer",
@@ -967,6 +970,18 @@ test("default post-handshake continuation resumes the same client with the A2A a
   assert.equal(resumed.options.env.AGENT_CONTRACT_A2A_ROLE, "buyer");
   assert.equal(resumed.options.env.AGENT_CONTRACT_A2A_ROLE_TOKEN, "buyer-only-token");
   assert.match(resumed.options.env.AGENT_CONTRACT_A2A_WALLET_PATH, /wallet\.json$/);
+  assert.deepEqual(continuationResult.activity, {
+    agentMessageCount: 0,
+    errorEventCount: 0,
+    eventCount: 2,
+    mcpToolCallCount: 0,
+    tools: [],
+  });
+  assert.equal(continuationResult.runtime.client, "codex-cli");
+  assert.equal(continuationResult.runtime.modelId, "gpt-5.6-terra");
+  assert.match(continuationResult.runtime.runtimeId, /^[0-9a-f-]{36}$/);
+  assert.match(continuationResult.runtime.processDigest, /^0x[0-9a-f]{64}$/);
+  assert.equal(Object.hasOwn(continuationResult.runtime, "pid"), false);
   assert.deepEqual(await readdir(parent), []);
 });
 

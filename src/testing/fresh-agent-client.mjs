@@ -78,6 +78,10 @@ const UNSAFE_SHELL = /[\0\r\n;&|`$<>]/;
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const HELPER_RESULT_SCHEMA = "clockchain.agent-handshake-cli-result/v1";
 const EVIDENCE_SCHEMA = "clockchain.fresh-agent-canary-evidence/v1";
+const POST_HANDSHAKE_RUNTIME = Object.freeze({
+  codex: Object.freeze({ client: "codex-cli", modelId: "gpt-5.6-terra" }),
+  claude: Object.freeze({ client: "claude-code", modelId: "sonnet" }),
+});
 const ATTEMPT_ARTIFACT_SCHEMA = "clockchain.fresh-agent-canary-attempt/v1";
 const RESPONDER_INVITATION_PLACEHOLDER = "<PASTE THE INITIATOR INVITATION>";
 const ADAPTER_APPROVAL_TOOL = "mcp__clockchain-adapter__approve_bound_action";
@@ -2433,19 +2437,20 @@ function observePostHandshakeChild(child, canaries, { client, role, timeoutMs = 
         rejectPromise(diagnostic("agent-exit", "validation", "AGENT_OUTPUT_INVALID"));
         return;
       }
+      const activity = summarizePostHandshakeOutput(stdout);
       traceLifecycle({
         phase: "post-handshake-continuation-result",
         role,
         client,
         code,
-        stdout: summarizePostHandshakeOutput(stdout),
+        stdout: activity,
         stderrBytes: Buffer.byteLength(stderr),
       });
       if (code !== 0) {
         rejectPromise(diagnostic("agent-exit", "process", "AGENT_EXIT"));
         return;
       }
-      resolvePromise(Object.freeze({ completed: true }));
+      resolvePromise(Object.freeze({ completed: true, activity }));
     });
   });
 }
@@ -3046,6 +3051,9 @@ export async function runFreshAgentHandshake({
     async function resumePostHandshakeRole(request) {
       const current = prepared[request.role];
       const room = run.roles[request.role];
+      const runtimeId = randomUUID();
+      const runtimeDescriptor = POST_HANDSHAKE_RUNTIME[current.client];
+      if (runtimeDescriptor === undefined) fail();
       const wallet = await findSingleAgentWallet(room.workspace);
       const adapterEnvironment = Object.freeze({
         ...request.environment,
@@ -3094,6 +3102,9 @@ export async function runFreshAgentHandshake({
         env: environment,
         stdio: ["pipe", "pipe", "pipe"],
       });
+      if (!Number.isSafeInteger(child.pid) || child.pid <= 0) {
+        throw diagnostic("agent-exit", "process", "AGENT_PID_INVALID");
+      }
       children.push(child);
       traceLifecycle({ phase: "post-handshake-continuation-spawn", role: request.role, client: current.client });
       const observed = observePostHandshakeChild(child, [
@@ -3103,7 +3114,23 @@ export async function runFreshAgentHandshake({
         request.environment.AGENT_CONTRACT_A2A_ROLE_TOKEN,
       ], { client: current.client, role: request.role });
       sendPrompt(child, command.input);
-      return observed;
+      const completed = await observed;
+      const processDigest = `0x${createHash("sha256").update(JSON.stringify({
+        client: runtimeDescriptor.client,
+        modelId: runtimeDescriptor.modelId,
+        pid: child.pid,
+        role: request.role,
+        runId: run.runId,
+        runtimeId,
+      })).digest("hex")}`;
+      return Object.freeze({
+        ...completed,
+        runtime: Object.freeze({
+          ...runtimeDescriptor,
+          runtimeId,
+          processDigest,
+        }),
+      });
     }
     const timedOut = new Promise((_, rejectPromise) => {
       timer = setTimeout(() => {
