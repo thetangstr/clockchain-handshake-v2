@@ -387,7 +387,7 @@ export async function createAgentContractA2AAdapter(input = {}) {
         messageDigest: canonicalDigest(persistedMessage),
         predecessorMessageDigest: null,
         authoredAt: strictIso(message.metadata.clockchainTrust.sentAt),
-        persistedAt: strictIso(task.status?.timestamp),
+        persistedAt: strictIso(config.now()),
       });
       return task;
     }
@@ -437,7 +437,7 @@ export async function createAgentContractA2AAdapter(input = {}) {
         predecessorMessageDigest:
           persistedMessage.metadata.clockchainTrust.predecessorMessageDigest,
         authoredAt: strictIso(message.metadata.clockchainTrust.sentAt),
-        persistedAt: strictIso(persistedTask.status?.timestamp),
+        persistedAt: strictIso(config.now()),
       });
       return persistedTask;
     }

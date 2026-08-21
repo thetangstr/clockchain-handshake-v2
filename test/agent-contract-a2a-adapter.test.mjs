@@ -114,6 +114,12 @@ test("proposal vocabulary matches the platform schema before any request is sent
 test("provider discovers the buyer and signs its own typed proposal", async (t) => {
   const walletPath = await walletFile(t, PROVIDER_KEY);
   const witnessLedgerPath = join(dirname(walletPath), ".agent-contract-a2a-witness.json");
+  const observedTimes = [
+    "2026-08-15T20:00:00.000Z",
+    "2026-08-15T20:00:01.000Z",
+    "2026-08-15T20:00:02.000Z",
+    "2026-08-15T20:00:03.000Z",
+  ];
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push({ url, init });
@@ -131,6 +137,7 @@ test("provider discovers the buyer and signs its own typed proposal", async (t) 
   const adapter = await createAgentContractA2AAdapter(baseConfig("provider", walletPath, fetchImpl, {
     runtimeId: "22222222-3333-4444-8555-666666666666",
     witnessLedgerPath,
+    now: () => observedTimes.shift(),
   }));
 
   const card = await adapter.callTool("agent_contract_discover_counterparty", {});
@@ -183,6 +190,8 @@ test("provider discovers the buyer and signs its own typed proposal", async (t) 
   );
   assert.equal(ledger.entries[1].messageDigest, adapter.canonicalDigest(message));
   assert.equal(ledger.entries[1].predecessorMessageDigest, null);
+  assert.equal(ledger.entries[1].authoredAt, "2026-08-15T20:00:02.000Z");
+  assert.equal(ledger.entries[1].persistedAt, "2026-08-15T20:00:03.000Z");
   assert.equal(JSON.stringify(ledger).includes(PROVIDER_KEY), false);
   assert.equal(JSON.stringify(ledger).includes("provider-capability-secret"), false);
   assert.equal(JSON.stringify(ledger).includes("Produce one signed"), false);
@@ -191,6 +200,11 @@ test("provider discovers the buyer and signs its own typed proposal", async (t) 
 test("buyer derives a nonbinding acknowledgment from the exact stored proposal", async (t) => {
   const walletPath = await walletFile(t, BUYER_KEY);
   const witnessLedgerPath = join(dirname(walletPath), ".agent-contract-a2a-witness.json");
+  const observedTimes = [
+    "2026-08-15T20:00:00.000Z",
+    "2026-08-15T20:00:01.000Z",
+    "2026-08-15T20:00:02.000Z",
+  ];
   const proposalMessage = {
     messageId: "99999999-aaaa-4bbb-8ccc-dddddddddddd",
     contextId: SESSION_ID,
@@ -242,6 +256,7 @@ test("buyer derives a nonbinding acknowledgment from the exact stored proposal",
   const adapter = await createAgentContractA2AAdapter(baseConfig("buyer", walletPath, fetchImpl, {
     runtimeId: "33333333-4444-4555-8666-777777777777",
     witnessLedgerPath,
+    now: () => observedTimes.shift(),
   }));
 
   await adapter.callTool("agent_contract_read_inbox", {});
@@ -280,6 +295,8 @@ test("buyer derives a nonbinding acknowledgment from the exact stored proposal",
     adapter.canonicalDigest(proposalMessage),
   );
   assert.equal(ledger.entries[1].messageDigest, adapter.canonicalDigest(acknowledgment));
+  assert.equal(ledger.entries[1].authoredAt, "2026-08-15T20:00:01.000Z");
+  assert.equal(ledger.entries[1].persistedAt, "2026-08-15T20:00:02.000Z");
 });
 
 test("rejects partial or non-workspace witness ledger configuration", async (t) => {
