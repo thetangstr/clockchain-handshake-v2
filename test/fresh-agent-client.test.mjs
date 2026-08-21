@@ -57,6 +57,13 @@ const execFileAsync = promisify(execFile);
 
 const V2_FIXTURE = await buildV2Fixture();
 
+test("fresh live canary pins the deployed isolated handshake transport", () => {
+  assert.equal(
+    CLOCKCHAIN_HANDSHAKE_MCP_URL,
+    "https://mcp-aws.clockchain.network/handshake/mcp",
+  );
+});
+
 function streamEvent(value) {
   return `${JSON.stringify(value)}\n`;
 }

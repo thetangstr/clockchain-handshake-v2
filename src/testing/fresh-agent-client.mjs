@@ -43,7 +43,7 @@ const HELPER_OPERATIONS = Object.freeze([
 ]);
 const RELEASE_PREFIX = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.3/";
 
-export const CLOCKCHAIN_HANDSHAKE_MCP_URL = "https://mcp.clockchain.network/handshake/mcp";
+export const CLOCKCHAIN_HANDSHAKE_MCP_URL = "https://mcp-aws.clockchain.network/handshake/mcp";
 export const FRESH_AGENT_CLIENTS = Object.freeze(["codex", "claude"]);
 export const CLAUDE_AUTHENTICATION_MODES = Object.freeze(["disposable", "existing_login_isolated"]);
 export const CLOCKCHAIN_HANDSHAKE_TOOLS = Object.freeze([

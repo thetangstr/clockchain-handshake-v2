@@ -4,15 +4,19 @@ This runbook proves the production stakeholder flow from two fresh clients in is
 
 ## Public endpoint
 
-Both clients connect to the same dedicated seven-tool endpoint:
+Both clients connect to the same dedicated eight-tool endpoint:
 
-`https://mcp.clockchain.network/handshake/mcp`
+`https://mcp-aws.clockchain.network/handshake/mcp`
+
+This is the currently deployed isolated handshake origin. The canonical
+`mcp.clockchain.network` hostname is reserved for the combined services surface and
+must not be substituted unless its preflight returns this exact eight-tool contract.
 
 Equivalent one-time commands for manual clients are:
 
 ```text
-codex mcp add clockchain-handshake --url https://mcp.clockchain.network/handshake/mcp
-claude mcp add --transport http --scope user clockchain-handshake https://mcp.clockchain.network/handshake/mcp
+codex mcp add clockchain-handshake --url https://mcp-aws.clockchain.network/handshake/mcp
+claude mcp add --transport http --scope user clockchain-handshake https://mcp-aws.clockchain.network/handshake/mcp
 ```
 
 The automated canary does not mutate the stakeholder's Claude configuration. It supplies that same endpoint inline with `--strict-mcp-config` for the one isolated process.
