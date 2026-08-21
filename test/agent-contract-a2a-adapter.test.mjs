@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 import { verifyMessage } from "viem";
@@ -113,6 +113,7 @@ test("proposal vocabulary matches the platform schema before any request is sent
 
 test("provider discovers the buyer and signs its own typed proposal", async (t) => {
   const walletPath = await walletFile(t, PROVIDER_KEY);
+  const witnessLedgerPath = join(dirname(walletPath), ".agent-contract-a2a-witness.json");
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push({ url, init });
@@ -127,7 +128,10 @@ test("provider discovers the buyer and signs its own typed proposal", async (t) 
       history: [body.message],
     }, { status: 201 });
   };
-  const adapter = await createAgentContractA2AAdapter(baseConfig("provider", walletPath, fetchImpl));
+  const adapter = await createAgentContractA2AAdapter(baseConfig("provider", walletPath, fetchImpl, {
+    runtimeId: "22222222-3333-4444-8555-666666666666",
+    witnessLedgerPath,
+  }));
 
   const card = await adapter.callTool("agent_contract_discover_counterparty", {});
   assert.equal(card.name, "buyer-card");
@@ -161,10 +165,32 @@ test("provider discovers the buyer and signs its own typed proposal", async (t) 
   }), true);
   assert.equal(JSON.stringify(task).includes(PROVIDER_KEY), false);
   assert.equal(JSON.stringify(task).includes("provider-capability-secret"), false);
+  const ledger = JSON.parse(await readFile(witnessLedgerPath, "utf8"));
+  assert.equal(ledger.schema, "agent-contract.a2a-authorship-ledger/v1");
+  assert.equal(ledger.runtimeId, "22222222-3333-4444-8555-666666666666");
+  assert.deepEqual(ledger.entries.map((entry) => entry.kind), [
+    "agent_card_discovered",
+    "proposal_authorship",
+  ]);
+  assert.equal(ledger.entries[1].toolName, "agent_contract_send_proposal");
+  assert.equal(
+    ledger.entries[1].argumentsDigest,
+    message.metadata.clockchainTrust.objectDigest,
+  );
+  assert.equal(
+    ledger.entries[1].persistedObjectDigest,
+    message.metadata.clockchainTrust.objectDigest,
+  );
+  assert.equal(ledger.entries[1].messageDigest, adapter.canonicalDigest(message));
+  assert.equal(ledger.entries[1].predecessorMessageDigest, null);
+  assert.equal(JSON.stringify(ledger).includes(PROVIDER_KEY), false);
+  assert.equal(JSON.stringify(ledger).includes("provider-capability-secret"), false);
+  assert.equal(JSON.stringify(ledger).includes("Produce one signed"), false);
 });
 
 test("buyer derives a nonbinding acknowledgment from the exact stored proposal", async (t) => {
   const walletPath = await walletFile(t, BUYER_KEY);
+  const witnessLedgerPath = join(dirname(walletPath), ".agent-contract-a2a-witness.json");
   const proposalMessage = {
     messageId: "99999999-aaaa-4bbb-8ccc-dddddddddddd",
     contextId: SESSION_ID,
@@ -213,8 +239,12 @@ test("buyer derives a nonbinding acknowledgment from the exact stored proposal",
       history: [body.message],
     }, { status: 201 });
   };
-  const adapter = await createAgentContractA2AAdapter(baseConfig("buyer", walletPath, fetchImpl));
+  const adapter = await createAgentContractA2AAdapter(baseConfig("buyer", walletPath, fetchImpl, {
+    runtimeId: "33333333-4444-4555-8666-777777777777",
+    witnessLedgerPath,
+  }));
 
+  await adapter.callTool("agent_contract_read_inbox", {});
   const task = await adapter.callTool("agent_contract_acknowledge_proposal", {
     taskId: proposalTask.id,
     decision: "received_for_review",
@@ -231,6 +261,43 @@ test("buyer derives a nonbinding acknowledgment from the exact stored proposal",
   assert.equal(
     acknowledgment.parts[0].data.proposalDigest,
     adapter.canonicalDigest(proposalMessage.parts[0].data.proposal),
+  );
+  const ledger = JSON.parse(await readFile(witnessLedgerPath, "utf8"));
+  assert.deepEqual(ledger.entries.map((entry) => entry.kind), [
+    "inbox_read",
+    "acknowledgment_authorship",
+  ]);
+  assert.equal(
+    ledger.entries[1].argumentsDigest,
+    acknowledgment.metadata.clockchainTrust.objectDigest,
+  );
+  assert.equal(
+    ledger.entries[1].persistedObjectDigest,
+    acknowledgment.metadata.clockchainTrust.objectDigest,
+  );
+  assert.equal(
+    ledger.entries[1].predecessorMessageDigest,
+    adapter.canonicalDigest(proposalMessage),
+  );
+  assert.equal(ledger.entries[1].messageDigest, adapter.canonicalDigest(acknowledgment));
+});
+
+test("rejects partial or non-workspace witness ledger configuration", async (t) => {
+  const walletPath = await walletFile(t, PROVIDER_KEY);
+  const fetchImpl = async () => Response.json({});
+
+  await assert.rejects(
+    createAgentContractA2AAdapter(baseConfig("provider", walletPath, fetchImpl, {
+      runtimeId: "22222222-3333-4444-8555-666666666666",
+    })),
+    /witness ledger/i,
+  );
+  await assert.rejects(
+    createAgentContractA2AAdapter(baseConfig("provider", walletPath, fetchImpl, {
+      runtimeId: "22222222-3333-4444-8555-666666666666",
+      witnessLedgerPath: join(tmpdir(), ".agent-contract-a2a-witness.json"),
+    })),
+    /witness ledger/i,
   );
 });
 

@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute } from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
@@ -149,7 +151,46 @@ function validateConfig(input) {
     fail("Agent Contract adapter trust binding is invalid.");
   }
   if (typeof input.fetchImpl !== "function" || typeof input.now !== "function") fail("Agent Contract adapter dependencies are invalid.");
+  const witnessConfigured = input.runtimeId !== undefined || input.witnessLedgerPath !== undefined;
+  if (witnessConfigured && (
+    !UUID.test(input.runtimeId ?? "") ||
+    typeof input.witnessLedgerPath !== "string" ||
+    !isAbsolute(input.witnessLedgerPath) ||
+    basename(input.witnessLedgerPath) !== ".agent-contract-a2a-witness.json" ||
+    !isAbsolute(input.walletPath) ||
+    dirname(input.witnessLedgerPath) !== dirname(input.walletPath)
+  )) fail("Agent Contract witness ledger configuration is invalid.");
   return Object.freeze({ ...input, baseUrl: loopbackBaseUrl(input.baseUrl), address: getAddress(input.address) });
+}
+
+function createAuthorshipLedger(config, canaries) {
+  if (config.witnessLedgerPath === undefined) {
+    return Object.freeze({ record: async () => {} });
+  }
+  const entries = [];
+  let created = false;
+  return Object.freeze({
+    async record(entry) {
+      if (!isPlainObject(entry) || entries.some((current) => current.kind === entry.kind)) {
+        fail("Agent Contract witness ledger entry is invalid.");
+      }
+      const next = Object.freeze({ ...entry, runtimeId: config.runtimeId });
+      assertSecretFree(next, canaries);
+      entries.push(next);
+      const ledger = Object.freeze({
+        schema: "agent-contract.a2a-authorship-ledger/v1",
+        runtimeId: config.runtimeId,
+        entries: Object.freeze([...entries]),
+      });
+      assertSecretFree(ledger, canaries);
+      await writeFile(config.witnessLedgerPath, `${JSON.stringify(ledger)}\n`, {
+        encoding: "utf8",
+        flag: created ? "w" : "wx",
+        mode: 0o600,
+      });
+      created = true;
+    },
+  });
 }
 
 async function readWallet(config) {
@@ -287,17 +328,32 @@ export async function createAgentContractA2AAdapter(input = {}) {
   const config = validateConfig(input);
   const wallet = await readWallet(config);
   const canaries = Object.freeze([wallet.privateKey, config.roleCapability, config.walletPath]);
+  const ledger = createAuthorshipLedger(config, canaries);
   const path = (suffix) => `/api/a2a/sessions/${config.sessionId}${suffix}`;
 
   async function callTool(name, args = {}) {
     if (name === "agent_contract_discover_counterparty") {
       exactObject(args, [], "Discovery arguments");
       const target = config.role === "provider" ? "buyer" : "provider";
-      return requestJson(config, path(`/agents/${target}/card`));
+      const card = await requestJson(config, path(`/agents/${target}/card`));
+      await ledger.record({
+        kind: "agent_card_discovered",
+        toolName: name,
+        argumentsDigest: canonicalDigest({}),
+        occurredAt: strictIso(config.now()),
+      });
+      return card;
     }
     if (name === "agent_contract_read_inbox") {
       exactObject(args, [], "Inbox arguments");
-      return requestJson(config, path(`/agents/${config.role}/inbox`));
+      const inbox = await requestJson(config, path(`/agents/${config.role}/inbox`));
+      await ledger.record({
+        kind: "inbox_read",
+        toolName: name,
+        argumentsDigest: canonicalDigest({}),
+        occurredAt: strictIso(config.now()),
+      });
+      return inbox;
     }
     if (name === "agent_contract_send_proposal") {
       if (config.role !== "provider") fail("Only the provider role may send a proposal.");
@@ -312,11 +368,28 @@ export async function createAgentContractA2AAdapter(input = {}) {
         predecessorMessageDigest: null,
         authorityDecisionDigest: canonicalDigest(decision),
       });
-      return publicJson(await requestJson(config, path("/agents/buyer/message:send"), {
+      const task = publicJson(await requestJson(config, path("/agents/buyer/message:send"), {
         method: "POST",
         body: { message },
         a2a: true,
       }), canaries);
+      const persistedMessage = taskMessage(task);
+      const objectDigest = canonicalDigest(data);
+      if (
+        persistedMessage.metadata?.clockchainTrust?.objectDigest !== objectDigest ||
+        persistedMessage.metadata.clockchainTrust.predecessorMessageDigest !== null
+      ) fail("Persisted proposal evidence is invalid.");
+      await ledger.record({
+        kind: "proposal_authorship",
+        toolName: name,
+        argumentsDigest: objectDigest,
+        persistedObjectDigest: persistedMessage.metadata.clockchainTrust.objectDigest,
+        messageDigest: canonicalDigest(persistedMessage),
+        predecessorMessageDigest: null,
+        authoredAt: strictIso(message.metadata.clockchainTrust.sentAt),
+        persistedAt: strictIso(task.status?.timestamp),
+      });
+      return task;
     }
     if (name === "agent_contract_acknowledge_proposal") {
       if (config.role !== "buyer") fail("Only the buyer role may acknowledge a proposal.");
@@ -343,11 +416,30 @@ export async function createAgentContractA2AAdapter(input = {}) {
         predecessorMessageDigest: canonicalDigest(proposalMessage),
         authorityDecisionDigest: null,
       });
-      return publicJson(await requestJson(config, path("/agents/provider/message:send"), {
+      const persistedTask = publicJson(await requestJson(config, path("/agents/provider/message:send"), {
         method: "POST",
         body: { message },
         a2a: true,
       }), canaries);
+      const persistedMessage = taskMessage(persistedTask);
+      const objectDigest = canonicalDigest(data);
+      if (
+        persistedMessage.metadata?.clockchainTrust?.objectDigest !== objectDigest ||
+        persistedMessage.metadata.clockchainTrust.predecessorMessageDigest !==
+          canonicalDigest(proposalMessage)
+      ) fail("Persisted acknowledgment evidence is invalid.");
+      await ledger.record({
+        kind: "acknowledgment_authorship",
+        toolName: name,
+        argumentsDigest: objectDigest,
+        persistedObjectDigest: persistedMessage.metadata.clockchainTrust.objectDigest,
+        messageDigest: canonicalDigest(persistedMessage),
+        predecessorMessageDigest:
+          persistedMessage.metadata.clockchainTrust.predecessorMessageDigest,
+        authoredAt: strictIso(message.metadata.clockchainTrust.sentAt),
+        persistedAt: strictIso(persistedTask.status?.timestamp),
+      });
+      return persistedTask;
     }
     fail("Unknown Agent Contract A2A tool.");
   }
@@ -403,6 +495,13 @@ export function agentContractA2AConfigFromEnvironment(env = process.env) {
     if (typeof value !== "string" || value.length === 0) fail(`Missing ${name}.`);
     return value;
   };
+  const witnessValues = [
+    env.AGENT_CONTRACT_A2A_RUNTIME_ID,
+    env.AGENT_CONTRACT_A2A_WITNESS_LEDGER_PATH,
+  ];
+  if (witnessValues.some((entry) => entry !== undefined) && witnessValues.some((entry) => entry === undefined)) {
+    fail("Agent Contract witness ledger environment is incomplete.");
+  }
   return Object.freeze({
     role: required("AGENT_CONTRACT_A2A_ROLE"),
     baseUrl: required("AGENT_CONTRACT_A2A_BASE_URL"),
@@ -415,6 +514,12 @@ export function agentContractA2AConfigFromEnvironment(env = process.env) {
     opportunityId: required("AGENT_CONTRACT_A2A_OPPORTUNITY_ID"),
     roleCapability: required("AGENT_CONTRACT_A2A_ROLE_TOKEN"),
     walletPath: required("AGENT_CONTRACT_A2A_WALLET_PATH"),
+    ...(witnessValues[0] === undefined
+      ? {}
+      : {
+          runtimeId: required("AGENT_CONTRACT_A2A_RUNTIME_ID"),
+          witnessLedgerPath: required("AGENT_CONTRACT_A2A_WITNESS_LEDGER_PATH"),
+        }),
     fetchImpl: globalThis.fetch,
     now: () => new Date().toISOString(),
   });
