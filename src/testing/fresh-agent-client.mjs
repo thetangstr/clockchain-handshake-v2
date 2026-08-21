@@ -3068,7 +3068,7 @@ export async function runFreshAgentHandshake({
       const runtimeDescriptor = POST_HANDSHAKE_RUNTIME[current.client];
       if (runtimeDescriptor === undefined) fail();
       const wallet = await findSingleAgentWallet(room.workspace);
-      const witnessLedgerPath = join(room.workspace, ".agent-contract-a2a-witness.json");
+      const witnessLedgerPath = join(dirname(wallet.path), ".agent-contract-a2a-witness.json");
       const adapterEnvironment = Object.freeze({
         ...request.environment,
         AGENT_CONTRACT_A2A_WALLET_PATH: wallet.path,
