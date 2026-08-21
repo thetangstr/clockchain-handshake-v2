@@ -251,7 +251,8 @@ function containsSecret(value, canaries, seen) {
       }
 
       return (
-        (SENSITIVE_KEY.test(key) && entry !== REDACTED) ||
+        (SENSITIVE_KEY.test(key) && entry !== REDACTED && entry !== false &&
+          !(key === "secretScan" && entry === "PASS")) ||
         containsSecret(entry, canaries, seen)
       );
     });
@@ -264,7 +265,8 @@ function containsSecret(value, canaries, seen) {
   if (isPlainObject(value)) {
     return Object.entries(value).some(
       ([key, entry]) =>
-        (SENSITIVE_KEY.test(key) && entry !== REDACTED) ||
+        (SENSITIVE_KEY.test(key) && entry !== REDACTED && entry !== false &&
+          !(key === "secretScan" && entry === "PASS")) ||
         containsSecret(entry, canaries, seen),
     );
   }

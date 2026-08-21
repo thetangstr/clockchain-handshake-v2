@@ -4,6 +4,7 @@ import { getAddress } from "viem";
 
 import { runAgentContractA2AFlow } from "../src/testing/agent-contract-a2a-flow.mjs";
 import { FACILITATED_A2A_AUTHORIZATION_STATEMENT } from "../src/testing/agent-contract-a2a-flow.mjs";
+import { canonicalDigest } from "../src/testing/agent-contract-a2a-adapter.mjs";
 
 const SESSION_ID = "11111111-2222-4333-8444-555555555555";
 const PROPOSAL_TASK_ID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
@@ -83,7 +84,7 @@ function publicHandshakeEvidence() {
   });
 }
 
-function exchangeFixture() {
+function exchangeFixture({ mutateContinuation = (_role, value) => value } = {}) {
   const calls = [];
   const continuations = [];
   let proposalTask = null;
@@ -133,11 +134,111 @@ function exchangeFixture() {
   const continueRole = async (role, request) => {
     continuations.push({ role, request, proposalWasStored: proposalTask !== null });
     if (role === "responder") {
-      proposalTask = { id: PROPOSAL_TASK_ID, contextId: SESSION_ID, history: [{ parts: [{ data: { kind: "firm_proposal" } }] }] };
+      const data = { kind: "firm_proposal", proposal: { proposalId: "proposal:live-witness" } };
+      const message = {
+        messageId: "cccccccc-dddd-4eee-8fff-000000000001",
+        contextId: SESSION_ID,
+        parts: [{ data }],
+        metadata: { clockchainTrust: {
+          objectDigest: canonicalDigest(data),
+          predecessorMessageDigest: null,
+          sentAt: "2026-08-15T20:00:04.000Z",
+        } },
+      };
+      proposalTask = {
+        id: PROPOSAL_TASK_ID,
+        contextId: SESSION_ID,
+        status: { timestamp: "2026-08-15T20:00:05.000Z" },
+        history: [message],
+      };
+      return mutateContinuation(role, {
+        completed: true,
+        activity: { tools: ["agent_contract_discover_counterparty", "agent_contract_send_proposal"] },
+        runtime: {
+          client: "claude-code",
+          modelId: "sonnet",
+          runtimeId: "22222222-3333-4444-8555-666666666666",
+          processDigest: `0x${"2".repeat(64)}`,
+        },
+        ledger: {
+          schema: "agent-contract.a2a-authorship-ledger/v1",
+          runtimeId: "22222222-3333-4444-8555-666666666666",
+          entries: [
+            {
+              kind: "agent_card_discovered",
+              toolName: "agent_contract_discover_counterparty",
+              argumentsDigest: canonicalDigest({}),
+              occurredAt: "2026-08-15T20:00:03.500Z",
+              runtimeId: "22222222-3333-4444-8555-666666666666",
+            },
+            {
+              kind: "proposal_authorship",
+              toolName: "agent_contract_send_proposal",
+              argumentsDigest: message.metadata.clockchainTrust.objectDigest,
+              persistedObjectDigest: message.metadata.clockchainTrust.objectDigest,
+              messageDigest: canonicalDigest(message),
+              predecessorMessageDigest: null,
+              authoredAt: "2026-08-15T20:00:04.000Z",
+              persistedAt: "2026-08-15T20:00:05.000Z",
+              runtimeId: "22222222-3333-4444-8555-666666666666",
+            },
+          ],
+        },
+      });
     } else {
-      acknowledgmentTask = { id: ACK_TASK_ID, contextId: SESSION_ID, history: [{ parts: [{ data: { kind: "proposal_acknowledgment", binding: false } }] }] };
+      const predecessorMessageDigest = canonicalDigest(proposalTask.history[0]);
+      const data = { kind: "proposal_acknowledgment", binding: false };
+      const message = {
+        messageId: "dddddddd-eeee-4fff-8000-000000000002",
+        contextId: SESSION_ID,
+        parts: [{ data }],
+        metadata: { clockchainTrust: {
+          objectDigest: canonicalDigest(data),
+          predecessorMessageDigest,
+          sentAt: "2026-08-15T20:00:06.000Z",
+        } },
+      };
+      acknowledgmentTask = {
+        id: ACK_TASK_ID,
+        contextId: SESSION_ID,
+        status: { timestamp: "2026-08-15T20:00:07.000Z" },
+        history: [message],
+      };
+      return mutateContinuation(role, {
+        completed: true,
+        activity: { tools: ["agent_contract_read_inbox", "agent_contract_acknowledge_proposal"] },
+        runtime: {
+          client: "codex-cli",
+          modelId: "gpt-5.6-terra",
+          runtimeId: "33333333-4444-4555-8666-777777777777",
+          processDigest: `0x${"3".repeat(64)}`,
+        },
+        ledger: {
+          schema: "agent-contract.a2a-authorship-ledger/v1",
+          runtimeId: "33333333-4444-4555-8666-777777777777",
+          entries: [
+            {
+              kind: "inbox_read",
+              toolName: "agent_contract_read_inbox",
+              argumentsDigest: canonicalDigest({}),
+              occurredAt: "2026-08-15T20:00:05.500Z",
+              runtimeId: "33333333-4444-4555-8666-777777777777",
+            },
+            {
+              kind: "acknowledgment_authorship",
+              toolName: "agent_contract_acknowledge_proposal",
+              argumentsDigest: message.metadata.clockchainTrust.objectDigest,
+              persistedObjectDigest: message.metadata.clockchainTrust.objectDigest,
+              messageDigest: canonicalDigest(message),
+              predecessorMessageDigest,
+              authoredAt: "2026-08-15T20:00:06.000Z",
+              persistedAt: "2026-08-15T20:00:07.000Z",
+              runtimeId: "33333333-4444-4555-8666-777777777777",
+            },
+          ],
+        },
+      });
     }
-    return { completed: true };
   };
   return { calls, continuations, continueRole, fetchImpl };
 }
@@ -199,6 +300,117 @@ test("activates, resumes provider then buyer, and returns a live bound export", 
   assert.equal(JSON.stringify(result).includes("operator-secret"), false);
   assert.equal(JSON.stringify(result).includes("provider-secret"), false);
   assert.equal(JSON.stringify(result).includes("buyer-secret"), false);
+});
+
+test("assembles the exact privacy-safe live two-runtime witness", async () => {
+  const fixture = exchangeFixture();
+  const times = ["2026-08-15T20:00:03.000Z", "2026-08-15T20:00:08.000Z"];
+  const result = await runAgentContractA2AFlow({
+    evidence: publicHandshakeEvidence(),
+    continueRole: fixture.continueRole,
+    baseUrl: "http://127.0.0.1:3017",
+    operatorToken: "operator-secret",
+    fetchImpl: fixture.fetchImpl,
+    now: () => times.shift(),
+    witnessSource: {
+      agentContractCommit: "5058b4672ef974ea6f8138fdf6caa6a20d5f90f6",
+      continuumCommit: "8c25194000000000000000000000000000000000",
+    },
+  });
+
+  const witness = result.liveRuntimeWitness;
+  assert.equal(witness.schema, "agent-contract.live-runtime-a2a-witness/v1");
+  assert.equal(witness.mode, "fresh_live_two_runtime");
+  assert.equal(witness.runtimes.buyer.client, "codex-cli");
+  assert.equal(witness.runtimes.provider.client, "claude-code");
+  assert.notEqual(witness.runtimes.buyer.processDigest, witness.runtimes.provider.processDigest);
+  assert.deepEqual(witness.events.map((event) => event.kind), [
+    "certificate_verified",
+    "session_activated",
+    "agent_card_discovered",
+    "proposal_authored",
+    "proposal_persisted_verified",
+    "acknowledgment_authored",
+    "acknowledgment_persisted_verified",
+    "witness_completed",
+  ]);
+  assert.equal(
+    witness.authorship.acknowledgment.predecessorMessageDigest,
+    witness.authorship.proposal.messageDigest,
+  );
+  assert.deepEqual(new Set(Object.values(witness.acceptance)), new Set([true]));
+  assert.deepEqual(witness.privacy, {
+    rawTranscriptRetained: false,
+    chainOfThoughtRetained: false,
+    privateKeysRetained: false,
+    capabilitiesRetained: false,
+    bearerTokensRetained: false,
+    secretScan: "PASS",
+  });
+  assert.equal(JSON.stringify(witness).includes("operator-secret"), false);
+});
+
+test("rejects runtime and authorship substitutions before witness completion", async () => {
+  const mutations = [
+    (role, value) => {
+      if (role === "initiator") value.runtime.processDigest = `0x${"2".repeat(64)}`;
+      return value;
+    },
+    (role, value) => {
+      if (role === "responder") value.runtime.modelId = "unrecorded-model";
+      return value;
+    },
+    (role, value) => {
+      if (role === "responder") value.ledger.entries[1].persistedObjectDigest = `0x${"9".repeat(64)}`;
+      return value;
+    },
+    (role, value) => {
+      if (role === "initiator") value.ledger.entries[1].predecessorMessageDigest = `0x${"9".repeat(64)}`;
+      return value;
+    },
+    (role, value) => {
+      if (role === "responder") value.activity.tools = ["agent_contract_discover_counterparty"];
+      return value;
+    },
+    (role, value) => {
+      if (role === "responder") value.ledger.entries[1].authoredAt = "2026-08-15T20:00:03.000Z";
+      return value;
+    },
+  ];
+
+  for (const mutateContinuation of mutations) {
+    const fixture = exchangeFixture({ mutateContinuation });
+    const times = ["2026-08-15T20:00:03.000Z", "2026-08-15T20:00:08.000Z"];
+    await assert.rejects(runAgentContractA2AFlow({
+      evidence: publicHandshakeEvidence(),
+      continueRole: fixture.continueRole,
+      baseUrl: "http://127.0.0.1:3017",
+      operatorToken: "operator-secret",
+      fetchImpl: fixture.fetchImpl,
+      now: () => times.shift(),
+      witnessSource: {
+        agentContractCommit: "5058b4672ef974ea6f8138fdf6caa6a20d5f90f6",
+        continuumCommit: "8c25194000000000000000000000000000000000",
+      },
+    }), /live runtime/i);
+  }
+});
+
+test("rejects unpinned witness source revisions", async () => {
+  const fixture = exchangeFixture();
+  const times = ["2026-08-15T20:00:03.000Z", "2026-08-15T20:00:08.000Z"];
+  await assert.rejects(runAgentContractA2AFlow({
+    evidence: publicHandshakeEvidence(),
+    continueRole: fixture.continueRole,
+    baseUrl: "http://127.0.0.1:3017",
+    operatorToken: "operator-secret",
+    fetchImpl: fixture.fetchImpl,
+    now: () => times.shift(),
+    witnessSource: {
+      agentContractCommit: "dirty",
+      continuumCommit: "8c25194000000000000000000000000000000000",
+    },
+  }), /source/i);
 });
 
 test("canonicalizes lowercase Continuum identities before validating the platform export", async () => {

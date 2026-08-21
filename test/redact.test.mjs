@@ -191,6 +191,18 @@ test("throws a typed error consumers can match without parsing the message", () 
   assert.equal(error.message.includes("wallet-material"), false);
 });
 
+test("accepts explicit false retention flags but rejects affirmative sensitive flags", () => {
+  assert.doesNotThrow(() => assertSecretFree({
+    privateKeysRetained: false,
+    bearerTokensRetained: false,
+    secretScan: "PASS",
+  }));
+  assert.throws(() => assertSecretFree({ privateKeysRetained: true }),
+    SecretMaterialDetectedError);
+  assert.throws(() => assertSecretFree({ secretScan: "FAIL" }),
+    SecretMaterialDetectedError);
+});
+
 test("owns the shared high-entropy secret-assignment pattern", () => {
   for (const prose of [
     "Minted a Clockchain token: mcp.clockchain.network",

@@ -1,5 +1,6 @@
 import { assertSecretFree } from "../core/redact.mjs";
 import { getAddress } from "viem";
+import { canonicalDigest } from "./agent-contract-a2a-adapter.mjs";
 
 const RESULT_SCHEMA = "agent-contract.facilitated-a2a-result/v1";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -228,7 +229,200 @@ function validateExport(value, validated, proposalTaskId, continuationDigest) {
   if (proposal === undefined || acknowledgments.length !== 1 || !UUID.test(acknowledgments[0]?.id ?? "") || acknowledgments[0]?.history?.[0]?.parts?.[0]?.data?.binding !== false) {
     fail("Agent Contract final export is missing the exact proposal and nonbinding acknowledgment.");
   }
-  return Object.freeze({ verification: Object.freeze(Object.fromEntries(VERIFICATION_KEYS.map((key) => [key, true]))), acknowledgmentTaskId: acknowledgments[0].id });
+  return Object.freeze({
+    verification: Object.freeze(Object.fromEntries(VERIFICATION_KEYS.map((key) => [key, true]))),
+    acknowledgmentTaskId: acknowledgments[0].id,
+    proposal,
+    acknowledgment: acknowledgments[0],
+  });
+}
+
+function witnessSource(value) {
+  if (
+    !isPlainObject(value) ||
+    !/^[0-9a-f]{40}$/.test(value.agentContractCommit ?? "") ||
+    !/^[0-9a-f]{40}$/.test(value.continuumCommit ?? "")
+  ) fail("Live runtime witness source invalid.");
+  return Object.freeze({
+    agentContractCommit: value.agentContractCommit,
+    continuumCommit: value.continuumCommit,
+  });
+}
+
+function exactRuntimeContinuation(value, {
+  client,
+  modelId,
+  requiredTools,
+  ledgerKinds,
+}) {
+  if (
+    value?.completed !== true || !isPlainObject(value.runtime) ||
+    value.runtime.client !== client || value.runtime.modelId !== modelId ||
+    !UUID.test(value.runtime.runtimeId ?? "") ||
+    !/^0x[0-9a-f]{64}$/.test(value.runtime.processDigest ?? "") ||
+    !isPlainObject(value.activity) || !Array.isArray(value.activity.tools) ||
+    requiredTools.some((tool) => !value.activity.tools.includes(tool)) ||
+    !isPlainObject(value.ledger) ||
+    value.ledger.schema !== "agent-contract.a2a-authorship-ledger/v1" ||
+    value.ledger.runtimeId !== value.runtime.runtimeId ||
+    !Array.isArray(value.ledger.entries) ||
+    JSON.stringify(value.ledger.entries.map((entry) => entry?.kind)) !==
+      JSON.stringify(ledgerKinds) ||
+    value.ledger.entries.some((entry) => entry?.runtimeId !== value.runtime.runtimeId)
+  ) fail("Live runtime continuation evidence invalid.");
+  return value;
+}
+
+function taskMessageForWitness(task) {
+  if (!isPlainObject(task) || !Array.isArray(task.history) || task.history.length !== 1) {
+    fail("Live runtime persisted task invalid.");
+  }
+  return task.history[0];
+}
+
+function buildLiveRuntimeWitness({
+  completedAt,
+  evidence,
+  source,
+  activationAt,
+  providerContinuation,
+  buyerContinuation,
+  verified,
+}) {
+  const provider = exactRuntimeContinuation(providerContinuation, {
+    client: "claude-code",
+    modelId: "sonnet",
+    requiredTools: ["agent_contract_discover_counterparty", "agent_contract_send_proposal"],
+    ledgerKinds: ["agent_card_discovered", "proposal_authorship"],
+  });
+  const buyer = exactRuntimeContinuation(buyerContinuation, {
+    client: "codex-cli",
+    modelId: "gpt-5.6-terra",
+    requiredTools: ["agent_contract_read_inbox", "agent_contract_acknowledge_proposal"],
+    ledgerKinds: ["inbox_read", "acknowledgment_authorship"],
+  });
+  if (
+    provider.runtime.runtimeId === buyer.runtime.runtimeId ||
+    provider.runtime.processDigest === buyer.runtime.processDigest
+  ) fail("Live runtime processes must be distinct.");
+
+  const discovery = provider.ledger.entries[0];
+  const proposalRecord = provider.ledger.entries[1];
+  const acknowledgmentRecord = buyer.ledger.entries[1];
+  const proposalMessage = taskMessageForWitness(verified.proposal);
+  const acknowledgmentMessage = taskMessageForWitness(verified.acknowledgment);
+  const proposalObjectDigest = proposalMessage?.metadata?.clockchainTrust?.objectDigest;
+  const acknowledgmentObjectDigest = acknowledgmentMessage?.metadata?.clockchainTrust?.objectDigest;
+  const proposalMessageDigest = canonicalDigest(proposalMessage);
+  const acknowledgmentMessageDigest = canonicalDigest(acknowledgmentMessage);
+  if (
+    proposalRecord.toolName !== "agent_contract_send_proposal" ||
+    proposalRecord.argumentsDigest !== proposalObjectDigest ||
+    proposalRecord.persistedObjectDigest !== proposalObjectDigest ||
+    proposalRecord.messageDigest !== proposalMessageDigest ||
+    proposalRecord.predecessorMessageDigest !== null ||
+    acknowledgmentRecord.toolName !== "agent_contract_acknowledge_proposal" ||
+    acknowledgmentRecord.argumentsDigest !== acknowledgmentObjectDigest ||
+    acknowledgmentRecord.persistedObjectDigest !== acknowledgmentObjectDigest ||
+    acknowledgmentRecord.messageDigest !== acknowledgmentMessageDigest ||
+    acknowledgmentRecord.predecessorMessageDigest !== proposalMessageDigest ||
+    acknowledgmentMessage?.metadata?.clockchainTrust?.predecessorMessageDigest !==
+      proposalMessageDigest
+  ) fail("Live runtime authorship binding invalid.");
+
+  const eventInputs = [
+    ["certificate_verified", new Date(evidence.monitor.checker.lastSeenMs).toISOString()],
+    ["session_activated", strictIso(activationAt)],
+    ["agent_card_discovered", strictIso(discovery.occurredAt)],
+    ["proposal_authored", strictIso(proposalRecord.authoredAt)],
+    ["proposal_persisted_verified", strictIso(proposalRecord.persistedAt)],
+    ["acknowledgment_authored", strictIso(acknowledgmentRecord.authoredAt)],
+    ["acknowledgment_persisted_verified", strictIso(acknowledgmentRecord.persistedAt)],
+    ["witness_completed", strictIso(completedAt)],
+  ];
+  const startedAt = new Date(evidence.monitor.certificate.issuedAtMs).toISOString();
+  let previous = Date.parse(startedAt);
+  const events = eventInputs.map(([kind, occurredAt], index) => {
+    const current = Date.parse(occurredAt);
+    if (!Number.isFinite(current) || current <= previous) {
+      fail("Live runtime witness event order invalid.");
+    }
+    previous = current;
+    const event = Object.freeze({ sequence: index + 1, kind, occurredAt });
+    return Object.freeze({ ...event, eventDigest: canonicalDigest(event) });
+  });
+
+  const result = Object.freeze({
+    schema: "agent-contract.live-runtime-a2a-witness/v1",
+    status: "completed",
+    mode: "fresh_live_two_runtime",
+    facilitator: "agent_contract_a2a",
+    runId: evidence.runId,
+    startedAt,
+    completedAt: strictIso(completedAt),
+    source,
+    scenario: Object.freeze({
+      source: "deterministic_input",
+      digest: canonicalDigest(Object.freeze({
+        opportunityId: "opportunity:1",
+        reference: "NS-1847",
+        scope: FACILITATED_A2A_SCOPE,
+      })),
+    }),
+    runtimes: Object.freeze({
+      buyer: Object.freeze({ role: "buyer", ...buyer.runtime }),
+      provider: Object.freeze({ role: "provider", ...provider.runtime }),
+    }),
+    certificate: Object.freeze({
+      provenance: "live_mcp",
+      certificateDigest: `0x${evidence.binding.certificateDigest}`,
+      continuationDigest: evidence.facilitatedA2AContinuationDigest,
+      sessionId: evidence.monitor.sessionId,
+    }),
+    authorship: Object.freeze({
+      proposal: Object.freeze({
+        role: "provider",
+        runtimeId: provider.runtime.runtimeId,
+        toolName: proposalRecord.toolName,
+        argumentsDigest: proposalRecord.argumentsDigest,
+        persistedObjectDigest: proposalRecord.persistedObjectDigest,
+        messageDigest: proposalRecord.messageDigest,
+        predecessorMessageDigest: null,
+        occurredAt: strictIso(proposalRecord.authoredAt),
+      }),
+      acknowledgment: Object.freeze({
+        role: "buyer",
+        runtimeId: buyer.runtime.runtimeId,
+        toolName: acknowledgmentRecord.toolName,
+        argumentsDigest: acknowledgmentRecord.argumentsDigest,
+        persistedObjectDigest: acknowledgmentRecord.persistedObjectDigest,
+        messageDigest: acknowledgmentRecord.messageDigest,
+        predecessorMessageDigest: acknowledgmentRecord.predecessorMessageDigest,
+        occurredAt: strictIso(acknowledgmentRecord.authoredAt),
+      }),
+    }),
+    events: Object.freeze(events),
+    acceptance: Object.freeze({
+      distinctRuntimeProcessesVerified: true,
+      certificateVerified: true,
+      identityContinuityVerified: true,
+      authorityVerified: true,
+      proposalSignatureVerified: true,
+      acknowledgmentSignatureVerified: true,
+      authorshipBindingVerified: true,
+      predecessorBindingVerified: true,
+      eventOrderVerified: true,
+    }),
+    privacy: Object.freeze({
+      rawTranscriptRetained: false,
+      chainOfThoughtRetained: false,
+      privateKeysRetained: false,
+      capabilitiesRetained: false,
+      bearerTokensRetained: false,
+      secretScan: "PASS",
+    }),
+  });
+  return result;
 }
 
 export async function runAgentContractA2AFlow({
@@ -238,6 +432,7 @@ export async function runAgentContractA2AFlow({
   operatorToken,
   fetchImpl = globalThis.fetch,
   now = () => new Date().toISOString(),
+  witnessSource: rawWitnessSource,
 } = {}) {
   if (typeof continueRole !== "function" || typeof fetchImpl !== "function" || typeof now !== "function" || typeof operatorToken !== "string" || operatorToken.length === 0) {
     fail("Agent Contract A2A flow dependencies invalid.");
@@ -265,7 +460,7 @@ export async function runAgentContractA2AFlow({
     partyId: "provider:proofworks",
     token: activated.capabilities.provider,
   });
-  await continueRole("responder", { prompt: PROVIDER_PROMPT, environment: providerEnvironment });
+  const providerContinuation = await continueRole("responder", { prompt: PROVIDER_PROMPT, environment: providerEnvironment });
 
   const buyerInbox = await requestJson(fetchImpl, `${origin}/api/a2a/sessions/${activated.sessionId}/agents/buyer/inbox`, {
     token: activated.capabilities.buyer,
@@ -282,7 +477,7 @@ export async function runAgentContractA2AFlow({
     partyId: "buyer:co",
     token: activated.capabilities.buyer,
   });
-  await continueRole("initiator", { prompt: BUYER_PROMPT, environment: buyerEnvironment });
+  const buyerContinuation = await continueRole("initiator", { prompt: BUYER_PROMPT, environment: buyerEnvironment });
 
   const exported = await requestJson(fetchImpl, `${origin}/api/agent-contract/harness/a2a/export`, {
     method: "POST",
@@ -290,6 +485,20 @@ export async function runAgentContractA2AFlow({
     body: { sessionId: activated.sessionId },
   });
   const verified = validateExport(exported, validated, proposalTask.id, activated.authorization.digest);
+  const liveRuntimeWitness = rawWitnessSource === undefined
+    ? undefined
+    : buildLiveRuntimeWitness({
+        completedAt: strictIso(now()),
+        evidence: Object.freeze({
+          ...evidence,
+          facilitatedA2AContinuationDigest: activated.authorization.digest,
+        }),
+        source: witnessSource(rawWitnessSource),
+        activationAt: timestamp,
+        providerContinuation,
+        buyerContinuation,
+        verified,
+      });
   const result = Object.freeze({
     schema: RESULT_SCHEMA,
     provenance: "live_a2a_facilitator",
@@ -304,6 +513,7 @@ export async function runAgentContractA2AFlow({
     proposalTaskId: proposalTask.id,
     acknowledgmentTaskId: verified.acknowledgmentTaskId,
     verification: verified.verification,
+    ...(liveRuntimeWitness === undefined ? {} : { liveRuntimeWitness }),
   });
   assertSecretFree(result, [operatorToken, activated.capabilities.buyer, activated.capabilities.provider]);
   return result;
