@@ -21,6 +21,7 @@ import {
   loadAppleClientAuthentication,
 } from "../src/testing/apple-client-auth.mjs";
 import {
+  AgentContractA2AFlowError,
   FACILITATED_A2A_AUTHORIZATION_STATEMENT,
   runAgentContractA2AFlow,
 } from "../src/testing/agent-contract-a2a-flow.mjs";
@@ -111,18 +112,35 @@ export function agentContractA2AExtensionFromEnvironment(env = process.env) {
     : undefined;
   return Object.freeze({
     secretCanaries: Object.freeze([operatorToken]),
-    postHandshakeFlow: ({ evidence, continueRole }) => runAgentContractA2AFlow({
-      evidence,
-      continueRole,
-      baseUrl,
-      operatorToken,
-      ...(source === undefined ? {} : { witnessSource: source }),
-    }),
+    postHandshakeFlow: async ({ evidence, continueRole }) => {
+      try {
+        return await runAgentContractA2AFlow({
+          evidence,
+          continueRole,
+          baseUrl,
+          operatorToken,
+          ...(source === undefined ? {} : { witnessSource: source }),
+        });
+      } catch (error) {
+        throw agentContractA2ADiagnostic(error);
+      }
+    },
     liveRuntimeWitnessCapture: witnessConfigured,
     ...(witnessConfigured
       ? { liveRuntimeWitnessRoot: witnessValues.root, witnessSource: source }
       : {}),
   });
+}
+
+export function agentContractA2ADiagnostic(error) {
+  if (error instanceof AgentContractA2AFlowError) {
+    return new FreshAgentDiagnosticError({
+      phase: "post-handshake",
+      category: "validation",
+      code: error.code,
+    });
+  }
+  return error;
 }
 
 export async function writeLiveRuntimeWitnessArtifact({ root, witness } = {}) {

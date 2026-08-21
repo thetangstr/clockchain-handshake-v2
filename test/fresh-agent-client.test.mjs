@@ -36,11 +36,13 @@ import { commitmentCheckpointDigest } from "../src/testing/hermes-v2-live.mjs";
 import { buildAgentCliFixture } from "./support/agent-cli-fixture.mjs";
 import {
   agentContractA2AExtensionFromEnvironment,
+  agentContractA2ADiagnostic,
   applyFacilitatedA2APromptAuthorization,
   monitor as runFreshAgentMonitor,
   runFreshAgentCliAttempt,
   writeLiveRuntimeWitnessArtifact,
 } from "../scripts/run-fresh-agent-handshake.mjs";
+import { AgentContractA2AFlowError } from "../src/testing/agent-contract-a2a-flow.mjs";
 import { agentHandshakeV2ResultDigest } from "../src/agent-handshake/v2/result.mjs";
 import { ed25519PublicKeyFingerprint, hostSessionKeyCertificateDigest } from "../src/agent-handshake/v2/host-key-certificate.mjs";
 import {
@@ -62,6 +64,35 @@ test("fresh live canary pins the deployed isolated handshake transport", () => {
     CLOCKCHAIN_HANDSHAKE_MCP_URL,
     "https://mcp-aws.clockchain.network/handshake/mcp",
   );
+});
+
+test("retains an allowlisted post-handshake diagnostic without private details", () => {
+  const source = new AgentContractA2AFlowError(
+    "Live runtime authorship binding invalid.",
+  );
+  const diagnostic = agentContractA2ADiagnostic(source);
+
+  assert.ok(diagnostic instanceof FreshAgentDiagnosticError);
+  assert.deepEqual(diagnostic.diagnostic, {
+    phase: "post-handshake",
+    category: "validation",
+    code: "A2A_AUTHORSHIP_BINDING_INVALID",
+  });
+  assert.equal(JSON.stringify(diagnostic).includes("authorship binding"), false);
+});
+
+test("retains the safe live-runtime witness-ledger diagnostic", () => {
+  const diagnostic = new FreshAgentDiagnosticError({
+    phase: "agent-exit",
+    category: "validation",
+    code: "A2A_WITNESS_LEDGER_INVALID",
+  });
+
+  assert.deepEqual(diagnostic.diagnostic, {
+    phase: "agent-exit",
+    category: "validation",
+    code: "A2A_WITNESS_LEDGER_INVALID",
+  });
 });
 
 function streamEvent(value) {

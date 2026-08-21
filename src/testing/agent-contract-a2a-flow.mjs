@@ -19,13 +19,30 @@ const VERIFICATION_KEYS = Object.freeze([
   "buyerAcknowledgmentVerified",
   "predecessorBindingVerified",
 ]);
+const FAILURE_CODE_BY_MESSAGE = new Map([
+  ["Agent Contract A2A activation invalid.", "A2A_ACTIVATION_INVALID"],
+  ["Agent Contract final export does not preserve verified identity and provenance.", "A2A_EXPORT_INVALID"],
+  ["Agent Contract final export is missing the exact proposal and nonbinding acknowledgment.", "A2A_EXPORT_INVALID"],
+  ["Live runtime continuation evidence invalid.", "A2A_RUNTIME_PROOF_INVALID"],
+  ["Live runtime processes must be distinct.", "A2A_RUNTIME_PROOF_INVALID"],
+  ["Live runtime authorship binding invalid.", "A2A_AUTHORSHIP_BINDING_INVALID"],
+  ["Live runtime witness event order invalid.", "A2A_WITNESS_EVENT_ORDER_INVALID"],
+]);
 
 const PROVIDER_PROMPT = `The Clockchain handshake is already verified. Continue as the provider through the configured Agent Contract A2A tools. First discover the buyer Agent Card. The buyer opportunity requests one signed evidence pack in both lowercase platform formats, json and markdown, delivered within 24 hours, at a price no greater than 20, using checksum-and-required-sections/v1 verification. Independently choose the deliverable summary, delivery time, and price within that opportunity and your mandate, then call the proposal tool yourself. Do not claim negotiation, agreement, payment, escrow, or external execution.`;
 
 const BUYER_PROMPT = `The Clockchain handshake is already verified. Continue as the buyer through the configured Agent Contract A2A tools. Call agent_contract_read_inbox to read your authenticated inbox, then evaluate the exact stored proposal against your opportunity: one signed evidence pack in both lowercase platform formats, json and markdown, delivered within 24 hours, at a price no greater than 20, using checksum-and-required-sections/v1 verification. Independently compare the stored proposal with those requirements. If it matches, call agent_contract_acknowledge_proposal yourself with the exact stored taskId and decision received_for_review to record only that it was received for review. The acknowledgment must remain nonbinding. Do not finish until you have either issued that signed nonbinding acknowledgment or stated the concrete requirement mismatch. Do not accept terms, create an agreement, authorize payment, or claim escrow or execution.`;
 
+export class AgentContractA2AFlowError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "AgentContractA2AFlowError";
+    this.code = FAILURE_CODE_BY_MESSAGE.get(message) ?? "A2A_FLOW_INVALID";
+  }
+}
+
 function fail(message) {
-  throw new Error(message);
+  throw new AgentContractA2AFlowError(message);
 }
 
 function isPlainObject(value) {

@@ -97,7 +97,7 @@ export const CLAUDE_CONTEXT_MARKER = "CLOCKCHAIN_CONTEXT_RECEIVED";
 export const CLAUDE_CONTEXT_PROMPT = `I am using this fresh disposable workspace for an expected Clockchain test. In my next message I will provide a concrete role-specific request. Do not perform any action now; evaluate that later request on its own exact scope and safety boundaries. Reply exactly ${CLAUDE_CONTEXT_MARKER}.`;
 const TRACE_LIFECYCLE = process.env.CLOCKCHAIN_FRESH_AGENT_TRACE === "1";
 const DIAGNOSTIC_PHASES = Object.freeze(new Set([
-  "agent-exit", "configure", "invitation", "monitor", "preflight", "prepare", "timeout", "unknown",
+  "agent-exit", "configure", "invitation", "monitor", "post-handshake", "preflight", "prepare", "timeout", "unknown",
 ]));
 const DIAGNOSTIC_CATEGORIES = Object.freeze(new Set([
   "agent", "authentication", "client", "deadline", "http", "monitor", "process", "runtime", "service", "unknown", "validation",
@@ -105,6 +105,8 @@ const DIAGNOSTIC_CATEGORIES = Object.freeze(new Set([
 const DIAGNOSTIC_CODES = Object.freeze(new Set([
   "AGENT_EXIT", "AGENT_FAILED", "AGENT_OUTPUT_INVALID", "CONFIGURE_FAILED", "HELPER_PROOF_MISSING",
   "HELPER_COMMAND_MISMATCH", "HELPER_EXECUTION_FAILED",
+  "A2A_ACTIVATION_INVALID", "A2A_AUTHORSHIP_BINDING_INVALID", "A2A_EXPORT_INVALID", "A2A_FLOW_INVALID",
+  "A2A_RUNTIME_PROOF_INVALID", "A2A_WITNESS_EVENT_ORDER_INVALID", "A2A_WITNESS_LEDGER_INVALID",
   "INVALID_RETRY_DELAY", "INVALID_TIMEOUT", "INVITATION_MISSING", "INVITATION_UNAVAILABLE", "MONITOR_FAILED", "MONITOR_RESULT_INVALID",
   "MCP_CONTRACT_MISMATCH", "NODE24_REQUIRED", "PREPARE_FAILED", "AUTHENTICATION_FAILED", "TIMEOUT", "UNKNOWN",
 ]));

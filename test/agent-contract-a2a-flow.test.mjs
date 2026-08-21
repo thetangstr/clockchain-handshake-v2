@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { getAddress } from "viem";
 
-import { runAgentContractA2AFlow } from "../src/testing/agent-contract-a2a-flow.mjs";
+import {
+  AgentContractA2AFlowError,
+  runAgentContractA2AFlow,
+} from "../src/testing/agent-contract-a2a-flow.mjs";
 import { FACILITATED_A2A_AUTHORIZATION_STATEMENT } from "../src/testing/agent-contract-a2a-flow.mjs";
 import { canonicalDigest } from "../src/testing/agent-contract-a2a-adapter.mjs";
 
@@ -395,7 +398,9 @@ test("rejects certificate verification before the run boundary", async () => {
         continuumCommit: "8c25194000000000000000000000000000000000",
       },
     }),
-    /Live runtime witness event order invalid/,
+    (error) =>
+      error instanceof AgentContractA2AFlowError &&
+      error.code === "A2A_WITNESS_EVENT_ORDER_INVALID",
   );
 });
 
