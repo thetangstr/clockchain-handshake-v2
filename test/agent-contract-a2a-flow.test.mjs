@@ -87,7 +87,11 @@ function publicHandshakeEvidence() {
   });
 }
 
-function exchangeFixture({ mutateContinuation = (_role, value) => value, binding = false } = {}) {
+function exchangeFixture({
+  mutateContinuation = (_role, value) => value,
+  mutateAgreement = (value) => value,
+  binding = false,
+} = {}) {
   const calls = [];
   const continuations = [];
   let proposalTask = null;
@@ -156,7 +160,18 @@ function exchangeFixture({ mutateContinuation = (_role, value) => value, binding
   const continueRole = async (role, request) => {
     continuations.push({ role, request, proposalWasStored: proposalTask !== null });
     if (role === "responder") {
-      const data = { kind: "firm_proposal", proposal: { proposalId: "proposal:live-witness" } };
+      const data = { kind: "firm_proposal", proposal: {
+        schema: "agent-contract/v1",
+        proposalId: "proposal:live-witness",
+        opportunityId: "opportunity:1",
+        providerPartyId: "provider:proofworks",
+        deliverableSummary: "Execute one sandbox cross-border transfer and produce a redacted receipt pack",
+        formats: ["json", "markdown"],
+        deliveryHours: 12,
+        price: "20",
+        verificationMethod: "sandbox-receipt-and-checksum/v1",
+        predecessorDigest: null,
+      } };
       const message = {
         messageId: "cccccccc-dddd-4eee-8fff-000000000001",
         contextId: SESSION_ID,
@@ -210,10 +225,39 @@ function exchangeFixture({ mutateContinuation = (_role, value) => value, binding
       if (binding) {
         while (acknowledgmentTask === null) await new Promise((resolve) => setImmediate(resolve));
         const acknowledgmentMessage = acknowledgmentTask.history[0];
-        const agreement = {
+        const agreement = mutateAgreement({
+          schema: "agent-contract.gate-1-agreement/v1",
           agreementId: `agreement:gate-1:${SESSION_ID}`,
           proposalDigest: canonicalDigest(data.proposal),
-        };
+          buyerPartyId: "buyer:co",
+          buyerAddress: `0x${"4".repeat(40)}`,
+          providerPartyId: "provider:proofworks",
+          providerAddress: `0x${"5".repeat(40)}`,
+          work: {
+            service: "sandbox_cross_border_payment_execution",
+            deliverable: data.proposal.deliverableSummary,
+            executionDeadline: "2026-08-16T08:00:08.000Z",
+            principalIsSandboxOnly: true,
+          },
+          providerServiceFee: {
+            assetChainId: "84532",
+            assetAddress: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+            assetDecimals: 6,
+            amountAtomic: data.proposal.price,
+            separateFromCrossBorderPrincipal: true,
+          },
+          evidencePolicy: {
+            requiredEvidenceTypes: [
+              "sandbox_transfer_receipt_json",
+              "sandbox_transfer_receipt_markdown",
+              "receipt_checksum",
+            ],
+          },
+          verificationPolicy: { method: data.proposal.verificationMethod },
+          effectiveAt: "2026-08-15T20:00:08.000Z",
+          expiresAt: "2026-08-15T20:05:08.000Z",
+          predecessorDigest: canonicalDigest(data.proposal),
+        });
         const offerData = {
           kind: "agreement_offer",
           agreement,
@@ -503,6 +547,12 @@ test("keeps the same two live runtimes and exact G3 lineage through one binding 
   assert.equal(fixture.continuations.length, 2);
   assert.match(fixture.continuations[0].request.prompt, /one provider runtime/i);
   assert.match(fixture.continuations[1].request.prompt, /one buyer runtime/i);
+  assert.match(fixture.continuations[0].request.prompt, /sandbox cross-border transfer/i);
+  assert.match(fixture.continuations[0].request.prompt, /atomic test-USDC/i);
+  assert.match(fixture.continuations[0].request.prompt, /sandbox-receipt-and-checksum\/v1/);
+  assert.match(fixture.continuations[1].request.prompt, /sandbox cross-border transfer/i);
+  assert.match(fixture.continuations[1].request.prompt, /atomic test-USDC/i);
+  assert.match(fixture.continuations[1].request.prompt, /sandbox-receipt-and-checksum\/v1/);
   assert.match(
     fixture.continuations[1].request.prompt,
     /agent_contract_wait_for_gate_1_agreement/,
@@ -530,6 +580,34 @@ test("keeps the same two live runtimes and exact G3 lineage through one binding 
   assert.deepEqual(result.cleanup, { sessionDestroyed: true });
   assert.equal(JSON.stringify(result).includes("provider-secret"), false);
   assert.equal(JSON.stringify(result).includes("buyer-secret"), false);
+});
+
+test("rejects a binding offer that changes the exact accepted proposal terms", async () => {
+  const fixture = exchangeFixture({
+    binding: true,
+    mutateAgreement: (agreement) => ({
+      ...agreement,
+      work: { ...agreement.work, deliverable: "Perform different work" },
+    }),
+  });
+  const times = ["2026-08-15T20:00:03.000Z", "2026-08-15T20:00:12.000Z"];
+  await assert.rejects(
+    runAgentContractA2AFlow({
+      evidence: publicHandshakeEvidence(),
+      continueRole: fixture.continueRole,
+      baseUrl: "http://127.0.0.1:3017",
+      operatorToken: "operator-secret",
+      fetchImpl: fixture.fetchImpl,
+      now: () => times.shift(),
+      wait: async () => {},
+      bindingAgreement: true,
+      witnessSource: {
+        agentContractCommit: "5058b4672ef974ea6f8138fdf6caa6a20d5f90f6",
+        continuumCommit: "8c25194000000000000000000000000000000000",
+      },
+    }),
+    /binding agreement lineage/i,
+  );
 });
 
 test("accepts a provider's additional allowlisted read-only inbox observation", async () => {

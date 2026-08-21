@@ -87,20 +87,52 @@ test("advertises the role-local proposal and binding-agreement tools", () => {
     proposalTool.inputSchema.properties.formats.items.enum,
     ["json", "markdown"],
   );
-  assert.equal(
-    proposalTool.inputSchema.properties.verificationMethod.const,
-    "checksum-and-required-sections/v1",
+  assert.deepEqual(
+    proposalTool.inputSchema.properties.verificationMethod.enum,
+    ["checksum-and-required-sections/v1", "sandbox-receipt-and-checksum/v1"],
   );
   assert.equal(proposalTool.inputSchema.properties.deliveryHours.maximum, 24);
-  assert.equal(proposalTool.inputSchema.properties.price.pattern, "^(?:0|[1-9]|1[0-9]|20)$");
+  assert.equal(proposalTool.inputSchema.properties.price.pattern, "^(?:[1-9]|1[0-9]|20)$");
 });
 
 test("provider offers and buyer accepts one exact predecessor-bound Gate 1 agreement", async (t) => {
   const providerWallet = await walletFile(t, PROVIDER_KEY);
   const buyerWallet = await walletFile(t, BUYER_KEY);
-  const proposalDigest = `0x${"1".repeat(64)}`;
+  let proposalTask;
+  let acknowledgmentTask;
+  let offerTask;
+  const provider = await createAgentContractA2AAdapter(baseConfig(
+    "provider",
+    providerWallet,
+    async (url, init) => {
+      if (String(url).endsWith("/agents/provider/inbox")) return Response.json([acknowledgmentTask]);
+      const body = JSON.parse(init.body);
+      const kind = body.message.parts[0].data.kind;
+      const task = {
+        id: kind === "firm_proposal"
+          ? "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+          : "cccccccc-dddd-4eee-8fff-000000000000",
+        contextId: SESSION_ID,
+        status: { state: "TASK_STATE_SUBMITTED", timestamp: NOW },
+        history: [body.message],
+      };
+      if (kind === "firm_proposal") proposalTask = task;
+      if (kind === "agreement_offer") offerTask = task;
+      return Response.json(task, { status: 201 });
+    },
+  ));
+
+  proposalTask = await provider.callTool("agent_contract_send_proposal", {
+    deliverableSummary: "Execute one sandbox cross-border transfer and produce a redacted receipt pack",
+    formats: ["json", "markdown"],
+    deliveryHours: 12,
+    price: "20",
+    verificationMethod: "sandbox-receipt-and-checksum/v1",
+  });
+  const proposal = proposalTask.history[0].parts[0].data.proposal;
+  const proposalDigest = provider.canonicalDigest(proposal);
   const acknowledgmentMessage = {
-    messageId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    messageId: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
     contextId: SESSION_ID,
     role: "ROLE_USER",
     parts: [{ data: {
@@ -119,34 +151,18 @@ test("provider offers and buyer accepts one exact predecessor-bound Gate 1 agree
       senderErc8004AgentId: "9452",
       recipientRole: "provider",
       objectDigest: `0x${"2".repeat(64)}`,
-      predecessorMessageDigest: `0x${"3".repeat(64)}`,
+      predecessorMessageDigest: provider.canonicalDigest(proposalTask.history[0]),
       authorityDecisionDigest: null,
       sentAt: "2026-08-15T20:00:01.000Z",
       signature: `0x${"4".repeat(130)}`,
     } },
   };
-  const acknowledgmentTask = {
+  acknowledgmentTask = {
     id: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
     contextId: SESSION_ID,
     status: { state: "TASK_STATE_COMPLETED", timestamp: NOW },
     history: [acknowledgmentMessage],
   };
-  let offerTask;
-  const provider = await createAgentContractA2AAdapter(baseConfig(
-    "provider",
-    providerWallet,
-    async (url, init) => {
-      if (String(url).endsWith("/agents/provider/inbox")) return Response.json([acknowledgmentTask]);
-      const body = JSON.parse(init.body);
-      offerTask = {
-        id: "cccccccc-dddd-4eee-8fff-000000000000",
-        contextId: SESSION_ID,
-        status: { state: "TASK_STATE_SUBMITTED", timestamp: NOW },
-        history: [body.message],
-      };
-      return Response.json(offerTask, { status: 201 });
-    },
-  ));
 
   const offered = await provider.callTool("agent_contract_offer_gate_1_agreement", {
     acknowledgmentTaskId: acknowledgmentTask.id,
@@ -155,6 +171,19 @@ test("provider offers and buyer accepts one exact predecessor-bound Gate 1 agree
   assert.equal(offer.parts[0].data.kind, "agreement_offer");
   assert.equal(offer.parts[0].data.binding, true);
   assert.equal(offer.parts[0].data.agreement.proposalDigest, proposalDigest);
+  assert.equal(offer.parts[0].data.agreement.work.deliverable, proposal.deliverableSummary);
+  assert.equal(offer.parts[0].data.agreement.providerServiceFee.amountAtomic, proposal.price);
+  assert.equal(offer.parts[0].data.agreement.verificationPolicy.method, proposal.verificationMethod);
+  assert.deepEqual(offer.parts[0].data.agreement.evidencePolicy.requiredEvidenceTypes, [
+    "sandbox_transfer_receipt_json",
+    "sandbox_transfer_receipt_markdown",
+    "receipt_checksum",
+  ]);
+  assert.equal(
+    Date.parse(offer.parts[0].data.agreement.work.executionDeadline) -
+      Date.parse(offer.parts[0].data.agreement.effectiveAt),
+    proposal.deliveryHours * 60 * 60 * 1_000,
+  );
   assert.equal(
     offer.metadata.clockchainTrust.predecessorMessageDigest,
     provider.canonicalDigest(acknowledgmentMessage),
@@ -189,6 +218,22 @@ test("provider offers and buyer accepts one exact predecessor-bound Gate 1 agree
     buyer.canonicalDigest(offer),
   );
   assert.notEqual(acceptance.metadata.clockchainTrust.authorityDecisionDigest, null);
+
+  const replayProviderWallet = await walletFile(t, PROVIDER_KEY);
+  const replayProvider = await createAgentContractA2AAdapter(baseConfig(
+    "provider",
+    replayProviderWallet,
+    async (url) => {
+      if (String(url).endsWith("/agents/provider/inbox")) return Response.json([acknowledgmentTask]);
+      throw new Error("unexpected request");
+    },
+  ));
+  await assert.rejects(
+    replayProvider.callTool("agent_contract_offer_gate_1_agreement", {
+      acknowledgmentTaskId: acknowledgmentTask.id,
+    }),
+    /exact authored proposal/i,
+  );
 });
 
 test("proposal vocabulary matches the platform schema before any request is sent", async (t) => {

@@ -33,9 +33,9 @@ const PROVIDER_PROMPT = `The Clockchain handshake is already verified. Continue 
 
 const BUYER_PROMPT = `The Clockchain handshake is already verified. Continue as the buyer through the configured Agent Contract A2A tools. Call agent_contract_read_inbox to read your authenticated inbox, then evaluate the exact stored proposal against your opportunity: one signed evidence pack in both lowercase platform formats, json and markdown, delivered within 24 hours, at a price no greater than 20, using checksum-and-required-sections/v1 verification. Independently compare the stored proposal with those requirements. If it matches, call agent_contract_acknowledge_proposal yourself with the exact stored taskId and decision received_for_review to record only that it was received for review. The acknowledgment must remain nonbinding. Do not finish until you have either issued that signed nonbinding acknowledgment or stated the concrete requirement mismatch. Do not accept terms, create an agreement, authorize payment, or claim escrow or execution.`;
 
-const INTEGRATED_PROVIDER_PROMPT = `The Clockchain handshake is already verified and the configured Agent Contract A2A session includes a scoped Gate 1 agreement authority. Stay in this one provider runtime for the complete authorized test exchange. First discover the buyer Agent Card. Then independently choose and send one firm proposal matching the opportunity: one signed evidence pack in both lowercase platform formats, json and markdown, delivered within 24 hours, at a price no greater than 20, using checksum-and-required-sections/v1 verification. After the proposal is stored, read your authenticated inbox until the buyer's exact nonbinding acknowledgment appears. Then call agent_contract_offer_gate_1_agreement yourself with that exact acknowledgmentTaskId. This creates one binding agreement for the sandbox-only Gate 1 payment-execution scenario. Do not finish before the binding offer is stored. Do not perform execution, verification, funding, escrow, settlement, or any external business action.`;
+const INTEGRATED_PROVIDER_PROMPT = `The Clockchain handshake is already verified and the configured Agent Contract A2A session includes a scoped Gate 1 agreement authority. Stay in this one provider runtime for the complete authorized test exchange. First discover the buyer Agent Card. Then independently choose and send one firm proposal for exactly this opportunity: execute one sandbox cross-border transfer with no real asset and produce a redacted receipt pack in both lowercase platform formats, json and markdown, within 24 hours. Choose a provider service fee from 1 through 20 atomic test-USDC units on Base Sepolia and use sandbox-receipt-and-checksum/v1 verification. After the proposal is stored, read your authenticated inbox until the buyer's exact nonbinding acknowledgment appears. Then call agent_contract_offer_gate_1_agreement yourself with that exact acknowledgmentTaskId. The tool must carry the exact proposal deliverable, delivery period, atomic test-USDC fee, formats, and verification method into the sandbox-only binding offer. Do not finish before the binding offer is stored. Do not perform execution, verification, funding, escrow, settlement, or any external business action.`;
 
-const INTEGRATED_BUYER_PROMPT = `The Clockchain handshake is already verified and the configured Agent Contract A2A session includes a scoped Gate 1 agreement authority. Stay in this one buyer runtime for the complete authorized test exchange. Read your authenticated inbox and evaluate the exact stored proposal against the opportunity: one signed evidence pack in both lowercase platform formats, json and markdown, delivered within 24 hours, at a price no greater than 20, using checksum-and-required-sections/v1 verification. If it matches, call agent_contract_acknowledge_proposal with the exact taskId and decision received_for_review. Then call agent_contract_wait_for_gate_1_agreement exactly once; this bounded tool waits for and returns the provider's exact stored Gate 1 agreement offer. Inspect the returned offer and, only if it remains the same sandbox-only scenario and is within your configured authority, call agent_contract_accept_gate_1_agreement yourself with the exact returned offerTaskId. Do not finish before either the binding acceptance is stored or you state the concrete authority or terms mismatch. Do not perform execution, verification, funding, escrow, settlement, or any external business action.`;
+const INTEGRATED_BUYER_PROMPT = `The Clockchain handshake is already verified and the configured Agent Contract A2A session includes a scoped Gate 1 agreement authority. Stay in this one buyer runtime for the complete authorized test exchange. Read your authenticated inbox and evaluate the exact stored proposal against this opportunity: execute one sandbox cross-border transfer with no real asset and produce a redacted receipt pack in both lowercase platform formats, json and markdown, within 24 hours; the provider service fee must be from 1 through 20 atomic test-USDC units on Base Sepolia and verification must use sandbox-receipt-and-checksum/v1. If it matches, call agent_contract_acknowledge_proposal with the exact taskId and decision received_for_review. Then call agent_contract_wait_for_gate_1_agreement exactly once; this bounded tool waits for and returns the provider's exact stored Gate 1 agreement offer. Inspect the returned offer. Confirm that it preserves the proposal digest, deliverable, delivery period, atomic test-USDC fee, output formats as required evidence, verification method, parties, and sandbox-only boundary. Only if those exact terms remain aligned and the offer is within your configured authority, call agent_contract_accept_gate_1_agreement yourself with the exact returned offerTaskId. Do not finish before either the binding acceptance is stored or you state the concrete authority or terms mismatch. Do not perform execution, verification, funding, escrow, settlement, or any external business action.`;
 
 export class AgentContractA2AFlowError extends Error {
   constructor(message) {
@@ -289,6 +289,36 @@ function taskByKind(tasks, kind) {
   return matches[0];
 }
 
+function agreementPreservesProposal(agreement, proposal) {
+  if (
+    !isPlainObject(agreement) || !isPlainObject(proposal) ||
+    proposal.verificationMethod !== "sandbox-receipt-and-checksum/v1" ||
+    !Array.isArray(proposal.formats) || !Number.isSafeInteger(proposal.deliveryHours) ||
+    typeof proposal.price !== "string"
+  ) return false;
+  const expectedEvidenceTypes = [
+    ...proposal.formats.map((format) => `sandbox_transfer_receipt_${format}`),
+    "receipt_checksum",
+  ];
+  return (
+    agreement.proposalDigest === canonicalDigest(proposal) &&
+    agreement.predecessorDigest === canonicalDigest(proposal) &&
+    agreement.providerPartyId === proposal.providerPartyId &&
+    agreement.work?.service === "sandbox_cross_border_payment_execution" &&
+    agreement.work.deliverable === proposal.deliverableSummary &&
+    agreement.work.principalIsSandboxOnly === true &&
+    Date.parse(agreement.work.executionDeadline) - Date.parse(agreement.effectiveAt) ===
+      proposal.deliveryHours * 60 * 60 * 1_000 &&
+    agreement.providerServiceFee?.assetChainId === "84532" &&
+    agreement.providerServiceFee.assetAddress === "0x036cbd53842c5426634e7929541ec2318f3dcf7e" &&
+    agreement.providerServiceFee.assetDecimals === 6 &&
+    agreement.providerServiceFee.amountAtomic === proposal.price &&
+    agreement.providerServiceFee.separateFromCrossBorderPrincipal === true &&
+    JSON.stringify(agreement.evidencePolicy?.requiredEvidenceTypes) === JSON.stringify(expectedEvidenceTypes) &&
+    agreement.verificationPolicy?.method === proposal.verificationMethod
+  );
+}
+
 function validateBindingAgreement({ value, sessionId, proposalTask, acknowledgmentTask, buyerInbox, providerInbox, providerContinuation, buyerContinuation }) {
   const offerTask = taskByKind(buyerInbox, "agreement_offer");
   const acceptanceTask = taskByKind(providerInbox, "agreement_acceptance");
@@ -298,6 +328,7 @@ function validateBindingAgreement({ value, sessionId, proposalTask, acknowledgme
   const acceptanceMessage = taskMessageForWitness(acceptanceTask);
   const offerData = offerMessage?.parts?.[0]?.data;
   const acceptanceData = acceptanceMessage?.parts?.[0]?.data;
+  const proposal = proposalMessage?.parts?.[0]?.data?.proposal;
   const proposalMessageDigest = canonicalDigest(proposalMessage);
   const acknowledgmentMessageDigest = canonicalDigest(acknowledgmentMessage);
   const offerMessageDigest = canonicalDigest(offerMessage);
@@ -318,6 +349,7 @@ function validateBindingAgreement({ value, sessionId, proposalTask, acknowledgme
     acceptanceData.binding !== true || value.agreementId !== offerData.agreement.agreementId ||
     value.agreementDigest !== offerData.agreementDigest ||
     value.agreementDigest !== acceptanceData.agreementDigest ||
+    !agreementPreservesProposal(offerData.agreement, proposal) ||
     value.offerMessageDigest !== offerMessageDigest ||
     value.acceptanceMessageDigest !== acceptanceMessageDigest ||
     offerMessage.metadata?.clockchainTrust?.predecessorMessageDigest !== acknowledgmentMessageDigest ||

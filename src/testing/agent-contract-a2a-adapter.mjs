@@ -41,8 +41,14 @@ export const AGENT_CONTRACT_A2A_TOOLS = Object.freeze([
           items: Object.freeze({ type: "string", enum: Object.freeze(["json", "markdown"]) }),
         }),
         deliveryHours: Object.freeze({ type: "integer", minimum: 1, maximum: 24 }),
-        price: Object.freeze({ type: "string", pattern: "^(?:0|[1-9]|1[0-9]|20)$" }),
-        verificationMethod: Object.freeze({ type: "string", const: "checksum-and-required-sections/v1" }),
+        price: Object.freeze({ type: "string", pattern: "^(?:[1-9]|1[0-9]|20)$" }),
+        verificationMethod: Object.freeze({
+          type: "string",
+          enum: Object.freeze([
+            "checksum-and-required-sections/v1",
+            "sandbox-receipt-and-checksum/v1",
+          ]),
+        }),
       }),
       required: Object.freeze(["deliverableSummary", "formats", "deliveryHours", "price", "verificationMethod"]),
     }),
@@ -315,8 +321,8 @@ function proposalFromArguments(config, value) {
     new Set(args.formats).size !== args.formats.length ||
     args.formats.some((entry) => !["json", "markdown"].includes(entry)) ||
     !Number.isSafeInteger(args.deliveryHours) || args.deliveryHours < 1 || args.deliveryHours > 24 ||
-    typeof args.price !== "string" || !INTEGER.test(args.price) || BigInt(args.price) > 20n ||
-    args.verificationMethod !== "checksum-and-required-sections/v1"
+    typeof args.price !== "string" || !INTEGER.test(args.price) || BigInt(args.price) < 1n || BigInt(args.price) > 20n ||
+    !["checksum-and-required-sections/v1", "sandbox-receipt-and-checksum/v1"].includes(args.verificationMethod)
   ) fail("Proposal arguments are invalid.");
   return Object.freeze({
     schema: "agent-contract/v1",
@@ -332,8 +338,12 @@ function proposalFromArguments(config, value) {
   });
 }
 
-function gate1Agreement(config, proposalDigest) {
+function gate1Agreement(config, proposal) {
   if (config.agreementAuthority === undefined || config.counterpartyAddress === undefined) fail("Gate 1 agreement authority is not configured.");
+  if (proposal.verificationMethod !== "sandbox-receipt-and-checksum/v1") {
+    fail("The exact authored proposal is not a Gate 1 payment-execution proposal.");
+  }
+  const proposalDigest = canonicalDigest(proposal);
   const effectiveAt = strictIso(config.now());
   const authorityExpiry = Date.parse(config.agreementAuthority.expiresAt);
   const expiresAtMs = Math.min(Date.parse(effectiveAt) + 5 * 60 * 1000, authorityExpiry - 1);
@@ -348,15 +358,15 @@ function gate1Agreement(config, proposalDigest) {
     providerAddress: config.role === "provider" ? config.address : config.counterpartyAddress,
     work: Object.freeze({
       service: "sandbox_cross_border_payment_execution",
-      deliverable: "Execute one sandbox transfer and produce a redacted receipt pack",
-      executionDeadline: new Date(Math.min(Date.parse(effectiveAt) + 4 * 60 * 1000, expiresAtMs)).toISOString(),
+      deliverable: proposal.deliverableSummary,
+      executionDeadline: new Date(Date.parse(effectiveAt) + proposal.deliveryHours * 60 * 60 * 1_000).toISOString(),
       principalIsSandboxOnly: true,
     }),
     providerServiceFee: Object.freeze({
       assetChainId: "84532",
       assetAddress: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
       assetDecimals: 6,
-      amountAtomic: "10000",
+      amountAtomic: proposal.price,
       separateFromCrossBorderPrincipal: true,
     }),
     payerObligations: Object.freeze([Object.freeze({
@@ -372,15 +382,22 @@ function gate1Agreement(config, proposalDigest) {
     }),
     evidencePolicy: Object.freeze({
       policyId: "evidence:gate-1:001",
-      policyDigest: canonicalDigest({ sessionId: config.sessionId, policy: "sandbox-transfer-receipt/v1" }),
-      requiredEvidenceTypes: Object.freeze(["sandbox_transfer_receipt", "receipt_checksum"]),
+      policyDigest: canonicalDigest({
+        sessionId: config.sessionId,
+        policy: "sandbox-transfer-receipt/v1",
+        proposalDigest,
+      }),
+      requiredEvidenceTypes: Object.freeze([
+        ...proposal.formats.map((format) => `sandbox_transfer_receipt_${format}`),
+        "receipt_checksum",
+      ]),
     }),
     verificationPolicy: Object.freeze({
       policyId: "verification:gate-1:001",
-      policyDigest: canonicalDigest({ sessionId: config.sessionId, policy: "sandbox-receipt-and-checksum/v1" }),
+      policyDigest: canonicalDigest({ sessionId: config.sessionId, policy: proposal.verificationMethod, proposalDigest }),
       evaluatorPartyId: "evaluator:gate-1",
       evaluatorAddress: `0x${"55".repeat(20)}`,
-      method: "sandbox-receipt-and-checksum/v1",
+      method: proposal.verificationMethod,
     }),
     conditionalSettlement: Object.freeze({
       settlementRailId: "base-commerce-sepolia-test-usdc/v1",
@@ -487,6 +504,7 @@ export async function createAgentContractA2AAdapter(input = {}) {
   const canaries = Object.freeze([wallet.privateKey, config.roleCapability, config.walletPath]);
   const ledger = createAuthorshipLedger(config, canaries);
   const path = (suffix) => `/api/a2a/sessions/${config.sessionId}${suffix}`;
+  let authoredProposal = null;
 
   async function callTool(name, args = {}) {
     if (name === "agent_contract_discover_counterparty") {
@@ -546,6 +564,7 @@ export async function createAgentContractA2AAdapter(input = {}) {
         authoredAt: strictIso(message.metadata.clockchainTrust.sentAt),
         persistedAt: strictIso(config.now()),
       });
+      authoredProposal = proposal;
       return task;
     }
     if (name === "agent_contract_acknowledge_proposal") {
@@ -612,7 +631,11 @@ export async function createAgentContractA2AAdapter(input = {}) {
         acknowledgment?.kind !== "proposal_acknowledgment" ||
         acknowledgment.binding !== false || !DIGEST.test(acknowledgment.proposalDigest ?? "")
       ) fail("The stored task is not a valid proposal acknowledgment.");
-      const agreement = gate1Agreement(config, acknowledgment.proposalDigest);
+      if (
+        authoredProposal === null ||
+        canonicalDigest(authoredProposal) !== acknowledgment.proposalDigest
+      ) fail("The exact authored proposal is unavailable for the Gate 1 agreement.");
+      const agreement = gate1Agreement(config, authoredProposal);
       const decision = agreementDecision(config, agreement);
       const data = Object.freeze({
         kind: "agreement_offer",
