@@ -98,10 +98,12 @@ function exchangeFixture({
   let acknowledgmentTask = null;
   let offerTask = null;
   let acceptanceTask = null;
+  let agreementAuthorities = null;
   const fetchImpl = async (url, init) => {
     calls.push({ url: String(url), init });
     const path = new URL(url).pathname;
     if (path.endsWith("/activate")) {
+      agreementAuthorities = JSON.parse(init.body).agreementAuthorities ?? null;
       return Response.json({
         sessionId: SESSION_ID,
         capabilities: { buyer: "buyer-secret", provider: "provider-secret" },
@@ -265,15 +267,32 @@ function exchangeFixture({
           binding: true,
           providerAcceptance: "ACCEPTED",
         };
+        const providerDecision = {
+          allowed: true,
+          role: "PROVIDER",
+          agreementDigest: canonicalDigest(agreement),
+          authorityDigest: canonicalDigest(agreementAuthorities.provider),
+          authorityRef: agreementAuthorities.provider.authorityRef,
+          approvalSource: agreementAuthorities.provider.approvalSource,
+        };
         const offerMessage = {
           messageId: "eeeeeeee-ffff-4000-8111-222222222222",
           contextId: SESSION_ID,
           parts: [{ data: offerData }],
           metadata: { clockchainTrust: {
+            schema: "agent-contract.a2a-trust-binding/v1",
+            sessionId: SESSION_ID,
+            certificateDigest: `0x${CERTIFICATE}`,
+            continuationDigest: AUTHORIZATION,
+            senderRole: "provider",
+            senderAddress: `0x${"5".repeat(40)}`,
+            senderErc8004AgentId: "9453",
+            recipientRole: "buyer",
             objectDigest: canonicalDigest(offerData),
             predecessorMessageDigest: canonicalDigest(acknowledgmentMessage),
-            authorityDecisionDigest: `0x${"6".repeat(64)}`,
+            authorityDecisionDigest: canonicalDigest(providerDecision),
             sentAt: "2026-08-15T20:00:08.000Z",
+            signature: `0x${"1".repeat(130)}`,
           } },
         };
         offerTask = {
@@ -369,15 +388,32 @@ function exchangeFixture({
           decision: "ACCEPTED",
           binding: true,
         };
+        const buyerDecision = {
+          allowed: true,
+          role: "BUYER",
+          agreementDigest: offerMessage.parts[0].data.agreementDigest,
+          authorityDigest: canonicalDigest(agreementAuthorities.buyer),
+          authorityRef: agreementAuthorities.buyer.authorityRef,
+          approvalSource: agreementAuthorities.buyer.approvalSource,
+        };
         const acceptanceMessage = {
           messageId: "ffffffff-0000-4111-8222-333333333333",
           contextId: SESSION_ID,
           parts: [{ data: acceptanceData }],
           metadata: { clockchainTrust: {
+            schema: "agent-contract.a2a-trust-binding/v1",
+            sessionId: SESSION_ID,
+            certificateDigest: `0x${CERTIFICATE}`,
+            continuationDigest: AUTHORIZATION,
+            senderRole: "buyer",
+            senderAddress: `0x${"4".repeat(40)}`,
+            senderErc8004AgentId: "9452",
+            recipientRole: "provider",
             objectDigest: canonicalDigest(acceptanceData),
             predecessorMessageDigest: canonicalDigest(offerMessage),
-            authorityDecisionDigest: `0x${"5".repeat(64)}`,
+            authorityDecisionDigest: canonicalDigest(buyerDecision),
             sentAt: "2026-08-15T20:00:10.000Z",
+            signature: `0x${"2".repeat(130)}`,
           } },
         };
         acceptanceTask = {
@@ -577,6 +613,29 @@ test("keeps the same two live runtimes and exact G3 lineage through one binding 
     result.liveRuntimeWitness.runtimes.buyer.runtimeId,
   );
   assert.equal(result.bindingAgreement.externalBusinessActionPerformed, false);
+  assert.equal(
+    result.bindingAgreement.proof.schema,
+    "agent-contract.live-runtime-binding-proof/v1",
+  );
+  assert.equal(
+    result.bindingAgreement.proof.offerMessage.metadata.clockchainTrust.signature.length,
+    132,
+  );
+  assert.equal(
+    result.bindingAgreement.proof.acceptanceMessage.metadata.clockchainTrust
+      .predecessorMessageDigest,
+    result.bindingAgreement.lineage.offerMessageDigest,
+  );
+  assert.equal(result.bindingAgreement.proof.authorityDecisions.provider.allowed, true);
+  assert.equal(result.bindingAgreement.proof.authorityDecisions.buyer.allowed, true);
+  assert.equal(
+    canonicalDigest(result.bindingAgreement.proof.authorityDecisions.provider),
+    result.bindingAgreement.authorityDecisionDigests.provider,
+  );
+  assert.equal(
+    canonicalDigest(result.bindingAgreement.proof.authorityDecisions.buyer),
+    result.bindingAgreement.authorityDecisionDigests.buyer,
+  );
   assert.deepEqual(result.cleanup, { sessionDestroyed: true });
   assert.equal(JSON.stringify(result).includes("provider-secret"), false);
   assert.equal(JSON.stringify(result).includes("buyer-secret"), false);

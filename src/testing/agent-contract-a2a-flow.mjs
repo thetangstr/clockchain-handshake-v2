@@ -319,7 +319,18 @@ function agreementPreservesProposal(agreement, proposal) {
   );
 }
 
-function validateBindingAgreement({ value, sessionId, proposalTask, acknowledgmentTask, buyerInbox, providerInbox, providerContinuation, buyerContinuation }) {
+function bindingAuthorityDecision(grant, agreement) {
+  return Object.freeze({
+    allowed: true,
+    role: grant.role,
+    agreementDigest: canonicalDigest(agreement),
+    authorityDigest: canonicalDigest(grant),
+    authorityRef: grant.authorityRef,
+    approvalSource: grant.approvalSource,
+  });
+}
+
+function validateBindingAgreement({ value, sessionId, proposalTask, acknowledgmentTask, buyerInbox, providerInbox, providerContinuation, buyerContinuation, agreementAuthorities, identities, certificateDigest, continuationDigest }) {
   const offerTask = taskByKind(buyerInbox, "agreement_offer");
   const acceptanceTask = taskByKind(providerInbox, "agreement_acceptance");
   const proposalMessage = taskMessageForWitness(proposalTask);
@@ -341,6 +352,14 @@ function validateBindingAgreement({ value, sessionId, proposalTask, acknowledgme
   );
   const buyerOfferObservation = buyerContinuation?.ledger?.entries?.find(
     (entry) => entry?.kind === "agreement_offer_observed",
+  );
+  const providerAuthorityDecision = bindingAuthorityDecision(
+    agreementAuthorities?.provider,
+    offerData?.agreement,
+  );
+  const buyerAuthorityDecision = bindingAuthorityDecision(
+    agreementAuthorities?.buyer,
+    offerData?.agreement,
   );
   if (
     value?.schema !== "agent-contract.facilitated-a2a-agreement-export/v1" ||
@@ -367,7 +386,9 @@ function validateBindingAgreement({ value, sessionId, proposalTask, acknowledgme
     buyerAcceptanceRecord?.toolName !== "agent_contract_accept_gate_1_agreement" ||
     buyerAcceptanceRecord.messageDigest !== acceptanceMessageDigest ||
     buyerAcceptanceRecord.predecessorMessageDigest !== offerMessageDigest ||
-    buyerAcceptanceRecord.authorityDecisionDigest !== value.buyerAuthorityDecisionDigest
+    buyerAcceptanceRecord.authorityDecisionDigest !== value.buyerAuthorityDecisionDigest ||
+    canonicalDigest(providerAuthorityDecision) !== value.providerAuthorityDecisionDigest ||
+    canonicalDigest(buyerAuthorityDecision) !== value.buyerAuthorityDecisionDigest
   ) fail("Agent Contract binding agreement lineage invalid.");
   return Object.freeze({
     schema: "agent-contract.live-runtime-binding-agreement/v1",
@@ -392,6 +413,32 @@ function validateBindingAgreement({ value, sessionId, proposalTask, acknowledgme
     runtimes: Object.freeze({
       provider: Object.freeze({ ...providerContinuation.runtime }),
       buyer: Object.freeze({ ...buyerContinuation.runtime }),
+    }),
+    proof: Object.freeze({
+      schema: "agent-contract.live-runtime-binding-proof/v1",
+      certificateDigest,
+      continuationDigest,
+      identities: Object.freeze({
+        buyer: Object.freeze({
+          address: identities.buyer.address,
+          erc8004AgentId: identities.buyer.erc8004.agentId,
+        }),
+        provider: Object.freeze({
+          address: identities.provider.address,
+          erc8004AgentId: identities.provider.erc8004.agentId,
+        }),
+      }),
+      agreement: offerData.agreement,
+      offerMessage,
+      acceptanceMessage,
+      authorityGrants: Object.freeze({
+        provider: agreementAuthorities.provider,
+        buyer: agreementAuthorities.buyer,
+      }),
+      authorityDecisions: Object.freeze({
+        provider: providerAuthorityDecision,
+        buyer: buyerAuthorityDecision,
+      }),
     }),
     externalBusinessActionPerformed: false,
   });
@@ -730,6 +777,10 @@ export async function runAgentContractA2AFlow({
       providerInbox: finalProviderInbox,
       providerContinuation,
       buyerContinuation,
+      agreementAuthorities,
+      identities: validated,
+      certificateDigest: certificate.certificateDigest,
+      continuationDigest: activated.authorization.digest,
     });
   }
   const liveRuntimeWitness = rawWitnessSource === undefined
