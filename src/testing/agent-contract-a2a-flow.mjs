@@ -33,6 +33,10 @@ const PROVIDER_PROMPT = `The Clockchain handshake is already verified. Continue 
 
 const BUYER_PROMPT = `The Clockchain handshake is already verified. Continue as the buyer through the configured Agent Contract A2A tools. Call agent_contract_read_inbox to read your authenticated inbox, then evaluate the exact stored proposal against your opportunity: one signed evidence pack in both lowercase platform formats, json and markdown, delivered within 24 hours, at a price no greater than 20, using checksum-and-required-sections/v1 verification. Independently compare the stored proposal with those requirements. If it matches, call agent_contract_acknowledge_proposal yourself with the exact stored taskId and decision received_for_review to record only that it was received for review. The acknowledgment must remain nonbinding. Do not finish until you have either issued that signed nonbinding acknowledgment or stated the concrete requirement mismatch. Do not accept terms, create an agreement, authorize payment, or claim escrow or execution.`;
 
+const INTEGRATED_PROVIDER_PROMPT = `The Clockchain handshake is already verified and the configured Agent Contract A2A session includes a scoped Gate 1 agreement authority. Stay in this one provider runtime for the complete authorized test exchange. First discover the buyer Agent Card. Then independently choose and send one firm proposal matching the opportunity: one signed evidence pack in both lowercase platform formats, json and markdown, delivered within 24 hours, at a price no greater than 20, using checksum-and-required-sections/v1 verification. After the proposal is stored, read your authenticated inbox until the buyer's exact nonbinding acknowledgment appears. Then call agent_contract_offer_gate_1_agreement yourself with that exact acknowledgmentTaskId. This creates one binding agreement for the sandbox-only Gate 1 payment-execution scenario. Do not finish before the binding offer is stored. Do not perform execution, verification, funding, escrow, settlement, or any external business action.`;
+
+const INTEGRATED_BUYER_PROMPT = `The Clockchain handshake is already verified and the configured Agent Contract A2A session includes a scoped Gate 1 agreement authority. Stay in this one buyer runtime for the complete authorized test exchange. Read your authenticated inbox and evaluate the exact stored proposal against the opportunity: one signed evidence pack in both lowercase platform formats, json and markdown, delivered within 24 hours, at a price no greater than 20, using checksum-and-required-sections/v1 verification. If it matches, call agent_contract_acknowledge_proposal with the exact taskId and decision received_for_review. Then continue reading your authenticated inbox until the provider's exact Gate 1 agreement offer appears. Inspect that stored offer and, only if it remains the same sandbox-only scenario and is within your configured authority, call agent_contract_accept_gate_1_agreement yourself with the exact offerTaskId. Do not finish before either the binding acceptance is stored or you state the concrete authority or terms mismatch. Do not perform execution, verification, funding, escrow, settlement, or any external business action.`;
+
 export class AgentContractA2AFlowError extends Error {
   constructor(message) {
     super(message);
@@ -198,7 +202,7 @@ function activation(value, expectedSessionId) {
   return value;
 }
 
-function environment({ baseUrl, sessionId, certificateDigest, continuationDigest, role, identity, partyId, token }) {
+function environment({ baseUrl, sessionId, certificateDigest, continuationDigest, role, identity, counterparty, partyId, token, agreementAuthority }) {
   return Object.freeze({
     AGENT_CONTRACT_A2A_BASE_URL: baseUrl,
     AGENT_CONTRACT_A2A_ROLE: role,
@@ -206,10 +210,32 @@ function environment({ baseUrl, sessionId, certificateDigest, continuationDigest
     AGENT_CONTRACT_A2A_CERTIFICATE_DIGEST: certificateDigest,
     AGENT_CONTRACT_A2A_CONTINUATION_DIGEST: continuationDigest,
     AGENT_CONTRACT_A2A_ADDRESS: identity.address,
+    AGENT_CONTRACT_A2A_COUNTERPARTY_ADDRESS: counterparty.address,
     AGENT_CONTRACT_A2A_ERC8004_AGENT_ID: identity.erc8004.agentId,
     AGENT_CONTRACT_A2A_PARTY_ID: partyId,
     AGENT_CONTRACT_A2A_OPPORTUNITY_ID: "opportunity:1",
     AGENT_CONTRACT_A2A_ROLE_TOKEN: token,
+    ...(agreementAuthority === undefined
+      ? {}
+      : { AGENT_CONTRACT_A2A_AGREEMENT_AUTHORITY: JSON.stringify(agreementAuthority) }),
+  });
+}
+
+function agreementAuthority({ role, identity, activatedAt, expiresAt }) {
+  return Object.freeze({
+    schema: "agent-contract.gate-1-agreement-authority/v1",
+    authorityRef: `ceo-authorized:gate-1:${role}`,
+    partyId: role === "BUYER" ? "buyer:co" : "provider:proofworks",
+    signerAddress: identity.address,
+    role,
+    allowedActions: Object.freeze(["ACCEPT_GATE_1_AGREEMENT"]),
+    maxProviderServiceFeeAtomic: "10000",
+    assetChainId: "84532",
+    assetAddress: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+    issuedAt: activatedAt,
+    expiresAt,
+    revokedAt: null,
+    approvalSource: "HUMAN_APPROVAL",
   });
 }
 
@@ -254,6 +280,86 @@ function validateExport(value, validated, proposalTaskId, continuationDigest) {
   });
 }
 
+function taskByKind(tasks, kind) {
+  if (!Array.isArray(tasks)) fail("Agent Contract agreement inbox invalid.");
+  const matches = tasks.filter((task) => task?.history?.[0]?.parts?.[0]?.data?.kind === kind);
+  if (matches.length !== 1 || !UUID.test(matches[0]?.id ?? "")) {
+    fail("Agent Contract binding agreement lineage invalid.");
+  }
+  return matches[0];
+}
+
+function validateBindingAgreement({ value, sessionId, proposalTask, acknowledgmentTask, buyerInbox, providerInbox, providerContinuation, buyerContinuation }) {
+  const offerTask = taskByKind(buyerInbox, "agreement_offer");
+  const acceptanceTask = taskByKind(providerInbox, "agreement_acceptance");
+  const proposalMessage = taskMessageForWitness(proposalTask);
+  const acknowledgmentMessage = taskMessageForWitness(acknowledgmentTask);
+  const offerMessage = taskMessageForWitness(offerTask);
+  const acceptanceMessage = taskMessageForWitness(acceptanceTask);
+  const offerData = offerMessage?.parts?.[0]?.data;
+  const acceptanceData = acceptanceMessage?.parts?.[0]?.data;
+  const proposalMessageDigest = canonicalDigest(proposalMessage);
+  const acknowledgmentMessageDigest = canonicalDigest(acknowledgmentMessage);
+  const offerMessageDigest = canonicalDigest(offerMessage);
+  const acceptanceMessageDigest = canonicalDigest(acceptanceMessage);
+  const providerOfferRecord = providerContinuation?.ledger?.entries?.find(
+    (entry) => entry?.kind === "agreement_offer_authorship",
+  );
+  const buyerAcceptanceRecord = buyerContinuation?.ledger?.entries?.find(
+    (entry) => entry?.kind === "agreement_acceptance_authorship",
+  );
+  if (
+    value?.schema !== "agent-contract.facilitated-a2a-agreement-export/v1" ||
+    value.sessionId !== sessionId || offerData?.kind !== "agreement_offer" ||
+    acceptanceData?.kind !== "agreement_acceptance" || offerData.binding !== true ||
+    acceptanceData.binding !== true || value.agreementId !== offerData.agreement.agreementId ||
+    value.agreementDigest !== offerData.agreementDigest ||
+    value.agreementDigest !== acceptanceData.agreementDigest ||
+    value.offerMessageDigest !== offerMessageDigest ||
+    value.acceptanceMessageDigest !== acceptanceMessageDigest ||
+    offerMessage.metadata?.clockchainTrust?.predecessorMessageDigest !== acknowledgmentMessageDigest ||
+    acceptanceMessage.metadata?.clockchainTrust?.predecessorMessageDigest !== offerMessageDigest ||
+    offerData.agreement.proposalDigest !== proposalMessage.metadata?.clockchainTrust?.objectDigest &&
+      offerData.agreement.proposalDigest !== canonicalDigest(proposalMessage.parts[0].data.proposal) ||
+    offerMessage.metadata?.clockchainTrust?.authorityDecisionDigest !== value.providerAuthorityDecisionDigest ||
+    acceptanceMessage.metadata?.clockchainTrust?.authorityDecisionDigest !== value.buyerAuthorityDecisionDigest ||
+    providerOfferRecord?.toolName !== "agent_contract_offer_gate_1_agreement" ||
+    providerOfferRecord.messageDigest !== offerMessageDigest ||
+    providerOfferRecord.predecessorMessageDigest !== acknowledgmentMessageDigest ||
+    providerOfferRecord.authorityDecisionDigest !== value.providerAuthorityDecisionDigest ||
+    buyerAcceptanceRecord?.toolName !== "agent_contract_accept_gate_1_agreement" ||
+    buyerAcceptanceRecord.messageDigest !== acceptanceMessageDigest ||
+    buyerAcceptanceRecord.predecessorMessageDigest !== offerMessageDigest ||
+    buyerAcceptanceRecord.authorityDecisionDigest !== value.buyerAuthorityDecisionDigest
+  ) fail("Agent Contract binding agreement lineage invalid.");
+  return Object.freeze({
+    schema: "agent-contract.live-runtime-binding-agreement/v1",
+    status: "accepted",
+    sessionId,
+    agreementId: value.agreementId,
+    agreementDigest: value.agreementDigest,
+    proposalTaskId: proposalTask.id,
+    acknowledgmentTaskId: acknowledgmentTask.id,
+    offerTaskId: offerTask.id,
+    acceptanceTaskId: acceptanceTask.id,
+    lineage: Object.freeze({
+      proposalMessageDigest,
+      acknowledgmentMessageDigest,
+      offerMessageDigest,
+      acceptanceMessageDigest,
+    }),
+    authorityDecisionDigests: Object.freeze({
+      provider: value.providerAuthorityDecisionDigest,
+      buyer: value.buyerAuthorityDecisionDigest,
+    }),
+    runtimes: Object.freeze({
+      provider: Object.freeze({ ...providerContinuation.runtime }),
+      buyer: Object.freeze({ ...buyerContinuation.runtime }),
+    }),
+    externalBusinessActionPerformed: false,
+  });
+}
+
 function witnessSource(value) {
   if (
     !isPlainObject(value) ||
@@ -287,7 +393,7 @@ function exactRuntimeContinuation(value, {
     !Array.isArray(value.ledger.entries) || !Array.isArray(ledgerKinds) ||
     ledgerKinds.some((kind) => !allowedLedgerKinds.includes(kind)) ||
     requiredLedgerKinds.some((kind) =>
-      ledgerKinds.filter((entryKind) => entryKind === kind).length !== 1
+      ledgerKinds.filter((entryKind) => entryKind === kind).length < 1
     ) ||
     value.ledger.entries.some((entry) => entry?.runtimeId !== value.runtime.runtimeId)
   ) fail("Live runtime continuation evidence invalid.");
@@ -315,14 +421,14 @@ function buildLiveRuntimeWitness({
     modelId: "sonnet",
     requiredTools: ["agent_contract_discover_counterparty", "agent_contract_send_proposal"],
     requiredLedgerKinds: ["agent_card_discovered", "proposal_authorship"],
-    allowedLedgerKinds: ["agent_card_discovered", "inbox_read", "proposal_authorship"],
+    allowedLedgerKinds: ["agent_card_discovered", "inbox_read", "proposal_authorship", "agreement_offer_authorship"],
   });
   const buyer = exactRuntimeContinuation(buyerContinuation, {
     client: "codex-cli",
     modelId: "gpt-5.6-terra",
     requiredTools: ["agent_contract_read_inbox", "agent_contract_acknowledge_proposal"],
     requiredLedgerKinds: ["inbox_read", "acknowledgment_authorship"],
-    allowedLedgerKinds: ["inbox_read", "acknowledgment_authorship"],
+    allowedLedgerKinds: ["inbox_read", "acknowledgment_authorship", "agreement_acceptance_authorship"],
   });
   if (
     provider.runtime.runtimeId === buyer.runtime.runtimeId ||
@@ -460,8 +566,14 @@ export async function runAgentContractA2AFlow({
   fetchImpl = globalThis.fetch,
   now = () => new Date().toISOString(),
   witnessSource: rawWitnessSource,
+  bindingAgreement = false,
+  wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
 } = {}) {
-  if (typeof continueRole !== "function" || typeof fetchImpl !== "function" || typeof now !== "function" || typeof operatorToken !== "string" || operatorToken.length === 0) {
+  if (
+    typeof continueRole !== "function" || typeof fetchImpl !== "function" || typeof now !== "function" ||
+    typeof wait !== "function" || typeof bindingAgreement !== "boolean" ||
+    typeof operatorToken !== "string" || operatorToken.length === 0
+  ) {
     fail("Agent Contract A2A flow dependencies invalid.");
   }
   const origin = loopbackBaseUrl(baseUrl);
@@ -471,10 +583,24 @@ export async function runAgentContractA2AFlow({
   if (Date.parse(timestamp) < Date.parse(certificate.issuedAt) || Date.parse(timestamp) > Date.parse(certificate.expiresAt)) {
     fail("Agent Contract A2A activation is outside the verified certificate window.");
   }
+  const authorityExpiresAt = new Date(
+    Date.parse(timestamp) + Number(FACILITATED_A2A_VALID_FOR_SECONDS) * 1_000,
+  ).toISOString();
+  const agreementAuthorities = bindingAgreement
+    ? Object.freeze({
+        buyer: agreementAuthority({ role: "BUYER", identity: validated.buyer, activatedAt: timestamp, expiresAt: authorityExpiresAt }),
+        provider: agreementAuthority({ role: "PROVIDER", identity: validated.provider, activatedAt: timestamp, expiresAt: authorityExpiresAt }),
+      })
+    : undefined;
   const activated = activation(await requestJson(fetchImpl, `${origin}/api/agent-contract/harness/a2a/activate`, {
     method: "POST",
     token: operatorToken,
-    body: { handshakeEvidence: certificate, evidenceClass: "live", now: timestamp },
+    body: {
+      handshakeEvidence: certificate,
+      evidenceClass: "live",
+      now: timestamp,
+      ...(agreementAuthorities === undefined ? {} : { agreementAuthorities }),
+    },
   }), certificate.sessionId);
 
   const providerEnvironment = environment({
@@ -484,15 +610,32 @@ export async function runAgentContractA2AFlow({
     continuationDigest: activated.authorization.digest,
     role: "provider",
     identity: validated.provider,
+    counterparty: validated.buyer,
     partyId: "provider:proofworks",
     token: activated.capabilities.provider,
+    agreementAuthority: agreementAuthorities?.provider,
   });
-  const providerContinuation = await continueRole("responder", { prompt: PROVIDER_PROMPT, environment: providerEnvironment });
-
-  const buyerInbox = await requestJson(fetchImpl, `${origin}/api/a2a/sessions/${activated.sessionId}/agents/buyer/inbox`, {
-    token: activated.capabilities.buyer,
+  const providerContinuationPromise = continueRole("responder", {
+    prompt: bindingAgreement ? INTEGRATED_PROVIDER_PROMPT : PROVIDER_PROMPT,
+    environment: providerEnvironment,
   });
-  const proposalTask = singleProposalTask(buyerInbox, activated.sessionId);
+  let providerContinuation;
+  let proposalTask;
+  const attempts = bindingAgreement ? 360 : 1;
+  if (!bindingAgreement) providerContinuation = await providerContinuationPromise;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const buyerInbox = await requestJson(fetchImpl, `${origin}/api/a2a/sessions/${activated.sessionId}/agents/buyer/inbox`, {
+      token: activated.capabilities.buyer,
+    });
+    try {
+      proposalTask = singleProposalTask(buyerInbox, activated.sessionId);
+      break;
+    } catch (error) {
+      if (attempt === attempts - 1) throw error;
+      await wait(250);
+    }
+  }
+  if (proposalTask === undefined) fail("Agent Contract must store exactly one proposal before buyer continuation.");
 
   const buyerEnvironment = environment({
     baseUrl: origin,
@@ -501,10 +644,19 @@ export async function runAgentContractA2AFlow({
     continuationDigest: activated.authorization.digest,
     role: "buyer",
     identity: validated.buyer,
+    counterparty: validated.provider,
     partyId: "buyer:co",
     token: activated.capabilities.buyer,
+    agreementAuthority: agreementAuthorities?.buyer,
   });
-  const buyerContinuation = await continueRole("initiator", { prompt: BUYER_PROMPT, environment: buyerEnvironment });
+  const buyerContinuationPromise = continueRole("initiator", {
+    prompt: bindingAgreement ? INTEGRATED_BUYER_PROMPT : BUYER_PROMPT,
+    environment: buyerEnvironment,
+  });
+  const buyerContinuation = bindingAgreement
+    ? (await Promise.all([providerContinuationPromise, buyerContinuationPromise]))[1]
+    : await buyerContinuationPromise;
+  if (bindingAgreement) providerContinuation = await providerContinuationPromise;
 
   const exported = await requestJson(fetchImpl, `${origin}/api/agent-contract/harness/a2a/export`, {
     method: "POST",
@@ -512,6 +664,32 @@ export async function runAgentContractA2AFlow({
     body: { sessionId: activated.sessionId },
   });
   const verified = validateExport(exported, validated, proposalTask.id, activated.authorization.digest);
+  let bindingAgreementResult;
+  if (bindingAgreement) {
+    const [agreementExport, finalBuyerInbox, finalProviderInbox] = await Promise.all([
+      requestJson(fetchImpl, `${origin}/api/agent-contract/harness/a2a/agreement`, {
+        method: "POST",
+        token: operatorToken,
+        body: { sessionId: activated.sessionId },
+      }),
+      requestJson(fetchImpl, `${origin}/api/a2a/sessions/${activated.sessionId}/agents/buyer/inbox`, {
+        token: activated.capabilities.buyer,
+      }),
+      requestJson(fetchImpl, `${origin}/api/a2a/sessions/${activated.sessionId}/agents/provider/inbox`, {
+        token: activated.capabilities.provider,
+      }),
+    ]);
+    bindingAgreementResult = validateBindingAgreement({
+      value: agreementExport,
+      sessionId: activated.sessionId,
+      proposalTask: verified.proposal,
+      acknowledgmentTask: verified.acknowledgment,
+      buyerInbox: finalBuyerInbox,
+      providerInbox: finalProviderInbox,
+      providerContinuation,
+      buyerContinuation,
+    });
+  }
   const liveRuntimeWitness = rawWitnessSource === undefined
     ? undefined
     : buildLiveRuntimeWitness({
@@ -540,8 +718,18 @@ export async function runAgentContractA2AFlow({
     proposalTaskId: proposalTask.id,
     acknowledgmentTaskId: verified.acknowledgmentTaskId,
     verification: verified.verification,
+    ...(bindingAgreementResult === undefined ? {} : { bindingAgreement: bindingAgreementResult }),
     ...(liveRuntimeWitness === undefined ? {} : { liveRuntimeWitness }),
   });
   assertSecretFree(result, [operatorToken, activated.capabilities.buyer, activated.capabilities.provider]);
-  return result;
+  if (!bindingAgreement) return result;
+  const cleanup = await requestJson(fetchImpl, `${origin}/api/agent-contract/harness/a2a/session`, {
+    method: "DELETE",
+    token: operatorToken,
+    body: { sessionId: activated.sessionId },
+  });
+  if (cleanup?.sessionId !== activated.sessionId || cleanup?.destroyed !== true) {
+    fail("Agent Contract ephemeral session cleanup invalid.");
+  }
+  return Object.freeze({ ...result, cleanup: Object.freeze({ sessionDestroyed: true }) });
 }

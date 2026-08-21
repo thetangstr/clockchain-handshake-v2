@@ -67,6 +67,32 @@ export const AGENT_CONTRACT_A2A_TOOLS = Object.freeze([
       required: Object.freeze(["taskId", "decision"]),
     }),
   }),
+  Object.freeze({
+    name: "agent_contract_offer_gate_1_agreement",
+    title: "Offer one binding Gate 1 agreement",
+    description: "Provider only. Build, authorize, sign, and send the one sandbox Gate 1 agreement from an exact stored proposal acknowledgment.",
+    inputSchema: Object.freeze({
+      type: "object",
+      additionalProperties: false,
+      properties: Object.freeze({
+        acknowledgmentTaskId: Object.freeze({ type: "string", format: "uuid" }),
+      }),
+      required: Object.freeze(["acknowledgmentTaskId"]),
+    }),
+  }),
+  Object.freeze({
+    name: "agent_contract_accept_gate_1_agreement",
+    title: "Accept one binding Gate 1 agreement",
+    description: "Buyer only. Validate, authorize, sign, and accept the exact stored Gate 1 agreement offer.",
+    inputSchema: Object.freeze({
+      type: "object",
+      additionalProperties: false,
+      properties: Object.freeze({
+        offerTaskId: Object.freeze({ type: "string", format: "uuid" }),
+      }),
+      required: Object.freeze(["offerTaskId"]),
+    }),
+  }),
 ]);
 
 function fail(message) {
@@ -151,6 +177,9 @@ function validateConfig(input) {
     fail("Agent Contract adapter trust binding is invalid.");
   }
   if (typeof input.fetchImpl !== "function" || typeof input.now !== "function") fail("Agent Contract adapter dependencies are invalid.");
+  const authority = input.agreementAuthority === undefined
+    ? undefined
+    : agreementAuthority(input.agreementAuthority, input.role, input.partyId, input.address);
   const witnessConfigured = input.runtimeId !== undefined || input.witnessLedgerPath !== undefined;
   if (witnessConfigured && (
     !UUID.test(input.runtimeId ?? "") ||
@@ -160,7 +189,40 @@ function validateConfig(input) {
     !isAbsolute(input.walletPath) ||
     dirname(input.witnessLedgerPath) !== dirname(input.walletPath)
   )) fail("Agent Contract witness ledger configuration is invalid.");
-  return Object.freeze({ ...input, baseUrl: loopbackBaseUrl(input.baseUrl), address: getAddress(input.address) });
+  return Object.freeze({
+    ...input,
+    agreementAuthority: authority,
+    baseUrl: loopbackBaseUrl(input.baseUrl),
+    address: getAddress(input.address),
+    counterpartyAddress: input.counterpartyAddress === undefined ? undefined : getAddress(input.counterpartyAddress),
+  });
+}
+
+function agreementAuthority(value, role, partyId, address) {
+  const keys = [
+    "schema", "authorityRef", "partyId", "signerAddress", "role", "allowedActions",
+    "maxProviderServiceFeeAtomic", "assetChainId", "assetAddress", "issuedAt", "expiresAt",
+    "revokedAt", "approvalSource",
+  ];
+  const grant = exactObject(value, keys, "Gate 1 agreement authority");
+  const expectedRole = role === "provider" ? "PROVIDER" : "BUYER";
+  if (
+    grant.schema !== "agent-contract.gate-1-agreement-authority/v1" ||
+    typeof grant.authorityRef !== "string" || grant.authorityRef.length === 0 ||
+    grant.partyId !== partyId || getAddress(grant.signerAddress) !== getAddress(address) ||
+    grant.role !== expectedRole || JSON.stringify(grant.allowedActions) !== JSON.stringify(["ACCEPT_GATE_1_AGREEMENT"]) ||
+    !INTEGER.test(grant.maxProviderServiceFeeAtomic ?? "") ||
+    grant.assetChainId !== "84532" ||
+    String(grant.assetAddress).toLowerCase() !== "0x036cbd53842c5426634e7929541ec2318f3dcf7e" ||
+    strictIso(grant.issuedAt) >= strictIso(grant.expiresAt) ||
+    grant.revokedAt !== null || !["AGENT_MANDATE", "HUMAN_APPROVAL"].includes(grant.approvalSource)
+  ) fail("Gate 1 agreement authority is invalid.");
+  return Object.freeze({
+    ...grant,
+    signerAddress: getAddress(grant.signerAddress),
+    assetAddress: String(grant.assetAddress).toLowerCase(),
+    allowedActions: Object.freeze([...grant.allowedActions]),
+  });
 }
 
 function createAuthorshipLedger(config, canaries) {
@@ -171,7 +233,10 @@ function createAuthorshipLedger(config, canaries) {
   let created = false;
   return Object.freeze({
     async record(entry) {
-      if (!isPlainObject(entry) || entries.some((current) => current.kind === entry.kind)) {
+      if (
+        !isPlainObject(entry) ||
+        (entry.kind !== "inbox_read" && entries.some((current) => current.kind === entry.kind))
+      ) {
         fail("Agent Contract witness ledger entry is invalid.");
       }
       const next = Object.freeze({ ...entry, runtimeId: config.runtimeId });
@@ -258,6 +323,92 @@ function proposalFromArguments(config, value) {
     price: args.price,
     verificationMethod: args.verificationMethod,
     predecessorDigest: null,
+  });
+}
+
+function gate1Agreement(config, proposalDigest) {
+  if (config.agreementAuthority === undefined || config.counterpartyAddress === undefined) fail("Gate 1 agreement authority is not configured.");
+  const effectiveAt = strictIso(config.now());
+  const authorityExpiry = Date.parse(config.agreementAuthority.expiresAt);
+  const expiresAtMs = Math.min(Date.parse(effectiveAt) + 5 * 60 * 1000, authorityExpiry - 1);
+  if (expiresAtMs <= Date.parse(effectiveAt)) fail("Gate 1 agreement authority is not active long enough.");
+  return Object.freeze({
+    schema: "agent-contract.gate-1-agreement/v1",
+    agreementId: `agreement:gate-1:${config.sessionId}`,
+    proposalDigest,
+    buyerPartyId: "buyer:co",
+    buyerAddress: config.role === "buyer" ? config.address : config.counterpartyAddress,
+    providerPartyId: "provider:proofworks",
+    providerAddress: config.role === "provider" ? config.address : config.counterpartyAddress,
+    work: Object.freeze({
+      service: "sandbox_cross_border_payment_execution",
+      deliverable: "Execute one sandbox transfer and produce a redacted receipt pack",
+      executionDeadline: new Date(Math.min(Date.parse(effectiveAt) + 4 * 60 * 1000, expiresAtMs)).toISOString(),
+      principalIsSandboxOnly: true,
+    }),
+    providerServiceFee: Object.freeze({
+      assetChainId: "84532",
+      assetAddress: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+      assetDecimals: 6,
+      amountAtomic: "10000",
+      separateFromCrossBorderPrincipal: true,
+    }),
+    payerObligations: Object.freeze([Object.freeze({
+      obligationId: "payer-input:sandbox-beneficiary",
+      description: "Provide sandbox beneficiary instructions",
+      dueAt: new Date(Math.min(Date.parse(effectiveAt) + 2 * 60 * 1000, expiresAtMs)).toISOString(),
+      acceptanceRequiredFromProvider: true,
+    })]),
+    providerInputAcknowledgment: Object.freeze({
+      status: "SUFFICIENT",
+      acknowledgedObligationIds: Object.freeze(["payer-input:sandbox-beneficiary"]),
+      acknowledgedAt: effectiveAt,
+    }),
+    evidencePolicy: Object.freeze({
+      policyId: "evidence:gate-1:001",
+      policyDigest: canonicalDigest({ sessionId: config.sessionId, policy: "sandbox-transfer-receipt/v1" }),
+      requiredEvidenceTypes: Object.freeze(["sandbox_transfer_receipt", "receipt_checksum"]),
+    }),
+    verificationPolicy: Object.freeze({
+      policyId: "verification:gate-1:001",
+      policyDigest: canonicalDigest({ sessionId: config.sessionId, policy: "sandbox-receipt-and-checksum/v1" }),
+      evaluatorPartyId: "evaluator:gate-1",
+      evaluatorAddress: `0x${"55".repeat(20)}`,
+      method: "sandbox-receipt-and-checksum/v1",
+    }),
+    conditionalSettlement: Object.freeze({
+      settlementRailId: "base-commerce-sepolia-test-usdc/v1",
+      fundingRequiredBeforeExecution: true,
+      captureOutcome: "PASS",
+      voidOutcome: "FAIL",
+      holdOutcomes: Object.freeze(["INDETERMINATE", "SYSTEM_ERROR"]),
+      fullAmountOnly: true,
+    }),
+    effectiveAt,
+    expiresAt: new Date(expiresAtMs).toISOString(),
+    predecessorDigest: proposalDigest,
+  });
+}
+
+function agreementDecision(config, agreement) {
+  const grant = config.agreementAuthority;
+  if (grant === undefined) fail("Gate 1 agreement authority is not configured.");
+  const now = Date.parse(strictIso(config.now()));
+  if (
+    now < Date.parse(grant.issuedAt) || now >= Date.parse(grant.expiresAt) ||
+    grant.partyId !== config.partyId || getAddress(grant.signerAddress) !== config.address ||
+    (grant.role === "BUYER" ? getAddress(agreement.buyerAddress) : getAddress(agreement.providerAddress)) !== config.address ||
+    BigInt(agreement.providerServiceFee.amountAtomic) > BigInt(grant.maxProviderServiceFeeAtomic) ||
+    agreement.providerServiceFee.assetChainId !== grant.assetChainId ||
+    agreement.providerServiceFee.assetAddress !== grant.assetAddress
+  ) fail("Gate 1 agreement authority denied.");
+  return Object.freeze({
+    allowed: true,
+    role: grant.role,
+    agreementDigest: canonicalDigest(agreement),
+    authorityDigest: canonicalDigest(grant),
+    authorityRef: grant.authorityRef,
+    approvalSource: grant.approvalSource,
   });
 }
 
@@ -441,6 +592,118 @@ export async function createAgentContractA2AAdapter(input = {}) {
       });
       return persistedTask;
     }
+    if (name === "agent_contract_offer_gate_1_agreement") {
+      if (config.role !== "provider") fail("Only the provider role may offer a Gate 1 agreement.");
+      const clean = exactObject(args, ["acknowledgmentTaskId"], "Agreement offer arguments");
+      if (!UUID.test(clean.acknowledgmentTaskId ?? "")) fail("Agreement offer arguments are invalid.");
+      const inbox = await requestJson(config, path("/agents/provider/inbox"));
+      if (!Array.isArray(inbox)) fail("Agent Contract inbox is invalid.");
+      const task = inbox.find((entry) => entry?.id === clean.acknowledgmentTaskId);
+      if (task === undefined) fail("The proposal acknowledgment was not found in the authenticated provider inbox.");
+      const acknowledgmentMessage = taskMessage(task);
+      const acknowledgment = acknowledgmentMessage?.parts?.[0]?.data;
+      if (
+        acknowledgment?.kind !== "proposal_acknowledgment" ||
+        acknowledgment.binding !== false || !DIGEST.test(acknowledgment.proposalDigest ?? "")
+      ) fail("The stored task is not a valid proposal acknowledgment.");
+      const agreement = gate1Agreement(config, acknowledgment.proposalDigest);
+      const decision = agreementDecision(config, agreement);
+      const data = Object.freeze({
+        kind: "agreement_offer",
+        agreement,
+        agreementDigest: canonicalDigest(agreement),
+        binding: true,
+        providerAcceptance: "ACCEPTED",
+      });
+      const message = await signedMessage({
+        account: wallet.account,
+        config,
+        data,
+        recipientRole: "buyer",
+        predecessorMessageDigest: canonicalDigest(acknowledgmentMessage),
+        authorityDecisionDigest: canonicalDigest(decision),
+      });
+      const persistedTask = publicJson(await requestJson(config, path("/agents/buyer/message:send"), {
+        method: "POST",
+        body: { message },
+        a2a: true,
+      }), canaries);
+      const persistedMessage = taskMessage(persistedTask);
+      if (
+        persistedMessage.metadata?.clockchainTrust?.objectDigest !== canonicalDigest(data) ||
+        persistedMessage.metadata.clockchainTrust.predecessorMessageDigest !== canonicalDigest(acknowledgmentMessage) ||
+        persistedMessage.metadata.clockchainTrust.authorityDecisionDigest !== canonicalDigest(decision)
+      ) fail("Persisted agreement offer evidence is invalid.");
+      await ledger.record({
+        kind: "agreement_offer_authorship",
+        toolName: name,
+        argumentsDigest: canonicalDigest(data),
+        persistedObjectDigest: persistedMessage.metadata.clockchainTrust.objectDigest,
+        messageDigest: canonicalDigest(persistedMessage),
+        predecessorMessageDigest: persistedMessage.metadata.clockchainTrust.predecessorMessageDigest,
+        authorityDecisionDigest: persistedMessage.metadata.clockchainTrust.authorityDecisionDigest,
+        authoredAt: strictIso(message.metadata.clockchainTrust.sentAt),
+        persistedAt: strictIso(config.now()),
+      });
+      return persistedTask;
+    }
+    if (name === "agent_contract_accept_gate_1_agreement") {
+      if (config.role !== "buyer") fail("Only the buyer role may accept a Gate 1 agreement.");
+      if (config.agreementAuthority === undefined || config.counterpartyAddress === undefined) fail("Gate 1 agreement authority is not configured.");
+      const clean = exactObject(args, ["offerTaskId"], "Agreement acceptance arguments");
+      if (!UUID.test(clean.offerTaskId ?? "")) fail("Agreement acceptance arguments are invalid.");
+      const inbox = await requestJson(config, path("/agents/buyer/inbox"));
+      if (!Array.isArray(inbox)) fail("Agent Contract inbox is invalid.");
+      const task = inbox.find((entry) => entry?.id === clean.offerTaskId);
+      if (task === undefined) fail("The agreement offer was not found in the authenticated buyer inbox.");
+      const offerMessage = taskMessage(task);
+      const offer = offerMessage?.parts?.[0]?.data;
+      if (
+        offer?.kind !== "agreement_offer" || offer.binding !== true ||
+        !isPlainObject(offer.agreement) || offer.agreementDigest !== canonicalDigest(offer.agreement) ||
+        getAddress(offer.agreement.buyerAddress) !== config.address ||
+        getAddress(offer.agreement.providerAddress) !== config.counterpartyAddress
+      ) fail("The stored task is not a valid Gate 1 agreement offer.");
+      const decision = agreementDecision(config, offer.agreement);
+      const data = Object.freeze({
+        kind: "agreement_acceptance",
+        agreementId: offer.agreement.agreementId,
+        agreementDigest: offer.agreementDigest,
+        decision: "ACCEPTED",
+        binding: true,
+      });
+      const message = await signedMessage({
+        account: wallet.account,
+        config,
+        data,
+        recipientRole: "provider",
+        predecessorMessageDigest: canonicalDigest(offerMessage),
+        authorityDecisionDigest: canonicalDigest(decision),
+      });
+      const persistedTask = publicJson(await requestJson(config, path("/agents/provider/message:send"), {
+        method: "POST",
+        body: { message },
+        a2a: true,
+      }), canaries);
+      const persistedMessage = taskMessage(persistedTask);
+      if (
+        persistedMessage.metadata?.clockchainTrust?.objectDigest !== canonicalDigest(data) ||
+        persistedMessage.metadata.clockchainTrust.predecessorMessageDigest !== canonicalDigest(offerMessage) ||
+        persistedMessage.metadata.clockchainTrust.authorityDecisionDigest !== canonicalDigest(decision)
+      ) fail("Persisted agreement acceptance evidence is invalid.");
+      await ledger.record({
+        kind: "agreement_acceptance_authorship",
+        toolName: name,
+        argumentsDigest: canonicalDigest(data),
+        persistedObjectDigest: persistedMessage.metadata.clockchainTrust.objectDigest,
+        messageDigest: canonicalDigest(persistedMessage),
+        predecessorMessageDigest: persistedMessage.metadata.clockchainTrust.predecessorMessageDigest,
+        authorityDecisionDigest: persistedMessage.metadata.clockchainTrust.authorityDecisionDigest,
+        authoredAt: strictIso(message.metadata.clockchainTrust.sentAt),
+        persistedAt: strictIso(config.now()),
+      });
+      return persistedTask;
+    }
     fail("Unknown Agent Contract A2A tool.");
   }
 
@@ -509,10 +772,18 @@ export function agentContractA2AConfigFromEnvironment(env = process.env) {
     certificateDigest: required("AGENT_CONTRACT_A2A_CERTIFICATE_DIGEST"),
     continuationDigest: required("AGENT_CONTRACT_A2A_CONTINUATION_DIGEST"),
     address: required("AGENT_CONTRACT_A2A_ADDRESS"),
+    counterpartyAddress: env.AGENT_CONTRACT_A2A_COUNTERPARTY_ADDRESS,
     erc8004AgentId: required("AGENT_CONTRACT_A2A_ERC8004_AGENT_ID"),
     partyId: required("AGENT_CONTRACT_A2A_PARTY_ID"),
     opportunityId: required("AGENT_CONTRACT_A2A_OPPORTUNITY_ID"),
     roleCapability: required("AGENT_CONTRACT_A2A_ROLE_TOKEN"),
+    agreementAuthority: env.AGENT_CONTRACT_A2A_AGREEMENT_AUTHORITY === undefined ? undefined : (() => {
+      try {
+        return JSON.parse(required("AGENT_CONTRACT_A2A_AGREEMENT_AUTHORITY"));
+      } catch {
+        fail("Invalid AGENT_CONTRACT_A2A_AGREEMENT_AUTHORITY.");
+      }
+    })(),
     walletPath: required("AGENT_CONTRACT_A2A_WALLET_PATH"),
     ...(witnessValues[0] === undefined
       ? {}

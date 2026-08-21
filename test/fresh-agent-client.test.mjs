@@ -40,6 +40,7 @@ import {
   applyFacilitatedA2APromptAuthorization,
   monitor as runFreshAgentMonitor,
   runFreshAgentCliAttempt,
+  writeLiveBindingAgreementArtifact,
   writeLiveRuntimeWitnessArtifact,
 } from "../scripts/run-fresh-agent-handshake.mjs";
 import { AgentContractA2AFlowError } from "../src/testing/agent-contract-a2a-flow.mjs";
@@ -910,6 +911,7 @@ test("facilitated A2A CLI extension is explicit and rejects partial configuratio
     AGENT_CONTRACT_A2A_LIVE_WITNESS_ROOT: "/tmp/gate-1-live-witness",
     AGENT_CONTRACT_A2A_AGENT_CONTRACT_COMMIT: "1".repeat(40),
     AGENT_CONTRACT_A2A_CONTINUUM_COMMIT: "2".repeat(40),
+    AGENT_CONTRACT_A2A_BINDING: "1",
   });
   assert.equal(witnessExtension.liveRuntimeWitnessCapture, true);
   assert.equal(witnessExtension.liveRuntimeWitnessRoot, "/tmp/gate-1-live-witness");
@@ -917,6 +919,7 @@ test("facilitated A2A CLI extension is explicit and rejects partial configuratio
     agentContractCommit: "1".repeat(40),
     continuumCommit: "2".repeat(40),
   });
+  assert.equal(witnessExtension.bindingAgreement, true);
 });
 
 test("publishes one exclusive private live witness artifact", async (t) => {
@@ -939,6 +942,24 @@ test("publishes one exclusive private live witness artifact", async (t) => {
   assert.deepEqual(JSON.parse(await readFile(published.path, "utf8")), witness);
   assert.equal((await stat(published.path)).mode & 0o777, 0o600);
   await assert.rejects(writeLiveRuntimeWitnessArtifact({ root, witness }));
+});
+
+test("publishes one exclusive privacy-safe binding agreement artifact", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "live-runtime-binding-publication-"));
+  const root = join(parent, "accepted");
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const bindingAgreement = {
+    schema: "agent-contract.live-runtime-binding-agreement/v1",
+    status: "accepted",
+    externalBusinessActionPerformed: false,
+  };
+
+  const published = await writeLiveBindingAgreementArtifact({ root, bindingAgreement });
+
+  assert.equal(published.path, join(root, "live-runtime-binding-agreement.json"));
+  assert.deepEqual(JSON.parse(await readFile(published.path, "utf8")), bindingAgreement);
+  assert.equal((await stat(published.path)).mode & 0o777, 0o600);
+  await assert.rejects(writeLiveBindingAgreementArtifact({ root, bindingAgreement }));
 });
 
 test("facilitated prompts preserve the deployed 90-second Clockchain mandate exactly", () => {

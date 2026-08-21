@@ -87,11 +87,13 @@ function publicHandshakeEvidence() {
   });
 }
 
-function exchangeFixture({ mutateContinuation = (_role, value) => value } = {}) {
+function exchangeFixture({ mutateContinuation = (_role, value) => value, binding = false } = {}) {
   const calls = [];
   const continuations = [];
   let proposalTask = null;
   let acknowledgmentTask = null;
+  let offerTask = null;
+  let acceptanceTask = null;
   const fetchImpl = async (url, init) => {
     calls.push({ url: String(url), init });
     const path = new URL(url).pathname;
@@ -106,8 +108,25 @@ function exchangeFixture({ mutateContinuation = (_role, value) => value } = {}) 
         },
       });
     }
-    if (path.endsWith("/agents/buyer/inbox")) return Response.json(proposalTask === null ? [] : [proposalTask]);
-    if (path.endsWith("/agents/provider/inbox")) return Response.json(acknowledgmentTask === null ? [] : [acknowledgmentTask]);
+    if (path.endsWith("/agents/buyer/inbox")) return Response.json([proposalTask, offerTask].filter(Boolean));
+    if (path.endsWith("/agents/provider/inbox")) return Response.json([acknowledgmentTask, acceptanceTask].filter(Boolean));
+    if (path.endsWith("/agreement")) {
+      const offer = offerTask.history[0];
+      const acceptance = acceptanceTask.history[0];
+      return Response.json({
+        schema: "agent-contract.facilitated-a2a-agreement-export/v1",
+        sessionId: SESSION_ID,
+        agreementId: offer.parts[0].data.agreement.agreementId,
+        agreementDigest: offer.parts[0].data.agreementDigest,
+        offerMessageDigest: canonicalDigest(offer),
+        acceptanceMessageDigest: canonicalDigest(acceptance),
+        providerAuthorityDecisionDigest: offer.metadata.clockchainTrust.authorityDecisionDigest,
+        buyerAuthorityDecisionDigest: acceptance.metadata.clockchainTrust.authorityDecisionDigest,
+      });
+    }
+    if (path.endsWith("/session") && init.method === "DELETE") {
+      return Response.json({ sessionId: SESSION_ID, destroyed: true });
+    }
     if (path.endsWith("/export")) {
       return Response.json({
         schema: "agent-contract.facilitated-a2a-export/v1",
@@ -154,7 +173,7 @@ function exchangeFixture({ mutateContinuation = (_role, value) => value } = {}) 
         status: { timestamp: "2026-08-15T20:00:05.000Z" },
         history: [message],
       };
-      return mutateContinuation(role, {
+      const value = {
         completed: true,
         activity: { tools: ["agent_contract_discover_counterparty", "agent_contract_send_proposal"] },
         runtime: {
@@ -187,7 +206,62 @@ function exchangeFixture({ mutateContinuation = (_role, value) => value } = {}) 
             },
           ],
         },
-      });
+      };
+      if (binding) {
+        while (acknowledgmentTask === null) await new Promise((resolve) => setImmediate(resolve));
+        const acknowledgmentMessage = acknowledgmentTask.history[0];
+        const agreement = {
+          agreementId: `agreement:gate-1:${SESSION_ID}`,
+          proposalDigest: canonicalDigest(data.proposal),
+        };
+        const offerData = {
+          kind: "agreement_offer",
+          agreement,
+          agreementDigest: canonicalDigest(agreement),
+          binding: true,
+          providerAcceptance: "ACCEPTED",
+        };
+        const offerMessage = {
+          messageId: "eeeeeeee-ffff-4000-8111-222222222222",
+          contextId: SESSION_ID,
+          parts: [{ data: offerData }],
+          metadata: { clockchainTrust: {
+            objectDigest: canonicalDigest(offerData),
+            predecessorMessageDigest: canonicalDigest(acknowledgmentMessage),
+            authorityDecisionDigest: `0x${"6".repeat(64)}`,
+            sentAt: "2026-08-15T20:00:08.000Z",
+          } },
+        };
+        offerTask = {
+          id: "eeeeeeee-ffff-4000-8111-222222222223",
+          contextId: SESSION_ID,
+          status: { timestamp: "2026-08-15T20:00:09.000Z" },
+          history: [offerMessage],
+        };
+        value.activity.tools.push("agent_contract_read_inbox", "agent_contract_offer_gate_1_agreement");
+        value.ledger.entries.push(
+          {
+            kind: "inbox_read",
+            toolName: "agent_contract_read_inbox",
+            argumentsDigest: canonicalDigest({}),
+            occurredAt: "2026-08-15T20:00:07.500Z",
+            runtimeId: value.runtime.runtimeId,
+          },
+          {
+            kind: "agreement_offer_authorship",
+            toolName: "agent_contract_offer_gate_1_agreement",
+            argumentsDigest: offerMessage.metadata.clockchainTrust.objectDigest,
+            persistedObjectDigest: offerMessage.metadata.clockchainTrust.objectDigest,
+            messageDigest: canonicalDigest(offerMessage),
+            predecessorMessageDigest: canonicalDigest(acknowledgmentMessage),
+            authorityDecisionDigest: offerMessage.metadata.clockchainTrust.authorityDecisionDigest,
+            authoredAt: "2026-08-15T20:00:08.000Z",
+            persistedAt: "2026-08-15T20:00:09.000Z",
+            runtimeId: value.runtime.runtimeId,
+          },
+        );
+      }
+      return mutateContinuation(role, value);
     } else {
       const predecessorMessageDigest = canonicalDigest(proposalTask.history[0]);
       const data = { kind: "proposal_acknowledgment", binding: false };
@@ -207,7 +281,7 @@ function exchangeFixture({ mutateContinuation = (_role, value) => value } = {}) 
         status: { timestamp: "2026-08-15T20:00:07.000Z" },
         history: [message],
       };
-      return mutateContinuation(role, {
+      const value = {
         completed: true,
         activity: { tools: ["agent_contract_read_inbox", "agent_contract_acknowledge_proposal"] },
         runtime: {
@@ -240,7 +314,58 @@ function exchangeFixture({ mutateContinuation = (_role, value) => value } = {}) 
             },
           ],
         },
-      });
+      };
+      if (binding) {
+        while (offerTask === null) await new Promise((resolve) => setImmediate(resolve));
+        const offerMessage = offerTask.history[0];
+        const acceptanceData = {
+          kind: "agreement_acceptance",
+          agreementId: offerMessage.parts[0].data.agreement.agreementId,
+          agreementDigest: offerMessage.parts[0].data.agreementDigest,
+          decision: "ACCEPTED",
+          binding: true,
+        };
+        const acceptanceMessage = {
+          messageId: "ffffffff-0000-4111-8222-333333333333",
+          contextId: SESSION_ID,
+          parts: [{ data: acceptanceData }],
+          metadata: { clockchainTrust: {
+            objectDigest: canonicalDigest(acceptanceData),
+            predecessorMessageDigest: canonicalDigest(offerMessage),
+            authorityDecisionDigest: `0x${"5".repeat(64)}`,
+            sentAt: "2026-08-15T20:00:10.000Z",
+          } },
+        };
+        acceptanceTask = {
+          id: "ffffffff-0000-4111-8222-333333333334",
+          contextId: SESSION_ID,
+          status: { timestamp: "2026-08-15T20:00:11.000Z" },
+          history: [acceptanceMessage],
+        };
+        value.activity.tools.push("agent_contract_read_inbox", "agent_contract_accept_gate_1_agreement");
+        value.ledger.entries.push(
+          {
+            kind: "inbox_read",
+            toolName: "agent_contract_read_inbox",
+            argumentsDigest: canonicalDigest({}),
+            occurredAt: "2026-08-15T20:00:09.500Z",
+            runtimeId: value.runtime.runtimeId,
+          },
+          {
+            kind: "agreement_acceptance_authorship",
+            toolName: "agent_contract_accept_gate_1_agreement",
+            argumentsDigest: acceptanceMessage.metadata.clockchainTrust.objectDigest,
+            persistedObjectDigest: acceptanceMessage.metadata.clockchainTrust.objectDigest,
+            messageDigest: canonicalDigest(acceptanceMessage),
+            predecessorMessageDigest: canonicalDigest(offerMessage),
+            authorityDecisionDigest: acceptanceMessage.metadata.clockchainTrust.authorityDecisionDigest,
+            authoredAt: "2026-08-15T20:00:10.000Z",
+            persistedAt: "2026-08-15T20:00:11.000Z",
+            runtimeId: value.runtime.runtimeId,
+          },
+        );
+      }
+      return mutateContinuation(role, value);
     }
   };
   return { calls, continuations, continueRole, fetchImpl };
@@ -351,6 +476,52 @@ test("assembles the exact privacy-safe live two-runtime witness", async () => {
     secretScan: "PASS",
   });
   assert.equal(JSON.stringify(witness).includes("operator-secret"), false);
+});
+
+test("keeps the same two live runtimes and exact G3 lineage through one binding G4 agreement", async () => {
+  const fixture = exchangeFixture({ binding: true });
+  const times = ["2026-08-15T20:00:03.000Z", "2026-08-15T20:00:12.000Z"];
+  const result = await runAgentContractA2AFlow({
+    evidence: publicHandshakeEvidence(),
+    continueRole: fixture.continueRole,
+    baseUrl: "http://127.0.0.1:3017",
+    operatorToken: "operator-secret",
+    fetchImpl: fixture.fetchImpl,
+    now: () => times.shift(),
+    wait: async () => {},
+    bindingAgreement: true,
+    witnessSource: {
+      agentContractCommit: "5058b4672ef974ea6f8138fdf6caa6a20d5f90f6",
+      continuumCommit: "8c25194000000000000000000000000000000000",
+    },
+  });
+
+  assert.equal(fixture.continuations.length, 2);
+  assert.match(fixture.continuations[0].request.prompt, /one provider runtime/i);
+  assert.match(fixture.continuations[1].request.prompt, /one buyer runtime/i);
+  assert.match(fixture.continuations[0].request.prompt, /do not perform execution/i);
+  const activation = JSON.parse(fixture.calls.find((call) => call.url.endsWith("/activate")).init.body);
+  assert.equal(activation.agreementAuthorities.buyer.approvalSource, "HUMAN_APPROVAL");
+  assert.equal(activation.agreementAuthorities.provider.approvalSource, "HUMAN_APPROVAL");
+  assert.equal(result.bindingAgreement.status, "accepted");
+  assert.equal(result.bindingAgreement.proposalTaskId, result.proposalTaskId);
+  assert.equal(result.bindingAgreement.acknowledgmentTaskId, result.acknowledgmentTaskId);
+  assert.equal(
+    result.bindingAgreement.lineage.acknowledgmentMessageDigest,
+    result.liveRuntimeWitness.authorship.acknowledgment.messageDigest,
+  );
+  assert.equal(
+    result.bindingAgreement.runtimes.provider.runtimeId,
+    result.liveRuntimeWitness.runtimes.provider.runtimeId,
+  );
+  assert.equal(
+    result.bindingAgreement.runtimes.buyer.runtimeId,
+    result.liveRuntimeWitness.runtimes.buyer.runtimeId,
+  );
+  assert.equal(result.bindingAgreement.externalBusinessActionPerformed, false);
+  assert.deepEqual(result.cleanup, { sessionDestroyed: true });
+  assert.equal(JSON.stringify(result).includes("provider-secret"), false);
+  assert.equal(JSON.stringify(result).includes("buyer-secret"), false);
 });
 
 test("accepts a provider's additional allowlisted read-only inbox observation", async () => {

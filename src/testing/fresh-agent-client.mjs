@@ -91,6 +91,8 @@ const AGENT_CONTRACT_A2A_TOOL_NAMES = Object.freeze([
   "agent_contract_send_proposal",
   "agent_contract_read_inbox",
   "agent_contract_acknowledge_proposal",
+  "agent_contract_offer_gate_1_agreement",
+  "agent_contract_accept_gate_1_agreement",
 ]);
 const HELPER_CERTIFICATE_BINDINGS = new WeakMap();
 export const CLAUDE_CONTEXT_MARKER = "CLOCKCHAIN_CONTEXT_RECEIVED";

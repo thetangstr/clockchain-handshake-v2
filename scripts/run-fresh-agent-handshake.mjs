@@ -83,6 +83,7 @@ export function agentContractA2AExtensionFromEnvironment(env = process.env) {
   const enabled = env.AGENT_CONTRACT_A2A_ENABLED;
   const baseUrl = env.AGENT_CONTRACT_A2A_BASE_URL;
   const operatorToken = env.AGENT_CONTRACT_A2A_OPERATOR_TOKEN;
+  const bindingAgreement = env.AGENT_CONTRACT_A2A_BINDING;
   const witnessValues = {
     enabled: env.AGENT_CONTRACT_A2A_LIVE_WITNESS,
     root: env.AGENT_CONTRACT_A2A_LIVE_WITNESS_ROOT,
@@ -90,12 +91,13 @@ export function agentContractA2AExtensionFromEnvironment(env = process.env) {
     continuumCommit: env.AGENT_CONTRACT_A2A_CONTINUUM_COMMIT,
   };
   if (
-    enabled === undefined && baseUrl === undefined && operatorToken === undefined &&
+    enabled === undefined && baseUrl === undefined && operatorToken === undefined && bindingAgreement === undefined &&
     Object.values(witnessValues).every((entry) => entry === undefined)
   ) return null;
   if (
     enabled !== "1" || typeof baseUrl !== "string" || baseUrl.length === 0 ||
-    typeof operatorToken !== "string" || operatorToken.length === 0
+    typeof operatorToken !== "string" || operatorToken.length === 0 ||
+    (bindingAgreement !== undefined && bindingAgreement !== "1")
   ) throw new Error("invalid");
   const witnessConfigured = Object.values(witnessValues).some((entry) => entry !== undefined);
   if (witnessConfigured && (
@@ -120,12 +122,14 @@ export function agentContractA2AExtensionFromEnvironment(env = process.env) {
           baseUrl,
           operatorToken,
           ...(source === undefined ? {} : { witnessSource: source }),
+          bindingAgreement: bindingAgreement === "1",
         });
       } catch (error) {
         throw agentContractA2ADiagnostic(error);
       }
     },
     liveRuntimeWitnessCapture: witnessConfigured,
+    bindingAgreement: bindingAgreement === "1",
     ...(witnessConfigured
       ? { liveRuntimeWitnessRoot: witnessValues.root, witnessSource: source }
       : {}),
@@ -155,6 +159,24 @@ export async function writeLiveRuntimeWitnessArtifact({ root, witness } = {}) {
   if (rootMetadata.isSymbolicLink() || !rootMetadata.isDirectory()) throw new Error("invalid");
   const path = join(root, "live-runtime-a2a-witness.json");
   const bytes = Buffer.from(`${JSON.stringify(witness)}\n`, "utf8");
+  if (bytes.length > 512 * 1024) throw new Error("invalid");
+  await writeFile(path, bytes, { flag: "wx", mode: 0o600 });
+  return Object.freeze({ path, bytes: bytes.length });
+}
+
+export async function writeLiveBindingAgreementArtifact({ root, bindingAgreement } = {}) {
+  if (
+    typeof root !== "string" || !isAbsolute(root) ||
+    bindingAgreement?.schema !== "agent-contract.live-runtime-binding-agreement/v1" ||
+    bindingAgreement?.status !== "accepted" ||
+    bindingAgreement?.externalBusinessActionPerformed !== false
+  ) throw new Error("invalid");
+  assertSecretFree(bindingAgreement);
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  const rootMetadata = await lstat(root);
+  if (rootMetadata.isSymbolicLink() || !rootMetadata.isDirectory()) throw new Error("invalid");
+  const path = join(root, "live-runtime-binding-agreement.json");
+  const bytes = Buffer.from(`${JSON.stringify(bindingAgreement)}\n`, "utf8");
   if (bytes.length > 512 * 1024) throw new Error("invalid");
   await writeFile(path, bytes, { flag: "wx", mode: 0o600 });
   return Object.freeze({ path, bytes: bytes.length });
@@ -449,6 +471,12 @@ async function main() {
         root: agentContractA2A.liveRuntimeWitnessRoot,
         witness: evidence.facilitatedA2A?.liveRuntimeWitness,
       });
+      if (agentContractA2A.bindingAgreement === true) {
+        await writeLiveBindingAgreementArtifact({
+          root: agentContractA2A.liveRuntimeWitnessRoot,
+          bindingAgreement: evidence.facilitatedA2A?.bindingAgreement,
+        });
+      }
     }
   } catch (error) {
     process.stderr.write(SAFE_ERROR);

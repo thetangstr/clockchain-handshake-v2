@@ -39,10 +39,26 @@ function baseConfig(role, walletPath, fetchImpl, overrides = {}) {
     certificateDigest: CERTIFICATE_DIGEST,
     continuationDigest: CONTINUATION_DIGEST,
     address: account.address,
+    counterpartyAddress: role === "provider" ? BUYER.address : PROVIDER.address,
     erc8004AgentId: role === "provider" ? "9453" : "9452",
     partyId: role === "provider" ? "provider:proofworks" : "buyer:co",
     opportunityId: "opportunity:1",
     roleCapability: `${role}-capability-secret`,
+    agreementAuthority: {
+      schema: "agent-contract.gate-1-agreement-authority/v1",
+      authorityRef: `authority:${role}:gate-1`,
+      partyId: role === "provider" ? "provider:proofworks" : "buyer:co",
+      signerAddress: account.address,
+      role: role === "provider" ? "PROVIDER" : "BUYER",
+      allowedActions: ["ACCEPT_GATE_1_AGREEMENT"],
+      maxProviderServiceFeeAtomic: "10000",
+      assetChainId: "84532",
+      assetAddress: "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+      issuedAt: "2026-08-15T19:59:59.000Z",
+      expiresAt: "2026-08-15T20:10:00.000Z",
+      revokedAt: null,
+      approvalSource: "AGENT_MANDATE",
+    },
     walletPath,
     now: () => NOW,
     fetchImpl,
@@ -50,7 +66,7 @@ function baseConfig(role, walletPath, fetchImpl, overrides = {}) {
   };
 }
 
-test("advertises exactly the four role-local Agent Contract tools", () => {
+test("advertises the role-local proposal and binding-agreement tools", () => {
   assert.deepEqual(
     AGENT_CONTRACT_A2A_TOOLS.map((tool) => tool.name),
     [
@@ -58,9 +74,11 @@ test("advertises exactly the four role-local Agent Contract tools", () => {
       "agent_contract_send_proposal",
       "agent_contract_read_inbox",
       "agent_contract_acknowledge_proposal",
+      "agent_contract_offer_gate_1_agreement",
+      "agent_contract_accept_gate_1_agreement",
     ],
   );
-  assert.equal(new Set(AGENT_CONTRACT_A2A_TOOLS.map((tool) => tool.name)).size, 4);
+  assert.equal(new Set(AGENT_CONTRACT_A2A_TOOLS.map((tool) => tool.name)).size, 6);
   const proposalTool = AGENT_CONTRACT_A2A_TOOLS.find(
     (tool) => tool.name === "agent_contract_send_proposal",
   );
@@ -74,6 +92,100 @@ test("advertises exactly the four role-local Agent Contract tools", () => {
   );
   assert.equal(proposalTool.inputSchema.properties.deliveryHours.maximum, 24);
   assert.equal(proposalTool.inputSchema.properties.price.pattern, "^(?:0|[1-9]|1[0-9]|20)$");
+});
+
+test("provider offers and buyer accepts one exact predecessor-bound Gate 1 agreement", async (t) => {
+  const providerWallet = await walletFile(t, PROVIDER_KEY);
+  const buyerWallet = await walletFile(t, BUYER_KEY);
+  const proposalDigest = `0x${"1".repeat(64)}`;
+  const acknowledgmentMessage = {
+    messageId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    contextId: SESSION_ID,
+    role: "ROLE_USER",
+    parts: [{ data: {
+      kind: "proposal_acknowledgment",
+      decision: "received_for_review",
+      binding: false,
+      proposalDigest,
+    } }],
+    metadata: { clockchainTrust: {
+      schema: "agent-contract.a2a-trust-binding/v1",
+      sessionId: SESSION_ID,
+      certificateDigest: CERTIFICATE_DIGEST,
+      continuationDigest: CONTINUATION_DIGEST,
+      senderRole: "buyer",
+      senderAddress: BUYER.address,
+      senderErc8004AgentId: "9452",
+      recipientRole: "provider",
+      objectDigest: `0x${"2".repeat(64)}`,
+      predecessorMessageDigest: `0x${"3".repeat(64)}`,
+      authorityDecisionDigest: null,
+      sentAt: "2026-08-15T20:00:01.000Z",
+      signature: `0x${"4".repeat(130)}`,
+    } },
+  };
+  const acknowledgmentTask = {
+    id: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+    contextId: SESSION_ID,
+    status: { state: "TASK_STATE_COMPLETED", timestamp: NOW },
+    history: [acknowledgmentMessage],
+  };
+  let offerTask;
+  const provider = await createAgentContractA2AAdapter(baseConfig(
+    "provider",
+    providerWallet,
+    async (url, init) => {
+      if (String(url).endsWith("/agents/provider/inbox")) return Response.json([acknowledgmentTask]);
+      const body = JSON.parse(init.body);
+      offerTask = {
+        id: "cccccccc-dddd-4eee-8fff-000000000000",
+        contextId: SESSION_ID,
+        status: { state: "TASK_STATE_SUBMITTED", timestamp: NOW },
+        history: [body.message],
+      };
+      return Response.json(offerTask, { status: 201 });
+    },
+  ));
+
+  const offered = await provider.callTool("agent_contract_offer_gate_1_agreement", {
+    acknowledgmentTaskId: acknowledgmentTask.id,
+  });
+  const offer = offered.history[0];
+  assert.equal(offer.parts[0].data.kind, "agreement_offer");
+  assert.equal(offer.parts[0].data.binding, true);
+  assert.equal(offer.parts[0].data.agreement.proposalDigest, proposalDigest);
+  assert.equal(
+    offer.metadata.clockchainTrust.predecessorMessageDigest,
+    provider.canonicalDigest(acknowledgmentMessage),
+  );
+  assert.notEqual(offer.metadata.clockchainTrust.authorityDecisionDigest, null);
+
+  const buyer = await createAgentContractA2AAdapter(baseConfig(
+    "buyer",
+    buyerWallet,
+    async (url, init) => {
+      if (String(url).endsWith("/agents/buyer/inbox")) return Response.json([offerTask]);
+      const body = JSON.parse(init.body);
+      return Response.json({
+        id: "dddddddd-eeee-4fff-8000-111111111111",
+        contextId: SESSION_ID,
+        status: { state: "TASK_STATE_COMPLETED", timestamp: NOW },
+        history: [body.message],
+      }, { status: 201 });
+    },
+  ));
+  const accepted = await buyer.callTool("agent_contract_accept_gate_1_agreement", {
+    offerTaskId: offerTask.id,
+  });
+  const acceptance = accepted.history[0];
+  assert.equal(acceptance.parts[0].data.kind, "agreement_acceptance");
+  assert.equal(acceptance.parts[0].data.binding, true);
+  assert.equal(acceptance.parts[0].data.agreementDigest, offer.parts[0].data.agreementDigest);
+  assert.equal(
+    acceptance.metadata.clockchainTrust.predecessorMessageDigest,
+    buyer.canonicalDigest(offer),
+  );
+  assert.notEqual(acceptance.metadata.clockchainTrust.authorityDecisionDigest, null);
 });
 
 test("proposal vocabulary matches the platform schema before any request is sent", async (t) => {
