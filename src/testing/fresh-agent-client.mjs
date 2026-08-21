@@ -2378,6 +2378,13 @@ export function summarizePostHandshakeOutput(value) {
   let eventCount = 0;
   let mcpToolCallCount = 0;
   const tools = new Set();
+  const recordTool = (tool) => {
+    mcpToolCallCount += 1;
+    const allowed = AGENT_CONTRACT_A2A_TOOL_NAMES.find(
+      (name) => tool === name || tool.endsWith(`__${name}`),
+    );
+    if (allowed !== undefined) tools.add(allowed);
+  };
   for (const line of value.split(/\r?\n/u)) {
     if (line.length === 0) continue;
     let event;
@@ -2385,10 +2392,14 @@ export function summarizePostHandshakeOutput(value) {
     eventCount += 1;
     if (event?.item?.type === "agent_message") agentMessageCount += 1;
     if (event?.item?.type === "mcp_tool_call") {
-      mcpToolCallCount += 1;
-      const tool = typeof event.item.tool === "string" ? event.item.tool : "";
-      const allowed = AGENT_CONTRACT_A2A_TOOL_NAMES.find((name) => tool === name || tool.endsWith(`__${name}`));
-      if (allowed !== undefined) tools.add(allowed);
+      recordTool(typeof event.item.tool === "string" ? event.item.tool : "");
+    }
+    if (Array.isArray(event?.message?.content)) {
+      for (const block of event.message.content) {
+        if (block?.type === "tool_use" && typeof block.name === "string") {
+          recordTool(block.name);
+        }
+      }
     }
     if (
       event?.type === "turn.failed" || event?.type === "error" ||
@@ -2915,6 +2926,7 @@ export async function runFreshAgentHandshake({
   monitor,
   hostEnvironment = process.env,
   hostHome = homedir(),
+  liveRuntimeWitnessCapture = false,
   parent,
   postHandshakeContinuation = null,
   postHandshakeFlow = null,
@@ -2939,6 +2951,7 @@ export async function runFreshAgentHandshake({
   ) fail();
   if (postHandshakeFlow !== null && typeof postHandshakeFlow !== "function") fail();
   if (postHandshakeContinuation !== null && typeof postHandshakeContinuation !== "function") fail();
+  if (typeof liveRuntimeWitnessCapture !== "boolean" || (liveRuntimeWitnessCapture && postHandshakeFlow === null)) fail();
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60 * 60 * 1000) fail();
   const pin = validateReleaseAgreement(release);
   const runtime = runtimeExecPath === undefined && runtimeVersion === undefined
@@ -3055,9 +3068,16 @@ export async function runFreshAgentHandshake({
       const runtimeDescriptor = POST_HANDSHAKE_RUNTIME[current.client];
       if (runtimeDescriptor === undefined) fail();
       const wallet = await findSingleAgentWallet(room.workspace);
+      const witnessLedgerPath = join(room.workspace, ".agent-contract-a2a-witness.json");
       const adapterEnvironment = Object.freeze({
         ...request.environment,
         AGENT_CONTRACT_A2A_WALLET_PATH: wallet.path,
+        ...(liveRuntimeWitnessCapture
+          ? {
+              AGENT_CONTRACT_A2A_RUNTIME_ID: runtimeId,
+              AGENT_CONTRACT_A2A_WITNESS_LEDGER_PATH: witnessLedgerPath,
+            }
+          : {}),
       });
       const environment = Object.freeze({
         ...current.env,
@@ -3123,6 +3143,30 @@ export async function runFreshAgentHandshake({
         runId: run.runId,
         runtimeId,
       })).digest("hex")}`;
+      let ledger;
+      if (liveRuntimeWitnessCapture) {
+        try {
+          ledger = JSON.parse(await readPrivateText({ path: witnessLedgerPath, maxBytes: 64 * 1024 }));
+        } catch {
+          throw diagnostic("agent-exit", "validation", "A2A_WITNESS_LEDGER_INVALID");
+        }
+        if (
+          ledger?.schema !== "agent-contract.a2a-authorship-ledger/v1" ||
+          ledger.runtimeId !== runtimeId || !Array.isArray(ledger.entries) ||
+          ledger.entries.length < 1 ||
+          ledger.entries.some((entry) => entry?.runtimeId !== runtimeId)
+        ) throw diagnostic("agent-exit", "validation", "A2A_WITNESS_LEDGER_INVALID");
+        assertSecretFree(ledger, [
+          ...canaries,
+          wallet.privateKey,
+          wallet.path,
+          request.environment.AGENT_CONTRACT_A2A_ROLE_TOKEN,
+        ]);
+        ledger = Object.freeze({
+          ...ledger,
+          entries: Object.freeze(ledger.entries.map((entry) => Object.freeze({ ...entry }))),
+        });
+      }
       return Object.freeze({
         ...completed,
         runtime: Object.freeze({
@@ -3130,6 +3174,7 @@ export async function runFreshAgentHandshake({
           runtimeId,
           processDigest,
         }),
+        ...(ledger === undefined ? {} : { ledger }),
       });
     }
     const timedOut = new Promise((_, rejectPromise) => {

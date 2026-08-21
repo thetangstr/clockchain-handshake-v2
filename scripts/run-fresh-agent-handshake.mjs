@@ -2,9 +2,9 @@
 
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -24,6 +24,7 @@ import {
   FACILITATED_A2A_AUTHORIZATION_STATEMENT,
   runAgentContractA2AFlow,
 } from "../src/testing/agent-contract-a2a-flow.mjs";
+import { assertSecretFree } from "../src/core/redact.mjs";
 
 const execFileAsync = promisify(execFile);
 const SAFE_ERROR = "Fresh agent compatibility check failed safely.\n";
@@ -81,11 +82,33 @@ export function agentContractA2AExtensionFromEnvironment(env = process.env) {
   const enabled = env.AGENT_CONTRACT_A2A_ENABLED;
   const baseUrl = env.AGENT_CONTRACT_A2A_BASE_URL;
   const operatorToken = env.AGENT_CONTRACT_A2A_OPERATOR_TOKEN;
-  if (enabled === undefined && baseUrl === undefined && operatorToken === undefined) return null;
+  const witnessValues = {
+    enabled: env.AGENT_CONTRACT_A2A_LIVE_WITNESS,
+    root: env.AGENT_CONTRACT_A2A_LIVE_WITNESS_ROOT,
+    agentContractCommit: env.AGENT_CONTRACT_A2A_AGENT_CONTRACT_COMMIT,
+    continuumCommit: env.AGENT_CONTRACT_A2A_CONTINUUM_COMMIT,
+  };
+  if (
+    enabled === undefined && baseUrl === undefined && operatorToken === undefined &&
+    Object.values(witnessValues).every((entry) => entry === undefined)
+  ) return null;
   if (
     enabled !== "1" || typeof baseUrl !== "string" || baseUrl.length === 0 ||
     typeof operatorToken !== "string" || operatorToken.length === 0
   ) throw new Error("invalid");
+  const witnessConfigured = Object.values(witnessValues).some((entry) => entry !== undefined);
+  if (witnessConfigured && (
+    witnessValues.enabled !== "1" ||
+    typeof witnessValues.root !== "string" || !isAbsolute(witnessValues.root) ||
+    !/^[0-9a-f]{40}$/.test(witnessValues.agentContractCommit ?? "") ||
+    !/^[0-9a-f]{40}$/.test(witnessValues.continuumCommit ?? "")
+  )) throw new Error("invalid");
+  const source = witnessConfigured
+    ? Object.freeze({
+        agentContractCommit: witnessValues.agentContractCommit,
+        continuumCommit: witnessValues.continuumCommit,
+      })
+    : undefined;
   return Object.freeze({
     secretCanaries: Object.freeze([operatorToken]),
     postHandshakeFlow: ({ evidence, continueRole }) => runAgentContractA2AFlow({
@@ -93,8 +116,30 @@ export function agentContractA2AExtensionFromEnvironment(env = process.env) {
       continueRole,
       baseUrl,
       operatorToken,
+      ...(source === undefined ? {} : { witnessSource: source }),
     }),
+    liveRuntimeWitnessCapture: witnessConfigured,
+    ...(witnessConfigured
+      ? { liveRuntimeWitnessRoot: witnessValues.root, witnessSource: source }
+      : {}),
   });
+}
+
+export async function writeLiveRuntimeWitnessArtifact({ root, witness } = {}) {
+  if (
+    typeof root !== "string" || !isAbsolute(root) ||
+    witness?.schema !== "agent-contract.live-runtime-a2a-witness/v1" ||
+    witness?.status !== "completed"
+  ) throw new Error("invalid");
+  assertSecretFree(witness);
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  const rootMetadata = await lstat(root);
+  if (rootMetadata.isSymbolicLink() || !rootMetadata.isDirectory()) throw new Error("invalid");
+  const path = join(root, "live-runtime-a2a-witness.json");
+  const bytes = Buffer.from(`${JSON.stringify(witness)}\n`, "utf8");
+  if (bytes.length > 512 * 1024) throw new Error("invalid");
+  await writeFile(path, bytes, { flag: "wx", mode: 0o600 });
+  return Object.freeze({ path, bytes: bytes.length });
 }
 
 export function validateClaudeExistingLoginStatus(status) {
@@ -300,6 +345,7 @@ async function main() {
   const artifactDirectory = value("CLOCKCHAIN_FRESH_AGENT_RESULT_DIR");
   const ownsParent = process.env.CLOCKCHAIN_FRESH_AGENT_PARENT === undefined;
   const parent = process.env.CLOCKCHAIN_FRESH_AGENT_PARENT ?? await mkdtemp(join(tmpdir(), "clockchain-fresh-agent-"));
+  let agentContractA2A = null;
   try {
     const prompts = JSON.parse(await readFile(new URL("../test/fixtures/fresh-agent/prompts.json", import.meta.url), "utf8"));
     const facilitatedA2AEnabled = process.env.AGENT_CONTRACT_A2A_ENABLED === "1";
@@ -316,11 +362,11 @@ async function main() {
       initiator: process.env.CLOCKCHAIN_INITIATOR_CLIENT ?? "codex",
       responder: process.env.CLOCKCHAIN_RESPONDER_CLIENT ?? "claude",
     };
-    await runFreshAgentCliAttempt({
+    const evidence = await runFreshAgentCliAttempt({
       artifactDirectory,
       preflight: async () => {
         const runtime = assertFreshAgentNodeRuntime();
-        const agentContractA2A = agentContractA2AExtensionFromEnvironment();
+        agentContractA2A = agentContractA2AExtensionFromEnvironment();
         let authentication;
         try {
           authentication = {
@@ -375,10 +421,17 @@ async function main() {
           },
           runtimeExecPath: runtime.execPath,
           runtimeVersion: runtime.version,
+          liveRuntimeWitnessCapture: agentContractA2A?.liveRuntimeWitnessCapture ?? false,
           ...(agentContractA2A === null ? {} : { postHandshakeFlow: agentContractA2A.postHandshakeFlow }),
         });
       },
     });
+    if (agentContractA2A?.liveRuntimeWitnessCapture === true) {
+      await writeLiveRuntimeWitnessArtifact({
+        root: agentContractA2A.liveRuntimeWitnessRoot,
+        witness: evidence.facilitatedA2A?.liveRuntimeWitness,
+      });
+    }
   } catch (error) {
     process.stderr.write(SAFE_ERROR);
     process.exitCode = 1;

@@ -39,6 +39,7 @@ import {
   applyFacilitatedA2APromptAuthorization,
   monitor as runFreshAgentMonitor,
   runFreshAgentCliAttempt,
+  writeLiveRuntimeWitnessArtifact,
 } from "../scripts/run-fresh-agent-handshake.mjs";
 import { agentHandshakeV2ResultDigest } from "../src/agent-handshake/v2/result.mjs";
 import { ed25519PublicKeyFingerprint, hostSessionKeyCertificateDigest } from "../src/agent-handshake/v2/host-key-certificate.mjs";
@@ -855,6 +856,51 @@ test("facilitated A2A CLI extension is explicit and rejects partial configuratio
   });
   assert.equal(typeof extension.postHandshakeFlow, "function");
   assert.deepEqual(extension.secretCanaries, ["operator-secret"]);
+  assert.equal(extension.liveRuntimeWitnessCapture, false);
+
+  assert.throws(() => agentContractA2AExtensionFromEnvironment({
+    AGENT_CONTRACT_A2A_ENABLED: "1",
+    AGENT_CONTRACT_A2A_BASE_URL: "http://127.0.0.1:3017",
+    AGENT_CONTRACT_A2A_OPERATOR_TOKEN: "operator-secret",
+    AGENT_CONTRACT_A2A_LIVE_WITNESS: "1",
+  }));
+  const witnessExtension = agentContractA2AExtensionFromEnvironment({
+    AGENT_CONTRACT_A2A_ENABLED: "1",
+    AGENT_CONTRACT_A2A_BASE_URL: "http://127.0.0.1:3017",
+    AGENT_CONTRACT_A2A_OPERATOR_TOKEN: "operator-secret",
+    AGENT_CONTRACT_A2A_LIVE_WITNESS: "1",
+    AGENT_CONTRACT_A2A_LIVE_WITNESS_ROOT: "/tmp/gate-1-live-witness",
+    AGENT_CONTRACT_A2A_AGENT_CONTRACT_COMMIT: "1".repeat(40),
+    AGENT_CONTRACT_A2A_CONTINUUM_COMMIT: "2".repeat(40),
+  });
+  assert.equal(witnessExtension.liveRuntimeWitnessCapture, true);
+  assert.equal(witnessExtension.liveRuntimeWitnessRoot, "/tmp/gate-1-live-witness");
+  assert.deepEqual(witnessExtension.witnessSource, {
+    agentContractCommit: "1".repeat(40),
+    continuumCommit: "2".repeat(40),
+  });
+});
+
+test("publishes one exclusive private live witness artifact", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "live-runtime-witness-publication-"));
+  const root = join(parent, "accepted");
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const witness = {
+    schema: "agent-contract.live-runtime-a2a-witness/v1",
+    status: "completed",
+    privacy: {
+      privateKeysRetained: false,
+      bearerTokensRetained: false,
+      secretScan: "PASS",
+    },
+  };
+
+  const published = await writeLiveRuntimeWitnessArtifact({ root, witness });
+
+  assert.equal(published.path, join(root, "live-runtime-a2a-witness.json"));
+  assert.deepEqual(JSON.parse(await readFile(published.path, "utf8")), witness);
+  assert.equal((await stat(published.path)).mode & 0o777, 0o600);
+  await assert.rejects(writeLiveRuntimeWitnessArtifact({ root, witness }));
 });
 
 test("facilitated prompts preserve the deployed 90-second Clockchain mandate exactly", () => {
@@ -911,14 +957,19 @@ test("post-handshake diagnostics expose only allowlisted tool activity", async (
     streamEvent({ type: "item.completed", item: { type: "mcp_tool_call", tool: "mcp__agent-contract-a2a__agent_contract_read_inbox", result: "private result" } }),
     streamEvent({ type: "item.completed", item: { type: "mcp_tool_call", tool: "untrusted_private_tool", result: "private result" } }),
     streamEvent({ type: "turn.failed", error: { message: "private failure" } }),
+    streamEvent({ type: "assistant", message: { content: [{
+      type: "tool_use",
+      name: "mcp__agent-contract-a2a__agent_contract_acknowledge_proposal",
+      input: { private: "content" },
+    }] } }),
   ].join(""));
 
   assert.deepEqual(summary, {
     agentMessageCount: 1,
     errorEventCount: 1,
-    eventCount: 4,
-    mcpToolCallCount: 2,
-    tools: ["agent_contract_read_inbox"],
+    eventCount: 5,
+    mcpToolCallCount: 3,
+    tools: ["agent_contract_read_inbox", "agent_contract_acknowledge_proposal"],
   });
   assert.equal(JSON.stringify(summary).includes("private"), false);
   assert.equal(JSON.stringify(summary).includes("untrusted_private_tool"), false);
@@ -931,6 +982,28 @@ test("default post-handshake continuation resumes the same client with the A2A a
   const configureCalls = [];
   let walletNumber = 4;
   let continuationResult;
+  const baseSpawn = successfulFreshAgentSpawn(processCalls);
+  const spawnProcess = (file, args, options) => {
+    const child = baseSpawn(file, args, options);
+    const ledgerPath = options.env.AGENT_CONTRACT_A2A_WITNESS_LEDGER_PATH;
+    if (ledgerPath !== undefined) {
+      const originalEnd = child.stdin.end;
+      child.stdin.end = (input) => {
+        void writeFile(ledgerPath, JSON.stringify({
+          schema: "agent-contract.a2a-authorship-ledger/v1",
+          runtimeId: options.env.AGENT_CONTRACT_A2A_RUNTIME_ID,
+          entries: [{
+            kind: "inbox_read",
+            toolName: "agent_contract_read_inbox",
+            argumentsDigest: `0x${"1".repeat(64)}`,
+            occurredAt: "2026-08-15T20:00:05.500Z",
+            runtimeId: options.env.AGENT_CONTRACT_A2A_RUNTIME_ID,
+          }],
+        }), { mode: 0o600 }).then(() => originalEnd(input));
+      };
+    }
+    return child;
+  };
 
   const result = await runFreshAgentHandshake(baseFreshAgentRunOptions(parent, {
     configureClient: async (entry) => { configureCalls.push(entry.command); },
@@ -945,6 +1018,7 @@ test("default post-handshake continuation resumes the same client with the A2A a
       }), { mode: 0o600 });
       return adapter;
     },
+    liveRuntimeWitnessCapture: true,
     postHandshakeFlow: async ({ continueRole }) => {
       continuationResult = await continueRole("initiator", {
         prompt: "Read the Agent Contract inbox.",
@@ -955,7 +1029,7 @@ test("default post-handshake continuation resumes the same client with the A2A a
       });
       return { schema: "agent-contract.facilitated-a2a-result/v1", sessionId: "public-result" };
     },
-    spawnProcess: successfulFreshAgentSpawn(processCalls),
+    spawnProcess,
   }));
 
   assert.equal(result.facilitatedA2A.sessionId, "public-result");
@@ -974,7 +1048,7 @@ test("default post-handshake continuation resumes the same client with the A2A a
     agentMessageCount: 0,
     errorEventCount: 0,
     eventCount: 2,
-    mcpToolCallCount: 0,
+    mcpToolCallCount: 1,
     tools: [],
   });
   assert.equal(continuationResult.runtime.client, "codex-cli");
@@ -982,6 +1056,13 @@ test("default post-handshake continuation resumes the same client with the A2A a
   assert.match(continuationResult.runtime.runtimeId, /^[0-9a-f-]{36}$/);
   assert.match(continuationResult.runtime.processDigest, /^0x[0-9a-f]{64}$/);
   assert.equal(Object.hasOwn(continuationResult.runtime, "pid"), false);
+  assert.equal(
+    continuationResult.ledger.runtimeId,
+    continuationResult.runtime.runtimeId,
+  );
+  assert.deepEqual(continuationResult.ledger.entries.map((entry) => entry.kind), [
+    "inbox_read",
+  ]);
   assert.deepEqual(await readdir(parent), []);
 });
 
