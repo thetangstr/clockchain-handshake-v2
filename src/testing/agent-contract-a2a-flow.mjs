@@ -270,8 +270,10 @@ function exactRuntimeContinuation(value, {
   client,
   modelId,
   requiredTools,
-  ledgerKinds,
+  requiredLedgerKinds,
+  allowedLedgerKinds,
 }) {
+  const ledgerKinds = value?.ledger?.entries?.map((entry) => entry?.kind);
   if (
     value?.completed !== true || !isPlainObject(value.runtime) ||
     value.runtime.client !== client || value.runtime.modelId !== modelId ||
@@ -282,9 +284,11 @@ function exactRuntimeContinuation(value, {
     !isPlainObject(value.ledger) ||
     value.ledger.schema !== "agent-contract.a2a-authorship-ledger/v1" ||
     value.ledger.runtimeId !== value.runtime.runtimeId ||
-    !Array.isArray(value.ledger.entries) ||
-    JSON.stringify(value.ledger.entries.map((entry) => entry?.kind)) !==
-      JSON.stringify(ledgerKinds) ||
+    !Array.isArray(value.ledger.entries) || !Array.isArray(ledgerKinds) ||
+    ledgerKinds.some((kind) => !allowedLedgerKinds.includes(kind)) ||
+    requiredLedgerKinds.some((kind) =>
+      ledgerKinds.filter((entryKind) => entryKind === kind).length !== 1
+    ) ||
     value.ledger.entries.some((entry) => entry?.runtimeId !== value.runtime.runtimeId)
   ) fail("Live runtime continuation evidence invalid.");
   return value;
@@ -310,22 +314,24 @@ function buildLiveRuntimeWitness({
     client: "claude-code",
     modelId: "sonnet",
     requiredTools: ["agent_contract_discover_counterparty", "agent_contract_send_proposal"],
-    ledgerKinds: ["agent_card_discovered", "proposal_authorship"],
+    requiredLedgerKinds: ["agent_card_discovered", "proposal_authorship"],
+    allowedLedgerKinds: ["agent_card_discovered", "inbox_read", "proposal_authorship"],
   });
   const buyer = exactRuntimeContinuation(buyerContinuation, {
     client: "codex-cli",
     modelId: "gpt-5.6-terra",
     requiredTools: ["agent_contract_read_inbox", "agent_contract_acknowledge_proposal"],
-    ledgerKinds: ["inbox_read", "acknowledgment_authorship"],
+    requiredLedgerKinds: ["inbox_read", "acknowledgment_authorship"],
+    allowedLedgerKinds: ["inbox_read", "acknowledgment_authorship"],
   });
   if (
     provider.runtime.runtimeId === buyer.runtime.runtimeId ||
     provider.runtime.processDigest === buyer.runtime.processDigest
   ) fail("Live runtime processes must be distinct.");
 
-  const discovery = provider.ledger.entries[0];
-  const proposalRecord = provider.ledger.entries[1];
-  const acknowledgmentRecord = buyer.ledger.entries[1];
+  const discovery = provider.ledger.entries.find((entry) => entry.kind === "agent_card_discovered");
+  const proposalRecord = provider.ledger.entries.find((entry) => entry.kind === "proposal_authorship");
+  const acknowledgmentRecord = buyer.ledger.entries.find((entry) => entry.kind === "acknowledgment_authorship");
   const proposalMessage = taskMessageForWitness(verified.proposal);
   const acknowledgmentMessage = taskMessageForWitness(verified.acknowledgment);
   const proposalObjectDigest = proposalMessage?.metadata?.clockchainTrust?.objectDigest;

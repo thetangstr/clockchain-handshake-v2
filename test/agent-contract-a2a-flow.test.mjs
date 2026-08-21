@@ -353,6 +353,40 @@ test("assembles the exact privacy-safe live two-runtime witness", async () => {
   assert.equal(JSON.stringify(witness).includes("operator-secret"), false);
 });
 
+test("accepts a provider's additional allowlisted read-only inbox observation", async () => {
+  const fixture = exchangeFixture({
+    mutateContinuation: (role, value) => {
+      if (role !== "responder") return value;
+      value.activity.tools.splice(1, 0, "agent_contract_read_inbox");
+      value.ledger.entries.splice(1, 0, {
+        kind: "inbox_read",
+        toolName: "agent_contract_read_inbox",
+        argumentsDigest: canonicalDigest({}),
+        occurredAt: "2026-08-15T20:00:03.750Z",
+        runtimeId: value.runtime.runtimeId,
+      });
+      return value;
+    },
+  });
+  const times = ["2026-08-15T20:00:03.000Z", "2026-08-15T20:00:08.000Z"];
+
+  const result = await runAgentContractA2AFlow({
+    evidence: publicHandshakeEvidence(),
+    continueRole: fixture.continueRole,
+    baseUrl: "http://127.0.0.1:3017",
+    operatorToken: "operator-secret",
+    fetchImpl: fixture.fetchImpl,
+    now: () => times.shift(),
+    witnessSource: {
+      agentContractCommit: "5058b4672ef974ea6f8138fdf6caa6a20d5f90f6",
+      continuumCommit: "8c25194000000000000000000000000000000000",
+    },
+  });
+
+  assert.equal(result.liveRuntimeWitness.acceptance.distinctRuntimeProcessesVerified, true);
+  assert.equal(result.liveRuntimeWitness.authorship.proposal.toolName, "agent_contract_send_proposal");
+});
+
 test("accepts co-timestamped certificate issuance and verification as the run boundary", async () => {
   const fixture = exchangeFixture();
   const evidence = structuredClone(publicHandshakeEvidence());
@@ -424,6 +458,13 @@ test("rejects runtime and authorship substitutions before witness completion", a
     },
     (role, value) => {
       if (role === "responder") value.activity.tools = ["agent_contract_discover_counterparty"];
+      return value;
+    },
+    (role, value) => {
+      if (role === "responder") value.ledger.entries.splice(1, 0, {
+        kind: "unapproved_observation",
+        runtimeId: value.runtime.runtimeId,
+      });
       return value;
     },
     (role, value) => {
