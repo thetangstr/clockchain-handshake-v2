@@ -563,6 +563,7 @@ test("continuation verification validates signatures before bindings, revocation
     { ...cont, partyRoleDigests: [digestF, digestE] },
     { ...cont, clockchainNetwork: "mainnet" },
     { ...cont, trustRootId: "other-root" },
+    { ...cont, allowedNextActionClass: "UNRELATED_BUSINESS_ACTION" },
   ]) {
     const sideEffects = [];
     await assert.rejects(() => verifyHandshakeV3Continuation({

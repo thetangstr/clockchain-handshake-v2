@@ -159,7 +159,8 @@ export async function verifyHandshakeV3Continuation({
   if (validContinuation.policyDigest !== validCertificate.policyDigest) fail("POLICY_DIGEST_MISMATCH");
   if (validContinuation.protocolVersion !== HANDSHAKE_V3_PROTOCOL_VERSION || validContinuation.schemaVersion !== HANDSHAKE_V3_SCHEMA_VERSION) fail("HANDSHAKE_VERSION_UNSUPPORTED");
   if (expectedAudience && validContinuation.audience !== expectedAudience) fail("RESULT_VERIFICATION_FAILED");
-  if (expectedAllowedNextActionClass && validContinuation.allowedNextActionClass !== expectedAllowedNextActionClass) fail("RESULT_VERIFICATION_FAILED");
+  const allowedNextActionClass = expectedAllowedNextActionClass ?? "A2A_DELIVERY";
+  if (validContinuation.allowedNextActionClass !== allowedNextActionClass) fail("RESULT_VERIFICATION_FAILED");
   assertTimeWindow(validCertificate, now);
   assertTimeWindow(validContinuation, now);
   await signatureAccepted({
