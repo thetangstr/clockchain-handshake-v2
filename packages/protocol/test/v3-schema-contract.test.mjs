@@ -76,6 +76,34 @@ test("constants mirror the normative schema enums exactly", () => {
   assert.equal(HANDSHAKE_V3_TOOL_NAMES.includes("agent_handshake_session_verify"), false);
 });
 
+test("exported contract schema is deeply immutable and cannot weaken validators", () => {
+  const policyScopeSchema = HANDSHAKE_V3_CONTRACT_SCHEMA.$defs.policy.properties.scope;
+  const resultVerifySchema = HANDSHAKE_V3_CONTRACT_SCHEMA.tools.find(
+    (tool) => tool.name === "agent_handshake_result_verify",
+  ).inputSchema;
+
+  assert.equal(Object.isFrozen(HANDSHAKE_V3_CONTRACT_SCHEMA.$defs), true);
+  assert.equal(Object.isFrozen(policyScopeSchema), true);
+  assert.equal(Object.isFrozen(resultVerifySchema.required), true);
+  assert.throws(() => {
+    policyScopeSchema.minItems = 0;
+  }, TypeError);
+  assert.throws(() => {
+    resultVerifySchema.required.length = 0;
+  }, TypeError);
+
+  assert.throws(() => validateHandshakeV3Def("policy", {
+    scope: [],
+    constraints: {},
+    externalBusinessActionsAllowed: false,
+    expiresAt: later,
+  }), { code: "SCHEMA_INVALID" });
+  assert.throws(
+    () => validateHandshakeV3ToolInput("agent_handshake_result_verify", {}),
+    { code: "SCHEMA_INVALID" },
+  );
+});
+
 test("schema engine validates every $defs object and rejects alternate public shapes", () => {
   for (const defName of Object.keys(schema.$defs)) {
     const sample = sampleForSchema(schema.$defs[defName]);

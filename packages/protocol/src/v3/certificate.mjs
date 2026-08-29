@@ -152,7 +152,7 @@ export async function verifyHandshakeV3Continuation({
     fail("RESULT_VERIFICATION_FAILED");
   }
   if (expectedCertificateDigest && validContinuation.certificateDigest !== expectedCertificateDigest) fail("RESULT_VERIFICATION_FAILED");
-  if (!expectedPartyRoleDigests || !assertSameArray(validContinuation.partyRoleDigests, expectedPartyRoleDigests)) fail("ROLE_DENIED");
+  if (expectedPartyRoleDigests && !assertSameArray(validContinuation.partyRoleDigests, expectedPartyRoleDigests)) fail("ROLE_DENIED");
   if (expectedStatementDigest && validContinuation.statementDigest !== expectedStatementDigest) fail("RESULT_VERIFICATION_FAILED");
   if (expectedScopeDigest && validContinuation.scopeDigest !== expectedScopeDigest) fail("RESULT_VERIFICATION_FAILED");
   if (expectedPolicyDigest && validContinuation.policyDigest !== expectedPolicyDigest) fail("POLICY_DIGEST_MISMATCH");

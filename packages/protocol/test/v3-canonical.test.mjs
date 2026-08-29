@@ -29,6 +29,46 @@ test("RFC8785 canonicalization rejects unsupported or dangerous values", () => {
   assert.throws(() => canonicalJsonString(cyclic), { code: "SCHEMA_INVALID" });
 });
 
+test("RFC8785 canonical helpers convert proxy and accessor traps to typed schema errors", () => {
+  const prototypeProxy = new Proxy({}, {
+    getPrototypeOf() {
+      throw new Error("raw prototype trap");
+    },
+  });
+  const ownKeysProxy = new Proxy({}, {
+    ownKeys() {
+      throw new Error("raw ownKeys trap");
+    },
+  });
+  const descriptorProxy = new Proxy({ value: 1 }, {
+    getOwnPropertyDescriptor() {
+      throw new Error("raw descriptor trap");
+    },
+  });
+  const accessor = {};
+  Object.defineProperty(accessor, "value", {
+    enumerable: true,
+    get() {
+      throw new Error("raw accessor error");
+    },
+  });
+
+  for (const value of [prototypeProxy, ownKeysProxy, descriptorProxy, accessor]) {
+    assert.throws(() => canonicalJsonString(value), {
+      name: "HandshakeV3Error",
+      code: "SCHEMA_INVALID",
+    });
+    assert.throws(() => canonicalJsonBytes(value), {
+      name: "HandshakeV3Error",
+      code: "SCHEMA_INVALID",
+    });
+    assert.throws(() => handshakeV3Digest(value), {
+      name: "HandshakeV3Error",
+      code: "SCHEMA_INVALID",
+    });
+  }
+});
+
 test("RFC8785 official-style numeric, unicode, and ordering vectors are deterministic", () => {
   assert.equal(canonicalJsonString({ numbers: [333333333.3333333, 1e-27, -0] }), "{\"numbers\":[333333333.3333333,1e-27,0]}");
   assert.equal(canonicalJsonString({ "\u20ac": "Euro", "\r": "Carriage Return", "\ufb33": "Hebrew Letter Dalet With Dagesh" }), "{\"\\r\":\"Carriage Return\",\"€\":\"Euro\",\"דּ\":\"Hebrew Letter Dalet With Dagesh\"}");

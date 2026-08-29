@@ -10,12 +10,12 @@ const BUSINESS_CONTENT_KEYS = new Set([
   "continuationPayload",
 ]);
 
-export const HANDSHAKE_V3_CONTRACT_SCHEMA = Object.freeze(contractSchema);
+export const HANDSHAKE_V3_CONTRACT_SCHEMA = deepFreeze(contractSchema);
 export const HANDSHAKE_V3_TOOL_NAMES = Object.freeze(contractSchema.tools.map((tool) => tool.name));
 
 export function deepFreeze(value) {
-  if (value && typeof value === "object" && !Object.isFrozen(value)) {
-    Object.freeze(value);
+  if (value && typeof value === "object") {
+    if (!Object.isFrozen(value)) Object.freeze(value);
     for (const nested of Object.values(value)) {
       deepFreeze(nested);
     }

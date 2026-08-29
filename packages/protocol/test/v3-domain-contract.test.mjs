@@ -11,6 +11,7 @@ import {
   handshakeV3Digest,
   recoverHandshakeV3RoleGrant,
   validateHandshakeV3RoleGrantBinding,
+  validateHandshakeV3ToolInput,
   validateHandshakeV3ToolResult,
   verifyHandshakeV3Certificate,
   verifyHandshakeV3Continuation,
@@ -521,6 +522,40 @@ test("continuation verification validates signatures before bindings, revocation
   }), { code: "SIGNATURE_INVALID" });
   assert.deepEqual(noReplayCalls, []);
 
+  const independentInput = validateHandshakeV3ToolInput("agent_handshake_result_verify", {
+    certificate: cert,
+    continuation: cont,
+  });
+  const independentlyVerified = await verifyHandshakeV3Continuation({
+    ...independentInput.input,
+    now: "2026-08-29T20:10:00Z",
+    verifyIssuerSignature: async () => true,
+    getRevocationStatus: async () => "GOOD",
+    checkAndRecordReplay: async () => true,
+  });
+  assert.equal(independentlyVerified.valid, true);
+
+  const mismatchSideEffects = [];
+  await assert.rejects(() => verifyHandshakeV3Continuation({
+    certificate: cert,
+    continuation: cont,
+    expectedPartyRoleDigests: [digestA, digestB],
+    now: "2026-08-29T20:10:00Z",
+    verifyIssuerSignature: async () => {
+      mismatchSideEffects.push("signature");
+      return true;
+    },
+    getRevocationStatus: async () => {
+      mismatchSideEffects.push("revocation");
+      return "GOOD";
+    },
+    checkAndRecordReplay: async () => {
+      mismatchSideEffects.push("replay");
+      return true;
+    },
+  }), { code: "ROLE_DENIED" });
+  assert.deepEqual(mismatchSideEffects, []);
+
   for (const badContinuation of [
     { ...cont, sessionId: "sess_mismatch_123456" },
     { ...cont, certificateDigest: digestF },
@@ -617,14 +652,4 @@ test("continuation verification validates signatures before bindings, revocation
   }), { code: "RESULT_VERIFICATION_FAILED" });
   assert.deepEqual(loopholeSideEffects, []);
 
-  await assert.rejects(() => verifyHandshakeV3Continuation({
-    certificate: cert,
-    continuation: cont,
-    now: "2026-08-29T20:10:00Z",
-    verifyIssuerSignature: async () => true,
-    getRevocationStatus: async () => "GOOD",
-    checkAndRecordReplay: async () => {
-      throw new Error("replay must not be reached without expected party-role binding");
-    },
-  }), { code: "ROLE_DENIED" });
 });

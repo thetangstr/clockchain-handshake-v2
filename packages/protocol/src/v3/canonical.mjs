@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { fail } from "./constants.mjs";
+import { HandshakeV3Error, fail } from "./constants.mjs";
 
 const LONE_SURROGATE_PATTERN = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/u;
 
@@ -80,7 +80,12 @@ function canonicalize(value, ancestors) {
 }
 
 export function canonicalJsonString(value) {
-  return JSON.stringify(canonicalize(value, new Set()));
+  try {
+    return JSON.stringify(canonicalize(value, new Set()));
+  } catch (error) {
+    if (error instanceof HandshakeV3Error) throw error;
+    fail("SCHEMA_INVALID");
+  }
 }
 
 export function canonicalJsonBytes(value) {
