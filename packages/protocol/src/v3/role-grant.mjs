@@ -18,13 +18,15 @@ export function recoverHandshakeV3RoleGrant(grant, options) {
     proofKeyThumbprint: options.proofKeyThumbprint,
     now: options.now,
   });
+  const session = validateHandshakeV3Session(options.session);
   if (!options.roleGrantId || options.roleGrantId === current.roleGrantId) fail("ROLE_DENIED");
+  if (session.sessionId !== current.sessionId || session.role !== current.role) fail("ROLE_DENIED");
   return Object.freeze({
     roleGrant: validateHandshakeV3RoleGrant({
       ...current,
       roleGrantId: options.roleGrantId,
     }),
-    session: validateHandshakeV3Session(options.session),
+    session,
     recoveredWithoutMutation: true,
   });
 }

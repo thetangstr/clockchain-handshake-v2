@@ -157,6 +157,37 @@ test("schema engine rejects accessors, proxies, bad enums, patterns, uniqueness,
     },
   });
   assert.throws(() => validateHandshakeV3Def("receipt", proxy), { code: "SCHEMA_INVALID" });
+
+  const prototypeProxy = new Proxy(sampleForSchema(schema.$defs.receipt), {
+    getPrototypeOf() {
+      throw new Error("getPrototypeOf trap must not escape");
+    },
+  });
+  assert.throws(() => validateHandshakeV3Def("receipt", prototypeProxy), { code: "SCHEMA_INVALID" });
+});
+
+test("date-time format implements RFC3339 fractional seconds and offsets", () => {
+  for (const value of [
+    "2026-08-29T20:00:00Z",
+    "2026-08-29T20:00:00.123Z",
+    "2026-08-29T20:00:00+00:00",
+    "2026-08-29T12:30:45.123456-07:30",
+  ]) {
+    assert.equal(validateHandshakeV3Schema({ type: "string", format: "date-time" }, value), value);
+  }
+
+  for (const value of [
+    "2026-02-29T20:00:00Z",
+    "2024-02-29T24:00:00Z",
+    "2026-08-29T20:60:00Z",
+    "2026-08-29T20:00:60Z",
+    "2026-08-29T20:00:00+24:00",
+    "2026-08-29T20:00:00+07:60",
+    "2026-08-29 20:00:00Z",
+    "2026-08-29T20:00Z",
+  ]) {
+    assert.throws(() => validateHandshakeV3Schema({ type: "string", format: "date-time" }, value), { code: "SCHEMA_INVALID" }, value);
+  }
 });
 
 test("operator-only scopes never satisfy role tool inputs", () => {

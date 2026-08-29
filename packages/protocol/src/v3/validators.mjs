@@ -46,8 +46,41 @@ function resolveRef(ref) {
 
 function isPlainJsonObject(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
+  let prototype;
+  try {
+    prototype = Object.getPrototypeOf(value);
+  } catch {
+    schemaInvalid();
+  }
   return prototype === Object.prototype || prototype === null;
+}
+
+function isLeapYear(year) {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+}
+
+function isValidRfc3339DateTime(value) {
+  const match = /^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})T(?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2})(?:\.\d+)?(?<offset>Z|[+-]\d{2}:\d{2})$/.exec(value);
+  if (!match) return false;
+  const { year, month, day, hour, minute, second, offset } = match.groups;
+  const numeric = {
+    year: Number(year),
+    month: Number(month),
+    day: Number(day),
+    hour: Number(hour),
+    minute: Number(minute),
+    second: Number(second),
+  };
+  if (numeric.month < 1 || numeric.month > 12) return false;
+  const daysByMonth = [31, isLeapYear(numeric.year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (numeric.day < 1 || numeric.day > daysByMonth[numeric.month - 1]) return false;
+  if (numeric.hour > 23 || numeric.minute > 59 || numeric.second > 59) return false;
+  if (offset !== "Z") {
+    const offsetHour = Number(offset.slice(1, 3));
+    const offsetMinute = Number(offset.slice(4, 6));
+    if (offsetHour > 23 || offsetMinute > 59) return false;
+  }
+  return !Number.isNaN(Date.parse(value));
 }
 
 function safeOwnKeys(value) {
@@ -84,7 +117,7 @@ function validateString(value, schema) {
   if (schema.maxLength !== undefined && value.length > schema.maxLength) schemaInvalid();
   if (schema.pattern && !(new RegExp(schema.pattern).test(value))) schemaInvalid();
   if (schema.format === "date-time") {
-    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value) || Number.isNaN(Date.parse(value))) schemaInvalid();
+    if (!isValidRfc3339DateTime(value)) schemaInvalid();
   }
   if (schema.format === "uuid") {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) schemaInvalid();

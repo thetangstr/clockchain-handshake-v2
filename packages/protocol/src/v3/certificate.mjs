@@ -66,6 +66,10 @@ function assertTimeWindow({ issuedAt, notBefore, expiresAt }, now) {
   }
 }
 
+function assertSameArray(left, right) {
+  return Array.isArray(left) && Array.isArray(right) && left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 async function revocationStatus(getRevocationStatus, handle) {
   const status = await getRevocationStatus(handle);
   if (status === "GOOD") return "GOOD";
@@ -136,9 +140,18 @@ export async function verifyHandshakeV3Continuation({
     verifyIssuerSignature,
   });
   if (validCertificate.certificateDigest !== certificateDigest) fail("RESULT_VERIFICATION_FAILED");
-  if (validContinuation.certificateDigest !== validCertificate.certificateDigest) fail("RESULT_VERIFICATION_FAILED");
+  if (
+    validContinuation.sessionId !== validCertificate.sessionId ||
+    validContinuation.certificateDigest !== validCertificate.certificateDigest ||
+    validContinuation.policyDigest !== validCertificate.policyDigest ||
+    !assertSameArray(validContinuation.partyRoleDigests, validCertificate.partyDigests) ||
+    validContinuation.clockchainNetwork !== validCertificate.clockchainNetwork ||
+    validContinuation.trustRootId !== validCertificate.trustRootId
+  ) {
+    fail("RESULT_VERIFICATION_FAILED");
+  }
   if (expectedCertificateDigest && validContinuation.certificateDigest !== expectedCertificateDigest) fail("RESULT_VERIFICATION_FAILED");
-  if (expectedPartyRoleDigests && JSON.stringify(validContinuation.partyRoleDigests) !== JSON.stringify(expectedPartyRoleDigests)) fail("ROLE_DENIED");
+  if (!expectedPartyRoleDigests || !assertSameArray(validContinuation.partyRoleDigests, expectedPartyRoleDigests)) fail("ROLE_DENIED");
   if (expectedStatementDigest && validContinuation.statementDigest !== expectedStatementDigest) fail("RESULT_VERIFICATION_FAILED");
   if (expectedScopeDigest && validContinuation.scopeDigest !== expectedScopeDigest) fail("RESULT_VERIFICATION_FAILED");
   if (expectedPolicyDigest && validContinuation.policyDigest !== expectedPolicyDigest) fail("POLICY_DIGEST_MISMATCH");
@@ -146,7 +159,9 @@ export async function verifyHandshakeV3Continuation({
   if (validContinuation.protocolVersion !== HANDSHAKE_V3_PROTOCOL_VERSION || validContinuation.schemaVersion !== HANDSHAKE_V3_SCHEMA_VERSION) fail("HANDSHAKE_VERSION_UNSUPPORTED");
   if (expectedAudience && validContinuation.audience !== expectedAudience) fail("RESULT_VERIFICATION_FAILED");
   if (expectedAllowedNextActionClass && validContinuation.allowedNextActionClass !== expectedAllowedNextActionClass) fail("RESULT_VERIFICATION_FAILED");
+  assertTimeWindow(validCertificate, now);
   assertTimeWindow(validContinuation, now);
+  await revocationStatus(getRevocationStatus, validCertificate.certificateId);
   const status = await revocationStatus(getRevocationStatus, validContinuation.revocationHandle);
   if ((await checkAndRecordReplay(validContinuation.replayNonce, continuationDigest)) !== true) fail("RESULT_VERIFICATION_FAILED");
   return validateHandshakeV3ToolResult("agent_handshake_result_verify", {

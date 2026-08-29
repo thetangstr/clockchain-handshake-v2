@@ -83,7 +83,7 @@ function continuation(cert = certificate()) {
     certificateDigest: cert.certificateDigest,
     clockchainNetwork: cert.clockchainNetwork,
     trustRootId: cert.trustRootId,
-    partyRoleDigests: [digestE, digestF],
+    partyRoleDigests: cert.partyDigests,
     statementDigest: digestB,
     scopeDigest: digestC,
     policyDigest: cert.policyDigest,
@@ -127,6 +127,20 @@ test("recovery returns exact roleGrant/session/result shape and does not mutate 
   assert.equal(recovered.recoveredWithoutMutation, true);
   assert.equal(recovered.roleGrant.roleGrantId, "grant_recovered_123");
   assert.deepEqual(validateHandshakeV3ToolResult("agent_handshake_session_resume", recovered), recovered);
+  assert.throws(() => recoverHandshakeV3RoleGrant(roleGrant(), {
+    roleGrantId: "grant_recovered_456",
+    principalDigest: digestB,
+    proofKeyThumbprint: digestC,
+    now: "2026-08-29T20:30:00Z",
+    session: { ...original, sessionId: "sess_mismatched_123" },
+  }), { code: "ROLE_DENIED" });
+  assert.throws(() => recoverHandshakeV3RoleGrant(roleGrant(), {
+    roleGrantId: "grant_recovered_789",
+    principalDigest: digestB,
+    proofKeyThumbprint: digestC,
+    now: "2026-08-29T20:30:00Z",
+    session: { ...original, role: "RESPONDER" },
+  }), { code: "ROLE_DENIED" });
 });
 
 test("typed signing request bytes use exact schema fields and signer negatives do not call verifier", async () => {
@@ -162,8 +176,15 @@ test("typed signing request bytes use exact schema fields and signer negatives d
   await verifyHandshakeV3SignedAction({
     request,
     action,
-    expectedRole: "INITIATOR",
-    expectedSignerKeyId: "agent-a-key",
+    expectedParty: {
+      identityDigest: digestB,
+      role: "INITIATOR",
+      signingKeyId: "agent-a-key",
+      signingAlgorithm: "EdDSA",
+      publicKey: "p".repeat(32),
+    },
+    expectedSigningRequestId: request.signingRequestId,
+    expectedSigningDigest: request.signingDigest,
     now: "2026-08-29T20:01:00Z",
     verifier: async () => {
       calls += 1;
@@ -174,9 +195,59 @@ test("typed signing request bytes use exact schema fields and signer negatives d
   await assert.rejects(() => verifyHandshakeV3SignedAction({
     request,
     action: { ...action, signingDigest: digestF },
-    expectedRole: "INITIATOR",
-    expectedSignerKeyId: "agent-a-key",
+    expectedParty: {
+      identityDigest: digestB,
+      role: "INITIATOR",
+      signingKeyId: "agent-a-key",
+      signingAlgorithm: "EdDSA",
+      publicKey: "p".repeat(32),
+    },
     now: "2026-08-29T20:01:00Z",
+    verifier: async () => {
+      throw new Error("must not call");
+    },
+  }), { code: "SIGNATURE_INVALID" });
+  await assert.rejects(() => verifyHandshakeV3SignedAction({
+    request: { ...request, signingDigest: digestF },
+    action: { ...action, signingDigest: digestF },
+    expectedParty: {
+      identityDigest: digestB,
+      role: "INITIATOR",
+      signingKeyId: "agent-a-key",
+      signingAlgorithm: "EdDSA",
+      publicKey: "p".repeat(32),
+    },
+    now: "2026-08-29T20:01:00Z",
+    verifier: async () => {
+      throw new Error("must not call");
+    },
+  }), { code: "SIGNATURE_INVALID" });
+  await assert.rejects(() => verifyHandshakeV3SignedAction({
+    request,
+    action: { ...action, algorithm: "ES256K" },
+    expectedParty: {
+      identityDigest: digestB,
+      role: "INITIATOR",
+      signingKeyId: "agent-a-key",
+      signingAlgorithm: "EdDSA",
+      publicKey: "p".repeat(32),
+    },
+    now: "2026-08-29T20:01:00Z",
+    verifier: async () => {
+      throw new Error("must not call");
+    },
+  }), { code: "SIGNATURE_INVALID" });
+  await assert.rejects(() => verifyHandshakeV3SignedAction({
+    request,
+    action,
+    expectedParty: {
+      identityDigest: digestB,
+      role: "INITIATOR",
+      signingKeyId: "agent-a-key",
+      signingAlgorithm: "EdDSA",
+      publicKey: "p".repeat(32),
+    },
+    now: "2026-08-29T19:59:59Z",
     verifier: async () => {
       throw new Error("must not call");
     },
@@ -253,7 +324,7 @@ test("continuation verification validates signatures before bindings, revocation
   });
   assert.equal(result.valid, true);
   assert.equal(result.externalBusinessActionPerformed, false);
-  assert.deepEqual(calls.map(([name]) => name), ["signature", "signature", "revocation", "replay"]);
+  assert.deepEqual(calls.map(([name]) => name), ["signature", "signature", "revocation", "revocation", "replay"]);
 
   const noReplayCalls = [];
   await assert.rejects(() => verifyHandshakeV3Continuation({
@@ -271,4 +342,111 @@ test("continuation verification validates signatures before bindings, revocation
     },
   }), { code: "SIGNATURE_INVALID" });
   assert.deepEqual(noReplayCalls, []);
+
+  for (const badContinuation of [
+    { ...cont, sessionId: "sess_mismatch_123456" },
+    { ...cont, certificateDigest: digestF },
+    { ...cont, policyDigest: digestF },
+    { ...cont, partyRoleDigests: [digestF, digestE] },
+    { ...cont, clockchainNetwork: "mainnet" },
+    { ...cont, trustRootId: "other-root" },
+  ]) {
+    const sideEffects = [];
+    await assert.rejects(() => verifyHandshakeV3Continuation({
+      certificate: cert,
+      continuation: badContinuation,
+      expectedPartyRoleDigests: cont.partyRoleDigests,
+      now: "2026-08-29T20:10:00Z",
+      verifyIssuerSignature: async () => {
+        sideEffects.push("signature");
+        return true;
+      },
+      getRevocationStatus: async () => {
+        sideEffects.push("revocation");
+        return "GOOD";
+      },
+      checkAndRecordReplay: async () => {
+        sideEffects.push("replay");
+        return true;
+      },
+    }), { code: "RESULT_VERIFICATION_FAILED" });
+    assert.deepEqual(sideEffects, ["signature", "signature"]);
+  }
+
+  for (const badCertificate of [
+    { ...cert, expiresAt: "2026-08-29T20:05:00Z" },
+  ]) {
+    const sideEffects = [];
+    await assert.rejects(() => verifyHandshakeV3Continuation({
+      certificate: badCertificate,
+      continuation: cont,
+      expectedPartyRoleDigests: cont.partyRoleDigests,
+      now: "2026-08-29T20:10:00Z",
+      verifyIssuerSignature: async () => {
+        sideEffects.push("signature");
+        return true;
+      },
+      getRevocationStatus: async () => {
+        sideEffects.push("revocation");
+        return "GOOD";
+      },
+      checkAndRecordReplay: async () => {
+        sideEffects.push("replay");
+        return true;
+      },
+    }), { code: "RESULT_VERIFICATION_FAILED" });
+    assert.deepEqual(sideEffects, ["signature", "signature"]);
+  }
+
+  const revokedSideEffects = [];
+  await assert.rejects(() => verifyHandshakeV3Continuation({
+    certificate: cert,
+    continuation: cont,
+    expectedPartyRoleDigests: cont.partyRoleDigests,
+    now: "2026-08-29T20:10:00Z",
+    verifyIssuerSignature: async () => {
+      revokedSideEffects.push("signature");
+      return true;
+    },
+    getRevocationStatus: async (handle) => {
+      revokedSideEffects.push(["revocation", handle]);
+      return handle === cert.certificateId ? "REVOKED" : "GOOD";
+    },
+    checkAndRecordReplay: async () => {
+      revokedSideEffects.push("replay");
+      return true;
+    },
+  }), { code: "SESSION_REVOKED" });
+  assert.deepEqual(revokedSideEffects, ["signature", "signature", ["revocation", cert.certificateId]]);
+
+  const loopholeSideEffects = [];
+  await assert.rejects(() => verifyHandshakeV3Continuation({
+    certificate: { ...cert, partyDigests: [digestB, digestD] },
+    continuation: cont,
+    now: "2026-08-29T20:10:00Z",
+    verifyIssuerSignature: async () => {
+      loopholeSideEffects.push("signature");
+      return true;
+    },
+    getRevocationStatus: async () => {
+      loopholeSideEffects.push("revocation");
+      return "GOOD";
+    },
+    checkAndRecordReplay: async () => {
+      loopholeSideEffects.push("replay");
+      return true;
+    },
+    }), { code: "RESULT_VERIFICATION_FAILED" });
+    assert.deepEqual(loopholeSideEffects, ["signature", "signature"]);
+
+  await assert.rejects(() => verifyHandshakeV3Continuation({
+    certificate: cert,
+    continuation: cont,
+    now: "2026-08-29T20:10:00Z",
+    verifyIssuerSignature: async () => true,
+    getRevocationStatus: async () => "GOOD",
+    checkAndRecordReplay: async () => {
+      throw new Error("replay must not be reached without expected party-role binding");
+    },
+  }), { code: "ROLE_DENIED" });
 });
