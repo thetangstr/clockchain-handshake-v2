@@ -1,28 +1,33 @@
 import {
   HANDSHAKE_V3_CANONICALIZATION,
   HANDSHAKE_V3_DOMAIN_SEPARATOR,
+  HANDSHAKE_V3_SCHEMA_VERSION,
   HANDSHAKE_V3_SIGNING_PAYLOAD_SCHEMA_ID,
   fail,
 } from "./constants.mjs";
 import { canonicalJsonBytes, handshakeV3Digest } from "./canonical.mjs";
 import { validateHandshakeV3SignedAction, validateHandshakeV3SigningRequest } from "./validators.mjs";
 
-export function createHandshakeV3SigningRequest(input) {
-  const payload = {
+export function handshakeV3SigningPayload(input) {
+  return Object.freeze({
     actionType: input.actionType,
-    counterpartyDigest: input.counterpartyDigest ?? null,
+    counterpartIdentityDigest: input.counterpartIdentityDigest ?? null,
     domainSeparator: HANDSHAKE_V3_DOMAIN_SEPARATOR,
     evidenceDigest: input.evidenceDigest ?? null,
     nonce: input.nonce,
     policyDigest: input.policyDigest,
-    priorEventDigest: input.priorEventDigest ?? null,
+    priorActionDigest: input.priorActionDigest ?? null,
     role: input.role,
-    schemaVersion: "3.0.0-draft.1",
+    schemaVersion: HANDSHAKE_V3_SCHEMA_VERSION,
     sessionId: input.sessionId,
     signingRequestId: input.signingRequestId,
     stateVersion: input.stateVersion,
     statementDigest: input.statementDigest,
-  };
+  });
+}
+
+export function createHandshakeV3SigningRequest(input) {
+  const payload = handshakeV3SigningPayload(input);
   const canonicalBytes = canonicalJsonBytes(payload);
   return validateHandshakeV3SigningRequest({
     signingRequestId: input.signingRequestId,
@@ -35,8 +40,8 @@ export function createHandshakeV3SigningRequest(input) {
     role: input.role,
     policyDigest: input.policyDigest,
     statementDigest: input.statementDigest,
-    counterpartyDigest: input.counterpartyDigest,
-    priorEventDigest: input.priorEventDigest,
+    counterpartIdentityDigest: input.counterpartIdentityDigest,
+    priorActionDigest: input.priorActionDigest,
     evidenceDigest: input.evidenceDigest,
     nonce: input.nonce,
     issuedAt: input.issuedAt,
@@ -56,18 +61,14 @@ export async function verifyHandshakeV3SignedAction({
 }) {
   const validRequest = validateHandshakeV3SigningRequest(request);
   const validAction = validateHandshakeV3SignedAction(action);
-  if (validRequest.role !== expectedRole) {
-    fail("SIGNING_REQUEST_ROLE_MISMATCH");
-  }
-  if (Date.parse(now) >= Date.parse(validRequest.expiresAt)) {
-    fail("SIGNING_REQUEST_EXPIRED");
-  }
+  if (validRequest.role !== expectedRole) fail("ROLE_DENIED");
+  if (Date.parse(now) >= Date.parse(validRequest.expiresAt)) fail("SIGNATURE_INVALID");
   if (
     validAction.signingRequestId !== validRequest.signingRequestId ||
     validAction.signingDigest !== validRequest.signingDigest ||
     validAction.signerKeyId !== expectedSignerKeyId
   ) {
-    fail("SIGNING_REQUEST_MISMATCH");
+    fail("SIGNATURE_INVALID");
   }
   const accepted = await verifier({
     bytes: Buffer.from(validRequest.canonicalBytesBase64Url, "base64url"),
@@ -76,11 +77,9 @@ export async function verifyHandshakeV3SignedAction({
     algorithm: validAction.algorithm,
     signingDigest: validAction.signingDigest,
   });
-  if (accepted !== true) {
-    fail("SIGNATURE_INVALID");
-  }
+  if (accepted !== true) fail("SIGNATURE_INVALID");
   return Object.freeze({
-    verified: true,
+    valid: true,
     signingRequestId: validRequest.signingRequestId,
     signingDigest: validRequest.signingDigest,
     externalBusinessActionPerformed: false,

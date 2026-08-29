@@ -14,7 +14,7 @@ function isPlainObject(value) {
 
 function assertString(value) {
   if (LONE_SURROGATE_PATTERN.test(value)) {
-    fail("CANONICAL_STRING", "Strings containing lone surrogates are outside RFC8785 JSON.");
+    fail("SCHEMA_INVALID", "Strings containing lone surrogates are outside RFC8785 JSON.");
   }
   return value;
 }
@@ -26,7 +26,7 @@ function assertDataOnly(record, code) {
     }
     const descriptor = Object.getOwnPropertyDescriptor(record, key);
     if (typeof key !== "string" || !descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) {
-      fail(code);
+      fail("SCHEMA_INVALID");
     }
   }
 }
@@ -40,15 +40,15 @@ function canonicalize(value, ancestors) {
   }
   if (typeof value === "number") {
     if (!Number.isFinite(value)) {
-      fail("CANONICAL_NON_FINITE_NUMBER", "Non-finite numbers are outside RFC8785 JSON.");
+      fail("SCHEMA_INVALID", "Non-finite numbers are outside RFC8785 JSON.");
     }
     return Object.is(value, -0) ? 0 : value;
   }
   if (typeof value !== "object") {
-    fail("CANONICAL_UNSUPPORTED_TYPE");
+    fail("SCHEMA_INVALID");
   }
   if (ancestors.has(value)) {
-    fail("CANONICAL_CYCLE");
+    fail("SCHEMA_INVALID");
   }
 
   ancestors.add(value);
@@ -59,15 +59,15 @@ function canonicalize(value, ancestors) {
         keys.length !== value.length + 1 ||
         keys.some((key) => key !== "length" && (typeof key !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(key) || Number(key) >= value.length))
       ) {
-        fail("CANONICAL_ARRAY");
+        fail("SCHEMA_INVALID");
       }
-      assertDataOnly(value, "CANONICAL_ARRAY");
+      assertDataOnly(value, "SCHEMA_INVALID");
       return value.map((entry) => canonicalize(entry, ancestors));
     }
     if (!isPlainObject(value)) {
-      fail("CANONICAL_OBJECT");
+      fail("SCHEMA_INVALID");
     }
-    assertDataOnly(value, "CANONICAL_OBJECT");
+    assertDataOnly(value, "SCHEMA_INVALID");
     const result = Object.create(null);
     for (const key of Object.keys(value).sort()) {
       assertString(key);

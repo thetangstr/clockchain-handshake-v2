@@ -36,13 +36,14 @@ export const HANDSHAKE_V3_NONTERMINAL_STATES = Object.freeze(
 
 export const HANDSHAKE_V3_ROLES = Object.freeze(["INITIATOR", "RESPONDER"]);
 export const HANDSHAKE_V3_ACTORS = Object.freeze(["INITIATOR", "RESPONDER", "CLOCKCHAIN", "OPERATOR", "SYSTEM"]);
-export const HANDSHAKE_V3_SIGNING_ALGORITHMS = Object.freeze(["EdDSA", "ES256K", "P-256"]);
+export const HANDSHAKE_V3_SIGNING_ALGORITHMS = Object.freeze(["ES256K", "EdDSA", "ES256"]);
 
 export const HANDSHAKE_V3_ROLE_TOOLS = Object.freeze([
+  "agent_handshake_session_join",
   "agent_handshake_session_next",
+  "agent_handshake_session_submit_checkpoint",
   "agent_handshake_session_submit",
-  "agent_handshake_session_verify",
-  "agent_handshake_session_cancel",
+  "agent_handshake_session_resume",
 ]);
 
 export const HANDSHAKE_V3_OPERATOR_TOOLS = Object.freeze([
@@ -50,34 +51,38 @@ export const HANDSHAKE_V3_OPERATOR_TOOLS = Object.freeze([
 ]);
 
 export const HANDSHAKE_V3_ERROR_CODES = Object.freeze([
-  "SCHEMA_INVALID",
+  "AUTHENTICATION_REQUIRED",
+  "TOKEN_INVALID",
+  "TOKEN_EXPIRED",
+  "TOKEN_REVOKED",
+  "SENDER_CONSTRAINT_INVALID",
+  "AUDIENCE_INVALID",
   "SCOPE_DENIED",
-  "STATE_VERSION_CONFLICT",
-  "STATE_TRANSITION_DENIED",
-  "AUTHORITY_DENIED",
-  "ROLE_GRANT_BOUNDARY_MISMATCH",
-  "ROLE_GRANT_EXPIRED",
-  "ROLE_GRANT_TOOL_DENIED",
-  "ROLE_GRANT_RECOVERY_DENIED",
-  "SIGNING_REQUEST_MISMATCH",
-  "SIGNING_REQUEST_ROLE_MISMATCH",
-  "SIGNING_REQUEST_EXPIRED",
+  "TENANT_DENIED",
+  "PRINCIPAL_DENIED",
+  "INVITATION_NOT_FOUND",
+  "INVITATION_EXPIRED",
+  "INVITATION_CLAIMED",
+  "INVITATION_REVOKED",
+  "ROLE_DENIED",
+  "POLICY_DIGEST_MISMATCH",
   "SIGNATURE_INVALID",
-  "CERTIFICATE_BINDING_MISMATCH",
-  "CERTIFICATE_EXPIRED",
-  "CERTIFICATE_NOT_YET_VALID",
-  "CONTINUATION_BINDING_MISMATCH",
-  "CONTINUATION_EXPIRED",
-  "CONTINUATION_NOT_YET_VALID",
-  "CONTINUATION_REPLAYED",
-  "REVOCATION_STATUS_UNKNOWN",
-  "OBJECT_REVOKED",
-  "CANONICAL_NON_FINITE_NUMBER",
-  "CANONICAL_UNSUPPORTED_TYPE",
-  "CANONICAL_CYCLE",
-  "CANONICAL_OBJECT",
-  "CANONICAL_ARRAY",
-  "CANONICAL_STRING",
+  "IDEMPOTENCY_CONFLICT",
+  "STATE_VERSION_CONFLICT",
+  "TRANSITION_DENIED",
+  "SESSION_CANCELLED",
+  "SESSION_EXPIRED",
+  "SESSION_REVOKED",
+  "SESSION_FAILED_CLOSED",
+  "CLOCKCHAIN_PENDING",
+  "CLOCKCHAIN_UNAVAILABLE",
+  "CLOCKCHAIN_RECEIPT_INVALID",
+  "CONTINUATION_UNAVAILABLE",
+  "RESULT_VERIFICATION_FAILED",
+  "HANDSHAKE_VERSION_UNSUPPORTED",
+  "SCHEMA_INVALID",
+  "RATE_LIMITED",
+  "INTERNAL_SAFE_FAILURE",
 ]);
 
 export class HandshakeV3Error extends Error {
@@ -96,10 +101,10 @@ export function fail(code, message = "Handshake v3 value is invalid.") {
 export const HANDSHAKE_V3_CONTRACT_PROVENANCE = Object.freeze({
   schema: "clockchain.handshake-protocol-v3-contract-provenance/v1",
   approvedProtocolSourceCommit: "d2cdedb705cf6855657381a908e47f71df959145",
-  contractSchemaPath: "packages/protocol/test/fixtures/standalone-handshake-v3-contract.schema.json",
+  contractSchemaPath: "packages/protocol/schemas/standalone-handshake-v3-contract.schema.json",
   contractSchemaOriginalPath: "docs/superpowers/specs/standalone-handshake-v3-contract.schema.json",
   contractSchemaSha256: "c8ecc8a28e4209883c525a1368226ea662612906789d817d0f35d370e52981b3",
-  contractFixturesPath: "packages/protocol/test/fixtures/standalone-handshake-v3-contract-fixtures.json",
+  contractFixturesPath: "packages/protocol/fixtures/standalone-handshake-v3-contract-fixtures.json",
   contractFixturesOriginalPath: "docs/superpowers/specs/standalone-handshake-v3-contract-fixtures.json",
   contractFixturesSha256: "440d97724879d0724b8cda09035f2bdf917ccb7591df480e849698beaa504222",
   packageName: "@clockchain/handshake-protocol",

@@ -162,7 +162,7 @@ test("package dry-run includes the immutable v2 fixture and extraction provenanc
 
   assert.equal(files.has("test/fixtures/agent-handshake-v2-canonical.json"), true);
   assert.equal(files.has("test/fixtures/v2-provenance.json"), true);
-  assert.equal(files.has("test/fixtures/standalone-handshake-v3-contract.schema.json"), true);
-  assert.equal(files.has("test/fixtures/standalone-handshake-v3-contract-fixtures.json"), true);
-  assert.equal(files.has("test/fixtures/v3-provenance.json"), true);
+  assert.equal(files.has("schemas/standalone-handshake-v3-contract.schema.json"), true);
+  assert.equal(files.has("fixtures/standalone-handshake-v3-contract-fixtures.json"), true);
+  assert.equal(files.has("fixtures/v3-provenance.json"), true);
 });

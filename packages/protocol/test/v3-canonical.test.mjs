@@ -19,14 +19,19 @@ test("RFC8785 canonicalization uses JSON-compatible Unicode escaping", () => {
 });
 
 test("RFC8785 canonicalization rejects unsupported or dangerous values", () => {
-  assert.throws(() => canonicalJsonString({ n: NaN }), { code: "CANONICAL_NON_FINITE_NUMBER" });
-  assert.throws(() => canonicalJsonString({ n: Infinity }), { code: "CANONICAL_NON_FINITE_NUMBER" });
-  assert.throws(() => canonicalJsonString({ big: 1n }), { code: "CANONICAL_UNSUPPORTED_TYPE" });
-  assert.throws(() => canonicalJsonString({ f() {} }), { code: "CANONICAL_UNSUPPORTED_TYPE" });
-  assert.throws(() => canonicalJsonString({ bad: "\uD800" }), { code: "CANONICAL_STRING" });
+  assert.throws(() => canonicalJsonString({ n: NaN }), { code: "SCHEMA_INVALID" });
+  assert.throws(() => canonicalJsonString({ n: Infinity }), { code: "SCHEMA_INVALID" });
+  assert.throws(() => canonicalJsonString({ big: 1n }), { code: "SCHEMA_INVALID" });
+  assert.throws(() => canonicalJsonString({ f() {} }), { code: "SCHEMA_INVALID" });
+  assert.throws(() => canonicalJsonString({ bad: "\uD800" }), { code: "SCHEMA_INVALID" });
   const cyclic = {};
   cyclic.self = cyclic;
-  assert.throws(() => canonicalJsonString(cyclic), { code: "CANONICAL_CYCLE" });
+  assert.throws(() => canonicalJsonString(cyclic), { code: "SCHEMA_INVALID" });
+});
+
+test("RFC8785 official-style numeric, unicode, and ordering vectors are deterministic", () => {
+  assert.equal(canonicalJsonString({ numbers: [333333333.3333333, 1e-27, -0] }), "{\"numbers\":[333333333.3333333,1e-27,0]}");
+  assert.equal(canonicalJsonString({ "\u20ac": "Euro", "\r": "Carriage Return", "\ufb33": "Hebrew Letter Dalet With Dagesh" }), "{\"\\r\":\"Carriage Return\",\"€\":\"Euro\",\"דּ\":\"Hebrew Letter Dalet With Dagesh\"}");
 });
 
 test("sha256 digest helper accepts bytes and canonical JSON values", () => {

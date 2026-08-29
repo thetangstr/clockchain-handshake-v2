@@ -15,10 +15,10 @@ import {
 } from "@clockchain/handshake-protocol/v3";
 
 const fixtures = JSON.parse(
-  await readFile(new URL("./fixtures/standalone-handshake-v3-contract-fixtures.json", import.meta.url), "utf8"),
+  await readFile(new URL("../fixtures/standalone-handshake-v3-contract-fixtures.json", import.meta.url), "utf8"),
 );
 const provenance = JSON.parse(
-  await readFile(new URL("./fixtures/v3-provenance.json", import.meta.url), "utf8"),
+  await readFile(new URL("../fixtures/v3-provenance.json", import.meta.url), "utf8"),
 );
 
 test("v3 protocol package records approved schema and fixture provenance", () => {

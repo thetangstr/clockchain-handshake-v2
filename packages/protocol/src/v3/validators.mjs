@@ -1,16 +1,16 @@
-import {
-  HANDSHAKE_V3_STATES,
-  HANDSHAKE_V3_OPERATOR_TOOLS,
-  HANDSHAKE_V3_PROTOCOL_VERSION,
-  HANDSHAKE_V3_ROLE_TOOLS,
-  HANDSHAKE_V3_SCHEMA_VERSION,
-  HANDSHAKE_V3_SIGNING_ALGORITHMS,
-  fail,
-} from "./constants.mjs";
+import contractSchema from "../../schemas/standalone-handshake-v3-contract.schema.json" with { type: "json" };
 
-const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
-const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
-const BUSINESS_CONTENT_KEYS = new Set(["businessContent", "canonicalPayload", "payload", "message", "continuationPayload"]);
+import { HANDSHAKE_V3_ROLE_TOOLS, fail } from "./constants.mjs";
+
+const BUSINESS_CONTENT_KEYS = new Set([
+  "businessContent",
+  "canonicalPayload",
+  "payload",
+  "continuationPayload",
+]);
+
+export const HANDSHAKE_V3_CONTRACT_SCHEMA = Object.freeze(contractSchema);
+export const HANDSHAKE_V3_TOOL_NAMES = Object.freeze(contractSchema.tools.map((tool) => tool.name));
 
 export function deepFreeze(value) {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {
@@ -22,360 +22,206 @@ export function deepFreeze(value) {
   return value;
 }
 
-export function cloneStrictRecord(value, allowedKeys, requiredKeys, code = "SCHEMA_INVALID") {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    fail(code);
+function schemaInvalid() {
+  fail("SCHEMA_INVALID");
+}
+
+function normalizeSchema(schema) {
+  if (schema === true) return {};
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) schemaInvalid();
+  return schema;
+}
+
+function resolveRef(ref) {
+  if (ref === "#/responseEnvelope") return contractSchema.responseEnvelope;
+  if (ref === "#/errorCodes") return contractSchema.errorCodes;
+  if (ref.startsWith("#/$defs/")) {
+    const name = ref.slice("#/$defs/".length);
+    const definition = contractSchema.$defs[name];
+    if (!definition) schemaInvalid();
+    return definition;
   }
+  schemaInvalid();
+}
+
+function isPlainJsonObject(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) {
-    fail(code);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function safeOwnKeys(value) {
+  try {
+    return Reflect.ownKeys(value);
+  } catch {
+    schemaInvalid();
   }
+}
+
+function safeDescriptor(value, key) {
+  try {
+    return Object.getOwnPropertyDescriptor(value, key);
+  } catch {
+    schemaInvalid();
+  }
+}
+
+function assertObjectSafety(value) {
+  if (!isPlainJsonObject(value)) schemaInvalid();
   const clone = {};
-  for (const key of Reflect.ownKeys(value)) {
-    let descriptor;
-    try {
-      descriptor = Object.getOwnPropertyDescriptor(value, key);
-    } catch {
-      fail(code);
-    }
-    if (typeof key !== "string" || !descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) {
-      fail(code);
-    }
-    if (!allowedKeys.includes(key) || BUSINESS_CONTENT_KEYS.has(key)) {
-      fail(code);
-    }
+  for (const key of safeOwnKeys(value)) {
+    if (typeof key !== "string" || BUSINESS_CONTENT_KEYS.has(key)) schemaInvalid();
+    const descriptor = safeDescriptor(value, key);
+    if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) schemaInvalid();
     clone[key] = descriptor.value;
-  }
-  for (const key of requiredKeys) {
-    if (!Object.hasOwn(clone, key)) {
-      fail(code);
-    }
   }
   return clone;
 }
 
-export function assertDigest(value, code = "SCHEMA_INVALID") {
-  if (typeof value !== "string" || !DIGEST_PATTERN.test(value)) {
-    fail(code);
+function validateString(value, schema) {
+  if (typeof value !== "string") schemaInvalid();
+  if (schema.minLength !== undefined && value.length < schema.minLength) schemaInvalid();
+  if (schema.maxLength !== undefined && value.length > schema.maxLength) schemaInvalid();
+  if (schema.pattern && !(new RegExp(schema.pattern).test(value))) schemaInvalid();
+  if (schema.format === "date-time") {
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value) || Number.isNaN(Date.parse(value))) schemaInvalid();
   }
+  if (schema.format === "uuid") {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) schemaInvalid();
+  }
+  return value;
 }
 
-export function assertIsoDate(value, code = "SCHEMA_INVALID") {
-  if (typeof value !== "string" || !ISO_DATE_PATTERN.test(value) || Number.isNaN(Date.parse(value))) {
-    fail(code);
-  }
+function validateNumber(value, schema) {
+  if (typeof value !== "number" || !Number.isFinite(value)) schemaInvalid();
+  const types = Array.isArray(schema.type) ? schema.type : [schema.type];
+  if (types.includes("integer") && !Number.isInteger(value)) schemaInvalid();
+  if (schema.minimum !== undefined && value < schema.minimum) schemaInvalid();
+  if (schema.maximum !== undefined && value > schema.maximum) schemaInvalid();
+  return value;
 }
 
-export function assertString(value, code = "SCHEMA_INVALID") {
-  if (typeof value !== "string" || value.length === 0) {
-    fail(code);
+function stableUniquenessKey(value) {
+  if (value && typeof value === "object") {
+    return JSON.stringify(value, Object.keys(value).sort());
   }
+  return `${typeof value}:${String(value)}`;
 }
 
-function assertSafeInteger(value, code = "SCHEMA_INVALID") {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    fail(code);
-  }
-}
-
-export function validateHandshakeV3SigningRequest(value) {
-  const request = cloneStrictRecord(value, [
-    "signingRequestId",
-    "actionType",
-    "domainSeparator",
-    "canonicalization",
-    "payloadSchemaId",
-    "sessionId",
-    "stateVersion",
-    "role",
-    "policyDigest",
-    "statementDigest",
-    "counterpartyDigest",
-    "priorEventDigest",
-    "evidenceDigest",
-    "nonce",
-    "issuedAt",
-    "expiresAt",
-    "canonicalBytesBase64Url",
-    "signingDigest",
-  ], [
-    "signingRequestId",
-    "actionType",
-    "domainSeparator",
-    "canonicalization",
-    "payloadSchemaId",
-    "sessionId",
-    "stateVersion",
-    "role",
-    "policyDigest",
-    "statementDigest",
-    "nonce",
-    "issuedAt",
-    "expiresAt",
-    "canonicalBytesBase64Url",
-    "signingDigest",
-  ]);
-  for (const key of ["signingRequestId", "actionType", "domainSeparator", "canonicalization", "payloadSchemaId", "sessionId", "role", "nonce", "canonicalBytesBase64Url"]) {
-    assertString(request[key]);
-  }
-  assertSafeInteger(request.stateVersion);
-  for (const key of ["policyDigest", "statementDigest", "signingDigest", "counterpartyDigest", "priorEventDigest", "evidenceDigest"]) {
-    if (request[key] !== undefined) {
-      assertDigest(request[key]);
+function validateArray(schema, value) {
+  if (!Array.isArray(value)) schemaInvalid();
+  if (schema.minItems !== undefined && value.length < schema.minItems) schemaInvalid();
+  if (schema.maxItems !== undefined && value.length > schema.maxItems) schemaInvalid();
+  if (schema.uniqueItems) {
+    const seen = new Set();
+    for (const item of value) {
+      const key = stableUniquenessKey(item);
+      if (seen.has(key)) schemaInvalid();
+      seen.add(key);
     }
   }
-  assertIsoDate(request.issuedAt);
-  assertIsoDate(request.expiresAt);
-  return deepFreeze(request);
+  return deepFreeze(value.map((item) => validateAgainstSchema(schema.items ?? {}, item)));
 }
 
-export function validateHandshakeV3SignedAction(value) {
-  const action = cloneStrictRecord(value, [
-    "signingRequestId",
-    "signingDigest",
-    "signerKeyId",
-    "algorithm",
-    "signature",
-  ], [
-    "signingRequestId",
-    "signingDigest",
-    "signerKeyId",
-    "algorithm",
-    "signature",
-  ]);
-  assertString(action.signingRequestId);
-  assertString(action.signerKeyId);
-  assertString(action.signature);
-  assertDigest(action.signingDigest);
-  if (!HANDSHAKE_V3_SIGNING_ALGORITHMS.includes(action.algorithm)) {
-    fail("SCHEMA_INVALID");
+function validateObject(schema, value) {
+  const source = assertObjectSafety(value);
+  if (schema.maxProperties !== undefined && Object.keys(source).length > schema.maxProperties) schemaInvalid();
+  if (schema.required) {
+    for (const key of schema.required) {
+      if (!Object.hasOwn(source, key)) schemaInvalid();
+    }
   }
-  return deepFreeze(action);
+  const properties = schema.properties ?? {};
+  const output = {};
+  for (const [key, entry] of Object.entries(source)) {
+    if (properties[key]) {
+      output[key] = validateAgainstSchema(properties[key], entry);
+    } else if (schema.additionalProperties === false) {
+      schemaInvalid();
+    } else if (schema.additionalProperties && typeof schema.additionalProperties === "object") {
+      output[key] = validateAgainstSchema(schema.additionalProperties, entry);
+    } else {
+      output[key] = entry;
+    }
+  }
+  return deepFreeze(output);
 }
 
-export function validateHandshakeV3RoleGrant(value, context = {}) {
-  const grant = cloneStrictRecord(value, [
-    "roleGrantId",
-    "sessionId",
-    "role",
-    "principalDigest",
-    "proofKeyThumbprint",
-    "allowedTools",
-    "issuedAt",
-    "expiresAt",
-    "recoveredWithoutMutation",
-    "protocolStateMutated",
-  ], [
-    "roleGrantId",
-    "sessionId",
-    "role",
-    "principalDigest",
-    "proofKeyThumbprint",
-    "allowedTools",
-    "issuedAt",
-    "expiresAt",
-  ]);
-  for (const key of ["roleGrantId", "sessionId", "role"]) {
-    assertString(grant[key]);
+function matches(schema, value) {
+  try {
+    validateAgainstSchema(schema, value);
+    return true;
+  } catch (error) {
+    if (error?.code === "SCHEMA_INVALID") return false;
+    throw error;
   }
-  assertDigest(grant.principalDigest);
-  assertDigest(grant.proofKeyThumbprint);
-  if (!Array.isArray(grant.allowedTools) || grant.allowedTools.some((tool) => typeof tool !== "string")) {
-    fail("SCHEMA_INVALID");
-  }
-  assertIsoDate(grant.issuedAt);
-  assertIsoDate(grant.expiresAt);
-  if (context.sessionId && grant.sessionId !== context.sessionId) {
-    fail("ROLE_GRANT_BOUNDARY_MISMATCH");
-  }
-  if (context.role && grant.role !== context.role) {
-    fail("ROLE_GRANT_BOUNDARY_MISMATCH");
-  }
-  if (context.principalDigest && grant.principalDigest !== context.principalDigest) {
-    fail("ROLE_GRANT_BOUNDARY_MISMATCH");
-  }
-  if (context.proofKeyThumbprint && grant.proofKeyThumbprint !== context.proofKeyThumbprint) {
-    fail("ROLE_GRANT_BOUNDARY_MISMATCH");
-  }
-  if (context.tool && !grant.allowedTools.includes(context.tool)) {
-    fail("ROLE_GRANT_TOOL_DENIED");
-  }
-  if (context.now && Date.parse(context.now) >= Date.parse(grant.expiresAt)) {
-    fail("ROLE_GRANT_EXPIRED");
-  }
-  return deepFreeze(grant);
 }
 
-export function validateHandshakeV3Policy(value) {
-  const policy = cloneStrictRecord(value, ["policyId", "scope", "expiresAt", "statementDigest", "policyDigest"], ["policyId", "scope", "expiresAt"]);
-  assertString(policy.policyId);
-  assertString(policy.scope);
-  assertIsoDate(policy.expiresAt);
-  if (policy.statementDigest) assertDigest(policy.statementDigest);
-  if (policy.policyDigest) assertDigest(policy.policyDigest);
-  return deepFreeze(policy);
+function validateAgainstSchema(schemaInput, value) {
+  const schema = normalizeSchema(schemaInput);
+  if (schema.$ref) return validateAgainstSchema(resolveRef(schema.$ref), value);
+  if (schema.const !== undefined && value !== schema.const) schemaInvalid();
+  if (schema.enum && !schema.enum.includes(value)) schemaInvalid();
+  if (schema.not && matches(schema.not, value)) schemaInvalid();
+  if (schema.anyOf && !schema.anyOf.some((option) => matches(option, value))) schemaInvalid();
+  if (schema.oneOf && schema.oneOf.filter((option) => matches(option, value)).length !== 1) schemaInvalid();
+
+  const types = Array.isArray(schema.type) ? schema.type : schema.type ? [schema.type] : [];
+  if (types.length > 0) {
+    const typeMatches = types.some((type) => {
+      if (type === "null") return value === null;
+      if (type === "array") return Array.isArray(value);
+      if (type === "object") return isPlainJsonObject(value);
+      if (type === "integer") return typeof value === "number" && Number.isInteger(value);
+      return typeof value === type;
+    });
+    if (!typeMatches) schemaInvalid();
+  }
+
+  if (typeof value === "string") return validateString(value, schema);
+  if (typeof value === "number") return validateNumber(value, schema);
+  if (typeof value === "boolean" || value === null) return value;
+  if (Array.isArray(value)) return validateArray(schema, value);
+  if (isPlainJsonObject(value)) return validateObject(schema, value);
+  schemaInvalid();
 }
 
-export function validateHandshakeV3Party(value) {
-  const party = cloneStrictRecord(value, ["role", "partyDigest", "principalDigest", "signingKeyId", "proofKeyThumbprint"], ["role", "partyDigest", "principalDigest", "signingKeyId"]);
-  assertString(party.role);
-  assertDigest(party.partyDigest);
-  assertDigest(party.principalDigest);
-  assertString(party.signingKeyId);
-  if (party.proofKeyThumbprint) assertDigest(party.proofKeyThumbprint);
-  return deepFreeze(party);
+export function validateHandshakeV3Schema(schema, value) {
+  return validateAgainstSchema(schema, value);
 }
 
-export function validateHandshakeV3Receipt(value) {
-  const receipt = cloneStrictRecord(value, [
-    "requestDigest",
-    "stateVersion",
-    "eventDigest",
-    "recordedAt",
-    "mutated",
-  ], [
-    "requestDigest",
-    "stateVersion",
-    "recordedAt",
-    "mutated",
-  ]);
-  assertDigest(receipt.requestDigest);
-  if (receipt.eventDigest) assertDigest(receipt.eventDigest);
-  assertSafeInteger(receipt.stateVersion);
-  assertIsoDate(receipt.recordedAt);
-  if (typeof receipt.mutated !== "boolean") fail("SCHEMA_INVALID");
-  return deepFreeze(receipt);
-}
-
-export function validateHandshakeV3FailureReceipt(value) {
-  const receipt = cloneStrictRecord(value, [
-    "requestDigest",
-    "stateVersion",
-    "recordedAt",
-    "mutated",
-  ], [
-    "requestDigest",
-    "stateVersion",
-    "recordedAt",
-    "mutated",
-  ]);
-  assertDigest(receipt.requestDigest);
-  assertSafeInteger(receipt.stateVersion);
-  assertIsoDate(receipt.recordedAt);
-  if (receipt.mutated !== false) fail("SCHEMA_INVALID");
-  return deepFreeze(receipt);
-}
-
-export function validateHandshakeV3CallbackEvent(value) {
-  const event = cloneStrictRecord(value, [
-    "eventId",
-    "sessionId",
-    "eventType",
-    "eventDigest",
-    "stateVersion",
-    "occurredAt",
-  ], [
-    "eventId",
-    "sessionId",
-    "eventType",
-    "eventDigest",
-    "stateVersion",
-    "occurredAt",
-  ]);
-  assertString(event.eventId);
-  assertString(event.sessionId);
-  assertString(event.eventType);
-  assertDigest(event.eventDigest);
-  assertSafeInteger(event.stateVersion);
-  assertIsoDate(event.occurredAt);
-  return deepFreeze(event);
-}
-
-export function validateHandshakeV3Session(value) {
-  const session = cloneStrictRecord(value, [
-    "sessionId",
-    "state",
-    "stateVersion",
-    "tenantDigest",
-    "createdAt",
-    "expiresAt",
-    "signedObjects",
-  ], [
-    "sessionId",
-    "state",
-    "stateVersion",
-    "tenantDigest",
-    "createdAt",
-    "expiresAt",
-  ]);
-  assertString(session.sessionId);
-  if (!HANDSHAKE_V3_STATES.includes(session.state)) fail("SCHEMA_INVALID");
-  assertSafeInteger(session.stateVersion);
-  assertDigest(session.tenantDigest);
-  assertIsoDate(session.createdAt);
-  assertIsoDate(session.expiresAt);
-  if (session.signedObjects !== undefined && !Array.isArray(session.signedObjects)) fail("SCHEMA_INVALID");
-  return deepFreeze(session);
+export function validateHandshakeV3Def(defName, value) {
+  const definition = contractSchema.$defs[defName];
+  if (!definition) schemaInvalid();
+  return validateAgainstSchema(definition, value);
 }
 
 export function validateHandshakeV3ResponseEnvelope(value) {
-  const envelope = cloneStrictRecord(value, ["protocolVersion", "schemaVersion", "requestId", "serverTime", "result", "receipt", "error", "failureReceipt"], ["protocolVersion", "schemaVersion", "requestId", "serverTime"]);
-  if (envelope.protocolVersion !== HANDSHAKE_V3_PROTOCOL_VERSION || envelope.schemaVersion !== HANDSHAKE_V3_SCHEMA_VERSION) {
-    fail("SCHEMA_INVALID");
-  }
-  assertIsoDate(envelope.serverTime);
-  const hasResult = envelope.result !== undefined;
-  const hasReceipt = envelope.receipt !== undefined;
-  const hasError = envelope.error !== undefined;
-  const hasFailureReceipt = envelope.failureReceipt !== undefined;
-  if (hasResult && (!hasReceipt || hasError || hasFailureReceipt)) {
-    fail("SCHEMA_INVALID");
-  }
-  if (hasFailureReceipt && (!hasError || hasResult || hasReceipt)) {
-    fail("SCHEMA_INVALID");
-  }
-  if (hasError && !hasFailureReceipt && (hasResult || hasReceipt)) {
-    fail("SCHEMA_INVALID");
-  }
-  if (!hasResult && !hasError) {
-    fail("SCHEMA_INVALID");
-  }
-  return deepFreeze(envelope);
+  return validateAgainstSchema(contractSchema.responseEnvelope, value);
 }
 
-export function validateHandshakeV3ToolInput(tool, input, context = {}) {
-  if (HANDSHAKE_V3_ROLE_TOOLS.includes(tool)) {
-    if (context.tokenScopes?.every((scope) => scope.startsWith("handshake.operator."))) {
-      fail("SCOPE_DENIED");
-    }
-    const required = tool === "agent_handshake_session_submit"
-      ? ["sessionId", "roleGrantId", "action", "idempotencyKey", "expectedStateVersion"]
-      : ["sessionId", "roleGrantId"];
-    const allowed = [...new Set([...required, "eventCursor", "waitTimeoutMs"])];
-    const body = cloneStrictRecord(input, allowed, required);
-    return deepFreeze({ tool, input: body });
-  }
-  if (tool === "agent_handshake_operator_request") {
-    const body = cloneStrictRecord(input, ["sessionId", "action", "reasonCode", "observedStateVersion", "observedEventDigest", "idempotencyKey"], ["sessionId", "action", "reasonCode", "observedStateVersion", "observedEventDigest", "idempotencyKey"]);
-    if (!["REQUEST_EXPIRY_EVALUATION", "REQUEST_CANCELLATION"].includes(body.action)) {
-      fail("SCHEMA_INVALID");
-    }
-    return deepFreeze({ tool, input: body });
-  }
-  fail("SCHEMA_INVALID");
+function toolSchema(toolName, kind) {
+  const tool = contractSchema.tools.find((candidate) => candidate.name === toolName);
+  if (!tool) schemaInvalid();
+  return tool[`${kind}Schema`];
 }
 
-export function validateHandshakeV3ToolResult(tool, value) {
-  if (tool === "agent_handshake_session_cancel") {
-    const result = cloneStrictRecord(value, ["sessionId", "state", "stateVersion", "mutated"], ["sessionId", "state"]);
-    return deepFreeze(result);
+export function validateHandshakeV3ToolInput(toolName, input, context = {}) {
+  if (HANDSHAKE_V3_ROLE_TOOLS.includes(toolName) && context.tokenScopes?.every((scope) => scope.startsWith("handshake.operator."))) {
+    fail("SCOPE_DENIED");
   }
-  return deepFreeze(cloneStrictRecord(value, ["sessionId", "state", "stateVersion", "receipt"], ["sessionId"]));
+  return deepFreeze({ tool: toolName, input: validateAgainstSchema(toolSchema(toolName, "input"), input) });
+}
+
+export function validateHandshakeV3ToolResult(toolName, result) {
+  return validateAgainstSchema(toolSchema(toolName, "result"), result);
 }
 
 export function validateHandshakeV3Fixture(fixture) {
   if (fixture.schemaRef === "#/$defs/signingRequest") {
     validateHandshakeV3SigningRequest(fixture.value);
+  } else if (fixture.schemaRef === "#/$defs/signedAction") {
+    validateHandshakeV3SignedAction(fixture.value);
   } else if (fixture.schemaRef === "#/responseEnvelope") {
     validateHandshakeV3ResponseEnvelope(fixture.value);
   } else if (fixture.tool) {
@@ -383,7 +229,19 @@ export function validateHandshakeV3Fixture(fixture) {
   } else if (fixture.resultTool) {
     validateHandshakeV3ToolResult(fixture.resultTool, fixture.value);
   } else {
-    fail("SCHEMA_INVALID");
+    schemaInvalid();
   }
   return deepFreeze({ valid: true, id: fixture.id });
 }
+
+export const validateHandshakeV3Policy = (value) => validateHandshakeV3Def("policy", value);
+export const validateHandshakeV3Party = (value) => validateHandshakeV3Def("party", value);
+export const validateHandshakeV3RoleGrant = (value) => validateHandshakeV3Def("roleGrant", value);
+export const validateHandshakeV3SigningRequest = (value) => validateHandshakeV3Def("signingRequest", value);
+export const validateHandshakeV3SignedAction = (value) => validateHandshakeV3Def("signedAction", value);
+export const validateHandshakeV3Receipt = (value) => validateHandshakeV3Def("receipt", value);
+export const validateHandshakeV3FailureReceipt = (value) => validateHandshakeV3Def("failureReceipt", value);
+export const validateHandshakeV3CallbackEvent = (value) => validateHandshakeV3Def("callbackEvent", value);
+export const validateHandshakeV3Session = (value) => validateHandshakeV3Def("session", value);
+export const validateHandshakeV3Certificate = (value) => validateHandshakeV3Def("certificate", value);
+export const validateHandshakeV3Continuation = (value) => validateHandshakeV3Def("continuation", value);

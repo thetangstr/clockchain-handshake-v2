@@ -1,186 +1,161 @@
-import { fail } from "./constants.mjs";
+import { HANDSHAKE_V3_PROTOCOL_VERSION, HANDSHAKE_V3_SCHEMA_VERSION, fail } from "./constants.mjs";
 import { handshakeV3Digest } from "./canonical.mjs";
-import { assertDigest, assertIsoDate, assertString, cloneStrictRecord, deepFreeze } from "./validators.mjs";
+import {
+  validateHandshakeV3Certificate,
+  validateHandshakeV3Continuation,
+  validateHandshakeV3ToolResult,
+} from "./validators.mjs";
 
-function validateSignature(signature) {
-  const value = cloneStrictRecord(signature, ["keyId", "algorithm", "signature"], ["keyId", "algorithm", "signature"]);
-  assertString(value.keyId);
-  assertString(value.algorithm);
-  assertString(value.signature);
-  return deepFreeze(value);
-}
+export { validateHandshakeV3Certificate, validateHandshakeV3Continuation } from "./validators.mjs";
 
-export function validateHandshakeV3Certificate(value) {
-  const certificate = cloneStrictRecord(value, [
-    "certificateId",
-    "schemaVersion",
-    "sessionId",
-    "statementDigest",
-    "policyDigest",
-    "scopeDigest",
-    "parties",
-    "issuedAt",
-    "expiresAt",
-    "clockchainAnchorDigest",
-    "clockchainSignature",
-  ], [
-    "certificateId",
-    "schemaVersion",
-    "sessionId",
-    "statementDigest",
-    "policyDigest",
-    "scopeDigest",
-    "parties",
-    "issuedAt",
-    "expiresAt",
-    "clockchainAnchorDigest",
-    "clockchainSignature",
-  ]);
-  for (const key of ["certificateId", "schemaVersion", "sessionId"]) assertString(certificate[key]);
-  for (const key of ["statementDigest", "policyDigest", "scopeDigest", "clockchainAnchorDigest"]) assertDigest(certificate[key]);
-  if (!Array.isArray(certificate.parties) || certificate.parties.length !== 2) fail("SCHEMA_INVALID");
-  certificate.parties = certificate.parties.map((party) => {
-    const valid = cloneStrictRecord(party, ["role", "partyDigest", "signingKeyId"], ["role", "partyDigest", "signingKeyId"]);
-    assertString(valid.role);
-    assertDigest(valid.partyDigest);
-    assertString(valid.signingKeyId);
-    return deepFreeze(valid);
+export function handshakeV3CertificateSignedProjection(certificate) {
+  const valid = validateHandshakeV3Certificate(certificate);
+  return Object.freeze({
+    certificateId: valid.certificateId,
+    sessionId: valid.sessionId,
+    policyDigest: valid.policyDigest,
+    partyDigests: valid.partyDigests,
+    clockchainNetwork: valid.clockchainNetwork,
+    trustRootId: valid.trustRootId,
+    issuedAt: valid.issuedAt,
+    expiresAt: valid.expiresAt,
   });
-  assertIsoDate(certificate.issuedAt);
-  assertIsoDate(certificate.expiresAt);
-  certificate.clockchainSignature = validateSignature(certificate.clockchainSignature);
-  return deepFreeze(certificate);
 }
 
-export function validateHandshakeV3Continuation(value) {
-  const continuation = cloneStrictRecord(value, [
-    "continuationId",
-    "certificateId",
-    "sessionId",
-    "statementDigest",
-    "policyDigest",
-    "scopeDigest",
-    "audience",
-    "actionClass",
-    "notBefore",
-    "expiresAt",
-    "replayNonce",
-    "clockchainSignature",
-  ], [
-    "continuationId",
-    "certificateId",
-    "sessionId",
-    "statementDigest",
-    "policyDigest",
-    "scopeDigest",
-    "audience",
-    "actionClass",
-    "notBefore",
-    "expiresAt",
-    "replayNonce",
-    "clockchainSignature",
-  ]);
-  for (const key of ["continuationId", "certificateId", "sessionId", "audience", "actionClass", "replayNonce"]) assertString(continuation[key]);
-  for (const key of ["statementDigest", "policyDigest", "scopeDigest"]) assertDigest(continuation[key]);
-  assertIsoDate(continuation.notBefore);
-  assertIsoDate(continuation.expiresAt);
-  continuation.clockchainSignature = validateSignature(continuation.clockchainSignature);
-  return deepFreeze(continuation);
+export function handshakeV3ContinuationSignedProjection(continuation) {
+  const valid = validateHandshakeV3Continuation(continuation);
+  return Object.freeze({
+    continuationId: valid.continuationId,
+    sessionId: valid.sessionId,
+    federationRelationDigest: valid.federationRelationDigest,
+    certificateDigest: valid.certificateDigest,
+    clockchainNetwork: valid.clockchainNetwork,
+    trustRootId: valid.trustRootId,
+    partyRoleDigests: valid.partyRoleDigests,
+    statementDigest: valid.statementDigest,
+    scopeDigest: valid.scopeDigest,
+    policyDigest: valid.policyDigest,
+    protocolVersion: valid.protocolVersion,
+    schemaVersion: valid.schemaVersion,
+    issuedAt: valid.issuedAt,
+    notBefore: valid.notBefore,
+    expiresAt: valid.expiresAt,
+    audience: valid.audience,
+    allowedNextActionClass: valid.allowedNextActionClass,
+    replayNonce: valid.replayNonce,
+    revocationHandle: valid.revocationHandle,
+  });
 }
 
-async function requireGoodRevocationStatus(getRevocationStatus, objectId) {
-  const status = await getRevocationStatus(objectId);
-  if (status === "UNKNOWN") {
-    fail("REVOCATION_STATUS_UNKNOWN");
+async function signatureAccepted({ object, projection, issuerSignature, verifyIssuerSignature }) {
+  const signedDigest = handshakeV3Digest(projection);
+  const accepted = await verifyIssuerSignature({
+    signedDigest,
+    issuerSignature,
+    clockchainNetwork: object.clockchainNetwork,
+    trustRootId: object.trustRootId,
+  });
+  if (accepted !== true) fail("SIGNATURE_INVALID");
+  return signedDigest;
+}
+
+function assertTimeWindow({ issuedAt, notBefore, expiresAt }, now) {
+  const nowMs = Date.parse(now);
+  if (nowMs < Date.parse(notBefore ?? issuedAt) || nowMs >= Date.parse(expiresAt)) {
+    fail("RESULT_VERIFICATION_FAILED");
   }
-  if (status !== "GOOD") {
-    fail("OBJECT_REVOKED");
-  }
+}
+
+async function revocationStatus(getRevocationStatus, handle) {
+  const status = await getRevocationStatus(handle);
+  if (status === "GOOD") return "GOOD";
+  if (status === "REVOKED") fail("SESSION_REVOKED");
+  fail("RESULT_VERIFICATION_FAILED");
 }
 
 export async function verifyHandshakeV3Certificate({
   certificate,
-  expectedSessionId,
-  expectedStatementDigest,
+  expectedCertificateDigest,
   expectedPolicyDigest,
-  expectedScopeDigest,
+  expectedPartyDigests,
   now,
-  verifyClockchainSignature,
+  verifyIssuerSignature,
   getRevocationStatus,
 }) {
   const valid = validateHandshakeV3Certificate(certificate);
-  if (
-    valid.sessionId !== expectedSessionId ||
-    valid.statementDigest !== expectedStatementDigest ||
-    valid.policyDigest !== expectedPolicyDigest ||
-    valid.scopeDigest !== expectedScopeDigest
-  ) {
-    fail("CERTIFICATE_BINDING_MISMATCH");
-  }
-  const nowMs = Date.parse(now);
-  if (nowMs < Date.parse(valid.issuedAt)) fail("CERTIFICATE_NOT_YET_VALID");
-  if (nowMs >= Date.parse(valid.expiresAt)) fail("CERTIFICATE_EXPIRED");
-  await requireGoodRevocationStatus(getRevocationStatus, valid.certificateId);
-  const signedDigest = handshakeV3Digest({
-    certificateId: valid.certificateId,
-    sessionId: valid.sessionId,
-    statementDigest: valid.statementDigest,
-    policyDigest: valid.policyDigest,
-    scopeDigest: valid.scopeDigest,
-    parties: valid.parties,
-    issuedAt: valid.issuedAt,
-    expiresAt: valid.expiresAt,
-    clockchainAnchorDigest: valid.clockchainAnchorDigest,
+  const signedDigest = await signatureAccepted({
+    object: valid,
+    projection: handshakeV3CertificateSignedProjection(valid),
+    issuerSignature: valid.issuerSignature,
+    verifyIssuerSignature,
   });
-  const accepted = await verifyClockchainSignature({ signedDigest, signature: valid.clockchainSignature });
-  if (accepted !== true) fail("SIGNATURE_INVALID");
-  return Object.freeze({ verified: true, certificateId: valid.certificateId, certificateDigest: signedDigest, externalBusinessActionPerformed: false, safeStop: true });
+  if (valid.certificateDigest !== signedDigest) fail("RESULT_VERIFICATION_FAILED");
+  if (expectedCertificateDigest && valid.certificateDigest !== expectedCertificateDigest) fail("RESULT_VERIFICATION_FAILED");
+  if (expectedPolicyDigest && valid.policyDigest !== expectedPolicyDigest) fail("POLICY_DIGEST_MISMATCH");
+  if (expectedPartyDigests && JSON.stringify(valid.partyDigests) !== JSON.stringify(expectedPartyDigests)) fail("ROLE_DENIED");
+  assertTimeWindow(valid, now);
+  const status = await revocationStatus(getRevocationStatus, valid.certificateId);
+  return Object.freeze({
+    valid: true,
+    certificateValid: true,
+    continuationValid: false,
+    revocationStatus: status,
+    checkedAt: now,
+    violations: Object.freeze([]),
+    externalBusinessActionPerformed: false,
+  });
 }
 
 export async function verifyHandshakeV3Continuation({
   certificate,
   continuation,
+  expectedCertificateDigest,
+  expectedPartyRoleDigests,
+  expectedStatementDigest,
+  expectedScopeDigest,
+  expectedPolicyDigest,
   expectedAudience,
-  expectedActionClass,
+  expectedAllowedNextActionClass,
   now,
-  verifyClockchainSignature,
+  verifyIssuerSignature,
   getRevocationStatus,
   checkAndRecordReplay,
 }) {
   const validCertificate = validateHandshakeV3Certificate(certificate);
   const validContinuation = validateHandshakeV3Continuation(continuation);
-  if (
-    validContinuation.certificateId !== validCertificate.certificateId ||
-    validContinuation.sessionId !== validCertificate.sessionId ||
-    validContinuation.statementDigest !== validCertificate.statementDigest ||
-    validContinuation.policyDigest !== validCertificate.policyDigest ||
-    validContinuation.scopeDigest !== validCertificate.scopeDigest ||
-    validContinuation.audience !== expectedAudience ||
-    validContinuation.actionClass !== expectedActionClass
-  ) {
-    fail("CONTINUATION_BINDING_MISMATCH");
-  }
-  const nowMs = Date.parse(now);
-  if (nowMs < Date.parse(validContinuation.notBefore)) fail("CONTINUATION_NOT_YET_VALID");
-  if (nowMs >= Date.parse(validContinuation.expiresAt)) fail("CONTINUATION_EXPIRED");
-  await requireGoodRevocationStatus(getRevocationStatus, validContinuation.continuationId);
-  if ((await checkAndRecordReplay(validContinuation.replayNonce)) !== true) {
-    fail("CONTINUATION_REPLAYED");
-  }
-  const signedDigest = handshakeV3Digest({
-    continuationId: validContinuation.continuationId,
-    certificateId: validContinuation.certificateId,
-    sessionId: validContinuation.sessionId,
-    statementDigest: validContinuation.statementDigest,
-    policyDigest: validContinuation.policyDigest,
-    scopeDigest: validContinuation.scopeDigest,
-    audience: validContinuation.audience,
-    actionClass: validContinuation.actionClass,
-    notBefore: validContinuation.notBefore,
-    expiresAt: validContinuation.expiresAt,
-    replayNonce: validContinuation.replayNonce,
+  const certificateDigest = await signatureAccepted({
+    object: validCertificate,
+    projection: handshakeV3CertificateSignedProjection(validCertificate),
+    issuerSignature: validCertificate.issuerSignature,
+    verifyIssuerSignature,
   });
-  const accepted = await verifyClockchainSignature({ signedDigest, signature: validContinuation.clockchainSignature });
-  if (accepted !== true) fail("SIGNATURE_INVALID");
-  return Object.freeze({ verified: true, continuationId: validContinuation.continuationId, continuationDigest: signedDigest, externalBusinessActionPerformed: false, safeStop: true });
+  const continuationDigest = await signatureAccepted({
+    object: validContinuation,
+    projection: handshakeV3ContinuationSignedProjection(validContinuation),
+    issuerSignature: validContinuation.issuerSignature,
+    verifyIssuerSignature,
+  });
+  if (validCertificate.certificateDigest !== certificateDigest) fail("RESULT_VERIFICATION_FAILED");
+  if (validContinuation.certificateDigest !== validCertificate.certificateDigest) fail("RESULT_VERIFICATION_FAILED");
+  if (expectedCertificateDigest && validContinuation.certificateDigest !== expectedCertificateDigest) fail("RESULT_VERIFICATION_FAILED");
+  if (expectedPartyRoleDigests && JSON.stringify(validContinuation.partyRoleDigests) !== JSON.stringify(expectedPartyRoleDigests)) fail("ROLE_DENIED");
+  if (expectedStatementDigest && validContinuation.statementDigest !== expectedStatementDigest) fail("RESULT_VERIFICATION_FAILED");
+  if (expectedScopeDigest && validContinuation.scopeDigest !== expectedScopeDigest) fail("RESULT_VERIFICATION_FAILED");
+  if (expectedPolicyDigest && validContinuation.policyDigest !== expectedPolicyDigest) fail("POLICY_DIGEST_MISMATCH");
+  if (validContinuation.policyDigest !== validCertificate.policyDigest) fail("POLICY_DIGEST_MISMATCH");
+  if (validContinuation.protocolVersion !== HANDSHAKE_V3_PROTOCOL_VERSION || validContinuation.schemaVersion !== HANDSHAKE_V3_SCHEMA_VERSION) fail("HANDSHAKE_VERSION_UNSUPPORTED");
+  if (expectedAudience && validContinuation.audience !== expectedAudience) fail("RESULT_VERIFICATION_FAILED");
+  if (expectedAllowedNextActionClass && validContinuation.allowedNextActionClass !== expectedAllowedNextActionClass) fail("RESULT_VERIFICATION_FAILED");
+  assertTimeWindow(validContinuation, now);
+  const status = await revocationStatus(getRevocationStatus, validContinuation.revocationHandle);
+  if ((await checkAndRecordReplay(validContinuation.replayNonce, continuationDigest)) !== true) fail("RESULT_VERIFICATION_FAILED");
+  return validateHandshakeV3ToolResult("agent_handshake_result_verify", {
+    valid: true,
+    certificateValid: true,
+    continuationValid: true,
+    revocationStatus: status,
+    checkedAt: now,
+    violations: [],
+    externalBusinessActionPerformed: false,
+  });
 }
