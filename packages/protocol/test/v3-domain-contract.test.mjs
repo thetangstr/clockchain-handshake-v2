@@ -165,6 +165,22 @@ test("typed signing request bytes use exact schema fields and signer negatives d
   assert.equal(bytes.priorActionDigest, digestD);
   assert.equal(bytes.counterpartyDigest, undefined);
 
+  const minimalRequest = createHandshakeV3SigningRequest({
+    signingRequestId: "signreq_minimal_0123456",
+    actionType: "PROPOSAL",
+    sessionId: "sess_0123456789abcdef",
+    stateVersion: 4,
+    role: "INITIATOR",
+    policyDigest: digestA,
+    statementDigest: digestB,
+    nonce: "nonce_minimal_0123456",
+    issuedAt: "2026-08-29T20:00:00Z",
+    expiresAt: "2026-08-29T20:05:00Z",
+  });
+  assert.equal(Object.hasOwn(minimalRequest, "counterpartIdentityDigest"), false);
+  assert.equal(Object.hasOwn(minimalRequest, "priorActionDigest"), false);
+  assert.equal(Object.hasOwn(minimalRequest, "evidenceDigest"), false);
+
   let calls = 0;
   const action = {
     signingRequestId: request.signingRequestId,
@@ -186,12 +202,27 @@ test("typed signing request bytes use exact schema fields and signer negatives d
     expectedSigningRequestId: request.signingRequestId,
     expectedSigningDigest: request.signingDigest,
     now: "2026-08-29T20:01:00Z",
-    verifier: async () => {
+    verifier: async ({ publicKey, algorithm, keyId, signingDigest }) => {
       calls += 1;
-      return true;
+      return publicKey === "p".repeat(32) && algorithm === "EdDSA" && keyId === "agent-a-key" && signingDigest === request.signingDigest;
     },
   });
   assert.equal(calls, 1);
+  await assert.rejects(() => verifyHandshakeV3SignedAction({
+    request,
+    action,
+    expectedParty: {
+      identityDigest: digestB,
+      role: "INITIATOR",
+      signingKeyId: "agent-a-key",
+      signingAlgorithm: "EdDSA",
+      publicKey: "q".repeat(32),
+    },
+    expectedSigningRequestId: request.signingRequestId,
+    expectedSigningDigest: request.signingDigest,
+    now: "2026-08-29T20:01:00Z",
+    verifier: async ({ publicKey, keyId }) => publicKey === "p".repeat(32) && keyId === "agent-a-key",
+  }), { code: "SIGNATURE_INVALID" });
   await assert.rejects(() => verifyHandshakeV3SignedAction({
     request,
     action: { ...action, signingDigest: digestF },

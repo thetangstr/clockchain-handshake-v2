@@ -29,7 +29,7 @@ export function handshakeV3SigningPayload(input) {
 export function createHandshakeV3SigningRequest(input) {
   const payload = handshakeV3SigningPayload(input);
   const canonicalBytes = canonicalJsonBytes(payload);
-  return validateHandshakeV3SigningRequest({
+  const request = {
     signingRequestId: input.signingRequestId,
     actionType: input.actionType,
     domainSeparator: HANDSHAKE_V3_DOMAIN_SEPARATOR,
@@ -40,15 +40,16 @@ export function createHandshakeV3SigningRequest(input) {
     role: input.role,
     policyDigest: input.policyDigest,
     statementDigest: input.statementDigest,
-    counterpartIdentityDigest: input.counterpartIdentityDigest,
-    priorActionDigest: input.priorActionDigest,
-    evidenceDigest: input.evidenceDigest,
     nonce: input.nonce,
     issuedAt: input.issuedAt,
     expiresAt: input.expiresAt,
     canonicalBytesBase64Url: Buffer.from(canonicalBytes).toString("base64url"),
     signingDigest: handshakeV3Digest(payload),
-  });
+  };
+  for (const key of ["counterpartIdentityDigest", "priorActionDigest", "evidenceDigest"]) {
+    if (input[key] !== undefined) request[key] = input[key];
+  }
+  return validateHandshakeV3SigningRequest(request);
 }
 
 export async function verifyHandshakeV3SignedAction({
@@ -92,6 +93,7 @@ export async function verifyHandshakeV3SignedAction({
     signature: validAction.signature,
     keyId: validAction.signerKeyId,
     algorithm: validAction.algorithm,
+    publicKey: party?.publicKey,
     signingDigest: validAction.signingDigest,
   });
   if (accepted !== true) fail("SIGNATURE_INVALID");

@@ -169,7 +169,11 @@ test("schema engine rejects accessors, proxies, bad enums, patterns, uniqueness,
 test("date-time format implements RFC3339 fractional seconds and offsets", () => {
   for (const value of [
     "2026-08-29T20:00:00Z",
+    "2026-08-29t20:00:00z",
     "2026-08-29T20:00:00.123Z",
+    "2026-08-29t20:00:00.123z",
+    "2026-08-29T20:00:60Z",
+    "2026-08-29t20:00:60z",
     "2026-08-29T20:00:00+00:00",
     "2026-08-29T12:30:45.123456-07:30",
   ]) {
@@ -180,7 +184,7 @@ test("date-time format implements RFC3339 fractional seconds and offsets", () =>
     "2026-02-29T20:00:00Z",
     "2024-02-29T24:00:00Z",
     "2026-08-29T20:60:00Z",
-    "2026-08-29T20:00:60Z",
+    "2026-08-29T20:00:61Z",
     "2026-08-29T20:00:00+24:00",
     "2026-08-29T20:00:00+07:60",
     "2026-08-29 20:00:00Z",
