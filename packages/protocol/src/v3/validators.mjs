@@ -93,6 +93,44 @@ function assertObjectSafety(value) {
   return clone;
 }
 
+function cloneSafeJson(value, ancestors = new Set()) {
+  if (value === null || typeof value === "boolean" || typeof value === "string") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) schemaInvalid();
+    return value;
+  }
+  if (typeof value !== "object") schemaInvalid();
+  if (ancestors.has(value)) schemaInvalid();
+
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const keys = safeOwnKeys(value);
+      for (const key of keys) {
+        if (key === "length") continue;
+        if (typeof key !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(key) || Number(key) >= value.length) schemaInvalid();
+        const descriptor = safeDescriptor(value, key);
+        if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) schemaInvalid();
+      }
+      const output = [];
+      for (let index = 0; index < value.length; index += 1) {
+        if (!Object.hasOwn(value, index)) schemaInvalid();
+        output.push(cloneSafeJson(value[index], ancestors));
+      }
+      return deepFreeze(output);
+    }
+
+    const source = assertObjectSafety(value);
+    const output = {};
+    for (const [key, entry] of Object.entries(source)) {
+      output[key] = cloneSafeJson(entry, ancestors);
+    }
+    return deepFreeze(output);
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
 function validateString(value, schema) {
   if (typeof value !== "string") schemaInvalid();
   if (schema.minLength !== undefined && value.length < schema.minLength) schemaInvalid();
@@ -145,6 +183,9 @@ function validateObject(schema, value) {
     for (const key of schema.required) {
       if (!Object.hasOwn(source, key)) schemaInvalid();
     }
+  }
+  if (!schema.properties && schema.additionalProperties === undefined) {
+    return cloneSafeJson(value);
   }
   const properties = schema.properties ?? {};
   const output = {};

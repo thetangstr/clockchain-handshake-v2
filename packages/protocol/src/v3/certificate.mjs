@@ -49,12 +49,17 @@ export function handshakeV3ContinuationSignedProjection(continuation) {
 }
 
 async function signatureAccepted({ object, signedDigest, issuerSignature, verifyIssuerSignature }) {
-  const accepted = await verifyIssuerSignature({
-    signedDigest,
-    issuerSignature,
-    clockchainNetwork: object.clockchainNetwork,
-    trustRootId: object.trustRootId,
-  });
+  let accepted;
+  try {
+    accepted = await verifyIssuerSignature({
+      signedDigest,
+      issuerSignature,
+      clockchainNetwork: object.clockchainNetwork,
+      trustRootId: object.trustRootId,
+    });
+  } catch {
+    fail("SIGNATURE_INVALID");
+  }
   if (accepted !== true) fail("SIGNATURE_INVALID");
   return signedDigest;
 }
@@ -81,10 +86,23 @@ function assertSameArray(left, right) {
 }
 
 async function revocationStatus(getRevocationStatus, handle) {
-  const status = await getRevocationStatus(handle);
+  let status;
+  try {
+    status = await getRevocationStatus(handle);
+  } catch {
+    fail("RESULT_VERIFICATION_FAILED");
+  }
   if (status === "GOOD") return "GOOD";
   if (status === "REVOKED") fail("SESSION_REVOKED");
   fail("RESULT_VERIFICATION_FAILED");
+}
+
+async function replayRecorded(checkAndRecordReplay, replayNonce, continuationDigest) {
+  try {
+    return (await checkAndRecordReplay(replayNonce, continuationDigest)) === true;
+  } catch {
+    fail("RESULT_VERIFICATION_FAILED");
+  }
 }
 
 export async function verifyHandshakeV3Certificate({
@@ -177,7 +195,7 @@ export async function verifyHandshakeV3Continuation({
   });
   await revocationStatus(getRevocationStatus, validCertificate.certificateId);
   const status = await revocationStatus(getRevocationStatus, validContinuation.revocationHandle);
-  if ((await checkAndRecordReplay(validContinuation.replayNonce, continuationDigest)) !== true) fail("RESULT_VERIFICATION_FAILED");
+  if ((await replayRecorded(checkAndRecordReplay, validContinuation.replayNonce, continuationDigest)) !== true) fail("RESULT_VERIFICATION_FAILED");
   return validateHandshakeV3ToolResult("agent_handshake_result_verify", {
     valid: true,
     certificateValid: true,

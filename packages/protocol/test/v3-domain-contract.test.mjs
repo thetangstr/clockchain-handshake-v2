@@ -25,6 +25,16 @@ const digestD = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddd
 const digestE = "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const digestF = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
 
+async function assertRejectsWithoutLeak(fn, code) {
+  try {
+    await fn();
+    assert.fail(`Expected ${code}`);
+  } catch (error) {
+    assert.equal(error.code, code);
+    assert.doesNotMatch(error.message, /secret|raw|callback|boom/i);
+  }
+}
+
 function policy() {
   return {
     scope: ["agent-contract:a2a"],
@@ -75,6 +85,14 @@ function certificate() {
   };
   const certificateDigest = handshakeV3Digest(handshakeV3CertificateSignedProjection(unsigned));
   return { ...unsigned, certificateDigest };
+}
+
+function signedCertificate(overrides) {
+  const candidate = { ...certificate(), ...overrides };
+  return {
+    ...candidate,
+    certificateDigest: handshakeV3Digest(handshakeV3CertificateSignedProjection(candidate)),
+  };
 }
 
 function continuation(cert = certificate()) {
@@ -299,6 +317,21 @@ test("typed signing request bytes use exact schema fields and signer negatives d
       throw new Error("must not call");
     },
   }), { code: "SIGNATURE_INVALID" });
+  await assertRejectsWithoutLeak(() => verifyHandshakeV3SignedAction({
+    request,
+    action,
+    expectedParty: {
+      identityDigest: digestB,
+      role: "INITIATOR",
+      signingKeyId: "agent-a-key",
+      signingAlgorithm: "EdDSA",
+      publicKey: "p".repeat(32),
+    },
+    now: "2026-08-29T20:01:00Z",
+    verifier: async () => {
+      throw new Error("secret verifier callback boom");
+    },
+  }), "SIGNATURE_INVALID");
 
   for (const [badRequest, badNow] of [
     [createHandshakeV3SigningRequest({
@@ -352,14 +385,6 @@ test("typed signing request bytes use exact schema fields and signer negatives d
 });
 
 test("leap-second time windows fail closed before security side effects", async () => {
-  function signedCertificate(overrides) {
-    const candidate = { ...certificate(), ...overrides };
-    return {
-      ...candidate,
-      certificateDigest: handshakeV3Digest(handshakeV3CertificateSignedProjection(candidate)),
-    };
-  }
-
   for (const badCert of [
     signedCertificate({ issuedAt: "2026-08-29T20:00:60Z", expiresAt: "2026-08-29T21:00:00Z" }),
     signedCertificate({ expiresAt: "2026-08-29T20:00:60Z" }),
@@ -430,6 +455,83 @@ test("leap-second time windows fail closed before security side effects", async 
     }), { code: "RESULT_VERIFICATION_FAILED" });
     assert.deepEqual(sideEffects, []);
   }
+});
+
+test("external callback throws normalize to stable v3 error codes without leaking messages", async () => {
+  const cert = certificate();
+  const cont = continuation(cert);
+
+  await assertRejectsWithoutLeak(() => verifyHandshakeV3Certificate({
+    certificate: cert,
+    expectedCertificateDigest: cert.certificateDigest,
+    expectedPolicyDigest: cert.policyDigest,
+    expectedPartyDigests: cert.partyDigests,
+    now: "2026-08-29T20:10:00Z",
+    verifyIssuerSignature: async () => {
+      throw new Error("secret certificate signature callback boom");
+    },
+    getRevocationStatus: async () => "GOOD",
+  }), "SIGNATURE_INVALID");
+
+  await assertRejectsWithoutLeak(() => verifyHandshakeV3Certificate({
+    certificate: cert,
+    expectedCertificateDigest: cert.certificateDigest,
+    expectedPolicyDigest: cert.policyDigest,
+    expectedPartyDigests: cert.partyDigests,
+    now: "2026-08-29T20:10:00Z",
+    verifyIssuerSignature: async () => true,
+    getRevocationStatus: async () => {
+      throw new Error("secret certificate revocation callback boom");
+    },
+  }), "RESULT_VERIFICATION_FAILED");
+
+  for (const throwingSignatureIndex of [0, 1]) {
+    let signatureCalls = 0;
+    await assertRejectsWithoutLeak(() => verifyHandshakeV3Continuation({
+      certificate: cert,
+      continuation: cont,
+      expectedPartyRoleDigests: cont.partyRoleDigests,
+      now: "2026-08-29T20:10:00Z",
+      verifyIssuerSignature: async () => {
+        if (signatureCalls++ === throwingSignatureIndex) {
+          throw new Error("secret continuation signature callback boom");
+        }
+        return true;
+      },
+      getRevocationStatus: async () => "GOOD",
+      checkAndRecordReplay: async () => true,
+    }), "SIGNATURE_INVALID");
+  }
+
+  for (const throwingRevocationIndex of [0, 1]) {
+    let revocationCalls = 0;
+    await assertRejectsWithoutLeak(() => verifyHandshakeV3Continuation({
+      certificate: cert,
+      continuation: cont,
+      expectedPartyRoleDigests: cont.partyRoleDigests,
+      now: "2026-08-29T20:10:00Z",
+      verifyIssuerSignature: async () => true,
+      getRevocationStatus: async () => {
+        if (revocationCalls++ === throwingRevocationIndex) {
+          throw new Error("secret revocation callback boom");
+        }
+        return "GOOD";
+      },
+      checkAndRecordReplay: async () => true,
+    }), "RESULT_VERIFICATION_FAILED");
+  }
+
+  await assertRejectsWithoutLeak(() => verifyHandshakeV3Continuation({
+    certificate: cert,
+    continuation: cont,
+    expectedPartyRoleDigests: cont.partyRoleDigests,
+    now: "2026-08-29T20:10:00Z",
+    verifyIssuerSignature: async () => true,
+    getRevocationStatus: async () => "GOOD",
+    checkAndRecordReplay: async () => {
+      throw new Error("secret replay callback boom");
+    },
+  }), "RESULT_VERIFICATION_FAILED");
 });
 
 test("lifecycle emits exact public sessions and schema error codes", () => {

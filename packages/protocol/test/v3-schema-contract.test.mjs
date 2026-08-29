@@ -8,6 +8,7 @@ import {
   HANDSHAKE_V3_SIGNING_ALGORITHMS,
   HANDSHAKE_V3_TOOL_NAMES,
   validateHandshakeV3Def,
+  validateHandshakeV3ResponseEnvelope,
   validateHandshakeV3Schema,
   validateHandshakeV3ToolInput,
   validateHandshakeV3ToolResult,
@@ -21,6 +22,14 @@ const digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 const digestB = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const opaque = "opaque_identifier_123";
 const later = "2026-08-29T21:00:00Z";
+
+function roleGrantSample() {
+  return sampleForSchema(schema.$defs.roleGrant);
+}
+
+function sessionSample() {
+  return sampleForSchema(schema.$defs.session);
+}
 
 function sampleForSchema(fragment) {
   if (!fragment) return opaque;
@@ -67,6 +76,34 @@ function sampleForSchema(fragment) {
   return {};
 }
 
+function responseEnvelope(result) {
+  return {
+    protocolVersion: "3.0",
+    schemaVersion: "3.0.0-draft.1",
+    requestId: "01234567-89ab-4def-8123-456789abcdef",
+    serverTime: later,
+    result,
+    receipt: sampleForSchema(schema.$defs.receipt),
+  };
+}
+
+function assertGenericObjectSurfacesReject(value) {
+  assert.throws(() => validateHandshakeV3ResponseEnvelope(responseEnvelope(value)), { code: "SCHEMA_INVALID" });
+  assert.throws(() => validateHandshakeV3ToolResult("agent_handshake_capabilities", {
+    negotiatedProtocolVersion: "3.0",
+    schemaVersion: "3.0.0-draft.1",
+    toolsetDigest: digest,
+    trustRootIds: ["root-2026-08"],
+    limits: value,
+  }), { code: "SCHEMA_INVALID" });
+  assert.throws(() => validateHandshakeV3ToolResult("agent_handshake_invitation_accept", {
+    sessionId: opaque,
+    roleGrant: roleGrantSample(),
+    tenantRelation: value,
+    session: sessionSample(),
+  }), { code: "SCHEMA_INVALID" });
+}
+
 test("constants mirror the normative schema enums exactly", () => {
   assert.deepEqual(HANDSHAKE_V3_CONTRACT_SCHEMA.errorCodes.enum, schema.errorCodes.enum);
   assert.deepEqual(HANDSHAKE_V3_ERROR_CODES, schema.errorCodes.enum);
@@ -102,6 +139,68 @@ test("exported contract schema is deeply immutable and cannot weaken validators"
     () => validateHandshakeV3ToolInput("agent_handshake_result_verify", {}),
     { code: "SCHEMA_INVALID" },
   );
+});
+
+test("generic object schema surfaces recursively clone only safe JSON", () => {
+  const nested = {
+    tenant: {
+      labels: ["external", "isolated"],
+      limits: { sessions: 2, burst: null, enabled: true },
+    },
+  };
+  assert.deepEqual(validateHandshakeV3ResponseEnvelope(responseEnvelope(nested)).result, nested);
+  assert.deepEqual(validateHandshakeV3ToolResult("agent_handshake_capabilities", {
+    negotiatedProtocolVersion: "3.0",
+    schemaVersion: "3.0.0-draft.1",
+    toolsetDigest: digest,
+    trustRootIds: ["root-2026-08"],
+    limits: nested,
+  }).limits, nested);
+  assert.deepEqual(validateHandshakeV3ToolResult("agent_handshake_invitation_accept", {
+    sessionId: opaque,
+    roleGrant: roleGrantSample(),
+    tenantRelation: nested,
+    session: sessionSample(),
+  }).tenantRelation, nested);
+
+  assertGenericObjectSurfacesReject({ nested: { businessContent: "smuggled" } });
+  assertGenericObjectSurfacesReject({ nested: { payload: { action: "AUTHOR_BUSINESS_CONTENT" } } });
+
+  const nestedAccessor = { nested: {} };
+  Object.defineProperty(nestedAccessor.nested, "safe", {
+    enumerable: true,
+    get() {
+      throw new Error("raw accessor must not escape");
+    },
+  });
+  assertGenericObjectSurfacesReject(nestedAccessor);
+
+  assertGenericObjectSurfacesReject({ nested: new Proxy({}, {
+    getPrototypeOf() {
+      throw new Error("raw getPrototypeOf trap must not escape");
+    },
+  }) });
+  assertGenericObjectSurfacesReject({ nested: new Proxy({}, {
+    ownKeys() {
+      throw new Error("raw ownKeys trap must not escape");
+    },
+  }) });
+  assertGenericObjectSurfacesReject({ nested: new Proxy({ value: true }, {
+    getOwnPropertyDescriptor() {
+      throw new Error("raw descriptor trap must not escape");
+    },
+  }) });
+
+  assertGenericObjectSurfacesReject({ nested: { [Symbol("hidden")]: true } });
+  assertGenericObjectSurfacesReject({ nested: new Date("2026-08-29T20:00:00Z") });
+  assertGenericObjectSurfacesReject({ nested: { unsupported: undefined } });
+  assertGenericObjectSurfacesReject({ nested: { unsupported: () => true } });
+  assertGenericObjectSurfacesReject({ nested: { unsupported: 1n } });
+  assertGenericObjectSurfacesReject({ nested: { unsupported: Number.NaN } });
+
+  const cyclic = {};
+  cyclic.self = cyclic;
+  assertGenericObjectSurfacesReject({ nested: cyclic });
 });
 
 test("schema engine validates every $defs object and rejects alternate public shapes", () => {

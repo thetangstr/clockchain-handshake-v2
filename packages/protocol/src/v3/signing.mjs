@@ -94,14 +94,19 @@ export async function verifyHandshakeV3SignedAction({
   ) {
     fail("SIGNATURE_INVALID");
   }
-  const accepted = await verifier({
-    bytes: Buffer.from(validRequest.canonicalBytesBase64Url, "base64url"),
-    signature: validAction.signature,
-    keyId: validAction.signerKeyId,
-    algorithm: validAction.algorithm,
-    publicKey: party?.publicKey,
-    signingDigest: validAction.signingDigest,
-  });
+  let accepted;
+  try {
+    accepted = await verifier({
+      bytes: Buffer.from(validRequest.canonicalBytesBase64Url, "base64url"),
+      signature: validAction.signature,
+      keyId: validAction.signerKeyId,
+      algorithm: validAction.algorithm,
+      publicKey: party?.publicKey,
+      signingDigest: validAction.signingDigest,
+    });
+  } catch {
+    fail("SIGNATURE_INVALID");
+  }
   if (accepted !== true) fail("SIGNATURE_INVALID");
   return Object.freeze({
     valid: true,
