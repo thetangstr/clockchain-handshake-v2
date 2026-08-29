@@ -2,6 +2,7 @@
   "schema": "clockchain.handshake-protocol-v2-extraction-provenance/v1",
   "approvedExtractionSourceCommit": "d2cdedb705cf6855657381a908e47f71df959145",
   "historicalCanonicalFixtureCommit": "c02da109081840262928f1a7e6d636d07e972f42",
-  "historicalCanonicalFixturePath": "test/fixtures/agent-handshake-v2-canonical.json",
+  "historicalCanonicalFixturePath": "packages/protocol/test/fixtures/agent-handshake-v2-canonical.json",
+  "historicalCanonicalFixtureOriginalPath": "test/fixtures/agent-handshake-v2-canonical.json",
   "packageName": "@clockchain/handshake-protocol"
 }

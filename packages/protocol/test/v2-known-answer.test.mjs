@@ -22,7 +22,7 @@ import {
 } from "@clockchain/handshake-protocol";
 
 const fixture = JSON.parse(
-  await readFile(new URL("../../../test/fixtures/agent-handshake-v2-canonical.json", import.meta.url), "utf8"),
+  await readFile(new URL("./fixtures/agent-handshake-v2-canonical.json", import.meta.url), "utf8"),
 );
 const provenance = JSON.parse(
   await readFile(new URL("./fixtures/v2-provenance.json", import.meta.url), "utf8"),
@@ -35,7 +35,8 @@ test("v2 protocol package preserves the historical canonical fixture bytes and d
     schema: "clockchain.handshake-protocol-v2-extraction-provenance/v1",
     approvedExtractionSourceCommit: "d2cdedb705cf6855657381a908e47f71df959145",
     historicalCanonicalFixtureCommit: fixture.handshakeSourceCommit,
-    historicalCanonicalFixturePath: "test/fixtures/agent-handshake-v2-canonical.json",
+    historicalCanonicalFixturePath: "packages/protocol/test/fixtures/agent-handshake-v2-canonical.json",
+    historicalCanonicalFixtureOriginalPath: "test/fixtures/agent-handshake-v2-canonical.json",
     packageName: "@clockchain/handshake-protocol",
   });
 
@@ -47,15 +48,19 @@ test("v2 protocol package preserves the historical canonical fixture bytes and d
     assert.equal(Buffer.from(canonicalBytes(objects.policies[role])).toString("hex"), canonical.policies[role].bytesHex);
     assert.equal(localPolicyDigest(objects.policies[role]), canonical.policies[role].digest);
     assert.equal(Buffer.from(canonicalBytes(objects.parties[role])).toString("hex"), canonical.parties[role].bytesHex);
+    assert.equal(digestHex(objects.parties[role]), canonical.parties[role].digest);
     assert.equal(Buffer.from(canonicalBytes(objects.identityClaims[role])).toString("hex"), canonical.identityClaims[role].bytesHex);
+    assert.equal(digestHex(objects.identityClaims[role]), canonical.identityClaims[role].digest);
   }
 
   assert.equal(Buffer.from(canonicalBytes(objects.proposalEnvelope.payload)).toString("hex"), canonical.proposal.bytesHex);
   assert.equal(agentHandshakeV2ProposalDigest(objects.proposalEnvelope), canonical.proposal.digest);
   assert.equal(Buffer.from(canonicalBytes(objects.acceptanceEnvelope.payload)).toString("hex"), canonical.acceptance.bytesHex);
+  assert.equal(digestHex(objects.acceptanceEnvelope.payload), canonical.acceptance.digest);
 
   for (const role of ["initiator", "responder"]) {
     assert.equal(Buffer.from(canonicalBytes(objects.evidence[role].result)).toString("hex"), canonical.evidence[role].bytesHex);
+    assert.equal(digestHex(objects.evidence[role].result), canonical.evidence[role].digest);
   }
 
   assert.equal(Buffer.from(canonicalBytes(objects.descriptorEnvelope.descriptor)).toString("hex"), canonical.descriptor.bytesHex);

@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import * as protocol from "@clockchain/handshake-protocol";
 
 const packageRoot = new URL("..", import.meta.url);
 const sourceRoot = new URL("../src", import.meta.url);
+const execFileAsync = promisify(execFile);
 
 async function sourceFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -107,4 +110,16 @@ test("protocol package source has no runtime, relay, wallet, cloud, or demo boun
       assert.equal(pattern.test(text), false, `${relative(packageRoot.pathname, file)} contains ${pattern}`);
     }
   }
+});
+
+test("package dry-run includes the immutable v2 fixture and extraction provenance", async () => {
+  const { stdout } = await execFileAsync("npm", ["pack", "--dry-run", "--json"], {
+    cwd: packageRoot,
+    maxBuffer: 1024 * 1024,
+  });
+  const [pack] = JSON.parse(stdout);
+  const files = new Set(pack.files.map((entry) => entry.path));
+
+  assert.equal(files.has("test/fixtures/agent-handshake-v2-canonical.json"), true);
+  assert.equal(files.has("test/fixtures/v2-provenance.json"), true);
 });
