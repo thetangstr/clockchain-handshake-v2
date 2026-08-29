@@ -33,7 +33,7 @@ test("checker emits one positive verdict only after every independent artifact v
   const fixture = await buildV2Fixture();
   assert.equal(fixture.verdict.outcome, "VERIFIED");
   assert.equal(fixture.verdict.externalBusinessActionPerformed, false);
-  const source = await readFile(new URL("../src/agent-handshake/v2/verdict.mjs", import.meta.url), "utf8");
+  const source = await readFile(new URL("../packages/protocol/src/v2/verdict.mjs", import.meta.url), "utf8");
   assert.equal((source.match(/outcome:\s*"VERIFIED"/g) ?? []).length, 1);
 });
 

@@ -46,6 +46,11 @@ const TABLE = {
   "src/registration-internal.mjs": "src/core/registration.mjs", // merged
 };
 
+const OUTPUT_TARGET_OVERRIDES = {
+  "src/bilateral/canonical.mjs": "packages/protocol/src/canonical.mjs",
+  "src/canonical.mjs": "packages/protocol/src/canonical-v1.mjs",
+};
+
 const PURE = [
   "src/bilateral/canonical.mjs",
   "src/canonical.mjs",
@@ -68,7 +73,7 @@ const PURE = [
 const SPECIFIER_LINE = /(?:^|[\s({,])(?:import|export)\b|from\s*["']|import\s*\(/;
 
 function rewriteSpecifiers(donorRelPath, source) {
-  const targetRelPath = TABLE[donorRelPath];
+  const targetRelPath = OUTPUT_TARGET_OVERRIDES[donorRelPath] ?? TABLE[donorRelPath];
   const donorDir = dirname(resolve(DONOR, donorRelPath));
   const targetDir = dirname(resolve(TARGET, targetRelPath));
   const unresolved = [];
@@ -79,7 +84,9 @@ function rewriteSpecifiers(donorRelPath, source) {
       // Only rewrite specifiers that resolve to a donor module in the table.
       const donorTargetAbs = resolve(donorDir, spec);
       const donorTargetRel = relative(DONOR, donorTargetAbs);
-      const mapped = TABLE[donorTargetRel];
+      const mapped = OUTPUT_TARGET_OVERRIDES[donorRelPath]
+        ? (OUTPUT_TARGET_OVERRIDES[donorTargetRel] ?? TABLE[donorTargetRel])
+        : TABLE[donorTargetRel];
       if (!mapped) {
         if (spec.endsWith(".mjs")) unresolved.push(`${spec} -> ${donorTargetRel}`);
         return whole; // not a ported module (e.g. a data path string) — leave alone
@@ -117,7 +124,7 @@ let changedLines = 0;
 let failures = 0;
 
 for (const donorRelPath of PURE) {
-  const targetRelPath = TABLE[donorRelPath];
+  const targetRelPath = OUTPUT_TARGET_OVERRIDES[donorRelPath] ?? TABLE[donorRelPath];
   const before = readFileSync(resolve(DONOR, donorRelPath), "utf8");
   const { out, unresolved } = rewriteSpecifiers(donorRelPath, before);
 

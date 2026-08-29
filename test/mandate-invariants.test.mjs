@@ -143,7 +143,7 @@ test("the donor validator is unchanged: it still accepts its shorter fixtures", 
 
 test("generic v2 has one positive checker emission site", async () => {
   const source = await readFile(
-    new URL("../src/agent-handshake/v2/verdict.mjs", import.meta.url),
+    new URL("../packages/protocol/src/v2/verdict.mjs", import.meta.url),
     "utf8",
   );
   assert.equal((source.match(/outcome:\s*"VERIFIED"/g) ?? []).length, 1);

@@ -1,0 +1,32 @@
+{
+  "name": "@clockchain/handshake-protocol",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Transport-independent Clockchain agent handshake protocol kernel.",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": "./src/index.mjs",
+    "./canonical": "./src/canonical.mjs",
+    "./canonical-v1": "./src/canonical-v1.mjs",
+    "./v2/constants": "./src/v2/constants.mjs",
+    "./v2/descriptor": "./src/v2/descriptor.mjs",
+    "./v2/evidence": "./src/v2/evidence.mjs",
+    "./v2/host-key-certificate": "./src/v2/host-key-certificate.mjs",
+    "./v2/identity-claim": "./src/v2/identity-claim.mjs",
+    "./v2/party": "./src/v2/party.mjs",
+    "./v2/policy": "./src/v2/policy.mjs",
+    "./v2/protocol": "./src/v2/protocol.mjs",
+    "./v2/result": "./src/v2/result.mjs",
+    "./v2/terms": "./src/v2/terms.mjs",
+    "./v2/verdict": "./src/v2/verdict.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "viem": "2.55.8"
+  }
+}
