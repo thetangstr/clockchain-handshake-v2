@@ -12,6 +12,7 @@ import {
   recoverHandshakeV3RoleGrant,
   validateHandshakeV3RoleGrantBinding,
   validateHandshakeV3ToolResult,
+  verifyHandshakeV3Certificate,
   verifyHandshakeV3Continuation,
   verifyHandshakeV3SignedAction,
 } from "@clockchain/handshake-protocol/v3";
@@ -362,6 +363,24 @@ test("leap-second time windows fail closed before security side effects", async 
     signedCertificate({ issuedAt: "2026-08-29T20:00:60Z", expiresAt: "2026-08-29T21:00:00Z" }),
     signedCertificate({ expiresAt: "2026-08-29T20:00:60Z" }),
   ]) {
+    const certificateSideEffects = [];
+    await assert.rejects(() => verifyHandshakeV3Certificate({
+      certificate: badCert,
+      expectedCertificateDigest: badCert.certificateDigest,
+      expectedPolicyDigest: badCert.policyDigest,
+      expectedPartyDigests: badCert.partyDigests,
+      now: badCert.expiresAt === "2026-08-29T20:00:60Z" ? "2026-08-29T20:01:00Z" : "2026-08-29T20:00:59.999Z",
+      verifyIssuerSignature: async () => {
+        certificateSideEffects.push("signature");
+        return true;
+      },
+      getRevocationStatus: async () => {
+        certificateSideEffects.push("revocation");
+        return "GOOD";
+      },
+    }), { code: "RESULT_VERIFICATION_FAILED" });
+    assert.deepEqual(certificateSideEffects, []);
+
     const sideEffects = [];
     await assert.rejects(() => verifyHandshakeV3Continuation({
       certificate: badCert,
@@ -381,7 +400,7 @@ test("leap-second time windows fail closed before security side effects", async 
         return true;
       },
     }), { code: "RESULT_VERIFICATION_FAILED" });
-    assert.deepEqual(sideEffects, ["signature", "signature"]);
+    assert.deepEqual(sideEffects, []);
   }
 
   const cert = certificate();
@@ -408,7 +427,7 @@ test("leap-second time windows fail closed before security side effects", async 
         return true;
       },
     }), { code: "RESULT_VERIFICATION_FAILED" });
-    assert.deepEqual(sideEffects, ["signature", "signature"]);
+    assert.deepEqual(sideEffects, []);
   }
 });
 
@@ -488,6 +507,7 @@ test("continuation verification validates signatures before bindings, revocation
   await assert.rejects(() => verifyHandshakeV3Continuation({
     certificate: cert,
     continuation: cont,
+    expectedPartyRoleDigests: cont.partyRoleDigests,
     now: "2026-08-29T20:10:00Z",
     verifyIssuerSignature: async () => false,
     getRevocationStatus: async () => {
@@ -528,7 +548,7 @@ test("continuation verification validates signatures before bindings, revocation
         return true;
       },
     }), { code: "RESULT_VERIFICATION_FAILED" });
-    assert.deepEqual(sideEffects, ["signature", "signature"]);
+    assert.deepEqual(sideEffects, []);
   }
 
   for (const badCertificate of [
@@ -553,7 +573,7 @@ test("continuation verification validates signatures before bindings, revocation
         return true;
       },
     }), { code: "RESULT_VERIFICATION_FAILED" });
-    assert.deepEqual(sideEffects, ["signature", "signature"]);
+    assert.deepEqual(sideEffects, []);
   }
 
   const revokedSideEffects = [];
@@ -594,8 +614,8 @@ test("continuation verification validates signatures before bindings, revocation
       loopholeSideEffects.push("replay");
       return true;
     },
-    }), { code: "RESULT_VERIFICATION_FAILED" });
-    assert.deepEqual(loopholeSideEffects, ["signature", "signature"]);
+  }), { code: "RESULT_VERIFICATION_FAILED" });
+  assert.deepEqual(loopholeSideEffects, []);
 
   await assert.rejects(() => verifyHandshakeV3Continuation({
     certificate: cert,

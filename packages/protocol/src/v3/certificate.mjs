@@ -48,8 +48,7 @@ export function handshakeV3ContinuationSignedProjection(continuation) {
   });
 }
 
-async function signatureAccepted({ object, projection, issuerSignature, verifyIssuerSignature }) {
-  const signedDigest = handshakeV3Digest(projection);
+async function signatureAccepted({ object, signedDigest, issuerSignature, verifyIssuerSignature }) {
   const accepted = await verifyIssuerSignature({
     signedDigest,
     issuerSignature,
@@ -58,6 +57,14 @@ async function signatureAccepted({ object, projection, issuerSignature, verifyIs
   });
   if (accepted !== true) fail("SIGNATURE_INVALID");
   return signedDigest;
+}
+
+function certificateSignedDigest(certificate) {
+  return handshakeV3Digest(handshakeV3CertificateSignedProjection(certificate));
+}
+
+function continuationSignedDigest(continuation) {
+  return handshakeV3Digest(handshakeV3ContinuationSignedProjection(continuation));
 }
 
 function assertTimeWindow({ issuedAt, notBefore, expiresAt }, now) {
@@ -90,17 +97,18 @@ export async function verifyHandshakeV3Certificate({
   getRevocationStatus,
 }) {
   const valid = validateHandshakeV3Certificate(certificate);
-  const signedDigest = await signatureAccepted({
-    object: valid,
-    projection: handshakeV3CertificateSignedProjection(valid),
-    issuerSignature: valid.issuerSignature,
-    verifyIssuerSignature,
-  });
+  const signedDigest = certificateSignedDigest(valid);
   if (valid.certificateDigest !== signedDigest) fail("RESULT_VERIFICATION_FAILED");
   if (expectedCertificateDigest && valid.certificateDigest !== expectedCertificateDigest) fail("RESULT_VERIFICATION_FAILED");
   if (expectedPolicyDigest && valid.policyDigest !== expectedPolicyDigest) fail("POLICY_DIGEST_MISMATCH");
   if (expectedPartyDigests && JSON.stringify(valid.partyDigests) !== JSON.stringify(expectedPartyDigests)) fail("ROLE_DENIED");
   assertTimeWindow(valid, now);
+  await signatureAccepted({
+    object: valid,
+    signedDigest,
+    issuerSignature: valid.issuerSignature,
+    verifyIssuerSignature,
+  });
   const status = await revocationStatus(getRevocationStatus, valid.certificateId);
   return Object.freeze({
     valid: true,
@@ -130,18 +138,8 @@ export async function verifyHandshakeV3Continuation({
 }) {
   const validCertificate = validateHandshakeV3Certificate(certificate);
   const validContinuation = validateHandshakeV3Continuation(continuation);
-  const certificateDigest = await signatureAccepted({
-    object: validCertificate,
-    projection: handshakeV3CertificateSignedProjection(validCertificate),
-    issuerSignature: validCertificate.issuerSignature,
-    verifyIssuerSignature,
-  });
-  const continuationDigest = await signatureAccepted({
-    object: validContinuation,
-    projection: handshakeV3ContinuationSignedProjection(validContinuation),
-    issuerSignature: validContinuation.issuerSignature,
-    verifyIssuerSignature,
-  });
+  const certificateDigest = certificateSignedDigest(validCertificate);
+  const continuationDigest = continuationSignedDigest(validContinuation);
   if (validCertificate.certificateDigest !== certificateDigest) fail("RESULT_VERIFICATION_FAILED");
   if (
     validContinuation.sessionId !== validCertificate.sessionId ||
@@ -164,6 +162,18 @@ export async function verifyHandshakeV3Continuation({
   if (expectedAllowedNextActionClass && validContinuation.allowedNextActionClass !== expectedAllowedNextActionClass) fail("RESULT_VERIFICATION_FAILED");
   assertTimeWindow(validCertificate, now);
   assertTimeWindow(validContinuation, now);
+  await signatureAccepted({
+    object: validCertificate,
+    signedDigest: certificateDigest,
+    issuerSignature: validCertificate.issuerSignature,
+    verifyIssuerSignature,
+  });
+  await signatureAccepted({
+    object: validContinuation,
+    signedDigest: continuationDigest,
+    issuerSignature: validContinuation.issuerSignature,
+    verifyIssuerSignature,
+  });
   await revocationStatus(getRevocationStatus, validCertificate.certificateId);
   const status = await revocationStatus(getRevocationStatus, validContinuation.revocationHandle);
   if ((await checkAndRecordReplay(validContinuation.replayNonce, continuationDigest)) !== true) fail("RESULT_VERIFICATION_FAILED");
