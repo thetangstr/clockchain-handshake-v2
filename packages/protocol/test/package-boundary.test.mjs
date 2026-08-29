@@ -25,6 +25,24 @@ async function sourceFiles(directory) {
   return files;
 }
 
+function extractModuleSpecifiers(text) {
+  const specifiers = [];
+  const patterns = [
+    /^\s*import\s+(?!["'])(?:[\s\S]*?)\s+from\s+["']([^"']+)["']/gm,
+    /^\s*import\s+["']([^"']+)["']/gm,
+    /^\s*export\s+(?:\*|\{[\s\S]*?\})\s+from\s+["']([^"']+)["']/gm,
+    /\bimport\s*\(\s*["']([^"']+)["']\s*\)/gm,
+  ];
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      specifiers.push({ index: match.index, specifier: match[1] });
+    }
+  }
+  return specifiers
+    .sort((left, right) => left.index - right.index)
+    .map((match) => match.specifier);
+}
+
 test("protocol package exposes the transport-independent v2 kernel", async () => {
   const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 
@@ -51,6 +69,24 @@ test("protocol package exposes the transport-independent v2 kernel", async () =>
   for (const exportedName of requiredExports) {
     assert.equal(typeof protocol[exportedName], "function", `${exportedName} must be public`);
   }
+});
+
+test("boundary scanner sees static imports, export-from declarations, and literal dynamic imports", () => {
+  const specifiers = extractModuleSpecifiers(`
+    import fs from "node:fs";
+    import "node:https";
+    export { createServer } from "node:http";
+    export * from "../session-supervisor/index.mjs";
+    const relay = await import("../../relay/client.mjs");
+  `);
+
+  assert.deepEqual(specifiers, [
+    "node:fs",
+    "node:https",
+    "node:http",
+    "../session-supervisor/index.mjs",
+    "../../relay/client.mjs",
+  ]);
 });
 
 test("protocol package source has no runtime, relay, wallet, cloud, or demo boundary imports", async () => {
@@ -90,8 +126,7 @@ test("protocol package source has no runtime, relay, wallet, cloud, or demo boun
 
   for (const file of await sourceFiles(sourceRoot.pathname)) {
     const text = await readFile(file, "utf8");
-    const importSpecifiers = [...text.matchAll(/^\s*import\s+(?:[\s\S]*?\s+from\s+)?["']([^"']+)["'];?/gm)]
-      .map((match) => match[1]);
+    const importSpecifiers = extractModuleSpecifiers(text);
     for (const specifier of importSpecifiers) {
       if (specifier.startsWith("node:")) {
         assert.match(specifier, /^node:(?:crypto|util)$/, `${relative(packageRoot.pathname, file)} imports ${specifier}`);
