@@ -1,6 +1,7 @@
 import contractSchema from "../../schemas/standalone-handshake-v3-contract.schema.json" with { type: "json" };
 
 import { HANDSHAKE_V3_ROLE_TOOLS, fail } from "./constants.mjs";
+import { parseHandshakeV3Rfc3339ToEpochMilliseconds } from "./time.mjs";
 
 const BUSINESS_CONTENT_KEYS = new Set([
   "businessContent",
@@ -55,32 +56,13 @@ function isPlainJsonObject(value) {
   return prototype === Object.prototype || prototype === null;
 }
 
-function isLeapYear(year) {
-  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-}
-
 function isValidRfc3339DateTime(value) {
-  const match = /^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})[Tt](?<hour>\d{2}):(?<minute>\d{2}):(?<second>\d{2})(?:\.\d+)?(?<offset>[Zz]|[+-]\d{2}:\d{2})$/.exec(value);
-  if (!match) return false;
-  const { year, month, day, hour, minute, second, offset } = match.groups;
-  const numeric = {
-    year: Number(year),
-    month: Number(month),
-    day: Number(day),
-    hour: Number(hour),
-    minute: Number(minute),
-    second: Number(second),
-  };
-  if (numeric.month < 1 || numeric.month > 12) return false;
-  const daysByMonth = [31, isLeapYear(numeric.year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-  if (numeric.day < 1 || numeric.day > daysByMonth[numeric.month - 1]) return false;
-  if (numeric.hour > 23 || numeric.minute > 59 || numeric.second > 60) return false;
-  if (!/^[Zz]$/.test(offset)) {
-    const offsetHour = Number(offset.slice(1, 3));
-    const offsetMinute = Number(offset.slice(4, 6));
-    if (offsetHour > 23 || offsetMinute > 59) return false;
+  try {
+    parseHandshakeV3Rfc3339ToEpochMilliseconds(value);
+    return true;
+  } catch {
+    return false;
   }
-  return true;
 }
 
 function safeOwnKeys(value) {

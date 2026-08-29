@@ -1,4 +1,5 @@
 import { fail } from "./constants.mjs";
+import { compareHandshakeV3DateTime } from "./time.mjs";
 import { validateHandshakeV3RoleGrant, validateHandshakeV3Session } from "./validators.mjs";
 
 export function validateHandshakeV3RoleGrantBinding(grant, context = {}) {
@@ -8,7 +9,7 @@ export function validateHandshakeV3RoleGrantBinding(grant, context = {}) {
   if (context.principalDigest && valid.principalDigest !== context.principalDigest) fail("PRINCIPAL_DENIED");
   if (context.proofKeyThumbprint && valid.proofKeyThumbprint !== context.proofKeyThumbprint) fail("SENDER_CONSTRAINT_INVALID");
   if (context.tool && !valid.allowedTools.includes(context.tool)) fail("SCOPE_DENIED");
-  if (context.now && Date.parse(context.now) >= Date.parse(valid.expiresAt)) fail("TOKEN_EXPIRED");
+  if (context.now && compareHandshakeV3DateTime(context.now, valid.expiresAt, "TOKEN_EXPIRED") >= 0) fail("TOKEN_EXPIRED");
   return valid;
 }
 

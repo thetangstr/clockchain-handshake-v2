@@ -6,6 +6,7 @@ import {
   fail,
 } from "./constants.mjs";
 import { canonicalJsonBytes, handshakeV3Digest } from "./canonical.mjs";
+import { compareHandshakeV3DateTime } from "./time.mjs";
 import { validateHandshakeV3Party, validateHandshakeV3SignedAction, validateHandshakeV3SigningRequest } from "./validators.mjs";
 
 export function handshakeV3SigningPayload(input) {
@@ -71,7 +72,12 @@ export async function verifyHandshakeV3SignedAction({
   const keyId = party?.signingKeyId ?? expectedSignerKeyId;
   const algorithm = party?.signingAlgorithm ?? expectedSigningAlgorithm;
   if (validRequest.role !== role) fail("ROLE_DENIED");
-  if (Date.parse(now) < Date.parse(validRequest.issuedAt) || Date.parse(now) >= Date.parse(validRequest.expiresAt)) fail("SIGNATURE_INVALID");
+  if (
+    compareHandshakeV3DateTime(now, validRequest.issuedAt, "SIGNATURE_INVALID") < 0 ||
+    compareHandshakeV3DateTime(now, validRequest.expiresAt, "SIGNATURE_INVALID") >= 0
+  ) {
+    fail("SIGNATURE_INVALID");
+  }
   const recomputedPayload = handshakeV3SigningPayload(validRequest);
   const recomputedBytesBase64Url = Buffer.from(canonicalJsonBytes(recomputedPayload)).toString("base64url");
   const recomputedDigest = handshakeV3Digest(recomputedPayload);

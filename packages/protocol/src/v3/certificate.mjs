@@ -1,5 +1,6 @@
 import { HANDSHAKE_V3_PROTOCOL_VERSION, HANDSHAKE_V3_SCHEMA_VERSION, fail } from "./constants.mjs";
 import { handshakeV3Digest } from "./canonical.mjs";
+import { compareHandshakeV3DateTime } from "./time.mjs";
 import {
   validateHandshakeV3Certificate,
   validateHandshakeV3Continuation,
@@ -60,8 +61,10 @@ async function signatureAccepted({ object, projection, issuerSignature, verifyIs
 }
 
 function assertTimeWindow({ issuedAt, notBefore, expiresAt }, now) {
-  const nowMs = Date.parse(now);
-  if (nowMs < Date.parse(notBefore ?? issuedAt) || nowMs >= Date.parse(expiresAt)) {
+  if (
+    compareHandshakeV3DateTime(now, notBefore ?? issuedAt, "RESULT_VERIFICATION_FAILED") < 0 ||
+    compareHandshakeV3DateTime(now, expiresAt, "RESULT_VERIFICATION_FAILED") >= 0
+  ) {
     fail("RESULT_VERIFICATION_FAILED");
   }
 }

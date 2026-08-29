@@ -112,6 +112,10 @@ test("role grants bind principal, proof key, tool, and expiry with schema error 
   assert.throws(() => validateHandshakeV3RoleGrantBinding(roleGrant(), { principalDigest: digestC }), { code: "PRINCIPAL_DENIED" });
   assert.throws(() => validateHandshakeV3RoleGrantBinding(roleGrant(), { proofKeyThumbprint: digestB }), { code: "SENDER_CONSTRAINT_INVALID" });
   assert.throws(() => validateHandshakeV3RoleGrantBinding(roleGrant(), { tool: "agent_handshake_operator_request" }), { code: "SCOPE_DENIED" });
+  assert.throws(() => validateHandshakeV3RoleGrantBinding({
+    ...roleGrant(),
+    expiresAt: "2026-08-29T20:00:60Z",
+  }, { now: "2026-08-29T20:01:00Z" }), { code: "TOKEN_EXPIRED" });
 });
 
 test("recovery returns exact roleGrant/session/result shape and does not mutate session", () => {
@@ -141,6 +145,16 @@ test("recovery returns exact roleGrant/session/result shape and does not mutate 
     now: "2026-08-29T20:30:00Z",
     session: { ...original, role: "RESPONDER" },
   }), { code: "ROLE_DENIED" });
+  assert.throws(() => recoverHandshakeV3RoleGrant({
+    ...roleGrant(),
+    expiresAt: "2026-08-29T20:00:60Z",
+  }, {
+    roleGrantId: "grant_recovered_999",
+    principalDigest: digestB,
+    proofKeyThumbprint: digestC,
+    now: "2026-08-29T20:01:00Z",
+    session: original,
+  }), { code: "TOKEN_EXPIRED" });
 });
 
 test("typed signing request bytes use exact schema fields and signer negatives do not call verifier", async () => {
@@ -283,6 +297,119 @@ test("typed signing request bytes use exact schema fields and signer negatives d
       throw new Error("must not call");
     },
   }), { code: "SIGNATURE_INVALID" });
+
+  for (const [badRequest, badNow] of [
+    [createHandshakeV3SigningRequest({
+      signingRequestId: "signreq_leap_notyet",
+      actionType: "PROPOSAL",
+      sessionId: "sess_0123456789abcdef",
+      stateVersion: 4,
+      role: "INITIATOR",
+      policyDigest: digestA,
+      statementDigest: digestB,
+      nonce: "nonce_leap_notyet",
+      issuedAt: "2026-08-29T20:00:60Z",
+      expiresAt: "2026-08-29T20:05:00Z",
+    }), "2026-08-29T20:00:59.999Z"],
+    [createHandshakeV3SigningRequest({
+      signingRequestId: "signreq_leap_expired",
+      actionType: "PROPOSAL",
+      sessionId: "sess_0123456789abcdef",
+      stateVersion: 4,
+      role: "INITIATOR",
+      policyDigest: digestA,
+      statementDigest: digestB,
+      nonce: "nonce_leap_expired",
+      issuedAt: "2026-08-29T20:00:00Z",
+      expiresAt: "2026-08-29T20:00:60Z",
+    }), "2026-08-29T20:01:00Z"],
+  ]) {
+    let verifierCalled = false;
+    await assert.rejects(() => verifyHandshakeV3SignedAction({
+      request: badRequest,
+      action: {
+        ...action,
+        signingRequestId: badRequest.signingRequestId,
+        signingDigest: badRequest.signingDigest,
+      },
+      expectedParty: {
+        identityDigest: digestB,
+        role: "INITIATOR",
+        signingKeyId: "agent-a-key",
+        signingAlgorithm: "EdDSA",
+        publicKey: "p".repeat(32),
+      },
+      now: badNow,
+      verifier: async () => {
+        verifierCalled = true;
+        return true;
+      },
+    }), { code: "SIGNATURE_INVALID" });
+    assert.equal(verifierCalled, false);
+  }
+});
+
+test("leap-second time windows fail closed before security side effects", async () => {
+  function signedCertificate(overrides) {
+    const candidate = { ...certificate(), ...overrides };
+    return {
+      ...candidate,
+      certificateDigest: handshakeV3Digest(handshakeV3CertificateSignedProjection(candidate)),
+    };
+  }
+
+  for (const badCert of [
+    signedCertificate({ issuedAt: "2026-08-29T20:00:60Z", expiresAt: "2026-08-29T21:00:00Z" }),
+    signedCertificate({ expiresAt: "2026-08-29T20:00:60Z" }),
+  ]) {
+    const sideEffects = [];
+    await assert.rejects(() => verifyHandshakeV3Continuation({
+      certificate: badCert,
+      continuation: continuation(badCert),
+      expectedPartyRoleDigests: badCert.partyDigests,
+      now: badCert.expiresAt === "2026-08-29T20:00:60Z" ? "2026-08-29T20:01:00Z" : "2026-08-29T20:00:59.999Z",
+      verifyIssuerSignature: async () => {
+        sideEffects.push("signature");
+        return true;
+      },
+      getRevocationStatus: async () => {
+        sideEffects.push("revocation");
+        return "GOOD";
+      },
+      checkAndRecordReplay: async () => {
+        sideEffects.push("replay");
+        return true;
+      },
+    }), { code: "RESULT_VERIFICATION_FAILED" });
+    assert.deepEqual(sideEffects, ["signature", "signature"]);
+  }
+
+  const cert = certificate();
+  for (const [badCont, badNow] of [
+    [{ ...continuation(cert), notBefore: "2026-08-29T20:00:60Z" }, "2026-08-29T20:00:59.999Z"],
+    [{ ...continuation(cert), expiresAt: "2026-08-29T20:00:60Z" }, "2026-08-29T20:01:00Z"],
+  ]) {
+    const sideEffects = [];
+    await assert.rejects(() => verifyHandshakeV3Continuation({
+      certificate: cert,
+      continuation: badCont,
+      expectedPartyRoleDigests: badCont.partyRoleDigests,
+      now: badNow,
+      verifyIssuerSignature: async () => {
+        sideEffects.push("signature");
+        return true;
+      },
+      getRevocationStatus: async () => {
+        sideEffects.push("revocation");
+        return "GOOD";
+      },
+      checkAndRecordReplay: async () => {
+        sideEffects.push("replay");
+        return true;
+      },
+    }), { code: "RESULT_VERIFICATION_FAILED" });
+    assert.deepEqual(sideEffects, ["signature", "signature"]);
+  }
 });
 
 test("lifecycle emits exact public sessions and schema error codes", () => {
