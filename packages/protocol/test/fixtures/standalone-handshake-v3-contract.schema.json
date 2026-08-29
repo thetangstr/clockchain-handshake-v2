@@ -1,0 +1,440 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.clockchain.network/agent-handshake/v3/contract.schema.json",
+  "title": "Standalone Agent Handshake MCP v3 contract",
+  "contractStatus": "G0-approved-local-implementation-draft",
+  "protocolVersion": "3.0",
+  "schemaVersion": "3.0.0-draft.1",
+  "endpoint": "/handshake/mcp",
+  "namespace": "agent_handshake_",
+  "foundationBinding": {
+    "runtimeRepository": "clockchain-developer-tools",
+    "runtimeReviewCommit": "98e6556b0cb770b27b902801eb6a8fb4b4186677",
+    "runtimeArtifactMilestoneCommit": "dddc2dcabe93389adedfe08e365b2aa123fd3922",
+    "runtimeProvenanceRecord": "packages/mcp-server/provenance/session-supervisor-contract.json",
+    "runtimeStatus": "production-ready-unpromoted",
+    "protocolRepository": "clockchain-handshake-v2",
+    "protocolReviewedCommit": "d2cdedb705cf6855657381a908e47f71df959145",
+    "adapterRule": "developer-tools imports the pinned protocol library and contains no copied protocol-domain implementation",
+    "noParallelStack": true
+  },
+  "sharedFoundationConcerns": [
+    "mcp-server-runtime", "streamable-http-transport", "http-edge-gateway",
+    "oauth-jwks-revocation", "workload-and-tenant-binding", "tool-registration-and-discovery",
+    "strict-schema-validation", "safe-error-and-receipt-conventions", "observability",
+    "provenance-build-test-deployment", "health-canary-monitoring", "encrypted-persistence-backup-restore-rollback"
+  ],
+  "moduleIsolation": {
+    "handshake": {
+      "namespace": "agent_handshake_",
+      "oauthAudience": "https://mcp.clockchain.network/handshake",
+      "stateMachineOwner": "clockchain-handshake-v2 protocol library",
+      "storageDomain": "handshake-v3",
+      "auditStream": "handshake-v3"
+    },
+    "sessionSupervisor": {
+      "namespace": "clockchain_session_",
+      "oauthAudience": "https://mcp.clockchain.network/session-supervisor/mcp",
+      "stateMachineOwner": "clockchain-developer-tools session-supervisor module",
+      "storageDomain": "session-supervisor",
+      "auditStream": "session-supervisor",
+      "relationship": "peer-module-not-handshake-dependency"
+    },
+    "requiredSeparations": [
+      "oauth-scopes", "state-machines", "data-roots", "writer-locks", "backup-roots",
+      "encryption-contexts", "migrations", "retention", "audit-streams", "authority-tests"
+    ]
+  },
+  "noParallelMcpStackChecks": [
+    "no McpServer or server transport instantiation outside clockchain-developer-tools",
+    "no Handshake-owned HTTP listener/router/gateway",
+    "no Handshake-owned OAuth/JWKS or tenant derivation implementation",
+    "no second generic error/receipt/telemetry/provenance/deployment framework",
+    "no Handshake-specific runtime image, ingress, health, backup, or rollback stack",
+    "no copied Handshake protocol implementation in developer-tools"
+  ],
+  "responseEnvelope": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["protocolVersion", "schemaVersion", "requestId", "serverTime"],
+    "oneOf": [
+      { "required": ["result", "receipt"], "not": { "required": ["error"] } },
+      { "required": ["error", "failureReceipt"], "not": { "required": ["result"] } },
+      { "required": ["error"], "not": { "anyOf": [{ "required": ["result"] }, { "required": ["receipt"] }, { "required": ["failureReceipt"] }] } }
+    ],
+    "properties": {
+      "protocolVersion": { "const": "3.0" },
+      "schemaVersion": { "const": "3.0.0-draft.1" },
+      "requestId": { "type": "string", "format": "uuid" },
+      "serverTime": { "type": "string", "format": "date-time" },
+      "result": { "type": "object" },
+      "receipt": { "$ref": "#/$defs/receipt" },
+      "error": { "$ref": "#/$defs/error" },
+      "failureReceipt": { "$ref": "#/$defs/failureReceipt" }
+    }
+  },
+  "authentication": {
+    "resourceAudience": "https://mcp.clockchain.network/handshake",
+    "tokenProfiles": ["RFC9068-JWT", "OAuth2-introspection"],
+    "senderConstraintRequired": ["DPoP", "mTLS"],
+    "requiredClaims": {
+      "iss": "configured issuer URI",
+      "aud": "contains resourceAudience",
+      "sub": "stable workload principal",
+      "client_id": "registered OAuth client",
+      "exp": "future NumericDate",
+      "iat": "NumericDate within configured skew",
+      "jti": "unique token identifier",
+      "scope": "space-delimited granted scopes",
+      "https://clockchain.network/claims/tenant_id": "issuer-qualified immutable tenant identifier"
+    },
+    "optionalClaims": {
+      "https://clockchain.network/claims/federation_subject": "targetable external subject",
+      "cnf": "required in production"
+    },
+    "bindingRules": [
+      "tenant and principal derive only from verified claims",
+      "request bodies cannot override tenant or principal",
+      "roleGrantId is a non-secret authorization-record identifier, not a bearer credential",
+      "every role-scoped tool supplies roleGrantId and also requires the bound OAuth principal and proof key",
+      "Agent A and Agent B never share tokens, credentials, capabilities, or signing keys"
+    ]
+  },
+  "tenantVisibilityRules": [
+    "initiator sees responder identity and tenant digests plus declared federation subject only",
+    "responder sees initiator identity and tenant digests plus immutable policy only",
+    "neither party can list unrelated tenant relations or invitations",
+    "open invitation atomically locks first claimant tenant, sub, and cnf"
+  ],
+  "scopes": [
+    "handshake.discovery.read",
+    "handshake.invitation.create",
+    "handshake.invitation.receive",
+    "handshake.invitation.accept",
+    "handshake.invitation.revoke",
+    "handshake.session.read",
+    "handshake.session.participate",
+    "handshake.session.cancel",
+    "handshake.certificate.read",
+    "handshake.audit.read",
+    "handshake.operator.expire",
+    "handshake.operator.cancel"
+  ],
+  "supervisorOperatorBoundary": {
+    "allowedScopes": ["handshake.operator.expire", "handshake.operator.cancel"],
+    "allowedActions": ["REQUEST_EXPIRY_EVALUATION", "REQUEST_CANCELLATION"],
+    "prohibitedActions": [
+      "create-or-accept-invitation",
+      "join-or-recover-agent-role",
+      "submit-role-action-or-signature",
+      "author-or-relay-business-content",
+      "issue-or-verify-as-authority-certificate",
+      "issue-mutate-or-revoke-continuation",
+      "advance-protocol-on-behalf-of-agent"
+    ],
+    "rule": "requests pass the normal Handshake authorization and state machine; Supervisor has no direct storage or protocol credential"
+  },
+  "errorCodes": { "enum": [
+    "AUTHENTICATION_REQUIRED", "TOKEN_INVALID", "TOKEN_EXPIRED", "TOKEN_REVOKED",
+    "SENDER_CONSTRAINT_INVALID", "AUDIENCE_INVALID", "SCOPE_DENIED", "TENANT_DENIED",
+    "PRINCIPAL_DENIED", "INVITATION_NOT_FOUND", "INVITATION_EXPIRED", "INVITATION_CLAIMED",
+    "INVITATION_REVOKED", "ROLE_DENIED", "POLICY_DIGEST_MISMATCH", "SIGNATURE_INVALID",
+    "IDEMPOTENCY_CONFLICT", "STATE_VERSION_CONFLICT", "TRANSITION_DENIED",
+    "SESSION_CANCELLED", "SESSION_EXPIRED", "SESSION_REVOKED", "SESSION_FAILED_CLOSED",
+    "CLOCKCHAIN_PENDING", "CLOCKCHAIN_UNAVAILABLE", "CLOCKCHAIN_RECEIPT_INVALID",
+    "CONTINUATION_UNAVAILABLE", "RESULT_VERIFICATION_FAILED", "HANDSHAKE_VERSION_UNSUPPORTED",
+    "SCHEMA_INVALID", "RATE_LIMITED", "INTERNAL_SAFE_FAILURE"
+  ] },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "opaqueId": { "type": "string", "minLength": 16, "maxLength": 512 },
+    "idempotencyKey": { "type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[A-Za-z0-9._~-]+$" },
+    "receipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["operationId", "eventDigest", "stateVersion", "recordedAt"],
+      "properties": {
+        "operationId": { "$ref": "#/$defs/opaqueId" },
+        "eventDigest": { "$ref": "#/$defs/digest" },
+        "stateVersion": { "type": "integer", "minimum": 0 },
+        "recordedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "failureReceipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["requestDigest", "recordedAt", "mutated"],
+      "properties": {
+        "requestDigest": { "$ref": "#/$defs/digest" },
+        "stateVersion": { "type": "integer", "minimum": 0 },
+        "recordedAt": { "type": "string", "format": "date-time" },
+        "mutated": { "const": false }
+      }
+    },
+    "error": {
+      "type": "object", "additionalProperties": false,
+      "required": ["code", "message", "retryable", "requestId"],
+      "properties": {
+        "code": { "$ref": "#/errorCodes" },
+        "message": { "type": "string", "maxLength": 512 },
+        "retryable": { "type": "boolean" },
+        "retryAfterMs": { "type": "integer", "minimum": 0 },
+        "requestId": { "type": "string", "format": "uuid" }
+      }
+    },
+    "mutation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["idempotencyKey", "expectedStateVersion"],
+      "properties": {
+        "idempotencyKey": { "$ref": "#/$defs/idempotencyKey" },
+        "expectedStateVersion": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "policy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["scope", "constraints", "externalBusinessActionsAllowed", "expiresAt"],
+      "properties": {
+        "scope": { "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true, "items": { "type": "string", "maxLength": 256 } },
+        "constraints": { "type": "object", "maxProperties": 64, "additionalProperties": { "type": ["string", "number", "boolean", "null"] } },
+        "externalBusinessActionsAllowed": { "const": false },
+        "expiresAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "party": {
+      "type": "object", "additionalProperties": false,
+      "required": ["identityDigest", "role", "signingKeyId", "signingAlgorithm", "publicKey"],
+      "properties": {
+        "identityDigest": { "$ref": "#/$defs/digest" },
+        "role": { "enum": ["INITIATOR", "RESPONDER"] },
+        "signingKeyId": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "signingAlgorithm": { "enum": ["ES256K", "EdDSA", "ES256"] },
+        "publicKey": { "type": "string", "minLength": 32, "maxLength": 4096 },
+        "federationSubject": { "type": "string", "minLength": 3, "maxLength": 512 }
+      }
+    },
+    "roleGrant": {
+      "type": "object", "additionalProperties": false,
+      "required": ["roleGrantId", "sessionId", "role", "principalDigest", "proofKeyThumbprint", "allowedTools", "expiresAt"],
+      "properties": {
+        "roleGrantId": { "$ref": "#/$defs/opaqueId" },
+        "sessionId": { "$ref": "#/$defs/opaqueId" },
+        "role": { "enum": ["INITIATOR", "RESPONDER"] },
+        "principalDigest": { "$ref": "#/$defs/digest" },
+        "proofKeyThumbprint": { "$ref": "#/$defs/digest" },
+        "allowedTools": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^agent_handshake_" } },
+        "expiresAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "signingRequest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["signingRequestId", "actionType", "domainSeparator", "canonicalization", "payloadSchemaId", "sessionId", "stateVersion", "role", "policyDigest", "statementDigest", "nonce", "issuedAt", "expiresAt", "canonicalBytesBase64Url", "signingDigest"],
+      "properties": {
+        "signingRequestId": { "$ref": "#/$defs/opaqueId" },
+        "actionType": { "enum": ["IDENTITY", "PROPOSAL", "ACCEPTANCE", "ACKNOWLEDGEMENT", "EVIDENCE"] },
+        "domainSeparator": { "const": "CLOCKCHAIN_AGENT_HANDSHAKE_V3" },
+        "canonicalization": { "const": "RFC8785" },
+        "payloadSchemaId": { "const": "https://schemas.clockchain.network/agent-handshake/v3/signing-payload.schema.json" },
+        "sessionId": { "$ref": "#/$defs/opaqueId" },
+        "stateVersion": { "type": "integer", "minimum": 0 },
+        "role": { "enum": ["INITIATOR", "RESPONDER"] },
+        "policyDigest": { "$ref": "#/$defs/digest" },
+        "statementDigest": { "$ref": "#/$defs/digest" },
+        "counterpartIdentityDigest": { "$ref": "#/$defs/digest" },
+        "priorActionDigest": { "$ref": "#/$defs/digest" },
+        "evidenceDigest": { "$ref": "#/$defs/digest" },
+        "nonce": { "$ref": "#/$defs/opaqueId" },
+        "issuedAt": { "type": "string", "format": "date-time" },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "canonicalBytesBase64Url": { "type": "string", "minLength": 16, "maxLength": 32768, "pattern": "^[A-Za-z0-9_-]+$" },
+        "signingDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "signedAction": {
+      "type": "object", "additionalProperties": false,
+      "required": ["signingRequestId", "signingDigest", "signerKeyId", "algorithm", "signature"],
+      "properties": {
+        "signingRequestId": { "$ref": "#/$defs/opaqueId" },
+        "signingDigest": { "$ref": "#/$defs/digest" },
+        "signerKeyId": { "type": "string" },
+        "algorithm": { "enum": ["ES256K", "EdDSA", "ES256"] },
+        "signature": { "type": "string", "minLength": 32, "maxLength": 4096 }
+      }
+    },
+    "session": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sessionId", "role", "state", "stateVersion", "policy", "policyDigest", "expiresAt", "allowedTransitions", "eventCursor"],
+      "properties": {
+        "sessionId": { "$ref": "#/$defs/opaqueId" },
+        "role": { "enum": ["INITIATOR", "RESPONDER"] },
+        "state": { "enum": ["INVITED", "CLAIMED", "POLICY_READY", "PARTIES_BOUND", "PROPOSAL_PENDING", "ACCEPTANCE_PENDING", "ANCHORING", "CERTIFICATE_ISSUED", "CONTINUATION_ISSUED", "COMPLETED", "FAILED_CLOSED", "CANCELLED", "EXPIRED", "REVOKED"] },
+        "stateVersion": { "type": "integer", "minimum": 0 },
+        "policy": { "$ref": "#/$defs/policy" },
+        "policyDigest": { "$ref": "#/$defs/digest" },
+        "partyDigests": { "type": "array", "maxItems": 2, "items": { "$ref": "#/$defs/digest" } },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "allowedTransitions": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+        "pendingSigningRequest": { "$ref": "#/$defs/signingRequest" },
+        "eventCursor": { "$ref": "#/$defs/opaqueId" }
+      }
+    },
+    "certificate": {
+      "type": "object", "additionalProperties": false,
+      "required": ["certificateId", "sessionId", "certificateDigest", "policyDigest", "partyDigests", "clockchainNetwork", "trustRootId", "issuedAt", "expiresAt", "issuerSignature"],
+      "properties": {
+        "certificateId": { "$ref": "#/$defs/opaqueId" },
+        "sessionId": { "$ref": "#/$defs/opaqueId" },
+        "certificateDigest": { "$ref": "#/$defs/digest" },
+        "policyDigest": { "$ref": "#/$defs/digest" },
+        "partyDigests": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/digest" } },
+        "clockchainNetwork": { "type": "string" },
+        "trustRootId": { "type": "string" },
+        "issuedAt": { "type": "string", "format": "date-time" },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "issuerSignature": { "type": "string", "minLength": 32, "maxLength": 8192 }
+      }
+    },
+    "continuation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["continuationId", "sessionId", "federationRelationDigest", "certificateDigest", "clockchainNetwork", "trustRootId", "partyRoleDigests", "statementDigest", "scopeDigest", "policyDigest", "protocolVersion", "schemaVersion", "issuedAt", "notBefore", "expiresAt", "audience", "allowedNextActionClass", "replayNonce", "revocationHandle", "issuerSignature"],
+      "properties": {
+        "continuationId": { "$ref": "#/$defs/opaqueId" },
+        "sessionId": { "$ref": "#/$defs/opaqueId" },
+        "federationRelationDigest": { "$ref": "#/$defs/digest" },
+        "certificateDigest": { "$ref": "#/$defs/digest" },
+        "clockchainNetwork": { "type": "string" },
+        "trustRootId": { "type": "string" },
+        "partyRoleDigests": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/digest" } },
+        "statementDigest": { "$ref": "#/$defs/digest" },
+        "scopeDigest": { "$ref": "#/$defs/digest" },
+        "policyDigest": { "$ref": "#/$defs/digest" },
+        "protocolVersion": { "const": "3.0" },
+        "schemaVersion": { "const": "3.0.0-draft.1" },
+        "issuedAt": { "type": "string", "format": "date-time" },
+        "notBefore": { "type": "string", "format": "date-time" },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "audience": { "const": "agent-contract-a2a" },
+        "allowedNextActionClass": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "replayNonce": { "$ref": "#/$defs/opaqueId" },
+        "revocationHandle": { "$ref": "#/$defs/opaqueId" },
+        "issuerSignature": { "type": "string", "minLength": 32, "maxLength": 8192 }
+      }
+    },
+    "callbackEvent": {
+      "type": "object", "additionalProperties": false,
+      "required": ["eventId", "sessionId", "state", "stateVersion", "eventCursor", "eventDigest", "occurredAt", "signature"],
+      "properties": {
+        "eventId": { "type": "string", "format": "uuid" },
+        "sessionId": { "$ref": "#/$defs/opaqueId" },
+        "state": { "type": "string" },
+        "stateVersion": { "type": "integer", "minimum": 0 },
+        "eventCursor": { "$ref": "#/$defs/opaqueId" },
+        "eventDigest": { "$ref": "#/$defs/digest" },
+        "occurredAt": { "type": "string", "format": "date-time" },
+        "signature": { "type": "string", "minLength": 32, "maxLength": 8192 }
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "agent_handshake_capabilities", "scope": "handshake.discovery.read",
+      "inputSchema": { "type": "object", "additionalProperties": false, "required": ["requestedProtocolVersions"], "properties": { "requestedProtocolVersions": { "type": "array", "minItems": 1, "items": { "type": "string" } }, "requestedFeatures": { "type": "array", "uniqueItems": true, "items": { "type": "string" } } } },
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["negotiatedProtocolVersion", "schemaVersion", "toolsetDigest", "trustRootIds", "limits"], "properties": { "negotiatedProtocolVersion": { "const": "3.0" }, "schemaVersion": { "const": "3.0.0-draft.1" }, "toolsetDigest": { "$ref": "#/$defs/digest" }, "trustRootIds": { "type": "array", "minItems": 1, "items": { "type": "string" } }, "limits": { "type": "object" } } }
+    },
+    {
+      "name": "agent_handshake_invitation_create", "scope": "handshake.invitation.create",
+      "inputSchema": { "type": "object", "additionalProperties": false, "required": ["idempotencyKey", "responderRole", "responderBinding", "policy", "expiresAt", "transport"], "properties": { "idempotencyKey": { "$ref": "#/$defs/idempotencyKey" }, "responderRole": { "const": "RESPONDER" }, "responderBinding": { "enum": ["TARGETED", "FIRST_AUTHENTICATED_CLAIM"] }, "responderFederationSubject": { "type": "string", "minLength": 3, "maxLength": 512 }, "policy": { "$ref": "#/$defs/policy" }, "expiresAt": { "type": "string", "format": "date-time" }, "transport": { "enum": ["AUTHENTICATED_INBOX", "OPAQUE_EXTERNAL_TOKEN"] } } },
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["invitationId", "policyDigest", "statementDigest", "state", "expiresAt"], "properties": { "invitationId": { "$ref": "#/$defs/opaqueId" }, "invitationToken": { "$ref": "#/$defs/opaqueId" }, "policyDigest": { "$ref": "#/$defs/digest" }, "statementDigest": { "$ref": "#/$defs/digest" }, "state": { "const": "ISSUED" }, "expiresAt": { "type": "string", "format": "date-time" } } }
+    },
+    {
+      "name": "agent_handshake_invitation_list", "scope": "handshake.invitation.receive",
+      "inputSchema": { "type": "object", "additionalProperties": false, "properties": { "cursor": { "$ref": "#/$defs/opaqueId" }, "states": { "type": "array", "uniqueItems": true, "items": { "enum": ["ISSUED", "CLAIMED", "EXPIRED", "CANCELLED", "REVOKED"] } }, "limit": { "type": "integer", "minimum": 1, "maximum": 100 } } },
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["invitations"], "properties": { "invitations": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["invitationId", "state", "policyDigest", "expiresAt"], "properties": { "invitationId": { "$ref": "#/$defs/opaqueId" }, "state": { "type": "string" }, "policyDigest": { "$ref": "#/$defs/digest" }, "expiresAt": { "type": "string", "format": "date-time" } } } }, "nextCursor": { "$ref": "#/$defs/opaqueId" } } }
+    },
+    {
+      "name": "agent_handshake_invitation_accept", "scope": "handshake.invitation.accept",
+      "inputSchema": { "type": "object", "additionalProperties": false, "required": ["party", "acceptedPolicyDigest", "idempotencyKey"], "oneOf": [{ "required": ["invitationId"], "not": { "required": ["invitationToken"] } }, { "required": ["invitationToken"], "not": { "required": ["invitationId"] } }], "properties": { "invitationId": { "$ref": "#/$defs/opaqueId" }, "invitationToken": { "$ref": "#/$defs/opaqueId" }, "party": { "$ref": "#/$defs/party" }, "acceptedPolicyDigest": { "$ref": "#/$defs/digest" }, "idempotencyKey": { "$ref": "#/$defs/idempotencyKey" } } },
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["sessionId", "roleGrant", "tenantRelation", "session"], "properties": { "sessionId": { "$ref": "#/$defs/opaqueId" }, "roleGrant": { "$ref": "#/$defs/roleGrant" }, "tenantRelation": { "type": "object" }, "session": { "$ref": "#/$defs/session" } } }
+    },
+    {
+      "name": "agent_handshake_invitation_revoke", "scope": "handshake.invitation.revoke",
+      "inputSchema": { "type": "object", "additionalProperties": false, "required": ["invitationId", "reasonCode", "idempotencyKey", "expectedStateVersion"], "properties": { "invitationId": { "$ref": "#/$defs/opaqueId" }, "reasonCode": { "enum": ["CREATOR_CANCELLED", "SECURITY", "SUPERSEDED", "OTHER"] }, "idempotencyKey": { "$ref": "#/$defs/idempotencyKey" }, "expectedStateVersion": { "type": "integer", "minimum": 0 } } },
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["invitationId", "state"], "properties": { "invitationId": { "$ref": "#/$defs/opaqueId" }, "state": { "const": "REVOKED" } } }
+    },
+    {
+      "name": "agent_handshake_session_inspect", "scope": "handshake.session.read",
+      "inputSchema": { "type": "object", "additionalProperties": false, "required": ["sessionId"], "properties": { "sessionId": { "$ref": "#/$defs/opaqueId" }, "afterEventCursor": { "$ref": "#/$defs/opaqueId" } } },
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["session", "events"], "properties": { "session": { "$ref": "#/$defs/session" }, "events": { "type": "array", "items": { "$ref": "#/$defs/callbackEvent" } } } }
+    },
+    {
+      "name": "agent_handshake_session_join", "scope": "handshake.session.participate",
+      "inputSchema": { "type": "object", "additionalProperties": false, "required": ["sessionId", "roleGrantId", "party", "policyDigest", "nonceCommitment", "idempotencyKey", "expectedStateVersion"], "properties": { "sessionId": { "$ref": "#/$defs/opaqueId" }, "roleGrantId": { "$ref": "#/$defs/opaqueId" }, "party": { "$ref": "#/$defs/party" }, "policyDigest": { "$ref": "#/$defs/digest" }, "nonceCommitment": { "$ref": "#/$defs/digest" }, "idempotencyKey": { "$ref": "#/$defs/idempotencyKey" }, "expectedStateVersion": { "type": "integer", "minimum": 0 } } },
+      "resultSchema": { "$ref": "#/$defs/session" }
+    },
+    {
+      "name": "agent_handshake_session_next", "scope": "handshake.session.read",
+      "inputSchema": { "type": "object", "additionalProperties": false, "required": ["sessionId", "roleGrantId", "eventCursor"], "properties": { "sessionId": { "$ref": "#/$defs/opaqueId" }, "roleGrantId": { "$ref": "#/$defs/opaqueId" }, "eventCursor": { "$ref": "#/$defs/opaqueId" }, "waitTimeoutMs": { "type": "integer", "minimum": 0, "maximum": 30000 } } },
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["changed", "session", "events", "retryAfterMs"], "properties": { "changed": { "type": "boolean" }, "session": { "$ref": "#/$defs/session" }, "events": { "type": "array", "items": { "$ref": "#/$defs/callbackEvent" } }, "retryAfterMs": { "type": "integer", "minimum": 0 } } }
+    },
+    {
+      "name": "agent_handshake_session_submit_checkpoint", "scope": "handshake.session.participate",
+      "inputSchema": { "type": "object", "additionalProperties": false, "required": ["sessionId", "roleGrantId", "checkpointType", "signingRequestId", "signingDigest", "signerKeyId", "algorithm", "signature", "idempotencyKey", "expectedStateVersion"], "properties": { "sessionId": { "$ref": "#/$defs/opaqueId" }, "roleGrantId": { "$ref": "#/$defs/opaqueId" }, "checkpointType": { "enum": ["PROPOSED", "ACCEPTED", "ACKNOWLEDGED"] }, "signingRequestId": { "$ref": "#/$defs/opaqueId" }, "signingDigest": { "$ref": "#/$defs/digest" }, "signerKeyId": { "type": "string" }, "algorithm": { "enum": ["ES256K", "EdDSA", "ES256"] }, "signature": { "type": "string", "minLength": 32, "maxLength": 4096 }, "idempotencyKey": { "$ref": "#/$defs/idempotencyKey" }, "expectedStateVersion": { "type": "integer", "minimum": 0 } } },
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["session", "clockchainReceiptStatus"], "properties": { "session": { "$ref": "#/$defs/session" }, "clockchainReceiptStatus": { "enum": ["PENDING", "CONFIRMED"] }, "clockchainReceiptDigest": { "$ref": "#/$defs/digest" } } }
+    },
+    {
+      "name": "agent_handshake_session_submit", "scope": "handshake.session.participate",
+      "inputSchema": { "type": "object", "additionalProperties": false, "required": ["sessionId", "roleGrantId", "action", "idempotencyKey", "expectedStateVersion"], "properties": { "sessionId": { "$ref": "#/$defs/opaqueId" }, "roleGrantId": { "$ref": "#/$defs/opaqueId" }, "action": { "$ref": "#/$defs/signedAction" }, "idempotencyKey": { "$ref": "#/$defs/idempotencyKey" }, "expectedStateVersion": { "type": "integer", "minimum": 0 } } },
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["session", "clockchainReceiptStatus"], "properties": { "session": { "$ref": "#/$defs/session" }, "clockchainReceiptStatus": { "enum": ["NOT_REQUIRED", "PENDING", "CONFIRMED"] }, "clockchainReceiptDigest": { "$ref": "#/$defs/digest" } } }
+    },
+    {
+      "name": "agent_handshake_session_cancel", "scope": "handshake.session.cancel",
+      "inputSchema": { "type": "object", "additionalProperties": false, "required": ["sessionId", "reasonCode", "idempotencyKey", "expectedStateVersion"], "properties": { "sessionId": { "$ref": "#/$defs/opaqueId" }, "reasonCode": { "enum": ["AGENT_CANCELLED", "POLICY_REJECTED", "KEY_LOST", "SECURITY", "OTHER"] }, "idempotencyKey": { "$ref": "#/$defs/idempotencyKey" }, "expectedStateVersion": { "type": "integer", "minimum": 0 } } },
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["sessionId", "state"], "properties": { "sessionId": { "$ref": "#/$defs/opaqueId" }, "state": { "const": "CANCELLED" } } }
+    },
+    {
+      "name": "agent_handshake_session_resume", "scope": "handshake.session.participate",
+      "inputSchema": { "type": "object", "additionalProperties": false, "required": ["sessionId", "latestReceiptDigest", "eventCursor", "challengeId", "challengeSignature", "idempotencyKey"], "properties": { "sessionId": { "$ref": "#/$defs/opaqueId" }, "latestReceiptDigest": { "$ref": "#/$defs/digest" }, "eventCursor": { "$ref": "#/$defs/opaqueId" }, "challengeId": { "$ref": "#/$defs/opaqueId" }, "challengeSignature": { "type": "string", "minLength": 32, "maxLength": 4096 }, "idempotencyKey": { "$ref": "#/$defs/idempotencyKey" } } },
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["roleGrant", "session", "recoveredWithoutMutation"], "properties": { "roleGrant": { "$ref": "#/$defs/roleGrant" }, "session": { "$ref": "#/$defs/session" }, "recoveredWithoutMutation": { "const": true } } }
+    },
+    {
+      "name": "agent_handshake_session_get_result", "scope": "handshake.certificate.read",
+      "inputSchema": { "type": "object", "additionalProperties": false, "required": ["sessionId"], "properties": { "sessionId": { "$ref": "#/$defs/opaqueId" } } },
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["certificate", "continuation", "clockchainReceiptDigests", "externalBusinessActionPerformed", "nextInstruction"], "properties": { "certificate": { "$ref": "#/$defs/certificate" }, "continuation": { "$ref": "#/$defs/continuation" }, "clockchainReceiptDigests": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/digest" } }, "externalBusinessActionPerformed": { "const": false }, "nextInstruction": { "const": "STOP_AFTER_VERIFICATION" } } }
+    },
+    {
+      "name": "agent_handshake_result_verify", "scope": "handshake.certificate.read",
+      "inputSchema": { "type": "object", "additionalProperties": false, "required": ["certificate", "continuation"], "properties": { "certificate": { "$ref": "#/$defs/certificate" }, "continuation": { "$ref": "#/$defs/continuation" }, "expectedPolicyDigest": { "$ref": "#/$defs/digest" }, "expectedPartyRoleDigests": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/digest" } } } },
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["valid", "certificateValid", "continuationValid", "revocationStatus", "checkedAt", "violations", "externalBusinessActionPerformed"], "properties": { "valid": { "type": "boolean" }, "certificateValid": { "type": "boolean" }, "continuationValid": { "type": "boolean" }, "revocationStatus": { "enum": ["GOOD", "REVOKED", "UNKNOWN_FAIL_CLOSED"] }, "checkedAt": { "type": "string", "format": "date-time" }, "violations": { "type": "array", "items": { "type": "string" } }, "externalBusinessActionPerformed": { "const": false } } }
+    },
+    {
+      "name": "agent_handshake_audit_receipt", "scope": "handshake.audit.read",
+      "inputSchema": { "type": "object", "additionalProperties": false, "required": ["sessionId"], "properties": { "sessionId": { "$ref": "#/$defs/opaqueId" }, "fromEvent": { "type": "integer", "minimum": 0 }, "toEvent": { "type": "integer", "minimum": 0 } } },
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["sessionId", "eventChainDigest", "externalBusinessActionPerformed", "signedReceipt"], "properties": { "sessionId": { "$ref": "#/$defs/opaqueId" }, "eventChainDigest": { "$ref": "#/$defs/digest" }, "certificateDigest": { "$ref": "#/$defs/digest" }, "continuationDigest": { "$ref": "#/$defs/digest" }, "externalBusinessActionPerformed": { "const": false }, "signedReceipt": { "type": "string", "minLength": 32, "maxLength": 16384 } } }
+    },
+    {
+      "name": "agent_handshake_operator_request", "scopeByAction": { "REQUEST_EXPIRY_EVALUATION": "handshake.operator.expire", "REQUEST_CANCELLATION": "handshake.operator.cancel" },
+      "inputSchema": { "type": "object", "additionalProperties": false, "required": ["sessionId", "action", "reasonCode", "observedStateVersion", "observedEventDigest", "idempotencyKey"], "properties": { "sessionId": { "$ref": "#/$defs/opaqueId" }, "action": { "enum": ["REQUEST_EXPIRY_EVALUATION", "REQUEST_CANCELLATION"] }, "reasonCode": { "enum": ["DEADLINE_REACHED", "OPERATOR_SECURITY", "TENANT_REQUEST", "OTHER"] }, "observedStateVersion": { "type": "integer", "minimum": 0 }, "observedEventDigest": { "$ref": "#/$defs/digest" }, "idempotencyKey": { "$ref": "#/$defs/idempotencyKey" } } },
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["accepted", "requestOnly", "session"], "properties": { "accepted": { "type": "boolean" }, "requestOnly": { "const": true }, "session": { "$ref": "#/$defs/session" }, "denialCode": { "enum": ["NOT_DUE", "TERMINAL", "SCOPE_DENIED", "STATE_VERSION_CONFLICT", "TRANSITION_DENIED"] } } }
+    }
+  ],
+  "invitationTransport": {
+    "authenticatedInbox": "principal-filtered invitation_list",
+    "opaqueExternalToken": "one-time capability; unusable without independently authenticated recipient and PoP",
+    "polling": "session_next with eventCursor is mandatory baseline",
+    "callback": { "$ref": "#/$defs/callbackEvent" },
+    "callbackRule": "administratively allowlisted HTTPS endpoints only; no tool-supplied callback URL"
+  },
+  "idempotency": {
+    "writeRequirement": "idempotencyKey plus expectedStateVersion after creation",
+    "sameKeySameCanonicalBody": "return original result and receipt",
+    "sameKeyDifferentBody": "IDEMPOTENCY_CONFLICT with no mutation",
+    "staleVersion": "STATE_VERSION_CONFLICT with no mutation",
+    "sameValidSignature": "idempotent",
+    "differentSignatureForBoundAction": "SIGNATURE_INVALID or TRANSITION_DENIED"
+  },
+  "continuationVerification": [
+    "verify issuer signature and trust root",
+    "verify certificate digest, party-role, statement, scope, and policy bindings",
+    "verify audience agent-contract-a2a and allowed next-action class",
+    "verify not-before, expiry, replay nonce, and authoritative revocation status",
+    "unknown revocation status fails closed",
+    "successful verification performs no business action"
+  ]
+}

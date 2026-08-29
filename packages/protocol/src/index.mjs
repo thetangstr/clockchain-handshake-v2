@@ -11,3 +11,4 @@ export * from "./v2/protocol.mjs";
 export * from "./v2/result.mjs";
 export * from "./v2/terms.mjs";
 export * from "./v2/verdict.mjs";
+export * from "./v3/index.mjs";

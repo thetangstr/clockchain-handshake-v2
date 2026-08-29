@@ -1,0 +1,148 @@
+{
+  "contract": "standalone-handshake-v3-contract.schema.json",
+  "schemaVersion": "3.0.0-draft.1",
+  "knownGood": [
+    {
+      "id": "role-scoped-next",
+      "tool": "agent_handshake_session_next",
+      "input": {
+        "sessionId": "sess_0123456789abcdef",
+        "roleGrantId": "grant_0123456789abcdef",
+        "eventCursor": "cursor_0123456789abcdef",
+        "waitTimeoutMs": 1000
+      }
+    },
+    {
+      "id": "typed-signing-request",
+      "schemaRef": "#/$defs/signingRequest",
+      "value": {
+        "signingRequestId": "signreq_0123456789abcdef",
+        "actionType": "PROPOSAL",
+        "domainSeparator": "CLOCKCHAIN_AGENT_HANDSHAKE_V3",
+        "canonicalization": "RFC8785",
+        "payloadSchemaId": "https://schemas.clockchain.network/agent-handshake/v3/signing-payload.schema.json",
+        "sessionId": "sess_0123456789abcdef",
+        "stateVersion": 4,
+        "role": "INITIATOR",
+        "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "statementDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "nonce": "nonce_0123456789abcdef",
+        "issuedAt": "2026-08-29T20:00:00Z",
+        "expiresAt": "2026-08-29T20:05:00Z",
+        "canonicalBytesBase64Url": "ZXhhY3QtY2Fub25pY2FsLWJ5dGVz",
+        "signingDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    },
+    {
+      "id": "supervisor-expiry-request",
+      "tool": "agent_handshake_operator_request",
+      "requiredScope": "handshake.operator.expire",
+      "input": {
+        "sessionId": "sess_0123456789abcdef",
+        "action": "REQUEST_EXPIRY_EVALUATION",
+        "reasonCode": "DEADLINE_REACHED",
+        "observedStateVersion": 8,
+        "observedEventDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "idempotencyKey": "idem.expiry.0123456789"
+      },
+      "authorityExpectation": "request is evaluated by Handshake; Supervisor cannot directly transition or recover an agent role"
+    },
+    {
+      "id": "admitted-error-envelope",
+      "schemaRef": "#/responseEnvelope",
+      "value": {
+        "protocolVersion": "3.0",
+        "schemaVersion": "3.0.0-draft.1",
+        "requestId": "01234567-89ab-4def-8123-456789abcdef",
+        "serverTime": "2026-08-29T20:00:00Z",
+        "error": {
+          "code": "STATE_VERSION_CONFLICT",
+          "message": "State version does not match.",
+          "retryable": true,
+          "requestId": "01234567-89ab-4def-8123-456789abcdef"
+        },
+        "failureReceipt": {
+          "requestDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "stateVersion": 9,
+          "recordedAt": "2026-08-29T20:00:00Z",
+          "mutated": false
+        }
+      }
+    }
+  ],
+  "knownBad": [
+    {
+      "id": "role-grant-omitted",
+      "tool": "agent_handshake_session_submit",
+      "input": {
+        "sessionId": "sess_0123456789abcdef",
+        "action": {
+          "signingRequestId": "signreq_0123456789abcdef",
+          "signingDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "signerKeyId": "agent-a-key-1",
+          "algorithm": "EdDSA",
+          "signature": "0123456789abcdef0123456789abcdef"
+        },
+        "idempotencyKey": "idem.submit.0123456789",
+        "expectedStateVersion": 4
+      },
+      "expectedError": "SCHEMA_INVALID",
+      "reason": "roleGrantId is mandatory on every role-scoped tool"
+    },
+    {
+      "id": "free-form-signing-payload",
+      "schemaRef": "#/$defs/signedAction",
+      "value": {
+        "canonicalPayload": { "businessContent": "forbidden" },
+        "signature": "0123456789abcdef0123456789abcdef"
+      },
+      "expectedError": "SCHEMA_INVALID",
+      "reason": "client submits only signingRequestId, signingDigest, key, algorithm, and signature"
+    },
+    {
+      "id": "supervisor-recover-role",
+      "tool": "agent_handshake_operator_request",
+      "input": {
+        "sessionId": "sess_0123456789abcdef",
+        "action": "RECOVER_AGENT_ROLE",
+        "reasonCode": "OTHER",
+        "observedStateVersion": 8,
+        "observedEventDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "idempotencyKey": "idem.recover.0123456789"
+      },
+      "expectedError": "SCHEMA_INVALID",
+      "reason": "Supervisor cannot recover role access or progress protocol"
+    },
+    {
+      "id": "success-without-receipt",
+      "schemaRef": "#/responseEnvelope",
+      "value": {
+        "protocolVersion": "3.0",
+        "schemaVersion": "3.0.0-draft.1",
+        "requestId": "01234567-89ab-4def-8123-456789abcdef",
+        "serverTime": "2026-08-29T20:00:00Z",
+        "result": {}
+      },
+      "expectedError": "SCHEMA_INVALID",
+      "reason": "an admitted success requires a receipt"
+    },
+    {
+      "id": "business-content-shaped-result-field",
+      "resultTool": "agent_handshake_session_cancel",
+      "value": {
+        "sessionId": "sess_0123456789abcdef",
+        "state": "CANCELLED",
+        "businessContent": "forbidden"
+      },
+      "expectedError": "SCHEMA_INVALID",
+      "reason": "all result schemas are strict and reject unknown or business-content-shaped output fields"
+    },
+    {
+      "id": "operator-token-on-role-tool",
+      "tool": "agent_handshake_session_next",
+      "tokenScopes": ["handshake.operator.expire", "handshake.operator.cancel"],
+      "expectedError": "SCOPE_DENIED",
+      "reason": "operator scopes never satisfy role-participation scope or role-grant binding"
+    }
+  ]
+}

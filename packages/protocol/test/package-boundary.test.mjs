@@ -65,8 +65,13 @@ test("protocol package exposes the transport-independent v2 kernel", async () =>
     "agentHandshakeV2ResultDigest",
     "verifyAgentHandshakeV2Authorization",
     "verifyAgentHandshakeV2Result",
+    "HANDSHAKE_V3_PROTOCOL_VERSION",
+    "createHandshakeV3SigningRequest",
+    "applyHandshakeV3Transition",
+    "verifyHandshakeV3Continuation",
   ];
-  for (const exportedName of requiredExports) {
+  assert.equal(protocol.HANDSHAKE_V3_PROTOCOL_VERSION, "3.0");
+  for (const exportedName of requiredExports.filter((name) => name !== "HANDSHAKE_V3_PROTOCOL_VERSION")) {
     assert.equal(typeof protocol[exportedName], "function", `${exportedName} must be public`);
   }
 });
@@ -157,4 +162,7 @@ test("package dry-run includes the immutable v2 fixture and extraction provenanc
 
   assert.equal(files.has("test/fixtures/agent-handshake-v2-canonical.json"), true);
   assert.equal(files.has("test/fixtures/v2-provenance.json"), true);
+  assert.equal(files.has("test/fixtures/standalone-handshake-v3-contract.schema.json"), true);
+  assert.equal(files.has("test/fixtures/standalone-handshake-v3-contract-fixtures.json"), true);
+  assert.equal(files.has("test/fixtures/v3-provenance.json"), true);
 });
