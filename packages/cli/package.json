@@ -1,0 +1,23 @@
+{
+  "name": "@clockchain/handshake-cli",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Offline JSON CLI helpers for the Clockchain standalone agent handshake.",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "clockchain-handshake": "./bin/clockchain-handshake.mjs"
+  },
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@clockchain/handshake-protocol": "0.1.0",
+    "@clockchain/handshake-sdk": "0.1.0"
+  }
+}

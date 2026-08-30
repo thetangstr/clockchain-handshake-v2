@@ -4,6 +4,11 @@
   "private": true,
   "type": "module",
   "description": "Bilateral payment-authorization handshake demo: two agents, three Clockchain anchors, one fresh verifier.",
+  "workspaces": [
+    "packages/protocol",
+    "packages/sdk",
+    "packages/cli"
+  ],
   "engines": {
     "node": ">=22"
   },
@@ -19,7 +24,7 @@
     "agent-cli:sea": "node scripts/build-agent-handshake-release.mjs sea dist/clockchain-agent-handshake",
     "agent-cli:npm:build": "node scripts/build-agent-handshake-npm.mjs",
     "agent-cli:release:verify": "node --test test/agent-cli-release.test.mjs test/agent-cli-clean-platform.test.mjs",
-    "test": "node --test --test-concurrency=4 test/*.test.mjs packages/protocol/test/*.test.mjs",
+    "test": "node --test --test-concurrency=4 test/*.test.mjs packages/protocol/test/*.test.mjs packages/sdk/test/*.test.mjs packages/cli/test/*.test.mjs",
     "verify": "npm run test && bash scripts/check-invariants.sh",
     "release:pin": "node scripts/release-pin.mjs"
   },

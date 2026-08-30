@@ -1,0 +1,19 @@
+{
+  "name": "@clockchain/handshake-sdk",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Offline client helpers for the Clockchain standalone agent handshake.",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@clockchain/handshake-protocol": "0.1.0"
+  }
+}
