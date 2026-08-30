@@ -241,7 +241,7 @@
         "federationSubjectDigest": { "$ref": "#/$defs/digest" }
       }
     },
-    "nextAction": { "enum": ["WAIT", "JOIN_SESSION", "SIGN_AND_SUBMIT", "SUBMIT_CHECKPOINT", "FETCH_RESULT", "VERIFY_RESULT", "STOP_AFTER_VERIFICATION", "TERMINAL"] },
+    "nextAction": { "enum": ["WAIT", "JOIN_SESSION", "SIGN_AND_SUBMIT", "SUBMIT_CHECKPOINT", "FETCH_RESULT", "TERMINAL"] },
     "waitingOn": { "enum": ["SELF", "COUNTERPARTY", "CLOCKCHAIN", "CALLER_VERIFICATION", "NONE"] },
     "transitionAction": { "enum": ["CLAIM_INVITATION", "PREPARE_POLICY", "BIND_PARTIES", "SUBMIT_PROPOSAL", "SUBMIT_ACCEPTANCE", "CONFIRM_ANCHOR", "ISSUE_CERTIFICATE", "ISSUE_CONTINUATION", "COMPLETE", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"] },
     "signingRequest": {

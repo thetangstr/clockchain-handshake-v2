@@ -54,6 +54,50 @@ function policy() {
   };
 }
 
+function agentParty(role) {
+  return {
+    role,
+    identityDigest: role === "INITIATOR" ? digestB : digestC,
+    publicKey: `${role.toLowerCase()}-public-key-0123456789abcdef0123456789abcdef`,
+    signingKeyId: role === "INITIATOR" ? "agent-a-key-1" : "agent-b-key-1",
+    signingAlgorithm: "EdDSA",
+  };
+}
+
+function toolInputForAction(aggregate, plan, role, signature = role === "INITIATOR" ? "p".repeat(32) : "a".repeat(32)) {
+  return {
+    sessionId: aggregate.sessionId,
+    roleGrantId: `grant.${role.toLowerCase()}.000`,
+    action: {
+      signingRequestId: plan.session.pendingSigningRequest.signingRequestId,
+      signingDigest: plan.session.pendingSigningRequest.signingDigest,
+      signerKeyId: agentParty(role).signingKeyId,
+      algorithm: agentParty(role).signingAlgorithm,
+      signature,
+    },
+    idempotencyKey: `idem.${role.toLowerCase()}.${aggregate.stateVersion}`,
+    expectedStateVersion: aggregate.stateVersion,
+  };
+}
+
+function toolInputForCheckpoint(aggregate, plan, signature = "e".repeat(32)) {
+  return {
+    sessionId: aggregate.sessionId,
+    roleGrantId: "grant.responder.000",
+    checkpointType: "ACCEPTED",
+    signingRequestId: plan.session.pendingSigningRequest.signingRequestId,
+    signingDigest: plan.session.pendingSigningRequest.signingDigest,
+    signerKeyId: agentParty("RESPONDER").signingKeyId,
+    algorithm: agentParty("RESPONDER").signingAlgorithm,
+    signature,
+    idempotencyKey: `idem.responder.checkpoint.${aggregate.stateVersion}`,
+    expectedStateVersion: aggregate.stateVersion,
+  };
+}
+
+const acceptingVerifier = async () => true;
+const rejectingVerifier = async () => false;
+
 function session(state = "INVITED", stateVersion = 0) {
   return {
     sessionId: "sess_0123456789abcdef",
@@ -148,7 +192,7 @@ test("role grants bind principal, proof key, tool, and expiry with schema error 
   }, { now: "2026-08-29T20:01:00Z" }), { code: "TOKEN_EXPIRED" });
 });
 
-test("draft.3 stateful two-agent vector reaches verified safe stop without business action", () => {
+test("draft.3 stateful two-agent vector reaches verified safe stop without business action", async () => {
   const sessionId = "sess_stateful_012345";
   const base = createHandshakeV3Aggregate({
     sessionId,
@@ -163,6 +207,7 @@ test("draft.3 stateful two-agent vector reaches verified safe stop without busin
 
   const accepted = applyHandshakeV3ToolEvent(base, {
     type: "INVITATION_ACCEPTED",
+    expectedStateVersion: base.stateVersion,
     role: "RESPONDER",
     partyDigest: digestC,
     eventCursor: "cursor_accept_012345",
@@ -172,6 +217,7 @@ test("draft.3 stateful two-agent vector reaches verified safe stop without busin
 
   const initiatorJoined = applyHandshakeV3ToolEvent(accepted, {
     type: "SESSION_JOINED",
+    expectedStateVersion: accepted.stateVersion,
     role: "INITIATOR",
     partyDigest: digestB,
     eventCursor: "cursor_join_i_012345",
@@ -182,6 +228,7 @@ test("draft.3 stateful two-agent vector reaches verified safe stop without busin
 
   const bothJoined = applyHandshakeV3ToolEvent(initiatorJoined, {
     type: "SESSION_JOINED",
+    expectedStateVersion: initiatorJoined.stateVersion,
     role: "RESPONDER",
     partyDigest: digestC,
     eventCursor: "cursor_join_r_012345",
@@ -193,15 +240,11 @@ test("draft.3 stateful two-agent vector reaches verified safe stop without busin
   assert.equal(initiatorPlan.session.pendingSigningRequest.actionType, "PROPOSAL");
   assert.equal(responderWait.nextAction, "WAIT");
 
-  const proposalEvent = validateHandshakeV3ActionSubmission(bothJoined, {
-    role: "INITIATOR",
-    action: {
-      signingRequestId: initiatorPlan.session.pendingSigningRequest.signingRequestId,
-      signingDigest: initiatorPlan.session.pendingSigningRequest.signingDigest,
-      signerKeyId: "agent-a-key-1",
-      algorithm: "EdDSA",
-      signature: "p".repeat(32),
-    },
+  const proposalEvent = await validateHandshakeV3ActionSubmission(bothJoined, {
+    toolInput: toolInputForAction(bothJoined, initiatorPlan, "INITIATOR"),
+    expectedParty: agentParty("INITIATOR"),
+    verifier: acceptingVerifier,
+    now: "2026-08-29T20:00:01Z",
     eventCursor: "cursor_proposal_012345",
   });
   const proposalSubmitted = applyHandshakeV3ToolEvent(bothJoined, proposalEvent);
@@ -210,47 +253,227 @@ test("draft.3 stateful two-agent vector reaches verified safe stop without busin
   assert.equal(responderPlan.session.pendingSigningRequest.actionType, "ACCEPTANCE");
   assert.equal(planHandshakeV3NextAction(proposalSubmitted, "INITIATOR").nextAction, "WAIT");
 
-  const acceptanceSubmitted = applyHandshakeV3ToolEvent(proposalSubmitted, validateHandshakeV3ActionSubmission(proposalSubmitted, {
-    role: "RESPONDER",
-    action: {
-      signingRequestId: responderPlan.session.pendingSigningRequest.signingRequestId,
-      signingDigest: responderPlan.session.pendingSigningRequest.signingDigest,
-      signerKeyId: "agent-b-key-1",
-      algorithm: "EdDSA",
-      signature: "a".repeat(32),
-    },
+  const acceptanceSubmitted = applyHandshakeV3ToolEvent(proposalSubmitted, await validateHandshakeV3ActionSubmission(proposalSubmitted, {
+    toolInput: toolInputForAction(proposalSubmitted, responderPlan, "RESPONDER"),
+    expectedParty: agentParty("RESPONDER"),
+    verifier: acceptingVerifier,
+    now: "2026-08-29T20:00:02Z",
     eventCursor: "cursor_acceptance_012345",
   }));
   const checkpointPlan = planHandshakeV3NextAction(acceptanceSubmitted, "RESPONDER");
   assert.equal(checkpointPlan.nextAction, "SUBMIT_CHECKPOINT");
   assert.equal(checkpointPlan.session.pendingSigningRequest.actionType, "EVIDENCE");
 
-  const anchoring = applyHandshakeV3ToolEvent(acceptanceSubmitted, validateHandshakeV3CheckpointSubmission(acceptanceSubmitted, {
-    role: "RESPONDER",
-    checkpointType: "ACCEPTED",
-    signingRequestId: checkpointPlan.session.pendingSigningRequest.signingRequestId,
-    signingDigest: checkpointPlan.session.pendingSigningRequest.signingDigest,
-    signerKeyId: "agent-b-key-1",
-    algorithm: "EdDSA",
-    signature: "e".repeat(32),
+  const anchoring = applyHandshakeV3ToolEvent(acceptanceSubmitted, await validateHandshakeV3CheckpointSubmission(acceptanceSubmitted, {
+    toolInput: toolInputForCheckpoint(acceptanceSubmitted, checkpointPlan),
+    expectedParty: agentParty("RESPONDER"),
+    verifier: acceptingVerifier,
+    now: "2026-08-29T20:00:03Z",
     eventCursor: "cursor_checkpoint_012345",
   }));
   assert.equal(anchoring.state, "ANCHORING");
 
   const certificateIssued = applyHandshakeV3ToolEvent(anchoring, {
     type: "CLOCKCHAIN_CERTIFICATE_ISSUED",
+    expectedStateVersion: anchoring.stateVersion,
+    certificateDigest: digestD,
     eventCursor: "cursor_cert_012345",
   });
   assert.equal(planHandshakeV3NextAction(certificateIssued, "INITIATOR").nextAction, "WAIT");
 
   const continuationIssued = applyHandshakeV3ToolEvent(certificateIssued, {
     type: "CLOCKCHAIN_CONTINUATION_ISSUED",
+    expectedStateVersion: certificateIssued.stateVersion,
     certificateDigest: digestD,
     continuationDigest: digestE,
     eventCursor: "cursor_cont_012345",
   });
   assert.equal(planHandshakeV3NextAction(continuationIssued, "RESPONDER").nextAction, "FETCH_RESULT");
   assert.equal(continuationIssued.externalBusinessActionPerformed, false);
+});
+
+test("draft.3 reducer rejects stale, out-of-order, and mutated lifecycle events", async () => {
+  const base = createHandshakeV3Aggregate({
+    sessionId: "sess_guarded_012345",
+    policy: policy(),
+    expiresAt: "2026-08-29T21:00:00Z",
+    statement: "guarded reducer",
+  });
+  assert.throws(() => applyHandshakeV3ToolEvent(base, {
+    type: "CLOCKCHAIN_CONTINUATION_ISSUED",
+    expectedStateVersion: base.stateVersion,
+    certificateDigest: digestD,
+    continuationDigest: digestE,
+  }), { code: "TRANSITION_DENIED" });
+  assert.throws(() => applyHandshakeV3ToolEvent(base, {
+    type: "ACTION_SUBMITTED",
+    expectedStateVersion: base.stateVersion,
+    role: "INITIATOR",
+    actionType: "PROPOSAL",
+    signingDigest: digestD,
+  }), { code: "TRANSITION_DENIED" });
+  assert.throws(() => applyHandshakeV3ToolEvent(base, {
+    type: "INVITATION_ACCEPTED",
+    expectedStateVersion: 99,
+    role: "RESPONDER",
+    partyDigest: digestC,
+  }), { code: "STATE_VERSION_CONFLICT" });
+
+  const accepted = applyHandshakeV3ToolEvent(base, {
+    type: "INVITATION_ACCEPTED",
+    expectedStateVersion: base.stateVersion,
+    role: "RESPONDER",
+    partyDigest: digestC,
+  });
+  const initiatorJoined = applyHandshakeV3ToolEvent(accepted, {
+    type: "SESSION_JOINED",
+    expectedStateVersion: accepted.stateVersion,
+    role: "INITIATOR",
+    partyDigest: digestB,
+    eventCursor: "cursor.join.i.000",
+  });
+  const replayed = applyHandshakeV3ToolEvent(initiatorJoined, {
+    type: "SESSION_JOINED",
+    expectedStateVersion: initiatorJoined.stateVersion,
+    role: "INITIATOR",
+    partyDigest: digestB,
+    eventCursor: "cursor.join.i.000",
+  });
+  assert.equal(replayed.stateVersion, initiatorJoined.stateVersion);
+  assert.equal(replayed.eventChainDigest, initiatorJoined.eventChainDigest);
+  assert.deepEqual(replayed.joinedPartyDigests, initiatorJoined.joinedPartyDigests);
+
+  assert.throws(() => applyHandshakeV3ToolEvent(initiatorJoined, {
+    type: "SESSION_JOINED",
+    expectedStateVersion: initiatorJoined.stateVersion,
+    role: "INITIATOR",
+    partyDigest: digestD,
+  }), { code: "IDEMPOTENCY_CONFLICT" });
+  const bothJoined = applyHandshakeV3ToolEvent(initiatorJoined, {
+    type: "SESSION_JOINED",
+    expectedStateVersion: initiatorJoined.stateVersion,
+    role: "RESPONDER",
+    partyDigest: digestC,
+  });
+  assert.equal(bothJoined.state, "PARTIES_BOUND");
+  assert.throws(() => applyHandshakeV3ToolEvent(bothJoined, {
+    type: "SESSION_JOINED",
+    expectedStateVersion: bothJoined.stateVersion,
+    role: "RESPONDER",
+    partyDigest: digestC,
+  }), { code: "TRANSITION_DENIED" });
+  assert.throws(() => applyHandshakeV3ToolEvent(bothJoined, {
+    type: "CLOCKCHAIN_CERTIFICATE_ISSUED",
+    expectedStateVersion: bothJoined.stateVersion,
+    certificateDigest: digestD,
+  }), { code: "TRANSITION_DENIED" });
+
+  const plan = planHandshakeV3NextAction(bothJoined, "INITIATOR");
+  await assert.rejects(() => validateHandshakeV3ActionSubmission(base, {
+    toolInput: toolInputForAction(base, {
+      session: { pendingSigningRequest: plan.session.pendingSigningRequest },
+    }, "INITIATOR"),
+    expectedParty: agentParty("INITIATOR"),
+    verifier: acceptingVerifier,
+    now: "2026-08-29T20:00:01Z",
+  }), { code: "TRANSITION_DENIED" });
+});
+
+test("draft.3 submissions require exact tool input, fresh state, matching pending request, and verified signatures", async () => {
+  const base = createHandshakeV3Aggregate({
+    sessionId: "sess_submit_guard_012345",
+    policy: policy(),
+    expiresAt: "2026-08-29T21:00:00Z",
+    statement: "guarded submit",
+    createdAt: "2026-08-29T20:00:00Z",
+  });
+  const accepted = applyHandshakeV3ToolEvent(base, {
+    type: "INVITATION_ACCEPTED",
+    expectedStateVersion: base.stateVersion,
+    role: "RESPONDER",
+    partyDigest: digestC,
+  });
+  const initiatorJoined = applyHandshakeV3ToolEvent(accepted, {
+    type: "SESSION_JOINED",
+    expectedStateVersion: accepted.stateVersion,
+    role: "INITIATOR",
+    partyDigest: digestB,
+  });
+  const bothJoined = applyHandshakeV3ToolEvent(initiatorJoined, {
+    type: "SESSION_JOINED",
+    expectedStateVersion: initiatorJoined.stateVersion,
+    role: "RESPONDER",
+    partyDigest: digestC,
+  });
+  const initiatorPlan = planHandshakeV3NextAction(bothJoined, "INITIATOR");
+  const validProposalInput = toolInputForAction(bothJoined, initiatorPlan, "INITIATOR");
+
+  await assert.rejects(() => validateHandshakeV3ActionSubmission(bothJoined, {
+    toolInput: {
+      ...validProposalInput,
+      action: {
+        signingRequestId: validProposalInput.action.signingRequestId,
+        signingDigest: validProposalInput.action.signingDigest,
+        signerKeyId: validProposalInput.action.signerKeyId,
+      },
+    },
+    expectedParty: agentParty("INITIATOR"),
+    verifier: acceptingVerifier,
+    now: "2026-08-29T20:00:01Z",
+  }), { code: "SCHEMA_INVALID" });
+  await assert.rejects(() => validateHandshakeV3ActionSubmission(bothJoined, {
+    toolInput: { ...validProposalInput, expectedStateVersion: bothJoined.stateVersion - 1 },
+    expectedParty: agentParty("INITIATOR"),
+    verifier: acceptingVerifier,
+    now: "2026-08-29T20:00:01Z",
+  }), { code: "STATE_VERSION_CONFLICT" });
+  await assert.rejects(() => validateHandshakeV3ActionSubmission(bothJoined, {
+    toolInput: validProposalInput,
+    expectedParty: agentParty("INITIATOR"),
+    verifier: rejectingVerifier,
+    now: "2026-08-29T20:00:01Z",
+  }), { code: "SIGNATURE_INVALID" });
+  await assert.rejects(() => validateHandshakeV3ActionSubmission(bothJoined, {
+    toolInput: toolInputForAction(bothJoined, initiatorPlan, "RESPONDER"),
+    expectedParty: agentParty("RESPONDER"),
+    verifier: acceptingVerifier,
+    now: "2026-08-29T20:00:01Z",
+  }), { code: "ROLE_DENIED" });
+
+  const proposalEvent = await validateHandshakeV3ActionSubmission(bothJoined, {
+    toolInput: validProposalInput,
+    expectedParty: agentParty("INITIATOR"),
+    verifier: acceptingVerifier,
+    now: "2026-08-29T20:00:01Z",
+  });
+  assert.equal(proposalEvent.expectedStateVersion, bothJoined.stateVersion);
+  const proposalSubmitted = applyHandshakeV3ToolEvent(bothJoined, proposalEvent);
+  const responderPlan = planHandshakeV3NextAction(proposalSubmitted, "RESPONDER");
+  await assert.rejects(() => validateHandshakeV3ActionSubmission(proposalSubmitted, {
+    toolInput: { ...toolInputForAction(proposalSubmitted, responderPlan, "RESPONDER"), expectedStateVersion: proposalSubmitted.stateVersion - 1 },
+    expectedParty: agentParty("RESPONDER"),
+    verifier: acceptingVerifier,
+    now: "2026-08-29T20:00:02Z",
+  }), { code: "STATE_VERSION_CONFLICT" });
+  const acceptanceSubmitted = applyHandshakeV3ToolEvent(proposalSubmitted, await validateHandshakeV3ActionSubmission(proposalSubmitted, {
+    toolInput: toolInputForAction(proposalSubmitted, responderPlan, "RESPONDER"),
+    expectedParty: agentParty("RESPONDER"),
+    verifier: acceptingVerifier,
+    now: "2026-08-29T20:00:02Z",
+  }));
+  const checkpointPlan = planHandshakeV3NextAction(acceptanceSubmitted, "RESPONDER");
+  await assert.rejects(() => validateHandshakeV3CheckpointSubmission(acceptanceSubmitted, {
+    toolInput: { ...toolInputForCheckpoint(acceptanceSubmitted, checkpointPlan), expectedStateVersion: acceptanceSubmitted.stateVersion - 1 },
+    expectedParty: agentParty("RESPONDER"),
+    verifier: acceptingVerifier,
+    now: "2026-08-29T20:00:03Z",
+  }), { code: "STATE_VERSION_CONFLICT" });
+  await assert.rejects(() => validateHandshakeV3CheckpointSubmission(acceptanceSubmitted, {
+    toolInput: toolInputForCheckpoint(acceptanceSubmitted, checkpointPlan),
+    expectedParty: agentParty("RESPONDER"),
+    verifier: rejectingVerifier,
+    now: "2026-08-29T20:00:03Z",
+  }), { code: "SIGNATURE_INVALID" });
 });
 
 test("recovery returns exact roleGrant/session/result shape and does not mutate session", () => {

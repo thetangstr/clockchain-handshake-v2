@@ -43,8 +43,6 @@ export const HANDSHAKE_V3_NEXT_ACTIONS = Object.freeze([
   "SIGN_AND_SUBMIT",
   "SUBMIT_CHECKPOINT",
   "FETCH_RESULT",
-  "VERIFY_RESULT",
-  "STOP_AFTER_VERIFICATION",
   "TERMINAL",
 ]);
 
@@ -167,7 +165,7 @@ export const HANDSHAKE_V3_CONTRACT_PROVENANCE = Object.freeze({
   approvedProtocolSourceCommit: "d2cdedb705cf6855657381a908e47f71df959145",
   contractSchemaPath: "packages/protocol/schemas/standalone-handshake-v3-contract.schema.json",
   contractSchemaOriginalPath: "docs/superpowers/specs/standalone-handshake-v3-contract.schema.json",
-  contractSchemaSha256: "335bc187c2f76de83f6d71df2cb6db7a39937693be0d9c814bec7d60ed378d81",
+  contractSchemaSha256: "2b2cde4d6bd0825ee3c681f041163ae6c2f2813ae6979fcd423beeb742d2c5bf",
   contractFixturesPath: "packages/protocol/fixtures/standalone-handshake-v3-contract-fixtures.json",
   contractFixturesOriginalPath: "docs/superpowers/specs/standalone-handshake-v3-contract-fixtures.json",
   contractFixturesSha256: "4a15a47a9183730dbc0b79641dfa984d7b628866078bbbb3686d252fb10f2b13",

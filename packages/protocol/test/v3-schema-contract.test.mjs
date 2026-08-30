@@ -256,8 +256,6 @@ test("constants mirror the normative schema enums exactly", () => {
     "SIGN_AND_SUBMIT",
     "SUBMIT_CHECKPOINT",
     "FETCH_RESULT",
-    "VERIFY_RESULT",
-    "STOP_AFTER_VERIFICATION",
     "TERMINAL",
   ]);
   assert.deepEqual(HANDSHAKE_V3_INITIATOR_REQUIRED_TOOLS, [
@@ -602,26 +600,27 @@ test("invitation list supports read-only token inspection with immutable policy 
 });
 
 test("session next exposes an exhaustive machine-readable nextAction", () => {
-  assert.equal(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
+  const reached = new Set();
+  reached.add(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
     state: "CLAIMED",
     nextAction: "JOIN_SESSION",
     waitingOn: "SELF",
     requiredTool: "agent_handshake_session_join",
     retryAfterMs: 0,
-  })).nextAction, "JOIN_SESSION");
-  assert.equal(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
+  })).nextAction);
+  reached.add(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
     state: "PARTIES_BOUND",
     nextAction: "SIGN_AND_SUBMIT",
     pendingSigningRequest: signingRequestSample("PROPOSAL", "INITIATOR", 1),
     retryAfterMs: 0,
-  })).nextAction, "SIGN_AND_SUBMIT");
-  assert.equal(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
+  })).nextAction);
+  reached.add(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
     state: "PROPOSAL_PENDING",
     nextAction: "SIGN_AND_SUBMIT",
     pendingSigningRequest: signingRequestSample("ACCEPTANCE", "RESPONDER", 1),
     retryAfterMs: 0,
-  })).nextAction, "SIGN_AND_SUBMIT");
-  assert.equal(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
+  })).nextAction);
+  reached.add(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
     state: "PROPOSAL_PENDING",
     nextAction: "WAIT",
     waitingOn: "COUNTERPARTY",
@@ -629,37 +628,38 @@ test("session next exposes an exhaustive machine-readable nextAction", () => {
     changed: true,
     events: [sampleForSchema(schema.$defs.callbackEvent)],
     retryAfterMs: 1000,
-  })).nextAction, "WAIT");
-  assert.equal(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
+  })).nextAction);
+  reached.add(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
     state: "ACCEPTANCE_PENDING",
     nextAction: "SUBMIT_CHECKPOINT",
     pendingSigningRequest: signingRequestSample("EVIDENCE", "RESPONDER", 1),
     retryAfterMs: 0,
-  })).nextAction, "SUBMIT_CHECKPOINT");
-  assert.equal(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
+  })).nextAction);
+  reached.add(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
     state: "CERTIFICATE_ISSUED",
     nextAction: "WAIT",
     waitingOn: "CLOCKCHAIN",
     requiredTool: "agent_handshake_session_get_result",
     retryAfterMs: 1000,
-  })).nextAction, "WAIT");
-  assert.equal(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
+  })).nextAction);
+  reached.add(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
     state: "CONTINUATION_ISSUED",
     nextAction: "FETCH_RESULT",
     requiredTool: "agent_handshake_session_get_result",
     retryAfterMs: 0,
-  })).nextAction, "FETCH_RESULT");
-  assert.equal(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
+  })).nextAction);
+  reached.add(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
     state: "COMPLETED",
     nextAction: "FETCH_RESULT",
     requiredTool: "agent_handshake_session_get_result",
     retryAfterMs: 0,
-  })).nextAction, "FETCH_RESULT");
-  assert.equal(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
+  })).nextAction);
+  reached.add(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
     state: "CANCELLED",
     nextAction: "TERMINAL",
     retryAfterMs: 0,
-  })).nextAction, "TERMINAL");
+  })).nextAction);
+  assert.deepEqual([...reached].sort(), [...HANDSHAKE_V3_NEXT_ACTIONS].sort());
 
   assert.throws(() => validateHandshakeV3ToolResult("agent_handshake_session_next", {
     changed: true,

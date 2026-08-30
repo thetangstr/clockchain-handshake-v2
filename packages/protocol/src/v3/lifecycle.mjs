@@ -6,8 +6,8 @@ import {
   fail,
 } from "./constants.mjs";
 import { handshakeV3Digest } from "./canonical.mjs";
-import { createHandshakeV3SigningRequest } from "./signing.mjs";
-import { validateHandshakeV3Session, validateHandshakeV3ToolResult } from "./validators.mjs";
+import { createHandshakeV3SigningRequest, verifyHandshakeV3SignedAction } from "./signing.mjs";
+import { validateHandshakeV3Session, validateHandshakeV3ToolInput, validateHandshakeV3ToolResult } from "./validators.mjs";
 
 const HAPPY_PATH = Object.freeze({
   INVITED: { CLAIM_INVITATION: ["RESPONDER", "CLAIMED"] },
@@ -148,7 +148,7 @@ function normalizeAggregate(input) {
   };
   aggregate.policyDigest ??= createHandshakeV3PolicyDigest(aggregate.policy);
   aggregate.statementDigest ??= createHandshakeV3StatementDigest(aggregate.statement);
-  aggregate.eventCursor ??= "cursor.initial";
+  aggregate.eventCursor ??= "cursor.initial.000";
   aggregate.createdAt ??= aggregate.updatedAt ?? aggregate.expiresAt;
   aggregate.updatedAt ??= aggregate.createdAt;
   aggregate.eventChainDigest = aggregateEventDigest(aggregate);
@@ -269,14 +269,48 @@ function advanceAggregate(input, patch) {
   });
 }
 
+function assertExpectedStateVersion(aggregate, expectedStateVersion) {
+  if (!Number.isInteger(expectedStateVersion) || expectedStateVersion < 0) fail("SCHEMA_INVALID");
+  if (expectedStateVersion !== aggregate.stateVersion) fail("STATE_VERSION_CONFLICT");
+}
+
+function assertEventState(aggregate, states) {
+  if (!states.includes(aggregate.state)) fail("TRANSITION_DENIED");
+}
+
+function assertDigest(value) {
+  if (typeof value !== "string" || !/^sha256:[0-9a-f]{64}$/.test(value)) fail("SCHEMA_INVALID");
+}
+
+function assertPendingRequest(aggregate, { role, actionType }) {
+  const request = aggregate.pendingSigningRequest;
+  if (!request) fail("TRANSITION_DENIED");
+  if (request.role !== role) fail("ROLE_DENIED");
+  if (request.actionType !== actionType) fail("TRANSITION_DENIED");
+  if (request.sessionId !== aggregate.sessionId || request.stateVersion !== aggregate.stateVersion) fail("STATE_VERSION_CONFLICT");
+  if (request.policyDigest !== aggregate.policyDigest || request.statementDigest !== aggregate.statementDigest) fail("POLICY_DIGEST_MISMATCH");
+  return request;
+}
+
 export function applyHandshakeV3ToolEvent(aggregateInput, event) {
   const aggregate = normalizeAggregate(aggregateInput);
   if (!event?.type) fail("SCHEMA_INVALID");
+  assertExpectedStateVersion(aggregate, event.expectedStateVersion);
   if (event.type === "INVITATION_ACCEPTED") {
+    assertEventState(aggregate, ["INVITED"]);
+    if (event.role !== "RESPONDER") fail("ROLE_DENIED");
+    if (event.partyDigest !== undefined) assertDigest(event.partyDigest);
     return advanceAggregate(aggregate, { state: "CLAIMED", eventCursor: event.eventCursor ?? aggregate.eventCursor });
   }
   if (event.type === "SESSION_JOINED") {
     if (!["INITIATOR", "RESPONDER"].includes(event.role) || !event.partyDigest) fail("SCHEMA_INVALID");
+    assertDigest(event.partyDigest);
+    assertEventState(aggregate, ["INVITED", "CLAIMED"]);
+    if (event.role === "RESPONDER" && aggregate.state !== "CLAIMED") fail("TRANSITION_DENIED");
+    if (aggregate.joinedPartyDigests[event.role]) {
+      if (aggregate.joinedPartyDigests[event.role] === event.partyDigest) return aggregate;
+      fail("IDEMPOTENCY_CONFLICT");
+    }
     const joinedPartyDigests = { ...aggregate.joinedPartyDigests, [event.role]: event.partyDigest };
     if (joinedPartyDigests.INITIATOR && joinedPartyDigests.RESPONDER) {
       const provisional = advanceAggregate(aggregate, {
@@ -292,6 +326,18 @@ export function applyHandshakeV3ToolEvent(aggregateInput, event) {
     return advanceAggregate(aggregate, { joinedPartyDigests, eventCursor: event.eventCursor ?? aggregate.eventCursor });
   }
   if (event.type === "ACTION_SUBMITTED") {
+    if (!["INITIATOR", "RESPONDER"].includes(event.role)) fail("SCHEMA_INVALID");
+    assertDigest(event.signingDigest);
+    const required = event.actionType === "PROPOSAL"
+      ? { state: "PARTIES_BOUND", role: "INITIATOR" }
+      : event.actionType === "ACCEPTANCE"
+        ? { state: "PROPOSAL_PENDING", role: "RESPONDER" }
+        : null;
+    if (!required) fail("TRANSITION_DENIED");
+    assertEventState(aggregate, [required.state]);
+    const request = assertPendingRequest(aggregate, { role: required.role, actionType: event.actionType });
+    if (event.role !== request.role) fail("ROLE_DENIED");
+    if (event.signingDigest !== request.signingDigest) fail("SIGNATURE_INVALID");
     const submittedActionDigests = [...aggregate.submittedActionDigests, event.signingDigest];
     const state = event.actionType === "PROPOSAL" ? "PROPOSAL_PENDING" : "ACCEPTANCE_PENDING";
     const provisional = advanceAggregate(aggregate, {
@@ -310,6 +356,11 @@ export function applyHandshakeV3ToolEvent(aggregateInput, event) {
     });
   }
   if (event.type === "CHECKPOINT_SUBMITTED") {
+    if (event.role !== "RESPONDER") fail("ROLE_DENIED");
+    assertDigest(event.signingDigest);
+    assertEventState(aggregate, ["ACCEPTANCE_PENDING"]);
+    const request = assertPendingRequest(aggregate, { role: "RESPONDER", actionType: "EVIDENCE" });
+    if (event.signingDigest !== request.signingDigest) fail("SIGNATURE_INVALID");
     return advanceAggregate(aggregate, {
       state: "ANCHORING",
       submittedActionDigests: [...aggregate.submittedActionDigests, event.signingDigest],
@@ -318,6 +369,8 @@ export function applyHandshakeV3ToolEvent(aggregateInput, event) {
     });
   }
   if (event.type === "CLOCKCHAIN_CERTIFICATE_ISSUED") {
+    assertEventState(aggregate, ["ANCHORING"]);
+    assertDigest(event.certificateDigest);
     return advanceAggregate(aggregate, {
       state: "CERTIFICATE_ISSUED",
       certificateDigest: event.certificateDigest ?? aggregate.certificateDigest,
@@ -325,6 +378,10 @@ export function applyHandshakeV3ToolEvent(aggregateInput, event) {
     });
   }
   if (event.type === "CLOCKCHAIN_CONTINUATION_ISSUED") {
+    assertEventState(aggregate, ["CERTIFICATE_ISSUED"]);
+    assertDigest(event.certificateDigest);
+    assertDigest(event.continuationDigest);
+    if (aggregate.certificateDigest && event.certificateDigest !== aggregate.certificateDigest) fail("CLOCKCHAIN_RECEIPT_INVALID");
     return advanceAggregate(aggregate, {
       state: "CONTINUATION_ISSUED",
       certificateDigest: event.certificateDigest ?? aggregate.certificateDigest,
@@ -335,33 +392,70 @@ export function applyHandshakeV3ToolEvent(aggregateInput, event) {
   fail("SCHEMA_INVALID");
 }
 
-export function validateHandshakeV3ActionSubmission(aggregateInput, input) {
+function submissionNow(input, aggregate) {
+  return input.now ?? aggregate.updatedAt ?? aggregate.createdAt ?? aggregate.expiresAt;
+}
+
+export async function validateHandshakeV3ActionSubmission(aggregateInput, input) {
   const aggregate = normalizeAggregate(aggregateInput);
+  const { input: toolInput } = validateHandshakeV3ToolInput("agent_handshake_session_submit", input?.toolInput);
+  if (toolInput.sessionId !== aggregate.sessionId) fail("TRANSITION_DENIED");
+  assertExpectedStateVersion(aggregate, toolInput.expectedStateVersion);
   const request = aggregate.pendingSigningRequest;
-  if (!request || !input?.action || input.role !== request.role) fail("ROLE_DENIED");
+  if (!request) fail("TRANSITION_DENIED");
   if (request.actionType !== "PROPOSAL" && request.actionType !== "ACCEPTANCE") fail("TRANSITION_DENIED");
-  if (
-    input.action.signingRequestId !== request.signingRequestId ||
-    input.action.signingDigest !== request.signingDigest
-  ) fail("SIGNATURE_INVALID");
+  const expectedState = request.actionType === "PROPOSAL" ? "PARTIES_BOUND" : "PROPOSAL_PENDING";
+  assertEventState(aggregate, [expectedState]);
+  await verifyHandshakeV3SignedAction({
+    request,
+    action: toolInput.action,
+    expectedParty: input.expectedParty,
+    expectedRole: request.role,
+    expectedSigningRequestId: request.signingRequestId,
+    expectedSigningDigest: request.signingDigest,
+    now: submissionNow(input, aggregate),
+    verifier: input.verifier,
+  });
   return Object.freeze({
     type: "ACTION_SUBMITTED",
-    role: input.role,
+    expectedStateVersion: aggregate.stateVersion,
+    role: request.role,
     actionType: request.actionType,
     signingDigest: request.signingDigest,
     eventCursor: input.eventCursor ?? aggregate.eventCursor,
   });
 }
 
-export function validateHandshakeV3CheckpointSubmission(aggregateInput, input) {
+export async function validateHandshakeV3CheckpointSubmission(aggregateInput, input) {
   const aggregate = normalizeAggregate(aggregateInput);
+  const { input: toolInput } = validateHandshakeV3ToolInput("agent_handshake_session_submit_checkpoint", input?.toolInput);
+  if (toolInput.sessionId !== aggregate.sessionId) fail("TRANSITION_DENIED");
+  assertExpectedStateVersion(aggregate, toolInput.expectedStateVersion);
   const request = aggregate.pendingSigningRequest;
-  if (!request || request.actionType !== "EVIDENCE" || input?.role !== request.role) fail("ROLE_DENIED");
-  if (input.checkpointType !== "ACCEPTED") fail("TRANSITION_DENIED");
-  if (input.signingRequestId !== request.signingRequestId || input.signingDigest !== request.signingDigest) fail("SIGNATURE_INVALID");
+  if (!request) fail("TRANSITION_DENIED");
+  if (request.actionType !== "EVIDENCE" || request.role !== "RESPONDER") fail("ROLE_DENIED");
+  assertEventState(aggregate, ["ACCEPTANCE_PENDING"]);
+  if (toolInput.checkpointType !== "ACCEPTED") fail("TRANSITION_DENIED");
+  await verifyHandshakeV3SignedAction({
+    request,
+    action: {
+      signingRequestId: toolInput.signingRequestId,
+      signingDigest: toolInput.signingDigest,
+      signerKeyId: toolInput.signerKeyId,
+      algorithm: toolInput.algorithm,
+      signature: toolInput.signature,
+    },
+    expectedParty: input.expectedParty,
+    expectedRole: request.role,
+    expectedSigningRequestId: request.signingRequestId,
+    expectedSigningDigest: request.signingDigest,
+    now: submissionNow(input, aggregate),
+    verifier: input.verifier,
+  });
   return Object.freeze({
     type: "CHECKPOINT_SUBMITTED",
-    role: input.role,
+    expectedStateVersion: aggregate.stateVersion,
+    role: request.role,
     signingDigest: request.signingDigest,
     eventCursor: input.eventCursor ?? aggregate.eventCursor,
   });
