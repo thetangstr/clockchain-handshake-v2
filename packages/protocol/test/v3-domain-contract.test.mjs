@@ -98,6 +98,23 @@ function toolInputForCheckpoint(aggregate, plan, signature = "e".repeat(32)) {
 const acceptingVerifier = async () => true;
 const rejectingVerifier = async () => false;
 
+function throwingGetterRecord(key = "type") {
+  return Object.defineProperty({}, key, {
+    enumerable: true,
+    get() {
+      throw new Error("secret raw getter boom");
+    },
+  });
+}
+
+function throwingOwnKeysProxy() {
+  return new Proxy({}, {
+    ownKeys() {
+      throw new Error("secret raw proxy boom");
+    },
+  });
+}
+
 function session(state = "INVITED", stateVersion = 0) {
   return {
     sessionId: "sess_0123456789abcdef",
@@ -433,6 +450,29 @@ test("draft.3 submissions require exact tool input, fresh state, matching pendin
     verifier: rejectingVerifier,
     now: "2026-08-29T20:00:01Z",
   }), { code: "SIGNATURE_INVALID" });
+  let foreignVerifierCalls = 0;
+  await assert.rejects(() => validateHandshakeV3ActionSubmission(bothJoined, {
+    toolInput: validProposalInput,
+    expectedParty: { ...agentParty("INITIATOR"), identityDigest: digestF },
+    verifier: async () => {
+      foreignVerifierCalls += 1;
+      return true;
+    },
+    now: "2026-08-29T20:00:01Z",
+  }), { code: "PRINCIPAL_DENIED" });
+  await assert.rejects(() => validateHandshakeV3ActionSubmission({
+    ...bothJoined,
+    joinedPartyDigests: { ...bothJoined.joinedPartyDigests, INITIATOR: null },
+  }, {
+    toolInput: validProposalInput,
+    expectedParty: agentParty("INITIATOR"),
+    verifier: async () => {
+      foreignVerifierCalls += 1;
+      return true;
+    },
+    now: "2026-08-29T20:00:01Z",
+  }), { code: "PRINCIPAL_DENIED" });
+  assert.equal(foreignVerifierCalls, 0);
   await assert.rejects(() => validateHandshakeV3ActionSubmission(bothJoined, {
     toolInput: toolInputForAction(bothJoined, initiatorPlan, "RESPONDER"),
     expectedParty: agentParty("RESPONDER"),
@@ -450,6 +490,12 @@ test("draft.3 submissions require exact tool input, fresh state, matching pendin
   const proposalSubmitted = applyHandshakeV3ToolEvent(bothJoined, proposalEvent);
   const responderPlan = planHandshakeV3NextAction(proposalSubmitted, "RESPONDER");
   await assert.rejects(() => validateHandshakeV3ActionSubmission(proposalSubmitted, {
+    toolInput: toolInputForAction(proposalSubmitted, responderPlan, "RESPONDER"),
+    expectedParty: { ...agentParty("RESPONDER"), identityDigest: digestF },
+    verifier: acceptingVerifier,
+    now: "2026-08-29T20:00:02Z",
+  }), { code: "PRINCIPAL_DENIED" });
+  await assert.rejects(() => validateHandshakeV3ActionSubmission(proposalSubmitted, {
     toolInput: { ...toolInputForAction(proposalSubmitted, responderPlan, "RESPONDER"), expectedStateVersion: proposalSubmitted.stateVersion - 1 },
     expectedParty: agentParty("RESPONDER"),
     verifier: acceptingVerifier,
@@ -463,6 +509,12 @@ test("draft.3 submissions require exact tool input, fresh state, matching pendin
   }));
   const checkpointPlan = planHandshakeV3NextAction(acceptanceSubmitted, "RESPONDER");
   await assert.rejects(() => validateHandshakeV3CheckpointSubmission(acceptanceSubmitted, {
+    toolInput: toolInputForCheckpoint(acceptanceSubmitted, checkpointPlan),
+    expectedParty: { ...agentParty("RESPONDER"), identityDigest: digestF },
+    verifier: acceptingVerifier,
+    now: "2026-08-29T20:00:03Z",
+  }), { code: "PRINCIPAL_DENIED" });
+  await assert.rejects(() => validateHandshakeV3CheckpointSubmission(acceptanceSubmitted, {
     toolInput: { ...toolInputForCheckpoint(acceptanceSubmitted, checkpointPlan), expectedStateVersion: acceptanceSubmitted.stateVersion - 1 },
     expectedParty: agentParty("RESPONDER"),
     verifier: acceptingVerifier,
@@ -474,6 +526,89 @@ test("draft.3 submissions require exact tool input, fresh state, matching pendin
     verifier: rejectingVerifier,
     now: "2026-08-29T20:00:03Z",
   }), { code: "SIGNATURE_INVALID" });
+});
+
+test("draft.3 lifecycle helpers normalize hostile wrapper traps before callbacks", async () => {
+  const base = createHandshakeV3Aggregate({
+    sessionId: "sess_proxy_guard_012345",
+    policy: policy(),
+    expiresAt: "2026-08-29T21:00:00Z",
+    statement: "proxy guard",
+    createdAt: "2026-08-29T20:00:00Z",
+  });
+  await assertRejectsWithoutLeak(
+    () => applyHandshakeV3ToolEvent(base, throwingGetterRecord("type")),
+    "SCHEMA_INVALID",
+  );
+  await assertRejectsWithoutLeak(
+    () => applyHandshakeV3ToolEvent(base, throwingOwnKeysProxy()),
+    "SCHEMA_INVALID",
+  );
+
+  const accepted = applyHandshakeV3ToolEvent(base, {
+    type: "INVITATION_ACCEPTED",
+    expectedStateVersion: base.stateVersion,
+    role: "RESPONDER",
+    partyDigest: digestC,
+  });
+  const initiatorJoined = applyHandshakeV3ToolEvent(accepted, {
+    type: "SESSION_JOINED",
+    expectedStateVersion: accepted.stateVersion,
+    role: "INITIATOR",
+    partyDigest: digestB,
+  });
+  const bothJoined = applyHandshakeV3ToolEvent(initiatorJoined, {
+    type: "SESSION_JOINED",
+    expectedStateVersion: initiatorJoined.stateVersion,
+    role: "RESPONDER",
+    partyDigest: digestC,
+  });
+  let callbackCount = 0;
+  const verifier = async () => {
+    callbackCount += 1;
+    return true;
+  };
+  await assertRejectsWithoutLeak(
+    () => validateHandshakeV3ActionSubmission(bothJoined, throwingGetterRecord("toolInput")),
+    "SCHEMA_INVALID",
+  );
+  await assertRejectsWithoutLeak(
+    () => validateHandshakeV3ActionSubmission(bothJoined, throwingOwnKeysProxy()),
+    "SCHEMA_INVALID",
+  );
+  await assertRejectsWithoutLeak(
+    () => validateHandshakeV3ActionSubmission(bothJoined, {
+      toolInput: toolInputForAction(bothJoined, planHandshakeV3NextAction(bothJoined, "INITIATOR"), "INITIATOR"),
+      expectedParty: agentParty("INITIATOR"),
+      get verifier() {
+        throw new Error("secret raw verifier getter boom");
+      },
+      now: "2026-08-29T20:00:01Z",
+    }),
+    "SCHEMA_INVALID",
+  );
+
+  const proposalSubmitted = applyHandshakeV3ToolEvent(bothJoined, await validateHandshakeV3ActionSubmission(bothJoined, {
+    toolInput: toolInputForAction(bothJoined, planHandshakeV3NextAction(bothJoined, "INITIATOR"), "INITIATOR"),
+    expectedParty: agentParty("INITIATOR"),
+    verifier,
+    now: "2026-08-29T20:00:01Z",
+  }));
+  const acceptanceSubmitted = applyHandshakeV3ToolEvent(proposalSubmitted, await validateHandshakeV3ActionSubmission(proposalSubmitted, {
+    toolInput: toolInputForAction(proposalSubmitted, planHandshakeV3NextAction(proposalSubmitted, "RESPONDER"), "RESPONDER"),
+    expectedParty: agentParty("RESPONDER"),
+    verifier,
+    now: "2026-08-29T20:00:02Z",
+  }));
+  await assertRejectsWithoutLeak(
+    () => validateHandshakeV3CheckpointSubmission(acceptanceSubmitted, throwingGetterRecord("toolInput")),
+    "SCHEMA_INVALID",
+  );
+  await assertRejectsWithoutLeak(
+    () => validateHandshakeV3CheckpointSubmission(acceptanceSubmitted, throwingOwnKeysProxy()),
+    "SCHEMA_INVALID",
+  );
+  assert.equal(callbackCount, 2);
 });
 
 test("recovery returns exact roleGrant/session/result shape and does not mutate session", () => {
