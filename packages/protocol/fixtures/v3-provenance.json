@@ -3,10 +3,10 @@
   "approvedProtocolSourceCommit": "d2cdedb705cf6855657381a908e47f71df959145",
   "contractSchemaPath": "packages/protocol/schemas/standalone-handshake-v3-contract.schema.json",
   "contractSchemaOriginalPath": "docs/superpowers/specs/standalone-handshake-v3-contract.schema.json",
-  "contractSchemaSha256": "c8ecc8a28e4209883c525a1368226ea662612906789d817d0f35d370e52981b3",
+  "contractSchemaSha256": "e9d5767c3a7c103105e0637f458e50250ef509bca534eee7215193267a74e29e",
   "contractFixturesPath": "packages/protocol/fixtures/standalone-handshake-v3-contract-fixtures.json",
   "contractFixturesOriginalPath": "docs/superpowers/specs/standalone-handshake-v3-contract-fixtures.json",
-  "contractFixturesSha256": "440d97724879d0724b8cda09035f2bdf917ccb7591df480e849698beaa504222",
+  "contractFixturesSha256": "3112ff459554765a699c168dc936ea15ada3d39429de0590c464c54c269642bf",
   "packageName": "@clockchain/handshake-protocol",
   "runtimeBoundary": "no MCP server, HTTP gateway, OAuth/JWKS validator, tenant store, persistence, Supervisor, Agent Contract delivery, or demo controller"
 }

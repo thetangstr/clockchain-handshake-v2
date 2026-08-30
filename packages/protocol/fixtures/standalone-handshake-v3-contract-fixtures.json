@@ -1,6 +1,6 @@
 {
   "contract": "standalone-handshake-v3-contract.schema.json",
-  "schemaVersion": "3.0.0-draft.1",
+  "schemaVersion": "3.0.0-draft.2",
   "knownGood": [
     {
       "id": "role-scoped-next",
@@ -52,7 +52,7 @@
       "schemaRef": "#/responseEnvelope",
       "value": {
         "protocolVersion": "3.0",
-        "schemaVersion": "3.0.0-draft.1",
+        "schemaVersion": "3.0.0-draft.2",
         "requestId": "01234567-89ab-4def-8123-456789abcdef",
         "serverTime": "2026-08-29T20:00:00Z",
         "error": {
@@ -68,9 +68,241 @@
           "mutated": false
         }
       }
+    },
+    {
+      "id": "creator-invitation-create-reachability",
+      "resultTool": "agent_handshake_invitation_create",
+      "value": {
+        "invitationId": "inv_creator_0123456789",
+        "invitationToken": "tok_creator_0123456789",
+        "sessionId": "sess_creator_0123456789",
+        "roleGrant": {
+          "roleGrantId": "grant_creator_0123456789",
+          "sessionId": "sess_creator_0123456789",
+          "role": "INITIATOR",
+          "principalDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "proofKeyThumbprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "allowedTools": [
+            "agent_handshake_session_join",
+            "agent_handshake_session_next",
+            "agent_handshake_session_submit_checkpoint",
+            "agent_handshake_session_submit",
+            "agent_handshake_session_cancel",
+            "agent_handshake_session_resume"
+          ],
+          "expiresAt": "2026-08-29T21:00:00Z"
+        },
+        "tenantRelation": {
+          "initiatorTenantDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "responderBinding": "FIRST_AUTHENTICATED_CLAIM"
+        },
+        "session": {
+          "sessionId": "sess_creator_0123456789",
+          "role": "INITIATOR",
+          "state": "INVITED",
+          "stateVersion": 0,
+          "policy": {
+            "scope": ["agent-contract:a2a-after-handshake"],
+            "constraints": { "businessAction": "none" },
+            "externalBusinessActionsAllowed": false,
+            "expiresAt": "2026-08-29T21:00:00Z"
+          },
+          "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expiresAt": "2026-08-29T21:00:00Z",
+          "allowedTransitions": ["CLAIM_INVITATION", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"],
+          "eventCursor": "cursor_creator_0123456789"
+        },
+        "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "statementDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "ISSUED",
+        "expiresAt": "2026-08-29T21:00:00Z"
+      }
+    },
+    {
+      "id": "read-only-invitation-token-inspection",
+      "tool": "agent_handshake_invitation_list",
+      "input": {
+        "invitationToken": "tok_creator_0123456789"
+      }
+    },
+    {
+      "id": "expanded-invitation-inspection-record",
+      "resultTool": "agent_handshake_invitation_list",
+      "value": {
+        "invitations": [
+          {
+            "invitationId": "inv_creator_0123456789",
+            "invitationToken": "tok_creator_0123456789",
+            "state": "ISSUED",
+            "policy": {
+              "scope": ["agent-contract:a2a-after-handshake"],
+              "constraints": { "businessAction": "none" },
+              "externalBusinessActionsAllowed": false,
+              "expiresAt": "2026-08-29T21:00:00Z"
+            },
+            "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "statementDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "responderRole": "RESPONDER",
+            "responderBinding": "FIRST_AUTHENTICATED_CLAIM",
+            "expiresAt": "2026-08-29T21:00:00Z",
+            "protocolVersion": "3.0",
+            "schemaVersion": "3.0.0-draft.2",
+            "trustRootIds": ["root-2026-08"]
+          }
+        ]
+      }
+    },
+    {
+      "id": "next-action-sign-and-submit",
+      "resultTool": "agent_handshake_session_next",
+      "value": {
+        "changed": true,
+        "nextAction": "SIGN_AND_SUBMIT",
+        "session": {
+          "sessionId": "sess_creator_0123456789",
+          "role": "INITIATOR",
+          "state": "PROPOSAL_PENDING",
+          "stateVersion": 4,
+          "policy": {
+            "scope": ["agent-contract:a2a-after-handshake"],
+            "constraints": { "businessAction": "none" },
+            "externalBusinessActionsAllowed": false,
+            "expiresAt": "2026-08-29T21:00:00Z"
+          },
+          "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expiresAt": "2026-08-29T21:00:00Z",
+          "allowedTransitions": ["SUBMIT_ACCEPTANCE", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"],
+          "pendingSigningRequest": {
+            "signingRequestId": "signreq_0123456789abcdef",
+            "actionType": "PROPOSAL",
+            "domainSeparator": "CLOCKCHAIN_AGENT_HANDSHAKE_V3",
+            "canonicalization": "RFC8785",
+            "payloadSchemaId": "https://schemas.clockchain.network/agent-handshake/v3/signing-payload.schema.json",
+            "sessionId": "sess_creator_0123456789",
+            "stateVersion": 4,
+            "role": "INITIATOR",
+            "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "statementDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "nonce": "nonce_0123456789abcdef",
+            "issuedAt": "2026-08-29T20:00:00Z",
+            "expiresAt": "2026-08-29T20:05:00Z",
+            "canonicalBytesBase64Url": "ZXhhY3QtY2Fub25pY2FsLWJ5dGVz",
+            "signingDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          },
+          "eventCursor": "cursor_creator_0123456789"
+        },
+        "events": [],
+        "retryAfterMs": 0
+      }
     }
   ],
   "knownBad": [
+    {
+      "id": "creator-grant-omitted",
+      "resultTool": "agent_handshake_invitation_create",
+      "value": {
+        "invitationId": "inv_creator_0123456789",
+        "invitationToken": "tok_creator_0123456789",
+        "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "statementDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "ISSUED",
+        "expiresAt": "2026-08-29T21:00:00Z"
+      },
+      "expectedError": "SCHEMA_INVALID",
+      "reason": "invitation creation must return sessionId, initiator roleGrant, tenantRelation, and creator-view session"
+    },
+    {
+      "id": "preaccept-inspection-claim-marker",
+      "resultTool": "agent_handshake_invitation_list",
+      "value": {
+        "invitations": [
+          {
+            "invitationId": "inv_creator_0123456789",
+            "state": "CLAIMED",
+            "policy": {
+              "scope": ["agent-contract:a2a-after-handshake"],
+              "constraints": { "businessAction": "none" },
+              "externalBusinessActionsAllowed": false,
+              "expiresAt": "2026-08-29T21:00:00Z"
+            },
+            "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "statementDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "responderRole": "RESPONDER",
+            "responderBinding": "FIRST_AUTHENTICATED_CLAIM",
+            "expiresAt": "2026-08-29T21:00:00Z",
+            "protocolVersion": "3.0",
+            "schemaVersion": "3.0.0-draft.2",
+            "trustRootIds": ["root-2026-08"],
+            "claimedByInspection": true
+          }
+        ]
+      },
+      "expectedError": "SCHEMA_INVALID",
+      "reason": "invitation token inspection is read-only and cannot claim or expose mutation markers"
+    },
+    {
+      "id": "cancel-without-role-grant",
+      "tool": "agent_handshake_session_cancel",
+      "input": {
+        "sessionId": "sess_0123456789abcdef",
+        "reasonCode": "AGENT_CANCELLED",
+        "idempotencyKey": "idem.cancel.0123456789",
+        "expectedStateVersion": 4
+      },
+      "expectedError": "SCHEMA_INVALID",
+      "reason": "cancel is role-bound and requires roleGrantId"
+    },
+    {
+      "id": "next-without-next-action",
+      "resultTool": "agent_handshake_session_next",
+      "value": {
+        "changed": true,
+        "session": {
+          "sessionId": "sess_creator_0123456789",
+          "role": "INITIATOR",
+          "state": "PROPOSAL_PENDING",
+          "stateVersion": 4,
+          "policy": {
+            "scope": ["agent-contract:a2a-after-handshake"],
+            "constraints": { "businessAction": "none" },
+            "externalBusinessActionsAllowed": false,
+            "expiresAt": "2026-08-29T21:00:00Z"
+          },
+          "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expiresAt": "2026-08-29T21:00:00Z",
+          "allowedTransitions": ["SUBMIT_ACCEPTANCE", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"],
+          "eventCursor": "cursor_creator_0123456789"
+        },
+        "events": [],
+        "retryAfterMs": 0
+      },
+      "expectedError": "SCHEMA_INVALID",
+      "reason": "session_next must provide machine-readable nextAction"
+    },
+    {
+      "id": "draft-one-envelope-rejected-by-draft-two",
+      "schemaRef": "#/responseEnvelope",
+      "value": {
+        "protocolVersion": "3.0",
+        "schemaVersion": "3.0.0-draft.1",
+        "requestId": "01234567-89ab-4def-8123-456789abcdef",
+        "serverTime": "2026-08-29T20:00:00Z",
+        "error": {
+          "code": "STATE_VERSION_CONFLICT",
+          "message": "State version does not match.",
+          "retryable": true,
+          "requestId": "01234567-89ab-4def-8123-456789abcdef"
+        },
+        "failureReceipt": {
+          "requestDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "stateVersion": 9,
+          "recordedAt": "2026-08-29T20:00:00Z",
+          "mutated": false
+        }
+      },
+      "expectedError": "SCHEMA_INVALID",
+      "reason": "draft.1 response envelopes are not accepted as draft.2"
+    },
     {
       "id": "role-grant-omitted",
       "tool": "agent_handshake_session_submit",
@@ -118,7 +350,7 @@
       "schemaRef": "#/responseEnvelope",
       "value": {
         "protocolVersion": "3.0",
-        "schemaVersion": "3.0.0-draft.1",
+        "schemaVersion": "3.0.0-draft.2",
         "requestId": "01234567-89ab-4def-8123-456789abcdef",
         "serverTime": "2026-08-29T20:00:00Z",
         "result": {}

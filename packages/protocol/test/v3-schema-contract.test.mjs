@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   HANDSHAKE_V3_CONTRACT_SCHEMA,
   HANDSHAKE_V3_ERROR_CODES,
+  HANDSHAKE_V3_NEXT_ACTIONS,
   HANDSHAKE_V3_SIGNING_ALGORITHMS,
   HANDSHAKE_V3_TOOL_NAMES,
   validateHandshakeV3Def,
@@ -25,6 +26,18 @@ const later = "2026-08-29T21:00:00Z";
 
 function roleGrantSample() {
   return sampleForSchema(schema.$defs.roleGrant);
+}
+
+function policySample() {
+  return sampleForSchema(schema.$defs.policy);
+}
+
+function partySample(role = "INITIATOR", identityDigest = digest) {
+  return {
+    ...sampleForSchema(schema.$defs.party),
+    role,
+    identityDigest,
+  };
 }
 
 function sessionSample() {
@@ -79,7 +92,7 @@ function sampleForSchema(fragment) {
 function responseEnvelope(result) {
   return {
     protocolVersion: "3.0",
-    schemaVersion: "3.0.0-draft.1",
+    schemaVersion: "3.0.0-draft.2",
     requestId: "01234567-89ab-4def-8123-456789abcdef",
     serverTime: later,
     result,
@@ -91,7 +104,7 @@ function assertGenericObjectSurfacesReject(value) {
   assert.throws(() => validateHandshakeV3ResponseEnvelope(responseEnvelope(value)), { code: "SCHEMA_INVALID" });
   assert.throws(() => validateHandshakeV3ToolResult("agent_handshake_capabilities", {
     negotiatedProtocolVersion: "3.0",
-    schemaVersion: "3.0.0-draft.1",
+    schemaVersion: "3.0.0-draft.2",
     toolsetDigest: digest,
     trustRootIds: ["root-2026-08"],
     limits: value,
@@ -108,9 +121,28 @@ test("constants mirror the normative schema enums exactly", () => {
   assert.deepEqual(HANDSHAKE_V3_CONTRACT_SCHEMA.errorCodes.enum, schema.errorCodes.enum);
   assert.deepEqual(HANDSHAKE_V3_ERROR_CODES, schema.errorCodes.enum);
   assert.deepEqual(HANDSHAKE_V3_SIGNING_ALGORITHMS, ["ES256K", "EdDSA", "ES256"]);
+  assert.deepEqual(HANDSHAKE_V3_NEXT_ACTIONS, [
+    "WAIT",
+    "SIGN_AND_SUBMIT",
+    "SUBMIT_CHECKPOINT",
+    "FETCH_RESULT",
+    "STOP_AFTER_VERIFICATION",
+    "TERMINAL",
+  ]);
   assert.deepEqual(HANDSHAKE_V3_TOOL_NAMES, schema.tools.map((tool) => tool.name));
   assert.equal(HANDSHAKE_V3_TOOL_NAMES.length, 16);
   assert.equal(HANDSHAKE_V3_TOOL_NAMES.includes("agent_handshake_session_verify"), false);
+});
+
+test("draft.2 schema is explicit and draft.1 envelopes are not accepted", () => {
+  assert.equal(schema.protocolVersion, "3.0");
+  assert.equal(schema.schemaVersion, "3.0.0-draft.2");
+  assert.equal(HANDSHAKE_V3_CONTRACT_SCHEMA.schemaVersion, "3.0.0-draft.2");
+
+  assert.throws(() => validateHandshakeV3ResponseEnvelope({
+    ...responseEnvelope({ ok: true }),
+    schemaVersion: "3.0.0-draft.1",
+  }), { code: "SCHEMA_INVALID" });
 });
 
 test("exported contract schema is deeply immutable and cannot weaken validators", () => {
@@ -151,7 +183,7 @@ test("generic object schema surfaces recursively clone only safe JSON", () => {
   assert.deepEqual(validateHandshakeV3ResponseEnvelope(responseEnvelope(nested)).result, nested);
   assert.deepEqual(validateHandshakeV3ToolResult("agent_handshake_capabilities", {
     negotiatedProtocolVersion: "3.0",
-    schemaVersion: "3.0.0-draft.1",
+    schemaVersion: "3.0.0-draft.2",
     toolsetDigest: digest,
     trustRootIds: ["root-2026-08"],
     limits: nested,
@@ -234,6 +266,209 @@ test("schema engine validates every $defs object and rejects alternate public sh
     expiresAt: later,
     signedObjects: [],
   }), { code: "SCHEMA_INVALID" });
+});
+
+test("invitation create returns the creator role grant and creator-view invited session", () => {
+  const creatorGrant = {
+    ...roleGrantSample(),
+    sessionId: "sess_creator_012345",
+    role: "INITIATOR",
+    allowedTools: [
+      "agent_handshake_session_join",
+      "agent_handshake_session_next",
+      "agent_handshake_session_submit_checkpoint",
+      "agent_handshake_session_submit",
+      "agent_handshake_session_resume",
+      "agent_handshake_session_cancel",
+    ],
+  };
+  const policy = policySample();
+  const session = {
+    ...sessionSample(),
+    sessionId: creatorGrant.sessionId,
+    role: "INITIATOR",
+    state: "INVITED",
+    stateVersion: 0,
+    policy,
+    eventCursor: "cursor_creator_012345",
+  };
+  const result = validateHandshakeV3ToolResult("agent_handshake_invitation_create", {
+    invitationId: "inv_creator_012345",
+    invitationToken: "tok_creator_012345",
+    sessionId: creatorGrant.sessionId,
+    roleGrant: creatorGrant,
+    tenantRelation: { initiatorTenantDigest: digest, responderBinding: "FIRST_AUTHENTICATED_CLAIM" },
+    session,
+    policyDigest: session.policyDigest,
+    statementDigest: digestB,
+    state: "ISSUED",
+    expiresAt: later,
+  });
+
+  assert.equal(result.sessionId, creatorGrant.sessionId);
+  assert.equal(result.roleGrant.role, "INITIATOR");
+  assert.equal(result.session.state, "INVITED");
+});
+
+test("invitation list supports read-only token inspection with immutable policy details", () => {
+  const policy = policySample();
+  const byCursor = validateHandshakeV3ToolInput("agent_handshake_invitation_list", {
+    cursor: "cursor_invite_012345",
+    states: ["ISSUED"],
+    limit: 20,
+  });
+  const byToken = validateHandshakeV3ToolInput("agent_handshake_invitation_list", {
+    invitationToken: "tok_external_012345",
+  });
+  const inspected = validateHandshakeV3ToolResult("agent_handshake_invitation_list", {
+    invitations: [{
+      invitationId: "inv_external_012345",
+      invitationToken: "tok_external_012345",
+      state: "ISSUED",
+      policy,
+      policyDigest: digest,
+      statementDigest: digestB,
+      responderRole: "RESPONDER",
+      responderBinding: "FIRST_AUTHENTICATED_CLAIM",
+      expiresAt: later,
+      protocolVersion: "3.0",
+      schemaVersion: "3.0.0-draft.2",
+      trustRootIds: ["root-2026-08"],
+    }],
+  });
+
+  assert.equal(byCursor.input.cursor, "cursor_invite_012345");
+  assert.equal(byToken.input.invitationToken, "tok_external_012345");
+  assert.deepEqual(inspected.invitations[0].policy, policy);
+  assert.equal(inspected.invitations[0].state, "ISSUED");
+
+  assert.throws(() => validateHandshakeV3ToolInput("agent_handshake_invitation_list", {
+    cursor: "cursor_invite_012345",
+    invitationToken: "tok_external_012345",
+  }), { code: "SCHEMA_INVALID" });
+});
+
+test("session next exposes an exhaustive machine-readable nextAction", () => {
+  for (const nextAction of HANDSHAKE_V3_NEXT_ACTIONS) {
+    const result = validateHandshakeV3ToolResult("agent_handshake_session_next", {
+      changed: nextAction !== "WAIT",
+      nextAction,
+      session: sessionSample(),
+      events: [],
+      retryAfterMs: nextAction === "WAIT" ? 1000 : 0,
+    });
+    assert.equal(result.nextAction, nextAction);
+  }
+
+  assert.throws(() => validateHandshakeV3ToolResult("agent_handshake_session_next", {
+    changed: true,
+    session: sessionSample(),
+    events: [],
+    retryAfterMs: 0,
+  }), { code: "SCHEMA_INVALID" });
+});
+
+test("session cancel is a role-bound input requiring roleGrantId", () => {
+  const input = validateHandshakeV3ToolInput("agent_handshake_session_cancel", {
+    sessionId: "sess_cancel_012345",
+    roleGrantId: "grant_cancel_012345",
+    reasonCode: "AGENT_CANCELLED",
+    idempotencyKey: "idem.cancel.012345",
+    expectedStateVersion: 2,
+  });
+
+  assert.equal(input.input.roleGrantId, "grant_cancel_012345");
+  assert.throws(() => validateHandshakeV3ToolInput("agent_handshake_session_cancel", {
+    sessionId: "sess_cancel_012345",
+    reasonCode: "AGENT_CANCELLED",
+    idempotencyKey: "idem.cancel.012345",
+    expectedStateVersion: 2,
+  }), { code: "SCHEMA_INVALID" });
+});
+
+test("documented external-agent response shapes are schema-reachable without shared controller state", () => {
+  const policy = policySample();
+  const sessionId = "sess_reachability_012345";
+  const initiatorGrant = {
+    ...roleGrantSample(),
+    roleGrantId: "grant_initiator_012345",
+    sessionId,
+    role: "INITIATOR",
+    principalDigest: digest,
+    proofKeyThumbprint: digestB,
+  };
+  const responderGrant = {
+    ...roleGrantSample(),
+    roleGrantId: "grant_responder_012345",
+    sessionId,
+    role: "RESPONDER",
+    principalDigest: digestB,
+    proofKeyThumbprint: digest,
+  };
+  const invitedSession = {
+    ...sessionSample(),
+    sessionId,
+    role: "INITIATOR",
+    state: "INVITED",
+    policy,
+    policyDigest: digest,
+  };
+  const create = validateHandshakeV3ToolResult("agent_handshake_invitation_create", {
+    invitationId: "inv_reachability_012345",
+    invitationToken: "tok_reachability_012345",
+    sessionId,
+    roleGrant: initiatorGrant,
+    tenantRelation: { initiatorTenantDigest: digest, responderBinding: "FIRST_AUTHENTICATED_CLAIM" },
+    session: invitedSession,
+    policyDigest: digest,
+    statementDigest: digestB,
+    state: "ISSUED",
+    expiresAt: later,
+  });
+  const inspect = validateHandshakeV3ToolResult("agent_handshake_invitation_list", {
+    invitations: [{
+      invitationId: "inv_reachability_012345",
+      invitationToken: "tok_reachability_012345",
+      state: "ISSUED",
+      policy,
+      policyDigest: digest,
+      statementDigest: digestB,
+      responderRole: "RESPONDER",
+      responderBinding: "FIRST_AUTHENTICATED_CLAIM",
+      expiresAt: later,
+      protocolVersion: "3.0",
+      schemaVersion: "3.0.0-draft.2",
+      trustRootIds: ["root-2026-08"],
+    }],
+  });
+  const accept = validateHandshakeV3ToolResult("agent_handshake_invitation_accept", {
+    sessionId,
+    roleGrant: responderGrant,
+    tenantRelation: { responderTenantDigest: digestB, binding: "FIRST_AUTHENTICATED_CLAIM" },
+    session: { ...invitedSession, role: "RESPONDER", state: "CLAIMED", stateVersion: 1 },
+  });
+
+  assert.equal(create.roleGrant.role, "INITIATOR");
+  assert.equal(inspect.invitations[0].state, "ISSUED");
+  assert.equal(accept.roleGrant.role, "RESPONDER");
+  assert.equal(validateHandshakeV3ToolInput("agent_handshake_session_join", {
+    sessionId,
+    roleGrantId: create.roleGrant.roleGrantId,
+    party: partySample("INITIATOR", digest),
+    policyDigest: inspect.invitations[0].policyDigest,
+    nonceCommitment: digest,
+    idempotencyKey: "idem.join.initiator",
+    expectedStateVersion: 1,
+  }).input.roleGrantId, create.roleGrant.roleGrantId);
+  assert.equal(validateHandshakeV3ToolInput("agent_handshake_session_join", {
+    sessionId,
+    roleGrantId: accept.roleGrant.roleGrantId,
+    party: partySample("RESPONDER", digestB),
+    policyDigest: inspect.invitations[0].policyDigest,
+    nonceCommitment: digestB,
+    idempotencyKey: "idem.join.responder",
+    expectedStateVersion: 1,
+  }).input.roleGrantId, accept.roleGrant.roleGrantId);
 });
 
 test("schema engine validates all 16 tool input and result schemas", () => {

@@ -55,6 +55,7 @@ test("CLI prints JSON contract discovery without stdin or side effects", async (
   assert.equal(output.command, "contract");
   assertFixtureMode(output);
   assert.equal(output.result.protocolVersion, "3.0");
+  assert.equal(output.result.schemaVersion, "3.0.0-draft.2");
   assert.equal(output.result.tools.includes("agent_handshake_session_submit"), true);
 });
 

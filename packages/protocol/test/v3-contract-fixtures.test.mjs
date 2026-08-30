@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
@@ -20,14 +21,26 @@ const fixtures = JSON.parse(
 const provenance = JSON.parse(
   await readFile(new URL("../fixtures/v3-provenance.json", import.meta.url), "utf8"),
 );
+const schemaBytes = await readFile(
+  new URL("../schemas/standalone-handshake-v3-contract.schema.json", import.meta.url),
+);
+const fixtureBytes = await readFile(
+  new URL("../fixtures/standalone-handshake-v3-contract-fixtures.json", import.meta.url),
+);
+
+function sha256Hex(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
 
 test("v3 protocol package records approved schema and fixture provenance", () => {
   assert.equal(HANDSHAKE_V3_PROTOCOL_VERSION, "3.0");
-  assert.equal(HANDSHAKE_V3_SCHEMA_VERSION, "3.0.0-draft.1");
+  assert.equal(HANDSHAKE_V3_SCHEMA_VERSION, "3.0.0-draft.2");
   assert.deepEqual(provenance, HANDSHAKE_V3_CONTRACT_PROVENANCE);
   assert.equal(provenance.approvedProtocolSourceCommit, "d2cdedb705cf6855657381a908e47f71df959145");
-  assert.equal(provenance.contractSchemaSha256, "c8ecc8a28e4209883c525a1368226ea662612906789d817d0f35d370e52981b3");
-  assert.equal(provenance.contractFixturesSha256, "440d97724879d0724b8cda09035f2bdf917ccb7591df480e849698beaa504222");
+  assert.equal(provenance.contractSchemaSha256, "e9d5767c3a7c103105e0637f458e50250ef509bca534eee7215193267a74e29e");
+  assert.equal(provenance.contractFixturesSha256, "3112ff459554765a699c168dc936ea15ada3d39429de0590c464c54c269642bf");
+  assert.equal(sha256Hex(schemaBytes), provenance.contractSchemaSha256);
+  assert.equal(sha256Hex(fixtureBytes), provenance.contractFixturesSha256);
 });
 
 test("v3 contract known-good fixtures are executable against strict validators", () => {

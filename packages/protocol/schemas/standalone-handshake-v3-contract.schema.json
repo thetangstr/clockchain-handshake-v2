@@ -4,7 +4,7 @@
   "title": "Standalone Agent Handshake MCP v3 contract",
   "contractStatus": "G0-approved-local-implementation-draft",
   "protocolVersion": "3.0",
-  "schemaVersion": "3.0.0-draft.1",
+  "schemaVersion": "3.0.0-draft.2",
   "endpoint": "/handshake/mcp",
   "namespace": "agent_handshake_",
   "foundationBinding": {
@@ -45,6 +45,12 @@
       "encryption-contexts", "migrations", "retention", "audit-streams", "authority-tests"
     ]
   },
+  "compatibility": {
+    "schemaVersion": "3.0.0-draft.2",
+    "rejectedSchemaVersions": ["3.0.0-draft.1"],
+    "adapterRepinRequiredBeforeConformance": true,
+    "rule": "draft.1 envelopes, tool results, and continuation objects are not accepted as draft.2"
+  },
   "noParallelMcpStackChecks": [
     "no McpServer or server transport instantiation outside clockchain-developer-tools",
     "no Handshake-owned HTTP listener/router/gateway",
@@ -64,7 +70,7 @@
     ],
     "properties": {
       "protocolVersion": { "const": "3.0" },
-      "schemaVersion": { "const": "3.0.0-draft.1" },
+      "schemaVersion": { "const": "3.0.0-draft.2" },
       "requestId": { "type": "string", "format": "uuid" },
       "serverTime": { "type": "string", "format": "date-time" },
       "result": { "type": "object" },
@@ -223,6 +229,7 @@
         "expiresAt": { "type": "string", "format": "date-time" }
       }
     },
+    "nextAction": { "enum": ["WAIT", "SIGN_AND_SUBMIT", "SUBMIT_CHECKPOINT", "FETCH_RESULT", "STOP_AFTER_VERIFICATION", "TERMINAL"] },
     "signingRequest": {
       "type": "object", "additionalProperties": false,
       "required": ["signingRequestId", "actionType", "domainSeparator", "canonicalization", "payloadSchemaId", "sessionId", "stateVersion", "role", "policyDigest", "statementDigest", "nonce", "issuedAt", "expiresAt", "canonicalBytesBase64Url", "signingDigest"],
@@ -306,7 +313,7 @@
         "scopeDigest": { "$ref": "#/$defs/digest" },
         "policyDigest": { "$ref": "#/$defs/digest" },
         "protocolVersion": { "const": "3.0" },
-        "schemaVersion": { "const": "3.0.0-draft.1" },
+        "schemaVersion": { "const": "3.0.0-draft.2" },
         "issuedAt": { "type": "string", "format": "date-time" },
         "notBefore": { "type": "string", "format": "date-time" },
         "expiresAt": { "type": "string", "format": "date-time" },
@@ -336,17 +343,17 @@
     {
       "name": "agent_handshake_capabilities", "scope": "handshake.discovery.read",
       "inputSchema": { "type": "object", "additionalProperties": false, "required": ["requestedProtocolVersions"], "properties": { "requestedProtocolVersions": { "type": "array", "minItems": 1, "items": { "type": "string" } }, "requestedFeatures": { "type": "array", "uniqueItems": true, "items": { "type": "string" } } } },
-      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["negotiatedProtocolVersion", "schemaVersion", "toolsetDigest", "trustRootIds", "limits"], "properties": { "negotiatedProtocolVersion": { "const": "3.0" }, "schemaVersion": { "const": "3.0.0-draft.1" }, "toolsetDigest": { "$ref": "#/$defs/digest" }, "trustRootIds": { "type": "array", "minItems": 1, "items": { "type": "string" } }, "limits": { "type": "object" } } }
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["negotiatedProtocolVersion", "schemaVersion", "toolsetDigest", "trustRootIds", "limits"], "properties": { "negotiatedProtocolVersion": { "const": "3.0" }, "schemaVersion": { "const": "3.0.0-draft.2" }, "toolsetDigest": { "$ref": "#/$defs/digest" }, "trustRootIds": { "type": "array", "minItems": 1, "items": { "type": "string" } }, "limits": { "type": "object" } } }
     },
     {
       "name": "agent_handshake_invitation_create", "scope": "handshake.invitation.create",
       "inputSchema": { "type": "object", "additionalProperties": false, "required": ["idempotencyKey", "responderRole", "responderBinding", "policy", "expiresAt", "transport"], "properties": { "idempotencyKey": { "$ref": "#/$defs/idempotencyKey" }, "responderRole": { "const": "RESPONDER" }, "responderBinding": { "enum": ["TARGETED", "FIRST_AUTHENTICATED_CLAIM"] }, "responderFederationSubject": { "type": "string", "minLength": 3, "maxLength": 512 }, "policy": { "$ref": "#/$defs/policy" }, "expiresAt": { "type": "string", "format": "date-time" }, "transport": { "enum": ["AUTHENTICATED_INBOX", "OPAQUE_EXTERNAL_TOKEN"] } } },
-      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["invitationId", "policyDigest", "statementDigest", "state", "expiresAt"], "properties": { "invitationId": { "$ref": "#/$defs/opaqueId" }, "invitationToken": { "$ref": "#/$defs/opaqueId" }, "policyDigest": { "$ref": "#/$defs/digest" }, "statementDigest": { "$ref": "#/$defs/digest" }, "state": { "const": "ISSUED" }, "expiresAt": { "type": "string", "format": "date-time" } } }
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["invitationId", "sessionId", "roleGrant", "tenantRelation", "session", "policyDigest", "statementDigest", "state", "expiresAt"], "properties": { "invitationId": { "$ref": "#/$defs/opaqueId" }, "invitationToken": { "$ref": "#/$defs/opaqueId" }, "sessionId": { "$ref": "#/$defs/opaqueId" }, "roleGrant": { "$ref": "#/$defs/roleGrant" }, "tenantRelation": { "type": "object" }, "session": { "$ref": "#/$defs/session" }, "policyDigest": { "$ref": "#/$defs/digest" }, "statementDigest": { "$ref": "#/$defs/digest" }, "state": { "const": "ISSUED" }, "expiresAt": { "type": "string", "format": "date-time" } } }
     },
     {
       "name": "agent_handshake_invitation_list", "scope": "handshake.invitation.receive",
-      "inputSchema": { "type": "object", "additionalProperties": false, "properties": { "cursor": { "$ref": "#/$defs/opaqueId" }, "states": { "type": "array", "uniqueItems": true, "items": { "enum": ["ISSUED", "CLAIMED", "EXPIRED", "CANCELLED", "REVOKED"] } }, "limit": { "type": "integer", "minimum": 1, "maximum": 100 } } },
-      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["invitations"], "properties": { "invitations": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["invitationId", "state", "policyDigest", "expiresAt"], "properties": { "invitationId": { "$ref": "#/$defs/opaqueId" }, "state": { "type": "string" }, "policyDigest": { "$ref": "#/$defs/digest" }, "expiresAt": { "type": "string", "format": "date-time" } } } }, "nextCursor": { "$ref": "#/$defs/opaqueId" } } }
+      "inputSchema": { "type": "object", "additionalProperties": false, "oneOf": [{ "not": { "required": ["invitationToken"] } }, { "required": ["invitationToken"], "not": { "anyOf": [{ "required": ["cursor"] }, { "required": ["states"] }, { "required": ["limit"] }] } }], "properties": { "invitationToken": { "$ref": "#/$defs/opaqueId" }, "cursor": { "$ref": "#/$defs/opaqueId" }, "states": { "type": "array", "uniqueItems": true, "items": { "enum": ["ISSUED", "CLAIMED", "EXPIRED", "CANCELLED", "REVOKED"] } }, "limit": { "type": "integer", "minimum": 1, "maximum": 100 } } },
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["invitations"], "properties": { "invitations": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["invitationId", "state", "policy", "policyDigest", "statementDigest", "responderRole", "responderBinding", "expiresAt", "protocolVersion", "schemaVersion", "trustRootIds"], "properties": { "invitationId": { "$ref": "#/$defs/opaqueId" }, "invitationToken": { "$ref": "#/$defs/opaqueId" }, "state": { "enum": ["ISSUED", "CLAIMED", "EXPIRED", "CANCELLED", "REVOKED"] }, "policy": { "$ref": "#/$defs/policy" }, "policyDigest": { "$ref": "#/$defs/digest" }, "statementDigest": { "$ref": "#/$defs/digest" }, "responderRole": { "const": "RESPONDER" }, "responderBinding": { "enum": ["TARGETED", "FIRST_AUTHENTICATED_CLAIM"] }, "expiresAt": { "type": "string", "format": "date-time" }, "protocolVersion": { "const": "3.0" }, "schemaVersion": { "const": "3.0.0-draft.2" }, "trustRootIds": { "type": "array", "minItems": 1, "items": { "type": "string" } } } } }, "nextCursor": { "$ref": "#/$defs/opaqueId" } } }
     },
     {
       "name": "agent_handshake_invitation_accept", "scope": "handshake.invitation.accept",
@@ -371,7 +378,7 @@
     {
       "name": "agent_handshake_session_next", "scope": "handshake.session.read",
       "inputSchema": { "type": "object", "additionalProperties": false, "required": ["sessionId", "roleGrantId", "eventCursor"], "properties": { "sessionId": { "$ref": "#/$defs/opaqueId" }, "roleGrantId": { "$ref": "#/$defs/opaqueId" }, "eventCursor": { "$ref": "#/$defs/opaqueId" }, "waitTimeoutMs": { "type": "integer", "minimum": 0, "maximum": 30000 } } },
-      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["changed", "session", "events", "retryAfterMs"], "properties": { "changed": { "type": "boolean" }, "session": { "$ref": "#/$defs/session" }, "events": { "type": "array", "items": { "$ref": "#/$defs/callbackEvent" } }, "retryAfterMs": { "type": "integer", "minimum": 0 } } }
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["changed", "nextAction", "session", "events", "retryAfterMs"], "properties": { "changed": { "type": "boolean" }, "nextAction": { "$ref": "#/$defs/nextAction" }, "session": { "$ref": "#/$defs/session" }, "events": { "type": "array", "items": { "$ref": "#/$defs/callbackEvent" } }, "retryAfterMs": { "type": "integer", "minimum": 0 } } }
     },
     {
       "name": "agent_handshake_session_submit_checkpoint", "scope": "handshake.session.participate",
@@ -385,7 +392,7 @@
     },
     {
       "name": "agent_handshake_session_cancel", "scope": "handshake.session.cancel",
-      "inputSchema": { "type": "object", "additionalProperties": false, "required": ["sessionId", "reasonCode", "idempotencyKey", "expectedStateVersion"], "properties": { "sessionId": { "$ref": "#/$defs/opaqueId" }, "reasonCode": { "enum": ["AGENT_CANCELLED", "POLICY_REJECTED", "KEY_LOST", "SECURITY", "OTHER"] }, "idempotencyKey": { "$ref": "#/$defs/idempotencyKey" }, "expectedStateVersion": { "type": "integer", "minimum": 0 } } },
+      "inputSchema": { "type": "object", "additionalProperties": false, "required": ["sessionId", "roleGrantId", "reasonCode", "idempotencyKey", "expectedStateVersion"], "properties": { "sessionId": { "$ref": "#/$defs/opaqueId" }, "roleGrantId": { "$ref": "#/$defs/opaqueId" }, "reasonCode": { "enum": ["AGENT_CANCELLED", "POLICY_REJECTED", "KEY_LOST", "SECURITY", "OTHER"] }, "idempotencyKey": { "$ref": "#/$defs/idempotencyKey" }, "expectedStateVersion": { "type": "integer", "minimum": 0 } } },
       "resultSchema": { "type": "object", "additionalProperties": false, "required": ["sessionId", "state"], "properties": { "sessionId": { "$ref": "#/$defs/opaqueId" }, "state": { "const": "CANCELLED" } } }
     },
     {

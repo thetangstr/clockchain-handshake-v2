@@ -108,7 +108,7 @@ function continuation(cert = certificate()) {
     scopeDigest: digestC,
     policyDigest: cert.policyDigest,
     protocolVersion: "3.0",
-    schemaVersion: "3.0.0-draft.1",
+    schemaVersion: "3.0.0-draft.2",
     issuedAt: "2026-08-29T20:01:00Z",
     notBefore: "2026-08-29T20:02:00Z",
     expiresAt: "2026-08-29T20:30:00Z",
