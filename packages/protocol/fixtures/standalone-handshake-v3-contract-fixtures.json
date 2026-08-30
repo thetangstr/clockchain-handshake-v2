@@ -1,6 +1,6 @@
 {
   "contract": "standalone-handshake-v3-contract.schema.json",
-  "schemaVersion": "3.0.0-draft.2",
+  "schemaVersion": "3.0.0-draft.3",
   "knownGood": [
     {
       "id": "role-scoped-next",
@@ -52,7 +52,7 @@
       "schemaRef": "#/responseEnvelope",
       "value": {
         "protocolVersion": "3.0",
-        "schemaVersion": "3.0.0-draft.2",
+        "schemaVersion": "3.0.0-draft.3",
         "requestId": "01234567-89ab-4def-8123-456789abcdef",
         "serverTime": "2026-08-29T20:00:00Z",
         "error": {
@@ -150,7 +150,7 @@
             "responderBinding": "FIRST_AUTHENTICATED_CLAIM",
             "expiresAt": "2026-08-29T21:00:00Z",
             "protocolVersion": "3.0",
-            "schemaVersion": "3.0.0-draft.2",
+            "schemaVersion": "3.0.0-draft.3",
             "trustRootIds": ["root-2026-08"]
           }
         ]
@@ -165,7 +165,7 @@
         "session": {
           "sessionId": "sess_creator_0123456789",
           "role": "INITIATOR",
-          "state": "PROPOSAL_PENDING",
+          "state": "PARTIES_BOUND",
           "stateVersion": 4,
           "policy": {
             "scope": ["agent-contract:a2a-after-handshake"],
@@ -175,7 +175,7 @@
           },
           "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "expiresAt": "2026-08-29T21:00:00Z",
-          "allowedTransitions": ["SUBMIT_ACCEPTANCE", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"],
+          "allowedTransitions": ["SUBMIT_PROPOSAL", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"],
           "pendingSigningRequest": {
             "signingRequestId": "signreq_0123456789abcdef",
             "actionType": "PROPOSAL",
@@ -196,7 +196,8 @@
           "eventCursor": "cursor_creator_0123456789"
         },
         "events": [],
-        "retryAfterMs": 0
+        "retryAfterMs": 0,
+        "expectedStateVersion": 4
       }
     }
   ],
@@ -520,7 +521,7 @@
             "responderBinding": "FIRST_AUTHENTICATED_CLAIM",
             "expiresAt": "2026-08-29T21:00:00Z",
             "protocolVersion": "3.0",
-            "schemaVersion": "3.0.0-draft.2",
+            "schemaVersion": "3.0.0-draft.3",
             "trustRootIds": ["root-2026-08"],
             "claimedByInspection": true
           }
@@ -639,7 +640,7 @@
       "schemaRef": "#/responseEnvelope",
       "value": {
         "protocolVersion": "3.0",
-        "schemaVersion": "3.0.0-draft.2",
+        "schemaVersion": "3.0.0-draft.3",
         "requestId": "01234567-89ab-4def-8123-456789abcdef",
         "serverTime": "2026-08-29T20:00:00Z",
         "result": {}

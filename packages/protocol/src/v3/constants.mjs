@@ -1,5 +1,5 @@
 export const HANDSHAKE_V3_PROTOCOL_VERSION = "3.0";
-export const HANDSHAKE_V3_SCHEMA_VERSION = "3.0.0-draft.2";
+export const HANDSHAKE_V3_SCHEMA_VERSION = "3.0.0-draft.3";
 export const HANDSHAKE_V3_DOMAIN_SEPARATOR = "CLOCKCHAIN_AGENT_HANDSHAKE_V3";
 export const HANDSHAKE_V3_CANONICALIZATION = "RFC8785";
 export const HANDSHAKE_V3_SIGNING_PAYLOAD_SCHEMA_ID =
@@ -39,9 +39,11 @@ export const HANDSHAKE_V3_ACTORS = Object.freeze(["INITIATOR", "RESPONDER", "CLO
 export const HANDSHAKE_V3_SIGNING_ALGORITHMS = Object.freeze(["ES256K", "EdDSA", "ES256"]);
 export const HANDSHAKE_V3_NEXT_ACTIONS = Object.freeze([
   "WAIT",
+  "JOIN_SESSION",
   "SIGN_AND_SUBMIT",
   "SUBMIT_CHECKPOINT",
   "FETCH_RESULT",
+  "VERIFY_RESULT",
   "STOP_AFTER_VERIFICATION",
   "TERMINAL",
 ]);
@@ -92,16 +94,16 @@ export const HANDSHAKE_V3_ALLOWED_TRANSITIONS_BY_STATE = Object.freeze({
 });
 
 export const HANDSHAKE_V3_NEXT_ACTION_BY_STATE = Object.freeze({
-  INVITED: "WAIT",
-  CLAIMED: "WAIT",
-  POLICY_READY: "WAIT",
-  PARTIES_BOUND: "WAIT",
+  INVITED: "JOIN_SESSION",
+  CLAIMED: "JOIN_SESSION",
+  POLICY_READY: "TERMINAL",
+  PARTIES_BOUND: "SIGN_AND_SUBMIT",
   PROPOSAL_PENDING: "SIGN_AND_SUBMIT",
   ACCEPTANCE_PENDING: "SUBMIT_CHECKPOINT",
   ANCHORING: "WAIT",
-  CERTIFICATE_ISSUED: "FETCH_RESULT",
-  CONTINUATION_ISSUED: "STOP_AFTER_VERIFICATION",
-  COMPLETED: "TERMINAL",
+  CERTIFICATE_ISSUED: "WAIT",
+  CONTINUATION_ISSUED: "FETCH_RESULT",
+  COMPLETED: "FETCH_RESULT",
   FAILED_CLOSED: "TERMINAL",
   CANCELLED: "TERMINAL",
   EXPIRED: "TERMINAL",
@@ -165,10 +167,10 @@ export const HANDSHAKE_V3_CONTRACT_PROVENANCE = Object.freeze({
   approvedProtocolSourceCommit: "d2cdedb705cf6855657381a908e47f71df959145",
   contractSchemaPath: "packages/protocol/schemas/standalone-handshake-v3-contract.schema.json",
   contractSchemaOriginalPath: "docs/superpowers/specs/standalone-handshake-v3-contract.schema.json",
-  contractSchemaSha256: "579f2e07475fbf1e0209df9f082218837b766aab507430e514962971625d2991",
+  contractSchemaSha256: "335bc187c2f76de83f6d71df2cb6db7a39937693be0d9c814bec7d60ed378d81",
   contractFixturesPath: "packages/protocol/fixtures/standalone-handshake-v3-contract-fixtures.json",
   contractFixturesOriginalPath: "docs/superpowers/specs/standalone-handshake-v3-contract-fixtures.json",
-  contractFixturesSha256: "9a71c8efa6d4cce6f8f2d20ff6dc9ef7255874c8c81c26bb9393cc884aa5af79",
+  contractFixturesSha256: "4a15a47a9183730dbc0b79641dfa984d7b628866078bbbb3686d252fb10f2b13",
   packageName: "@clockchain/handshake-protocol",
   runtimeBoundary: "no MCP server, HTTP gateway, OAuth/JWKS validator, tenant store, persistence, Supervisor, Agent Contract delivery, or demo controller",
 });

@@ -4,7 +4,7 @@
   "title": "Standalone Agent Handshake MCP v3 contract",
   "contractStatus": "G0-approved-local-implementation-draft",
   "protocolVersion": "3.0",
-  "schemaVersion": "3.0.0-draft.2",
+  "schemaVersion": "3.0.0-draft.3",
   "endpoint": "/handshake/mcp",
   "namespace": "agent_handshake_",
   "foundationBinding": {
@@ -46,10 +46,10 @@
     ]
   },
   "compatibility": {
-    "schemaVersion": "3.0.0-draft.2",
-    "rejectedSchemaVersions": ["3.0.0-draft.1"],
+    "schemaVersion": "3.0.0-draft.3",
+    "rejectedSchemaVersions": ["3.0.0-draft.1", "3.0.0-draft.2"],
     "adapterRepinRequiredBeforeConformance": true,
-    "rule": "draft.1 envelopes, tool results, and continuation objects are not accepted as draft.2"
+    "rule": "draft.1 and draft.2 envelopes, tool results, and continuation objects are not accepted as draft.3"
   },
   "noParallelMcpStackChecks": [
     "no McpServer or server transport instantiation outside clockchain-developer-tools",
@@ -70,7 +70,7 @@
     ],
     "properties": {
       "protocolVersion": { "const": "3.0" },
-      "schemaVersion": { "const": "3.0.0-draft.2" },
+      "schemaVersion": { "const": "3.0.0-draft.3" },
       "requestId": { "type": "string", "format": "uuid" },
       "serverTime": { "type": "string", "format": "date-time" },
       "result": { "type": "object" },
@@ -241,7 +241,8 @@
         "federationSubjectDigest": { "$ref": "#/$defs/digest" }
       }
     },
-    "nextAction": { "enum": ["WAIT", "SIGN_AND_SUBMIT", "SUBMIT_CHECKPOINT", "FETCH_RESULT", "STOP_AFTER_VERIFICATION", "TERMINAL"] },
+    "nextAction": { "enum": ["WAIT", "JOIN_SESSION", "SIGN_AND_SUBMIT", "SUBMIT_CHECKPOINT", "FETCH_RESULT", "VERIFY_RESULT", "STOP_AFTER_VERIFICATION", "TERMINAL"] },
+    "waitingOn": { "enum": ["SELF", "COUNTERPARTY", "CLOCKCHAIN", "CALLER_VERIFICATION", "NONE"] },
     "transitionAction": { "enum": ["CLAIM_INVITATION", "PREPARE_POLICY", "BIND_PARTIES", "SUBMIT_PROPOSAL", "SUBMIT_ACCEPTANCE", "CONFIRM_ANCHOR", "ISSUE_CERTIFICATE", "ISSUE_CONTINUATION", "COMPLETE", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"] },
     "signingRequest": {
       "type": "object", "additionalProperties": false,
@@ -326,7 +327,7 @@
         "scopeDigest": { "$ref": "#/$defs/digest" },
         "policyDigest": { "$ref": "#/$defs/digest" },
         "protocolVersion": { "const": "3.0" },
-        "schemaVersion": { "const": "3.0.0-draft.2" },
+        "schemaVersion": { "const": "3.0.0-draft.3" },
         "issuedAt": { "type": "string", "format": "date-time" },
         "notBefore": { "type": "string", "format": "date-time" },
         "expiresAt": { "type": "string", "format": "date-time" },
@@ -356,7 +357,7 @@
     {
       "name": "agent_handshake_capabilities", "scope": "handshake.discovery.read",
       "inputSchema": { "type": "object", "additionalProperties": false, "required": ["requestedProtocolVersions"], "properties": { "requestedProtocolVersions": { "type": "array", "minItems": 1, "items": { "type": "string" } }, "requestedFeatures": { "type": "array", "uniqueItems": true, "items": { "type": "string" } } } },
-      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["negotiatedProtocolVersion", "schemaVersion", "toolsetDigest", "trustRootIds", "limits"], "properties": { "negotiatedProtocolVersion": { "const": "3.0" }, "schemaVersion": { "const": "3.0.0-draft.2" }, "toolsetDigest": { "$ref": "#/$defs/digest" }, "trustRootIds": { "type": "array", "minItems": 1, "items": { "type": "string" } }, "limits": { "type": "object" } } }
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["negotiatedProtocolVersion", "schemaVersion", "toolsetDigest", "trustRootIds", "limits"], "properties": { "negotiatedProtocolVersion": { "const": "3.0" }, "schemaVersion": { "const": "3.0.0-draft.3" }, "toolsetDigest": { "$ref": "#/$defs/digest" }, "trustRootIds": { "type": "array", "minItems": 1, "items": { "type": "string" } }, "limits": { "type": "object" } } }
     },
     {
       "name": "agent_handshake_invitation_create", "scope": "handshake.invitation.create",
@@ -366,7 +367,7 @@
     {
       "name": "agent_handshake_invitation_list", "scope": "handshake.invitation.receive",
       "inputSchema": { "type": "object", "additionalProperties": false, "oneOf": [{ "not": { "required": ["invitationToken"] } }, { "required": ["invitationToken"], "not": { "anyOf": [{ "required": ["cursor"] }, { "required": ["states"] }, { "required": ["limit"] }] } }], "properties": { "invitationToken": { "$ref": "#/$defs/opaqueId" }, "cursor": { "$ref": "#/$defs/opaqueId" }, "states": { "type": "array", "uniqueItems": true, "items": { "enum": ["ISSUED", "CLAIMED", "EXPIRED", "CANCELLED", "REVOKED"] } }, "limit": { "type": "integer", "minimum": 1, "maximum": 100 } } },
-      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["invitations"], "properties": { "invitations": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["invitationId", "state", "policy", "policyDigest", "statementDigest", "responderRole", "responderBinding", "expiresAt", "protocolVersion", "schemaVersion", "trustRootIds"], "properties": { "invitationId": { "$ref": "#/$defs/opaqueId" }, "invitationToken": { "$ref": "#/$defs/opaqueId" }, "state": { "enum": ["ISSUED", "CLAIMED", "EXPIRED", "CANCELLED", "REVOKED"] }, "policy": { "$ref": "#/$defs/policy" }, "policyDigest": { "$ref": "#/$defs/digest" }, "statementDigest": { "$ref": "#/$defs/digest" }, "responderRole": { "const": "RESPONDER" }, "responderBinding": { "enum": ["TARGETED", "FIRST_AUTHENTICATED_CLAIM"] }, "expiresAt": { "type": "string", "format": "date-time" }, "protocolVersion": { "const": "3.0" }, "schemaVersion": { "const": "3.0.0-draft.2" }, "trustRootIds": { "type": "array", "minItems": 1, "items": { "type": "string" } } } } }, "nextCursor": { "$ref": "#/$defs/opaqueId" } } }
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["invitations"], "properties": { "invitations": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["invitationId", "state", "policy", "policyDigest", "statementDigest", "responderRole", "responderBinding", "expiresAt", "protocolVersion", "schemaVersion", "trustRootIds"], "properties": { "invitationId": { "$ref": "#/$defs/opaqueId" }, "invitationToken": { "$ref": "#/$defs/opaqueId" }, "state": { "enum": ["ISSUED", "CLAIMED", "EXPIRED", "CANCELLED", "REVOKED"] }, "policy": { "$ref": "#/$defs/policy" }, "policyDigest": { "$ref": "#/$defs/digest" }, "statementDigest": { "$ref": "#/$defs/digest" }, "responderRole": { "const": "RESPONDER" }, "responderBinding": { "enum": ["TARGETED", "FIRST_AUTHENTICATED_CLAIM"] }, "expiresAt": { "type": "string", "format": "date-time" }, "protocolVersion": { "const": "3.0" }, "schemaVersion": { "const": "3.0.0-draft.3" }, "trustRootIds": { "type": "array", "minItems": 1, "items": { "type": "string" } } } } }, "nextCursor": { "$ref": "#/$defs/opaqueId" } } }
     },
     {
       "name": "agent_handshake_invitation_accept", "scope": "handshake.invitation.accept",
@@ -391,7 +392,7 @@
     {
       "name": "agent_handshake_session_next", "scope": "handshake.session.read",
       "inputSchema": { "type": "object", "additionalProperties": false, "required": ["sessionId", "roleGrantId", "eventCursor"], "properties": { "sessionId": { "$ref": "#/$defs/opaqueId" }, "roleGrantId": { "$ref": "#/$defs/opaqueId" }, "eventCursor": { "$ref": "#/$defs/opaqueId" }, "waitTimeoutMs": { "type": "integer", "minimum": 0, "maximum": 30000 } } },
-      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["changed", "nextAction", "session", "events", "retryAfterMs"], "properties": { "changed": { "type": "boolean" }, "nextAction": { "$ref": "#/$defs/nextAction" }, "session": { "$ref": "#/$defs/session" }, "events": { "type": "array", "items": { "$ref": "#/$defs/callbackEvent" } }, "retryAfterMs": { "type": "integer", "minimum": 0 } } }
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["changed", "nextAction", "session", "events", "retryAfterMs", "expectedStateVersion"], "properties": { "changed": { "type": "boolean" }, "nextAction": { "$ref": "#/$defs/nextAction" }, "session": { "$ref": "#/$defs/session" }, "events": { "type": "array", "items": { "$ref": "#/$defs/callbackEvent" } }, "retryAfterMs": { "type": "integer", "minimum": 0 }, "waitingOn": { "$ref": "#/$defs/waitingOn" }, "requiredTool": { "type": "string", "pattern": "^agent_handshake_[a-z_]+$" }, "expectedStateVersion": { "type": "integer", "minimum": 0 } } }
     },
     {
       "name": "agent_handshake_session_submit_checkpoint", "scope": "handshake.session.participate",
@@ -416,12 +417,12 @@
     {
       "name": "agent_handshake_session_get_result", "scope": "handshake.certificate.read",
       "inputSchema": { "type": "object", "additionalProperties": false, "required": ["sessionId"], "properties": { "sessionId": { "$ref": "#/$defs/opaqueId" } } },
-      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["certificate", "continuation", "clockchainReceiptDigests", "externalBusinessActionPerformed", "nextInstruction"], "properties": { "certificate": { "$ref": "#/$defs/certificate" }, "continuation": { "$ref": "#/$defs/continuation" }, "clockchainReceiptDigests": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/digest" } }, "externalBusinessActionPerformed": { "const": false }, "nextInstruction": { "const": "STOP_AFTER_VERIFICATION" } } }
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["certificate", "continuation", "clockchainReceiptDigests", "externalBusinessActionPerformed", "nextInstruction"], "properties": { "certificate": { "$ref": "#/$defs/certificate" }, "continuation": { "$ref": "#/$defs/continuation" }, "clockchainReceiptDigests": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/digest" } }, "externalBusinessActionPerformed": { "const": false }, "nextInstruction": { "const": "VERIFY_RESULT" } } }
     },
     {
       "name": "agent_handshake_result_verify", "scope": "handshake.certificate.read",
       "inputSchema": { "type": "object", "additionalProperties": false, "required": ["certificate", "continuation"], "properties": { "certificate": { "$ref": "#/$defs/certificate" }, "continuation": { "$ref": "#/$defs/continuation" }, "expectedPolicyDigest": { "$ref": "#/$defs/digest" }, "expectedPartyRoleDigests": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/digest" } } } },
-      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["valid", "certificateValid", "continuationValid", "revocationStatus", "checkedAt", "violations", "externalBusinessActionPerformed"], "properties": { "valid": { "type": "boolean" }, "certificateValid": { "type": "boolean" }, "continuationValid": { "type": "boolean" }, "revocationStatus": { "enum": ["GOOD", "REVOKED", "UNKNOWN_FAIL_CLOSED"] }, "checkedAt": { "type": "string", "format": "date-time" }, "violations": { "type": "array", "items": { "type": "string" } }, "externalBusinessActionPerformed": { "const": false } } }
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["valid", "certificateValid", "continuationValid", "revocationStatus", "checkedAt", "violations", "externalBusinessActionPerformed", "nextInstruction"], "properties": { "valid": { "type": "boolean" }, "certificateValid": { "type": "boolean" }, "continuationValid": { "type": "boolean" }, "revocationStatus": { "enum": ["GOOD", "REVOKED", "UNKNOWN_FAIL_CLOSED"] }, "checkedAt": { "type": "string", "format": "date-time" }, "violations": { "type": "array", "items": { "type": "string" } }, "externalBusinessActionPerformed": { "const": false }, "nextInstruction": { "const": "STOP_AFTER_VERIFICATION" } } }
     },
     {
       "name": "agent_handshake_audit_receipt", "scope": "handshake.audit.read",

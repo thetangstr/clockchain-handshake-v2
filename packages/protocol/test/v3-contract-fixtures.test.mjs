@@ -34,11 +34,11 @@ function sha256Hex(bytes) {
 
 test("v3 protocol package records approved schema and fixture provenance", () => {
   assert.equal(HANDSHAKE_V3_PROTOCOL_VERSION, "3.0");
-  assert.equal(HANDSHAKE_V3_SCHEMA_VERSION, "3.0.0-draft.2");
+  assert.equal(HANDSHAKE_V3_SCHEMA_VERSION, "3.0.0-draft.3");
   assert.deepEqual(provenance, HANDSHAKE_V3_CONTRACT_PROVENANCE);
   assert.equal(provenance.approvedProtocolSourceCommit, "d2cdedb705cf6855657381a908e47f71df959145");
-  assert.equal(provenance.contractSchemaSha256, "579f2e07475fbf1e0209df9f082218837b766aab507430e514962971625d2991");
-  assert.equal(provenance.contractFixturesSha256, "9a71c8efa6d4cce6f8f2d20ff6dc9ef7255874c8c81c26bb9393cc884aa5af79");
+  assert.equal(provenance.contractSchemaSha256, "335bc187c2f76de83f6d71df2cb6db7a39937693be0d9c814bec7d60ed378d81");
+  assert.equal(provenance.contractFixturesSha256, "4a15a47a9183730dbc0b79641dfa984d7b628866078bbbb3686d252fb10f2b13");
   assert.equal(sha256Hex(schemaBytes), provenance.contractSchemaSha256);
   assert.equal(sha256Hex(fixtureBytes), provenance.contractFixturesSha256);
 });

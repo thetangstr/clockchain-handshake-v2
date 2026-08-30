@@ -151,13 +151,13 @@ function sessionResumeResult(overrides = {}) {
   };
 }
 
-function nextResult({ state, nextAction, pendingSigningRequest, retryAfterMs, allowedTransitions } = {}) {
+function nextResult({ state, nextAction, pendingSigningRequest, retryAfterMs, allowedTransitions, waitingOn, requiredTool, changed, events = [] } = {}) {
   const sessionId = "sess_semantic_012345";
   const role = pendingSigningRequest?.role ?? "INITIATOR";
   const stateVersion = state === "INVITED" ? 0 : 1;
   const policyDigest = digest;
   return {
-    changed: nextAction !== "WAIT",
+    changed: changed ?? nextAction !== "WAIT",
     nextAction,
     session: sessionFor({
       sessionId,
@@ -169,8 +169,11 @@ function nextResult({ state, nextAction, pendingSigningRequest, retryAfterMs, al
         ? { ...pendingSigningRequest, sessionId, role, stateVersion, policyDigest }
         : undefined,
     }),
-    events: [],
+    events,
     retryAfterMs,
+    expectedStateVersion: stateVersion,
+    ...(waitingOn ? { waitingOn } : {}),
+    ...(requiredTool ? { requiredTool } : {}),
   };
 }
 
@@ -224,7 +227,7 @@ function sampleForSchema(fragment) {
 function responseEnvelope(result) {
   return {
     protocolVersion: "3.0",
-    schemaVersion: "3.0.0-draft.2",
+    schemaVersion: "3.0.0-draft.3",
     requestId: "01234567-89ab-4def-8123-456789abcdef",
     serverTime: later,
     result,
@@ -236,7 +239,7 @@ function assertGenericObjectSurfacesReject(value) {
   assert.throws(() => validateHandshakeV3ResponseEnvelope(responseEnvelope(value)), { code: "SCHEMA_INVALID" });
   assert.throws(() => validateHandshakeV3ToolResult("agent_handshake_capabilities", {
     negotiatedProtocolVersion: "3.0",
-    schemaVersion: "3.0.0-draft.2",
+    schemaVersion: "3.0.0-draft.3",
     toolsetDigest: digest,
     trustRootIds: ["root-2026-08"],
     limits: value,
@@ -249,9 +252,11 @@ test("constants mirror the normative schema enums exactly", () => {
   assert.deepEqual(HANDSHAKE_V3_SIGNING_ALGORITHMS, ["ES256K", "EdDSA", "ES256"]);
   assert.deepEqual(HANDSHAKE_V3_NEXT_ACTIONS, [
     "WAIT",
+    "JOIN_SESSION",
     "SIGN_AND_SUBMIT",
     "SUBMIT_CHECKPOINT",
     "FETCH_RESULT",
+    "VERIFY_RESULT",
     "STOP_AFTER_VERIFICATION",
     "TERMINAL",
   ]);
@@ -281,20 +286,30 @@ test("constants mirror the normative schema enums exactly", () => {
     REVOKED: [],
   });
   assert.equal(HANDSHAKE_V3_NEXT_ACTION_BY_STATE.PROPOSAL_PENDING, "SIGN_AND_SUBMIT");
-  assert.equal(HANDSHAKE_V3_NEXT_ACTION_BY_STATE.CERTIFICATE_ISSUED, "FETCH_RESULT");
+  assert.equal(HANDSHAKE_V3_NEXT_ACTION_BY_STATE.CERTIFICATE_ISSUED, "WAIT");
   assert.deepEqual(HANDSHAKE_V3_TOOL_NAMES, schema.tools.map((tool) => tool.name));
   assert.equal(HANDSHAKE_V3_TOOL_NAMES.length, 16);
   assert.equal(HANDSHAKE_V3_TOOL_NAMES.includes("agent_handshake_session_verify"), false);
 });
 
-test("draft.2 schema is explicit and draft.1 envelopes are not accepted", () => {
+test("draft.3 schema is explicit and draft.1/draft.2 envelopes are not accepted", () => {
   assert.equal(schema.protocolVersion, "3.0");
-  assert.equal(schema.schemaVersion, "3.0.0-draft.2");
-  assert.equal(HANDSHAKE_V3_CONTRACT_SCHEMA.schemaVersion, "3.0.0-draft.2");
+  assert.equal(schema.schemaVersion, "3.0.0-draft.3");
+  assert.equal(HANDSHAKE_V3_CONTRACT_SCHEMA.schemaVersion, "3.0.0-draft.3");
 
   assert.throws(() => validateHandshakeV3ResponseEnvelope({
     ...responseEnvelope({ ok: true }),
     schemaVersion: "3.0.0-draft.1",
+  }), { code: "SCHEMA_INVALID" });
+  assert.throws(() => validateHandshakeV3ResponseEnvelope({
+    ...responseEnvelope({ ok: true }),
+    schemaVersion: "3.0.0-draft.2",
+  }), { code: "SCHEMA_INVALID" });
+  const draftTwoContinuation = sampleForSchema(schema.$defs.continuation);
+  assert.equal(validateHandshakeV3Def("continuation", draftTwoContinuation).schemaVersion, "3.0.0-draft.3");
+  assert.throws(() => validateHandshakeV3Def("continuation", {
+    ...draftTwoContinuation,
+    schemaVersion: "3.0.0-draft.2",
   }), { code: "SCHEMA_INVALID" });
 });
 
@@ -336,7 +351,7 @@ test("generic object schema surfaces recursively clone only safe JSON", () => {
   assert.deepEqual(validateHandshakeV3ResponseEnvelope(responseEnvelope(nested)).result, nested);
   assert.deepEqual(validateHandshakeV3ToolResult("agent_handshake_capabilities", {
     negotiatedProtocolVersion: "3.0",
-    schemaVersion: "3.0.0-draft.2",
+    schemaVersion: "3.0.0-draft.3",
     toolsetDigest: digest,
     trustRootIds: ["root-2026-08"],
     limits: nested,
@@ -570,7 +585,7 @@ test("invitation list supports read-only token inspection with immutable policy 
       responderBinding: "FIRST_AUTHENTICATED_CLAIM",
       expiresAt: later,
       protocolVersion: "3.0",
-      schemaVersion: "3.0.0-draft.2",
+      schemaVersion: "3.0.0-draft.3",
       trustRootIds: ["root-2026-08"],
     }],
   });
@@ -589,15 +604,32 @@ test("invitation list supports read-only token inspection with immutable policy 
 test("session next exposes an exhaustive machine-readable nextAction", () => {
   assert.equal(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
     state: "CLAIMED",
-    nextAction: "WAIT",
-    retryAfterMs: 1000,
-  })).nextAction, "WAIT");
+    nextAction: "JOIN_SESSION",
+    waitingOn: "SELF",
+    requiredTool: "agent_handshake_session_join",
+    retryAfterMs: 0,
+  })).nextAction, "JOIN_SESSION");
   assert.equal(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
-    state: "PROPOSAL_PENDING",
+    state: "PARTIES_BOUND",
     nextAction: "SIGN_AND_SUBMIT",
     pendingSigningRequest: signingRequestSample("PROPOSAL", "INITIATOR", 1),
     retryAfterMs: 0,
   })).nextAction, "SIGN_AND_SUBMIT");
+  assert.equal(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
+    state: "PROPOSAL_PENDING",
+    nextAction: "SIGN_AND_SUBMIT",
+    pendingSigningRequest: signingRequestSample("ACCEPTANCE", "RESPONDER", 1),
+    retryAfterMs: 0,
+  })).nextAction, "SIGN_AND_SUBMIT");
+  assert.equal(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
+    state: "PROPOSAL_PENDING",
+    nextAction: "WAIT",
+    waitingOn: "COUNTERPARTY",
+    requiredTool: "agent_handshake_session_next",
+    changed: true,
+    events: [sampleForSchema(schema.$defs.callbackEvent)],
+    retryAfterMs: 1000,
+  })).nextAction, "WAIT");
   assert.equal(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
     state: "ACCEPTANCE_PENDING",
     nextAction: "SUBMIT_CHECKPOINT",
@@ -606,14 +638,23 @@ test("session next exposes an exhaustive machine-readable nextAction", () => {
   })).nextAction, "SUBMIT_CHECKPOINT");
   assert.equal(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
     state: "CERTIFICATE_ISSUED",
+    nextAction: "WAIT",
+    waitingOn: "CLOCKCHAIN",
+    requiredTool: "agent_handshake_session_get_result",
+    retryAfterMs: 1000,
+  })).nextAction, "WAIT");
+  assert.equal(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
+    state: "CONTINUATION_ISSUED",
     nextAction: "FETCH_RESULT",
+    requiredTool: "agent_handshake_session_get_result",
     retryAfterMs: 0,
   })).nextAction, "FETCH_RESULT");
   assert.equal(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
-    state: "CONTINUATION_ISSUED",
-    nextAction: "STOP_AFTER_VERIFICATION",
+    state: "COMPLETED",
+    nextAction: "FETCH_RESULT",
+    requiredTool: "agent_handshake_session_get_result",
     retryAfterMs: 0,
-  })).nextAction, "STOP_AFTER_VERIFICATION");
+  })).nextAction, "FETCH_RESULT");
   assert.equal(validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
     state: "CANCELLED",
     nextAction: "TERMINAL",
@@ -642,7 +683,7 @@ test("session next rejects inconsistent nextAction state and signing request pai
   assert.throws(() => validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
     state: "PROPOSAL_PENDING",
     nextAction: "SIGN_AND_SUBMIT",
-    pendingSigningRequest: signingRequestSample("ACCEPTANCE", "RESPONDER", 1),
+    pendingSigningRequest: signingRequestSample("PROPOSAL", "RESPONDER", 1),
     retryAfterMs: 0,
   })), { code: "SCHEMA_INVALID" });
   assert.throws(() => validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
@@ -734,7 +775,7 @@ test("documented external-agent response shapes are schema-reachable without sha
       responderBinding: "FIRST_AUTHENTICATED_CLAIM",
       expiresAt: later,
       protocolVersion: "3.0",
-      schemaVersion: "3.0.0-draft.2",
+      schemaVersion: "3.0.0-draft.3",
       trustRootIds: ["root-2026-08"],
     }],
   });
@@ -776,7 +817,7 @@ test("schema engine validates all 16 tool input and result schemas", () => {
       : tool.name === "agent_handshake_invitation_accept"
         ? invitationAcceptResult()
         : tool.name === "agent_handshake_session_next"
-          ? nextResult({ state: "CLAIMED", nextAction: "WAIT", retryAfterMs: 1000 })
+          ? nextResult({ state: "CLAIMED", nextAction: "JOIN_SESSION", waitingOn: "SELF", requiredTool: "agent_handshake_session_join", retryAfterMs: 0 })
           : tool.name === "agent_handshake_session_resume"
             ? sessionResumeResult()
             : sampleForSchema(tool.resultSchema);

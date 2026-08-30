@@ -338,7 +338,8 @@ function validateResumedRoleResult(result) {
 
 const NEXT_ACTION_SIGNING_REQUIREMENTS = Object.freeze({
   SIGN_AND_SUBMIT: Object.freeze({
-    PROPOSAL_PENDING: Object.freeze({ actionType: "PROPOSAL", role: "INITIATOR" }),
+    PARTIES_BOUND: Object.freeze({ actionType: "PROPOSAL", role: "INITIATOR" }),
+    PROPOSAL_PENDING: Object.freeze({ actionType: "ACCEPTANCE", role: "RESPONDER" }),
   }),
   SUBMIT_CHECKPOINT: Object.freeze({
     ACCEPTANCE_PENDING: Object.freeze({ actionType: "EVIDENCE", role: "RESPONDER" }),
@@ -350,18 +351,34 @@ function assertNoPendingSigningRequest(session) {
 }
 
 function validateNextActionResult(result) {
-  const expected = HANDSHAKE_V3_NEXT_ACTION_BY_STATE[result.session.state];
-  assertEqual(result.nextAction, expected);
+  if (result.expectedStateVersion !== result.session.stateVersion) schemaInvalid();
   assertAllowedTransitions(result.session);
+  if (result.session.state === "POLICY_READY") schemaInvalid();
+  if (result.nextAction === "JOIN_SESSION") {
+    if (!["INVITED", "CLAIMED"].includes(result.session.state)) schemaInvalid();
+    assertNoPendingSigningRequest(result.session);
+    assertEqual(result.waitingOn, "SELF");
+    assertEqual(result.requiredTool, "agent_handshake_session_join");
+    if (result.retryAfterMs !== 0) schemaInvalid();
+    return;
+  }
   if (result.nextAction === "WAIT") {
     assertNoPendingSigningRequest(result.session);
     if (result.retryAfterMs < 1 || result.retryAfterMs > 30000) schemaInvalid();
-    if (result.changed !== false) schemaInvalid();
+    if (result.changed === true && result.events.length === 0) schemaInvalid();
+    if (!result.waitingOn || !result.requiredTool) schemaInvalid();
     return;
   }
   if (result.retryAfterMs !== 0) schemaInvalid();
-  if (result.nextAction === "TERMINAL" || result.nextAction === "FETCH_RESULT" || result.nextAction === "STOP_AFTER_VERIFICATION") {
+  if (result.nextAction === "TERMINAL") {
+    if (!["FAILED_CLOSED", "CANCELLED", "EXPIRED", "REVOKED"].includes(result.session.state)) schemaInvalid();
     assertNoPendingSigningRequest(result.session);
+    return;
+  }
+  if (result.nextAction === "FETCH_RESULT") {
+    if (!["CONTINUATION_ISSUED", "COMPLETED"].includes(result.session.state)) schemaInvalid();
+    assertNoPendingSigningRequest(result.session);
+    assertEqual(result.requiredTool, "agent_handshake_session_get_result");
     return;
   }
   const requirement = NEXT_ACTION_SIGNING_REQUIREMENTS[result.nextAction]?.[result.session.state];

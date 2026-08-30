@@ -204,5 +204,6 @@ export async function verifyHandshakeV3Continuation({
     checkedAt: now,
     violations: [],
     externalBusinessActionPerformed: false,
+    nextInstruction: "STOP_AFTER_VERIFICATION",
   });
 }

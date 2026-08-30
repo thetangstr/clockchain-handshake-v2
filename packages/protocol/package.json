@@ -1,6 +1,6 @@
 {
   "name": "@clockchain/handshake-protocol",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": false,
   "type": "module",
   "description": "Transport-independent Clockchain agent handshake protocol kernel.",

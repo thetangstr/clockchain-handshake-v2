@@ -6,12 +6,20 @@ import {
   HANDSHAKE_V3_DOMAIN_SEPARATOR,
   HANDSHAKE_V3_INITIATOR_REQUIRED_TOOLS,
   applyHandshakeV3Transition,
+  applyHandshakeV3ToolEvent,
+  createHandshakeV3Aggregate,
+  createHandshakeV3PolicyDigest,
+  createHandshakeV3StatementDigest,
   createHandshakeV3SigningRequest,
   evaluateHandshakeV3OperatorRequest,
   handshakeV3CertificateSignedProjection,
   handshakeV3ContinuationSignedProjection,
   handshakeV3Digest,
   recoverHandshakeV3RoleGrant,
+  planHandshakeV3NextAction,
+  projectHandshakeV3SessionForRole,
+  validateHandshakeV3ActionSubmission,
+  validateHandshakeV3CheckpointSubmission,
   validateHandshakeV3RoleGrantBinding,
   validateHandshakeV3ToolInput,
   validateHandshakeV3ToolResult,
@@ -110,7 +118,7 @@ function continuation(cert = certificate()) {
     scopeDigest: digestC,
     policyDigest: cert.policyDigest,
     protocolVersion: "3.0",
-    schemaVersion: "3.0.0-draft.2",
+    schemaVersion: "3.0.0-draft.3",
     issuedAt: "2026-08-29T20:01:00Z",
     notBefore: "2026-08-29T20:02:00Z",
     expiresAt: "2026-08-29T20:30:00Z",
@@ -138,6 +146,111 @@ test("role grants bind principal, proof key, tool, and expiry with schema error 
     ...roleGrant(),
     expiresAt: "2026-08-29T20:00:60Z",
   }, { now: "2026-08-29T20:01:00Z" }), { code: "TOKEN_EXPIRED" });
+});
+
+test("draft.3 stateful two-agent vector reaches verified safe stop without business action", () => {
+  const sessionId = "sess_stateful_012345";
+  const base = createHandshakeV3Aggregate({
+    sessionId,
+    policy: policy(),
+    expiresAt: "2026-08-29T21:00:00Z",
+    statement: "Agent Contract handshake only; stop before business action.",
+    createdAt: "2026-08-29T20:00:00Z",
+  });
+  assert.equal(base.schemaVersion, "3.0.0-draft.3");
+  assert.equal(base.policyDigest, createHandshakeV3PolicyDigest(policy()));
+  assert.equal(base.statementDigest, createHandshakeV3StatementDigest("Agent Contract handshake only; stop before business action."));
+
+  const accepted = applyHandshakeV3ToolEvent(base, {
+    type: "INVITATION_ACCEPTED",
+    role: "RESPONDER",
+    partyDigest: digestC,
+    eventCursor: "cursor_accept_012345",
+  });
+  assert.equal(planHandshakeV3NextAction(accepted, "INITIATOR").nextAction, "JOIN_SESSION");
+  assert.equal(planHandshakeV3NextAction(accepted, "RESPONDER").nextAction, "JOIN_SESSION");
+
+  const initiatorJoined = applyHandshakeV3ToolEvent(accepted, {
+    type: "SESSION_JOINED",
+    role: "INITIATOR",
+    partyDigest: digestB,
+    eventCursor: "cursor_join_i_012345",
+  });
+  const responderJoinPlan = planHandshakeV3NextAction(initiatorJoined, "RESPONDER");
+  assert.equal(responderJoinPlan.nextAction, "JOIN_SESSION");
+  assert.equal(responderJoinPlan.requiredTool, "agent_handshake_session_join");
+
+  const bothJoined = applyHandshakeV3ToolEvent(initiatorJoined, {
+    type: "SESSION_JOINED",
+    role: "RESPONDER",
+    partyDigest: digestC,
+    eventCursor: "cursor_join_r_012345",
+  });
+  const initiatorPlan = planHandshakeV3NextAction(bothJoined, "INITIATOR");
+  const responderWait = planHandshakeV3NextAction(bothJoined, "RESPONDER");
+  assert.equal(projectHandshakeV3SessionForRole(bothJoined, "INITIATOR").state, "PARTIES_BOUND");
+  assert.equal(initiatorPlan.nextAction, "SIGN_AND_SUBMIT");
+  assert.equal(initiatorPlan.session.pendingSigningRequest.actionType, "PROPOSAL");
+  assert.equal(responderWait.nextAction, "WAIT");
+
+  const proposalEvent = validateHandshakeV3ActionSubmission(bothJoined, {
+    role: "INITIATOR",
+    action: {
+      signingRequestId: initiatorPlan.session.pendingSigningRequest.signingRequestId,
+      signingDigest: initiatorPlan.session.pendingSigningRequest.signingDigest,
+      signerKeyId: "agent-a-key-1",
+      algorithm: "EdDSA",
+      signature: "p".repeat(32),
+    },
+    eventCursor: "cursor_proposal_012345",
+  });
+  const proposalSubmitted = applyHandshakeV3ToolEvent(bothJoined, proposalEvent);
+  const responderPlan = planHandshakeV3NextAction(proposalSubmitted, "RESPONDER");
+  assert.equal(responderPlan.nextAction, "SIGN_AND_SUBMIT");
+  assert.equal(responderPlan.session.pendingSigningRequest.actionType, "ACCEPTANCE");
+  assert.equal(planHandshakeV3NextAction(proposalSubmitted, "INITIATOR").nextAction, "WAIT");
+
+  const acceptanceSubmitted = applyHandshakeV3ToolEvent(proposalSubmitted, validateHandshakeV3ActionSubmission(proposalSubmitted, {
+    role: "RESPONDER",
+    action: {
+      signingRequestId: responderPlan.session.pendingSigningRequest.signingRequestId,
+      signingDigest: responderPlan.session.pendingSigningRequest.signingDigest,
+      signerKeyId: "agent-b-key-1",
+      algorithm: "EdDSA",
+      signature: "a".repeat(32),
+    },
+    eventCursor: "cursor_acceptance_012345",
+  }));
+  const checkpointPlan = planHandshakeV3NextAction(acceptanceSubmitted, "RESPONDER");
+  assert.equal(checkpointPlan.nextAction, "SUBMIT_CHECKPOINT");
+  assert.equal(checkpointPlan.session.pendingSigningRequest.actionType, "EVIDENCE");
+
+  const anchoring = applyHandshakeV3ToolEvent(acceptanceSubmitted, validateHandshakeV3CheckpointSubmission(acceptanceSubmitted, {
+    role: "RESPONDER",
+    checkpointType: "ACCEPTED",
+    signingRequestId: checkpointPlan.session.pendingSigningRequest.signingRequestId,
+    signingDigest: checkpointPlan.session.pendingSigningRequest.signingDigest,
+    signerKeyId: "agent-b-key-1",
+    algorithm: "EdDSA",
+    signature: "e".repeat(32),
+    eventCursor: "cursor_checkpoint_012345",
+  }));
+  assert.equal(anchoring.state, "ANCHORING");
+
+  const certificateIssued = applyHandshakeV3ToolEvent(anchoring, {
+    type: "CLOCKCHAIN_CERTIFICATE_ISSUED",
+    eventCursor: "cursor_cert_012345",
+  });
+  assert.equal(planHandshakeV3NextAction(certificateIssued, "INITIATOR").nextAction, "WAIT");
+
+  const continuationIssued = applyHandshakeV3ToolEvent(certificateIssued, {
+    type: "CLOCKCHAIN_CONTINUATION_ISSUED",
+    certificateDigest: digestD,
+    continuationDigest: digestE,
+    eventCursor: "cursor_cont_012345",
+  });
+  assert.equal(planHandshakeV3NextAction(continuationIssued, "RESPONDER").nextAction, "FETCH_RESULT");
+  assert.equal(continuationIssued.externalBusinessActionPerformed, false);
 });
 
 test("recovery returns exact roleGrant/session/result shape and does not mutate session", () => {

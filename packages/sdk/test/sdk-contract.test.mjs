@@ -58,7 +58,7 @@ test("SDK exposes immutable contract and tool discovery metadata from protocol v
   const descriptor = getHandshakeV3ToolDescriptor("agent_handshake_session_join");
 
   assert.equal(contract.protocolVersion, "3.0");
-  assert.equal(contract.schemaVersion, "3.0.0-draft.2");
+  assert.equal(contract.schemaVersion, "3.0.0-draft.3");
   assert.equal(Object.isFrozen(contract), true);
   assert.equal(tools.includes("agent_handshake_result_verify"), true);
   assert.equal(descriptor.name, "agent_handshake_session_join");

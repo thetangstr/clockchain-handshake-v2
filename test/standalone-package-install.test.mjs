@@ -84,9 +84,9 @@ test("standalone packages import and run from installed tarballs without repo-re
 
     const sdkManifest = JSON.parse(await readFile(join(installDir, "node_modules", "@clockchain", "handshake-sdk", "package.json"), "utf8"));
     const cliManifest = JSON.parse(await readFile(join(installDir, "node_modules", "@clockchain", "handshake-cli", "package.json"), "utf8"));
-    assert.equal(sdkManifest.dependencies["@clockchain/handshake-protocol"], "0.2.0");
-    assert.equal(cliManifest.dependencies["@clockchain/handshake-sdk"], "0.2.0");
-    assert.equal(cliManifest.dependencies["@clockchain/handshake-protocol"], "0.2.0");
+    assert.equal(sdkManifest.dependencies["@clockchain/handshake-protocol"], "0.3.0");
+    assert.equal(cliManifest.dependencies["@clockchain/handshake-sdk"], "0.3.0");
+    assert.equal(cliManifest.dependencies["@clockchain/handshake-protocol"], "0.3.0");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -158,7 +158,7 @@ test("SDK tarball installs with protocol tarball and exact package pin", async (
     assert.equal(JSON.parse(stdout), "3.0");
 
     const sdkManifest = JSON.parse(await readFile(join(installDir, "node_modules", "@clockchain", "handshake-sdk", "package.json"), "utf8"));
-    assert.equal(sdkManifest.dependencies["@clockchain/handshake-protocol"], "0.2.0");
+    assert.equal(sdkManifest.dependencies["@clockchain/handshake-protocol"], "0.3.0");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -191,8 +191,8 @@ test("CLI tarball installs with exact SDK and protocol tarballs and fixture-only
     assert.equal(output.externalBusinessActionPerformed, false);
 
     const cliManifest = JSON.parse(await readFile(join(installDir, "node_modules", "@clockchain", "handshake-cli", "package.json"), "utf8"));
-    assert.equal(cliManifest.dependencies["@clockchain/handshake-sdk"], "0.2.0");
-    assert.equal(cliManifest.dependencies["@clockchain/handshake-protocol"], "0.2.0");
+    assert.equal(cliManifest.dependencies["@clockchain/handshake-sdk"], "0.3.0");
+    assert.equal(cliManifest.dependencies["@clockchain/handshake-protocol"], "0.3.0");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
