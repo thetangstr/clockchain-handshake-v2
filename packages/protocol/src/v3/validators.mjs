@@ -322,6 +322,20 @@ function validateInvitationRoleResult(result, {
   assertEqual(result.tenantRelation.visibility, visibility);
 }
 
+function validateResumedRoleResult(result) {
+  assertEqual(result.roleGrant.role, result.session.role);
+  assertEqual(result.roleGrant.sessionId, result.session.sessionId);
+  assertEqual(result.roleGrant.expiresAt, result.session.expiresAt);
+  assertPolicyExpiry(result.session);
+  assertAllowedTransitions(result.session);
+  assertRequiredTools(
+    result.roleGrant.allowedTools,
+    result.roleGrant.role === "INITIATOR"
+      ? HANDSHAKE_V3_INITIATOR_REQUIRED_TOOLS
+      : HANDSHAKE_V3_RESPONDER_REQUIRED_TOOLS,
+  );
+}
+
 const NEXT_ACTION_SIGNING_REQUIREMENTS = Object.freeze({
   SIGN_AND_SUBMIT: Object.freeze({
     PROPOSAL_PENDING: Object.freeze({ actionType: "PROPOSAL", role: "INITIATOR" }),
@@ -381,6 +395,8 @@ export function validateHandshakeV3SemanticToolResult(toolName, result) {
     });
   } else if (toolName === "agent_handshake_session_next") {
     validateNextActionResult(result);
+  } else if (toolName === "agent_handshake_session_resume") {
+    validateResumedRoleResult(result);
   }
   return result;
 }

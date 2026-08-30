@@ -38,7 +38,7 @@ test("v3 protocol package records approved schema and fixture provenance", () =>
   assert.deepEqual(provenance, HANDSHAKE_V3_CONTRACT_PROVENANCE);
   assert.equal(provenance.approvedProtocolSourceCommit, "d2cdedb705cf6855657381a908e47f71df959145");
   assert.equal(provenance.contractSchemaSha256, "579f2e07475fbf1e0209df9f082218837b766aab507430e514962971625d2991");
-  assert.equal(provenance.contractFixturesSha256, "56c7ee85b0b5a0b838e55b0caea4051b9f2d5585b7ca86f162a4da554a97ad7d");
+  assert.equal(provenance.contractFixturesSha256, "9a71c8efa6d4cce6f8f2d20ff6dc9ef7255874c8c81c26bb9393cc884aa5af79");
   assert.equal(sha256Hex(schemaBytes), provenance.contractSchemaSha256);
   assert.equal(sha256Hex(fixtureBytes), provenance.contractFixturesSha256);
 });

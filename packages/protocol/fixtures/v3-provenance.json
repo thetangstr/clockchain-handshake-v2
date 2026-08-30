@@ -6,7 +6,7 @@
   "contractSchemaSha256": "579f2e07475fbf1e0209df9f082218837b766aab507430e514962971625d2991",
   "contractFixturesPath": "packages/protocol/fixtures/standalone-handshake-v3-contract-fixtures.json",
   "contractFixturesOriginalPath": "docs/superpowers/specs/standalone-handshake-v3-contract-fixtures.json",
-  "contractFixturesSha256": "56c7ee85b0b5a0b838e55b0caea4051b9f2d5585b7ca86f162a4da554a97ad7d",
+  "contractFixturesSha256": "9a71c8efa6d4cce6f8f2d20ff6dc9ef7255874c8c81c26bb9393cc884aa5af79",
   "packageName": "@clockchain/handshake-protocol",
   "runtimeBoundary": "no MCP server, HTTP gateway, OAuth/JWKS validator, tenant store, persistence, Supervisor, Agent Contract delivery, or demo controller"
 }

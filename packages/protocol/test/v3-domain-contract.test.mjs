@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  HANDSHAKE_V3_ALLOWED_TRANSITIONS_BY_STATE,
   HANDSHAKE_V3_DOMAIN_SEPARATOR,
+  HANDSHAKE_V3_INITIATOR_REQUIRED_TOOLS,
   applyHandshakeV3Transition,
   createHandshakeV3SigningRequest,
   evaluateHandshakeV3OperatorRequest,
@@ -53,7 +55,7 @@ function session(state = "INVITED", stateVersion = 0) {
     policy: policy(),
     policyDigest: digestA,
     expiresAt: "2026-08-29T21:00:00Z",
-    allowedTransitions: [],
+    allowedTransitions: [...HANDSHAKE_V3_ALLOWED_TRANSITIONS_BY_STATE[state]],
     eventCursor: "cursor_0123456789abcdef",
   };
 }
@@ -65,7 +67,7 @@ function roleGrant() {
     role: "INITIATOR",
     principalDigest: digestB,
     proofKeyThumbprint: digestC,
-    allowedTools: ["agent_handshake_session_next", "agent_handshake_session_submit"],
+    allowedTools: [...HANDSHAKE_V3_INITIATOR_REQUIRED_TOOLS],
     expiresAt: "2026-08-29T21:00:00Z",
   };
 }

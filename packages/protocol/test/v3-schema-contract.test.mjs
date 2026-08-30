@@ -138,6 +138,19 @@ function invitationAcceptResult(overrides = {}) {
   };
 }
 
+function sessionResumeResult(overrides = {}) {
+  const sessionId = overrides.sessionId ?? "sess_semantic_012345";
+  const role = overrides.role ?? "INITIATOR";
+  const policy = overrides.policy ?? policySample();
+  const policyDigest = overrides.policyDigest ?? digest;
+  return {
+    roleGrant: grantFor({ role, sessionId }),
+    session: sessionFor({ sessionId, role, state: "POLICY_READY", policy, policyDigest }),
+    recoveredWithoutMutation: true,
+    ...overrides,
+  };
+}
+
 function nextResult({ state, nextAction, pendingSigningRequest, retryAfterMs, allowedTransitions } = {}) {
   const sessionId = "sess_semantic_012345";
   const role = pendingSigningRequest?.role ?? "INITIATOR";
@@ -496,6 +509,29 @@ test("invitation accept rejects swapped roles and inconsistent responder binding
   }), { code: "SCHEMA_INVALID" });
 });
 
+test("session resume rejects widened authority and inconsistent resumed bindings", () => {
+  assert.equal(validateHandshakeV3ToolResult("agent_handshake_session_resume", sessionResumeResult()).roleGrant.role, "INITIATOR");
+  assert.throws(() => validateHandshakeV3ToolResult("agent_handshake_session_resume", {
+    ...sessionResumeResult(),
+    roleGrant: grantFor({
+      role: "INITIATOR",
+      allowedTools: [...HANDSHAKE_V3_INITIATOR_REQUIRED_TOOLS, "agent_handshake_operator_request"],
+    }),
+  }), { code: "SCHEMA_INVALID" });
+  assert.throws(() => validateHandshakeV3ToolResult("agent_handshake_session_resume", {
+    ...sessionResumeResult(),
+    session: sessionFor({ role: "RESPONDER", state: "POLICY_READY" }),
+  }), { code: "SCHEMA_INVALID" });
+  assert.throws(() => validateHandshakeV3ToolResult("agent_handshake_session_resume", {
+    ...sessionResumeResult(),
+    session: sessionFor({
+      role: "INITIATOR",
+      state: "POLICY_READY",
+      allowedTransitions: ["CLAIM_INVITATION", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"],
+    }),
+  }), { code: "SCHEMA_INVALID" });
+});
+
 test("tenantRelation is exact digest-only metadata", () => {
   const relation = validateHandshakeV3Def("tenantRelation", tenantRelationSample("INITIATOR_CREATED"));
   assert.equal(relation.visibility, "CREATOR_VIEW");
@@ -741,7 +777,9 @@ test("schema engine validates all 16 tool input and result schemas", () => {
         ? invitationAcceptResult()
         : tool.name === "agent_handshake_session_next"
           ? nextResult({ state: "CLAIMED", nextAction: "WAIT", retryAfterMs: 1000 })
-          : sampleForSchema(tool.resultSchema);
+          : tool.name === "agent_handshake_session_resume"
+            ? sessionResumeResult()
+            : sampleForSchema(tool.resultSchema);
     assert.equal(validateHandshakeV3ToolInput(tool.name, input).tool, tool.name);
     assert.deepEqual(validateHandshakeV3ToolResult(tool.name, result), result);
     assert.throws(() => validateHandshakeV3ToolInput(tool.name, { ...input, extra: true }), { code: "SCHEMA_INVALID" }, `${tool.name} input extra`);

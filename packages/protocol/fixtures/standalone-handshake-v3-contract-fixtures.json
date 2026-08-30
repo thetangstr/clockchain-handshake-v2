@@ -472,6 +472,35 @@
       "reason": "session_next must expose the exact canonical allowedTransitions for the reported state"
     },
     {
+      "id": "resume-grant-extra-operator-tool",
+      "resultTool": "agent_handshake_session_resume",
+      "value": {
+        "roleGrant": {
+          "roleGrantId": "grant_creator_0123456789",
+          "sessionId": "sess_creator_0123456789",
+          "role": "INITIATOR",
+          "principalDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "proofKeyThumbprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "allowedTools": ["agent_handshake_session_join", "agent_handshake_session_next", "agent_handshake_session_submit_checkpoint", "agent_handshake_session_submit", "agent_handshake_session_cancel", "agent_handshake_session_resume", "agent_handshake_operator_request"],
+          "expiresAt": "2026-08-29T21:00:00Z"
+        },
+        "session": {
+          "sessionId": "sess_creator_0123456789",
+          "role": "INITIATOR",
+          "state": "POLICY_READY",
+          "stateVersion": 2,
+          "policy": { "scope": ["agent-contract:a2a-after-handshake"], "constraints": { "businessAction": "none" }, "externalBusinessActionsAllowed": false, "expiresAt": "2026-08-29T21:00:00Z" },
+          "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expiresAt": "2026-08-29T21:00:00Z",
+          "allowedTransitions": ["BIND_PARTIES", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"],
+          "eventCursor": "cursor_creator_0123456789"
+        },
+        "recoveredWithoutMutation": true
+      },
+      "expectedError": "SCHEMA_INVALID",
+      "reason": "session_resume must not recover a role grant with operator authority"
+    },
+    {
       "id": "preaccept-inspection-claim-marker",
       "resultTool": "agent_handshake_invitation_list",
       "value": {
