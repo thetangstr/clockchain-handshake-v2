@@ -243,6 +243,24 @@ test("draft.3 stateful two-agent vector reaches verified safe stop without busin
   assert.equal(responderJoinPlan.nextAction, "JOIN_SESSION");
   assert.equal(responderJoinPlan.requiredTool, "agent_handshake_session_join");
 
+  const callbackEvents = [{
+    eventId: "01234567-89ab-4def-8123-456789abcdef",
+    sessionId,
+    state: initiatorJoined.state,
+    stateVersion: initiatorJoined.stateVersion,
+    eventCursor: initiatorJoined.eventCursor,
+    eventDigest: digestD,
+    occurredAt: "2026-08-29T20:00:01Z",
+    signature: "fixture-callback-signature-0123456789abcdef",
+  }];
+  const changedWait = planHandshakeV3NextAction(initiatorJoined, "INITIATOR", {
+    changed: true,
+    events: callbackEvents,
+  });
+  assert.equal(changedWait.nextAction, "WAIT");
+  assert.equal(changedWait.changed, true);
+  assert.deepEqual(changedWait.events, callbackEvents);
+
   const bothJoined = applyHandshakeV3ToolEvent(initiatorJoined, {
     type: "SESSION_JOINED",
     expectedStateVersion: initiatorJoined.stateVersion,

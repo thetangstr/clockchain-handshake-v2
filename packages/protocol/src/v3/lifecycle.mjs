@@ -186,12 +186,12 @@ export function projectHandshakeV3SessionForRole(aggregateInput, role) {
   return validateHandshakeV3Session(session);
 }
 
-function waitPlan(aggregate, role, waitingOn, requiredTool = "agent_handshake_session_next", changed = false) {
+function waitPlan(aggregate, role, waitingOn, requiredTool = "agent_handshake_session_next", changed = false, events = []) {
   return validateHandshakeV3ToolResult("agent_handshake_session_next", {
     changed,
     nextAction: "WAIT",
     session: projectHandshakeV3SessionForRole(aggregate, role),
-    events: [],
+    events,
     retryAfterMs: 1000,
     waitingOn,
     requiredTool,
@@ -256,7 +256,14 @@ export function planHandshakeV3NextAction(aggregateInput, role, options = {}) {
   const waitingOn = aggregate.state === "CERTIFICATE_ISSUED" || aggregate.state === "ANCHORING"
     ? "CLOCKCHAIN"
     : "COUNTERPARTY";
-  return waitPlan(aggregate, role, waitingOn, waitingOn === "CLOCKCHAIN" ? "agent_handshake_session_get_result" : "agent_handshake_session_next", options.changed === true);
+  return waitPlan(
+    aggregate,
+    role,
+    waitingOn,
+    waitingOn === "CLOCKCHAIN" ? "agent_handshake_session_get_result" : "agent_handshake_session_next",
+    options.changed === true,
+    options.events ?? [],
+  );
 }
 
 function advanceAggregate(input, patch) {
