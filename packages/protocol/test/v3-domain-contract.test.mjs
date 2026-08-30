@@ -16,6 +16,7 @@ import {
   handshakeV3ContinuationSignedProjection,
   handshakeV3Digest,
   recoverHandshakeV3RoleGrant,
+  createHandshakeV3RoleGrantRecoveryAuditEvent,
   planHandshakeV3NextAction,
   projectHandshakeV3SessionForRole,
   validateHandshakeV3ActionSubmission,
@@ -642,6 +643,23 @@ test("recovery returns exact roleGrant/session/result shape and does not mutate 
   assert.equal(recovered.recoveredWithoutMutation, true);
   assert.equal(recovered.roleGrant.roleGrantId, "grant_recovered_123");
   assert.deepEqual(validateHandshakeV3ToolResult("agent_handshake_session_resume", recovered), recovered);
+  assert.deepEqual(createHandshakeV3RoleGrantRecoveryAuditEvent(roleGrant(), recovered.roleGrant, {
+    occurredAt: "2026-08-29T20:30:00Z",
+  }), {
+    schema: "clockchain.handshake-v3-role-grant-recovery/v1",
+    type: "ROLE_GRANT_RECOVERED",
+    sessionId: "sess_0123456789abcdef",
+    role: "INITIATOR",
+    invalidatedRoleGrantId: "grant_0123456789abcdef",
+    replacementRoleGrantId: "grant_recovered_123",
+    principalDigest: digestB,
+    proofKeyThumbprint: digestC,
+    occurredAt: "2026-08-29T20:30:00Z",
+  });
+  assert.throws(() => createHandshakeV3RoleGrantRecoveryAuditEvent(roleGrant(), {
+    ...recovered.roleGrant,
+    principalDigest: digestA,
+  }, { occurredAt: "2026-08-29T20:30:00Z" }), { code: "PRINCIPAL_DENIED" });
   assert.throws(() => recoverHandshakeV3RoleGrant(roleGrant(), {
     roleGrantId: "grant_recovered_456",
     principalDigest: digestB,

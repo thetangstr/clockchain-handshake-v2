@@ -1,5 +1,6 @@
 import { fail } from "./constants.mjs";
 import { compareHandshakeV3DateTime } from "./time.mjs";
+import { parseHandshakeV3Rfc3339ToEpochMilliseconds } from "./time.mjs";
 import { validateHandshakeV3RoleGrant, validateHandshakeV3Session } from "./validators.mjs";
 
 export function validateHandshakeV3RoleGrantBinding(grant, context = {}) {
@@ -29,5 +30,28 @@ export function recoverHandshakeV3RoleGrant(grant, options) {
     }),
     session,
     recoveredWithoutMutation: true,
+  });
+}
+
+export function createHandshakeV3RoleGrantRecoveryAuditEvent(invalidatedGrant, replacementGrant, options) {
+  const invalidated = validateHandshakeV3RoleGrantBinding(invalidatedGrant);
+  const replacement = validateHandshakeV3RoleGrantBinding(replacementGrant, {
+    sessionId: invalidated.sessionId,
+    role: invalidated.role,
+    principalDigest: invalidated.principalDigest,
+    proofKeyThumbprint: invalidated.proofKeyThumbprint,
+  });
+  if (replacement.roleGrantId === invalidated.roleGrantId) fail("ROLE_DENIED");
+  parseHandshakeV3Rfc3339ToEpochMilliseconds(options?.occurredAt, "SCHEMA_INVALID");
+  return Object.freeze({
+    schema: "clockchain.handshake-v3-role-grant-recovery/v1",
+    type: "ROLE_GRANT_RECOVERED",
+    sessionId: invalidated.sessionId,
+    role: invalidated.role,
+    invalidatedRoleGrantId: invalidated.roleGrantId,
+    replacementRoleGrantId: replacement.roleGrantId,
+    principalDigest: invalidated.principalDigest,
+    proofKeyThumbprint: invalidated.proofKeyThumbprint,
+    occurredAt: options.occurredAt,
   });
 }
