@@ -1,6 +1,12 @@
 import contractSchema from "../../schemas/standalone-handshake-v3-contract.schema.json" with { type: "json" };
 
-import { HANDSHAKE_V3_ROLE_TOOLS, fail } from "./constants.mjs";
+import {
+  HANDSHAKE_V3_INITIATOR_REQUIRED_TOOLS,
+  HANDSHAKE_V3_NEXT_ACTION_BY_STATE,
+  HANDSHAKE_V3_RESPONDER_REQUIRED_TOOLS,
+  HANDSHAKE_V3_ROLE_TOOLS,
+  fail,
+} from "./constants.mjs";
 import { parseHandshakeV3Rfc3339ToEpochMilliseconds } from "./time.mjs";
 
 const BUSINESS_CONTENT_KEYS = new Set([
@@ -269,8 +275,110 @@ export function validateHandshakeV3ToolInput(toolName, input, context = {}) {
   return deepFreeze({ tool: toolName, input: validateAgainstSchema(toolSchema(toolName, "input"), input) });
 }
 
+function assertEqual(left, right) {
+  if (left !== right) schemaInvalid();
+}
+
+function assertRequiredTools(allowedTools, requiredTools) {
+  const allowed = new Set(allowedTools);
+  for (const tool of requiredTools) {
+    if (!allowed.has(tool)) schemaInvalid();
+  }
+}
+
+function assertPolicyExpiry(session) {
+  assertEqual(session.policy.expiresAt, session.expiresAt);
+}
+
+function validateInvitationRoleResult(result, {
+  role,
+  state,
+  relationType,
+  visibility,
+  requiredTools,
+  resultExpiresAt,
+}) {
+  assertEqual(result.roleGrant.role, role);
+  assertEqual(result.session.role, role);
+  assertEqual(result.session.state, state);
+  assertEqual(result.sessionId, result.roleGrant.sessionId);
+  assertEqual(result.sessionId, result.session.sessionId);
+  assertEqual(result.session.policyDigest, result.policyDigest ?? result.session.policyDigest);
+  assertEqual(result.roleGrant.expiresAt, result.session.expiresAt);
+  if (resultExpiresAt) assertEqual(result.expiresAt, result.session.expiresAt);
+  assertPolicyExpiry(result.session);
+  assertRequiredTools(result.roleGrant.allowedTools, requiredTools);
+  assertEqual(result.tenantRelation.relationType, relationType);
+  assertEqual(result.tenantRelation.visibility, visibility);
+}
+
+const NEXT_ACTION_SIGNING_REQUIREMENTS = Object.freeze({
+  SIGN_AND_SUBMIT: Object.freeze({
+    PROPOSAL_PENDING: Object.freeze({ actionType: "PROPOSAL", role: "INITIATOR" }),
+  }),
+  SUBMIT_CHECKPOINT: Object.freeze({
+    ACCEPTANCE_PENDING: Object.freeze({ actionType: "EVIDENCE", role: "RESPONDER" }),
+  }),
+});
+
+function assertNoPendingSigningRequest(session) {
+  if (Object.hasOwn(session, "pendingSigningRequest")) schemaInvalid();
+}
+
+function validateNextActionResult(result) {
+  const expected = HANDSHAKE_V3_NEXT_ACTION_BY_STATE[result.session.state];
+  assertEqual(result.nextAction, expected);
+  if (result.nextAction === "WAIT") {
+    assertNoPendingSigningRequest(result.session);
+    if (result.retryAfterMs < 1 || result.retryAfterMs > 30000) schemaInvalid();
+    if (result.changed !== false) schemaInvalid();
+    return;
+  }
+  if (result.retryAfterMs !== 0) schemaInvalid();
+  if (result.nextAction === "TERMINAL" || result.nextAction === "FETCH_RESULT" || result.nextAction === "STOP_AFTER_VERIFICATION") {
+    assertNoPendingSigningRequest(result.session);
+    return;
+  }
+  const requirement = NEXT_ACTION_SIGNING_REQUIREMENTS[result.nextAction]?.[result.session.state];
+  if (!requirement || !result.session.pendingSigningRequest) schemaInvalid();
+  assertEqual(result.session.pendingSigningRequest.actionType, requirement.actionType);
+  assertEqual(result.session.pendingSigningRequest.role, requirement.role);
+  assertEqual(result.session.pendingSigningRequest.role, result.session.role);
+  assertEqual(result.session.pendingSigningRequest.sessionId, result.session.sessionId);
+  assertEqual(result.session.pendingSigningRequest.stateVersion, result.session.stateVersion);
+  assertEqual(result.session.pendingSigningRequest.policyDigest, result.session.policyDigest);
+}
+
+export function validateHandshakeV3SemanticToolResult(toolName, result) {
+  if (toolName === "agent_handshake_invitation_create") {
+    validateInvitationRoleResult(result, {
+      role: "INITIATOR",
+      state: "INVITED",
+      relationType: "INITIATOR_CREATED",
+      visibility: "CREATOR_VIEW",
+      requiredTools: HANDSHAKE_V3_INITIATOR_REQUIRED_TOOLS,
+      resultExpiresAt: true,
+    });
+  } else if (toolName === "agent_handshake_invitation_accept") {
+    validateInvitationRoleResult(result, {
+      role: "RESPONDER",
+      state: "CLAIMED",
+      relationType: "RESPONDER_ACCEPTED",
+      visibility: "RESPONDER_VIEW",
+      requiredTools: HANDSHAKE_V3_RESPONDER_REQUIRED_TOOLS,
+      resultExpiresAt: false,
+    });
+  } else if (toolName === "agent_handshake_session_next") {
+    validateNextActionResult(result);
+  }
+  return result;
+}
+
 export function validateHandshakeV3ToolResult(toolName, result) {
-  return validateAgainstSchema(toolSchema(toolName, "result"), result);
+  return validateHandshakeV3SemanticToolResult(
+    toolName,
+    validateAgainstSchema(toolSchema(toolName, "result"), result),
+  );
 }
 
 export function validateHandshakeV3Fixture(fixture) {

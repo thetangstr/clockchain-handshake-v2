@@ -229,6 +229,18 @@
         "expiresAt": { "type": "string", "format": "date-time" }
       }
     },
+    "tenantRelation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["relationType", "localTenantDigest", "counterpartyTenantDigest", "binding", "visibility"],
+      "properties": {
+        "relationType": { "enum": ["INITIATOR_CREATED", "RESPONDER_ACCEPTED"] },
+        "localTenantDigest": { "$ref": "#/$defs/digest" },
+        "counterpartyTenantDigest": { "$ref": "#/$defs/digest" },
+        "binding": { "enum": ["TARGETED", "FIRST_AUTHENTICATED_CLAIM"] },
+        "visibility": { "enum": ["CREATOR_VIEW", "RESPONDER_VIEW"] },
+        "federationSubjectDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
     "nextAction": { "enum": ["WAIT", "SIGN_AND_SUBMIT", "SUBMIT_CHECKPOINT", "FETCH_RESULT", "STOP_AFTER_VERIFICATION", "TERMINAL"] },
     "signingRequest": {
       "type": "object", "additionalProperties": false,
@@ -348,7 +360,7 @@
     {
       "name": "agent_handshake_invitation_create", "scope": "handshake.invitation.create",
       "inputSchema": { "type": "object", "additionalProperties": false, "required": ["idempotencyKey", "responderRole", "responderBinding", "policy", "expiresAt", "transport"], "properties": { "idempotencyKey": { "$ref": "#/$defs/idempotencyKey" }, "responderRole": { "const": "RESPONDER" }, "responderBinding": { "enum": ["TARGETED", "FIRST_AUTHENTICATED_CLAIM"] }, "responderFederationSubject": { "type": "string", "minLength": 3, "maxLength": 512 }, "policy": { "$ref": "#/$defs/policy" }, "expiresAt": { "type": "string", "format": "date-time" }, "transport": { "enum": ["AUTHENTICATED_INBOX", "OPAQUE_EXTERNAL_TOKEN"] } } },
-      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["invitationId", "sessionId", "roleGrant", "tenantRelation", "session", "policyDigest", "statementDigest", "state", "expiresAt"], "properties": { "invitationId": { "$ref": "#/$defs/opaqueId" }, "invitationToken": { "$ref": "#/$defs/opaqueId" }, "sessionId": { "$ref": "#/$defs/opaqueId" }, "roleGrant": { "$ref": "#/$defs/roleGrant" }, "tenantRelation": { "type": "object" }, "session": { "$ref": "#/$defs/session" }, "policyDigest": { "$ref": "#/$defs/digest" }, "statementDigest": { "$ref": "#/$defs/digest" }, "state": { "const": "ISSUED" }, "expiresAt": { "type": "string", "format": "date-time" } } }
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["invitationId", "sessionId", "roleGrant", "tenantRelation", "session", "policyDigest", "statementDigest", "state", "expiresAt"], "properties": { "invitationId": { "$ref": "#/$defs/opaqueId" }, "invitationToken": { "$ref": "#/$defs/opaqueId" }, "sessionId": { "$ref": "#/$defs/opaqueId" }, "roleGrant": { "$ref": "#/$defs/roleGrant" }, "tenantRelation": { "$ref": "#/$defs/tenantRelation" }, "session": { "$ref": "#/$defs/session" }, "policyDigest": { "$ref": "#/$defs/digest" }, "statementDigest": { "$ref": "#/$defs/digest" }, "state": { "const": "ISSUED" }, "expiresAt": { "type": "string", "format": "date-time" } } }
     },
     {
       "name": "agent_handshake_invitation_list", "scope": "handshake.invitation.receive",
@@ -358,7 +370,7 @@
     {
       "name": "agent_handshake_invitation_accept", "scope": "handshake.invitation.accept",
       "inputSchema": { "type": "object", "additionalProperties": false, "required": ["party", "acceptedPolicyDigest", "idempotencyKey"], "oneOf": [{ "required": ["invitationId"], "not": { "required": ["invitationToken"] } }, { "required": ["invitationToken"], "not": { "required": ["invitationId"] } }], "properties": { "invitationId": { "$ref": "#/$defs/opaqueId" }, "invitationToken": { "$ref": "#/$defs/opaqueId" }, "party": { "$ref": "#/$defs/party" }, "acceptedPolicyDigest": { "$ref": "#/$defs/digest" }, "idempotencyKey": { "$ref": "#/$defs/idempotencyKey" } } },
-      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["sessionId", "roleGrant", "tenantRelation", "session"], "properties": { "sessionId": { "$ref": "#/$defs/opaqueId" }, "roleGrant": { "$ref": "#/$defs/roleGrant" }, "tenantRelation": { "type": "object" }, "session": { "$ref": "#/$defs/session" } } }
+      "resultSchema": { "type": "object", "additionalProperties": false, "required": ["sessionId", "roleGrant", "tenantRelation", "session"], "properties": { "sessionId": { "$ref": "#/$defs/opaqueId" }, "roleGrant": { "$ref": "#/$defs/roleGrant" }, "tenantRelation": { "$ref": "#/$defs/tenantRelation" }, "session": { "$ref": "#/$defs/session" } } }
     },
     {
       "name": "agent_handshake_invitation_revoke", "scope": "handshake.invitation.revoke",
