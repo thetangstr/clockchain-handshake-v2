@@ -39,6 +39,84 @@ function cliShapeInvalid() {
   fail("SCHEMA_INVALID");
 }
 
+function safeOwnKeys(value) {
+  try {
+    return Reflect.ownKeys(value);
+  } catch {
+    cliShapeInvalid();
+  }
+}
+
+function safeDescriptor(value, key) {
+  try {
+    return Object.getOwnPropertyDescriptor(value, key);
+  } catch {
+    cliShapeInvalid();
+  }
+}
+
+function assertPlainObject(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) cliShapeInvalid();
+  let prototype;
+  try {
+    prototype = Object.getPrototypeOf(value);
+  } catch {
+    cliShapeInvalid();
+  }
+  if (prototype !== Object.prototype && prototype !== null) cliShapeInvalid();
+}
+
+function cloneCliJson(value, ancestors = new Set()) {
+  if (value === null || typeof value === "boolean" || typeof value === "string") return value;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) cliShapeInvalid();
+    return value;
+  }
+  if (typeof value !== "object") cliShapeInvalid();
+  if (ancestors.has(value)) cliShapeInvalid();
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const keys = safeOwnKeys(value);
+      for (const key of keys) {
+        if (key === "length") continue;
+        if (typeof key !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(key) || Number(key) >= value.length) cliShapeInvalid();
+        const descriptor = safeDescriptor(value, key);
+        if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) cliShapeInvalid();
+      }
+      const output = [];
+      for (let index = 0; index < value.length; index += 1) {
+        if (!Object.hasOwn(value, index)) cliShapeInvalid();
+        output.push(cloneCliJson(value[index], ancestors));
+      }
+      return deepFreeze(output);
+    }
+    assertPlainObject(value);
+    const output = {};
+    for (const key of safeOwnKeys(value)) {
+      if (typeof key !== "string") cliShapeInvalid();
+      const descriptor = safeDescriptor(value, key);
+      if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, "value")) cliShapeInvalid();
+      output[key] = cloneCliJson(descriptor.value, ancestors);
+    }
+    return deepFreeze(output);
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function cloneCliObject(value) {
+  const cloned = cloneCliJson(value);
+  assertPlainObject(cloned);
+  return cloned;
+}
+
+function assertExactKeys(value, keys) {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) cliShapeInvalid();
+}
+
 export function getHandshakeV3Contract() {
   return CONTRACT;
 }
@@ -89,18 +167,25 @@ export async function verifyHandshakeV3SdkContinuation(input) {
 }
 
 export function validateHandshakeV3CliResultShape(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) cliShapeInvalid();
-  if (typeof value.ok !== "boolean") cliShapeInvalid();
-  if (typeof value.command !== "string" || value.command.length === 0) cliShapeInvalid();
-  if (value.externalBusinessActionPerformed !== false) cliShapeInvalid();
-  if (value.ok) {
-    if (value.verificationMode !== "explicit_fixture_only") cliShapeInvalid();
-    if (value.clockchainTrustVerified !== false) cliShapeInvalid();
-    if (!Object.hasOwn(value, "result")) cliShapeInvalid();
-    if (Object.hasOwn(value, "error")) cliShapeInvalid();
+  const cloned = cloneCliObject(value);
+  if (typeof cloned.ok !== "boolean") cliShapeInvalid();
+  if (typeof cloned.command !== "string" || cloned.command.length === 0) cliShapeInvalid();
+  if (cloned.externalBusinessActionPerformed !== false) cliShapeInvalid();
+  if (cloned.ok) {
+    assertExactKeys(cloned, [
+      "ok",
+      "command",
+      "verificationMode",
+      "clockchainTrustVerified",
+      "externalBusinessActionPerformed",
+      "result",
+    ]);
+    if (cloned.verificationMode !== "explicit_fixture_only") cliShapeInvalid();
+    if (cloned.clockchainTrustVerified !== false) cliShapeInvalid();
   } else {
-    if (!value.error || typeof value.error !== "object" || Array.isArray(value.error)) cliShapeInvalid();
-    if (typeof value.error.code !== "string") cliShapeInvalid();
+    assertExactKeys(cloned, ["ok", "command", "externalBusinessActionPerformed", "error"]);
+    if (!cloned.error || typeof cloned.error !== "object" || Array.isArray(cloned.error)) cliShapeInvalid();
+    if (typeof cloned.error.code !== "string") cliShapeInvalid();
   }
-  return deepFreeze(value);
+  return deepFreeze(cloned);
 }

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
+import { runHandshakeCliCommand } from "../src/index.mjs";
+
 const cli = new URL("../bin/clockchain-handshake.mjs", import.meta.url);
 const digestA = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const digestB = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
@@ -138,6 +140,49 @@ test("CLI fixture verification refuses to run without explicit trust and replay 
 
   assert.equal(output.ok, false);
   assert.equal(output.error.code, "RESULT_VERIFICATION_FAILED");
+});
+
+test("CLI fixture verification rejects malformed fixture trust adapters", async () => {
+  const invalidAdapters = [
+    "not-an-object",
+    { clockchainNetwork: "sepolia", trustRootId: "root-2026-08", acceptedIssuerDigests: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+    { clockchainNetwork: "sepolia", trustRootId: "root-2026-08", acceptedIssuerDigests: [], extra: true },
+    { clockchainNetwork: "sepolia", trustRootId: "root-2026-08", acceptedIssuerDigests: ["not-a-digest"] },
+    { clockchainNetwork: "sepolia", trustRootId: "root-2026-08", acceptedIssuerDigests: [], revokedHandles: ["x".repeat(200)] },
+    Object.defineProperty({ clockchainNetwork: "sepolia", trustRootId: "root-2026-08", acceptedIssuerDigests: [] }, "revokedHandles", {
+      enumerable: true,
+      get() {
+        throw new Error("raw adapter getter");
+      },
+    }),
+    new Proxy({ clockchainNetwork: "sepolia", trustRootId: "root-2026-08", acceptedIssuerDigests: [] }, {
+      ownKeys() {
+        throw new Error("raw adapter ownKeys");
+      },
+    }),
+    { clockchainNetwork: "sepolia", trustRootId: "root-2026-08", acceptedIssuerDigests: new Proxy([], {
+      ownKeys() {
+        throw new Error("raw array ownKeys");
+      },
+    }) },
+    { clockchainNetwork: "sepolia", trustRootId: "root-2026-08", acceptedIssuerDigests: Object.defineProperty([], "0", {
+      enumerable: true,
+      get() {
+        throw new Error("raw array getter");
+      },
+    }) },
+  ];
+
+  for (const fixtureTrustAdapter of invalidAdapters) {
+    const output = await runHandshakeCliCommand("verify-certificate-fixture", {
+      certificate: {},
+      now: "2026-08-29T20:01:00Z",
+      fixtureTrustAdapter,
+    });
+    assert.equal(output.ok, false);
+    assert.equal(output.error.code, "SCHEMA_INVALID");
+    assert.doesNotMatch(output.error.message, /raw adapter|not-a-digest/i);
+  }
 });
 
 test("CLI rejects unknown commands as JSON without stderr noise", async () => {

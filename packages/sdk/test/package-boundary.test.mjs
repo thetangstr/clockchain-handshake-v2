@@ -31,6 +31,39 @@ function extractModuleSpecifiers(text) {
   return specifiers;
 }
 
+function assertNoDynamicExecution(text, label) {
+  const forbiddenPatterns = [
+    /\bimport\s*\(/,
+    /=\s*import\b/,
+    /["']import["']/,
+    /\bcreateRequire\s*\(/,
+    /(?:^|[^\w$])require\s*\(/,
+    /\beval\s*\(/,
+    /\bFunction\s*\(/,
+    /\bnode:vm\b/,
+    /\bnode:worker_threads\b/,
+  ];
+  for (const pattern of forbiddenPatterns) {
+    assert.equal(pattern.test(text), false, `${label} contains ${pattern}`);
+  }
+}
+
+test("SDK boundary scanner rejects dynamic and computed loader evasions", () => {
+  const fixtures = [
+    'await import("node:http")',
+    "const loader = import; await loader('node:https')",
+    "createRequire(import.meta.url)('node:fs')",
+    "require('node:net')",
+    "eval('fetch(1)')",
+    "Function('return process')()",
+    "import 'node:vm'",
+    "import 'node:worker_threads'",
+  ];
+  for (const fixture of fixtures) {
+    assert.throws(() => assertNoDynamicExecution(fixture, "fixture"));
+  }
+});
+
 test("SDK source imports only the protocol package and no authority-bearing runtime modules", async () => {
   const forbiddenImportFragments = [
     "@modelcontextprotocol",
@@ -55,6 +88,14 @@ test("SDK source imports only the protocol package and no authority-bearing runt
     "credential",
     "aws",
     "cloud",
+    "child_process",
+    "cluster",
+    "dgram",
+    "dns",
+    "readline",
+    "stream",
+    "vm",
+    "worker_threads",
   ];
   const forbiddenSourcePatterns = [
     /\bfetch\s*\(/,
@@ -69,6 +110,7 @@ test("SDK source imports only the protocol package and no authority-bearing runt
 
   for (const file of await sourceFiles(sourceRoot.pathname)) {
     const text = await readFile(file, "utf8");
+    assertNoDynamicExecution(text, relative(packageRoot.pathname, file));
     for (const specifier of extractModuleSpecifiers(text)) {
       assert.equal(
         specifier === "@clockchain/handshake-protocol/v3" ||

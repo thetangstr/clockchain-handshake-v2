@@ -137,17 +137,22 @@ test("SDK verification adapter callbacks are explicit and receive the signed dig
 });
 
 test("SDK result-shape helper validates JSON CLI envelopes only", () => {
+  const result = {};
   const value = validateHandshakeV3CliResultShape({
     ok: true,
     command: "contract",
     verificationMode: "explicit_fixture_only",
     clockchainTrustVerified: false,
     externalBusinessActionPerformed: false,
-    result: {
-      protocolVersion: "3.0",
-    },
+    result,
   });
   assert.equal(value.ok, true);
+  assert.notEqual(value.result, result);
+  assert.equal(Object.isFrozen(value), true);
+  assert.equal(Object.isFrozen(value.result), true);
+  result.mutatedAfterValidation = true;
+  assert.equal(value.result.mutatedAfterValidation, undefined);
+
   assert.throws(() => validateHandshakeV3CliResultShape({
     ok: true,
     command: "contract",
@@ -162,6 +167,63 @@ test("SDK result-shape helper validates JSON CLI envelopes only", () => {
     externalBusinessActionPerformed: false,
     result: {},
   }), { code: "SCHEMA_INVALID" });
+});
+
+test("SDK result-shape helper fails closed on hostile envelope objects", () => {
+  const value = validateHandshakeV3CliResultShape({
+    ok: true,
+    command: "contract",
+    verificationMode: "explicit_fixture_only",
+    clockchainTrustVerified: false,
+    externalBusinessActionPerformed: false,
+    result: {
+      protocolVersion: "3.0",
+    },
+  });
+  assert.equal(value.ok, true);
+  const accessor = {};
+  Object.defineProperty(accessor, "ok", {
+    enumerable: true,
+    get() {
+      throw new Error("raw getter detail");
+    },
+  });
+  assert.throws(() => validateHandshakeV3CliResultShape(accessor), { code: "SCHEMA_INVALID" });
+
+  const proxy = new Proxy({}, {
+    ownKeys() {
+      throw new Error("raw ownKeys detail");
+    },
+  });
+  assert.throws(() => validateHandshakeV3CliResultShape(proxy), { code: "SCHEMA_INVALID" });
+
+  const descriptorTrap = new Proxy({ ok: true }, {
+    getOwnPropertyDescriptor() {
+      throw new Error("raw descriptor detail");
+    },
+  });
+  assert.throws(() => validateHandshakeV3CliResultShape(descriptorTrap), { code: "SCHEMA_INVALID" });
+
+  const prototypeTrap = new Proxy({}, {
+    getPrototypeOf() {
+      throw new Error("raw prototype detail");
+    },
+  });
+  assert.throws(() => validateHandshakeV3CliResultShape(prototypeTrap), { code: "SCHEMA_INVALID" });
+
+  assert.throws(() => validateHandshakeV3CliResultShape({ [Symbol("secret")]: true }), { code: "SCHEMA_INVALID" });
+  assert.throws(() => validateHandshakeV3CliResultShape(Object.assign([], { ok: true })), { code: "SCHEMA_INVALID" });
+
+  const cycle = {
+    ok: true,
+    command: "contract",
+    verificationMode: "explicit_fixture_only",
+    clockchainTrustVerified: false,
+    externalBusinessActionPerformed: false,
+    result: {},
+  };
+  cycle.result.self = cycle;
+  assert.throws(() => validateHandshakeV3CliResultShape(cycle), { code: "SCHEMA_INVALID" });
 });
 
 test("SDK package dry-run includes source and tests without server or runtime files", async () => {

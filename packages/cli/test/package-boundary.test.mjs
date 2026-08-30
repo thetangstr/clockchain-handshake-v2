@@ -34,6 +34,39 @@ function extractModuleSpecifiers(text) {
   return specifiers;
 }
 
+function assertNoDynamicExecution(text, label) {
+  const forbiddenPatterns = [
+    /\bimport\s*\(/,
+    /=\s*import\b/,
+    /["']import["']/,
+    /\bcreateRequire\s*\(/,
+    /(?:^|[^\w$])require\s*\(/,
+    /\beval\s*\(/,
+    /\bFunction\s*\(/,
+    /\bnode:vm\b/,
+    /\bnode:worker_threads\b/,
+  ];
+  for (const pattern of forbiddenPatterns) {
+    assert.equal(pattern.test(text), false, `${label} contains ${pattern}`);
+  }
+}
+
+test("CLI boundary scanner rejects dynamic and computed loader evasions", () => {
+  const fixtures = [
+    'await import("node:http")',
+    "const loader = import; await loader('node:https')",
+    "createRequire(import.meta.url)('node:fs')",
+    "require('node:net')",
+    "eval('fetch(1)')",
+    "Function('return process')()",
+    "import 'node:vm'",
+    "import 'node:worker_threads'",
+  ];
+  for (const fixture of fixtures) {
+    assert.throws(() => assertNoDynamicExecution(fixture, "fixture"));
+  }
+});
+
 test("CLI source stays offline and non-authoritative", async () => {
   const forbiddenImportFragments = [
     "@modelcontextprotocol",
@@ -56,6 +89,13 @@ test("CLI source stays offline and non-authoritative", async () => {
     "credential",
     "aws",
     "cloud",
+    "child_process",
+    "cluster",
+    "dgram",
+    "dns",
+    "readline",
+    "vm",
+    "worker_threads",
   ];
   const forbiddenSourcePatterns = [
     /\bfetch\s*\(/,
@@ -71,9 +111,9 @@ test("CLI source stays offline and non-authoritative", async () => {
   for (const root of sourceRoots) {
     for (const file of await sourceFiles(root.pathname)) {
       const text = await readFile(file, "utf8");
+      assertNoDynamicExecution(text, relative(packageRoot.pathname, file));
       for (const specifier of extractModuleSpecifiers(text)) {
-        const allowed = specifier === "node:fs" ||
-          specifier === "node:process" ||
+        const allowed = specifier === "node:process" ||
           specifier === "@clockchain/handshake-sdk" ||
           specifier.startsWith("../src/");
         assert.equal(allowed, true, `${relative(packageRoot.pathname, file)} imports ${specifier}`);

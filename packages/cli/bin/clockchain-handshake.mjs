@@ -2,14 +2,7 @@
 import process from "node:process";
 
 import { formatHandshakeCliFailure, runHandshakeCliCommand } from "../src/index.mjs";
-
-async function readJsonInput() {
-  let text = "";
-  process.stdin.setEncoding("utf8");
-  for await (const chunk of process.stdin) text += chunk;
-  text = text.trim();
-  return text.length === 0 ? {} : JSON.parse(text);
-}
+import { readHandshakeCliJsonInput } from "../src/stdin.mjs";
 
 const [command, toolName] = process.argv.slice(2);
 const commandsWithInput = new Set([
@@ -21,7 +14,7 @@ const commandsWithInput = new Set([
 ]);
 let output;
 try {
-  const input = commandsWithInput.has(command) ? await readJsonInput() : {};
+  const input = commandsWithInput.has(command) ? await readHandshakeCliJsonInput(process.stdin) : {};
   output = await runHandshakeCliCommand(command, input, { toolName });
 } catch (error) {
   output = formatHandshakeCliFailure(command || "unknown", {
