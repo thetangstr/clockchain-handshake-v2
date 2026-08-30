@@ -1,6 +1,7 @@
 import contractSchema from "../../schemas/standalone-handshake-v3-contract.schema.json" with { type: "json" };
 
 import {
+  HANDSHAKE_V3_ALLOWED_TRANSITIONS_BY_STATE,
   HANDSHAKE_V3_INITIATOR_REQUIRED_TOOLS,
   HANDSHAKE_V3_NEXT_ACTION_BY_STATE,
   HANDSHAKE_V3_RESPONDER_REQUIRED_TOOLS,
@@ -280,14 +281,22 @@ function assertEqual(left, right) {
 }
 
 function assertRequiredTools(allowedTools, requiredTools) {
-  const allowed = new Set(allowedTools);
-  for (const tool of requiredTools) {
-    if (!allowed.has(tool)) schemaInvalid();
+  if (allowedTools.length !== requiredTools.length) schemaInvalid();
+  for (let index = 0; index < requiredTools.length; index += 1) {
+    if (allowedTools[index] !== requiredTools[index]) schemaInvalid();
   }
 }
 
 function assertPolicyExpiry(session) {
   assertEqual(session.policy.expiresAt, session.expiresAt);
+}
+
+function assertAllowedTransitions(session) {
+  const expected = HANDSHAKE_V3_ALLOWED_TRANSITIONS_BY_STATE[session.state];
+  if (!expected || session.allowedTransitions.length !== expected.length) schemaInvalid();
+  for (let index = 0; index < expected.length; index += 1) {
+    if (session.allowedTransitions[index] !== expected[index]) schemaInvalid();
+  }
 }
 
 function validateInvitationRoleResult(result, {
@@ -308,6 +317,7 @@ function validateInvitationRoleResult(result, {
   if (resultExpiresAt) assertEqual(result.expiresAt, result.session.expiresAt);
   assertPolicyExpiry(result.session);
   assertRequiredTools(result.roleGrant.allowedTools, requiredTools);
+  assertAllowedTransitions(result.session);
   assertEqual(result.tenantRelation.relationType, relationType);
   assertEqual(result.tenantRelation.visibility, visibility);
 }
@@ -328,6 +338,7 @@ function assertNoPendingSigningRequest(session) {
 function validateNextActionResult(result) {
   const expected = HANDSHAKE_V3_NEXT_ACTION_BY_STATE[result.session.state];
   assertEqual(result.nextAction, expected);
+  assertAllowedTransitions(result.session);
   if (result.nextAction === "WAIT") {
     assertNoPendingSigningRequest(result.session);
     if (result.retryAfterMs < 1 || result.retryAfterMs > 30000) schemaInvalid();

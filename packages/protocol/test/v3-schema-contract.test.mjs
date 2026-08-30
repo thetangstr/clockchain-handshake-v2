@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  HANDSHAKE_V3_ALLOWED_TRANSITIONS_BY_STATE,
   HANDSHAKE_V3_CONTRACT_SCHEMA,
   HANDSHAKE_V3_ERROR_CODES,
   HANDSHAKE_V3_INITIATOR_REQUIRED_TOOLS,
@@ -75,6 +76,7 @@ function sessionFor({
   policy = policySample(),
   policyDigest = digest,
   expiresAt = later,
+  allowedTransitions = HANDSHAKE_V3_ALLOWED_TRANSITIONS_BY_STATE[state],
   pendingSigningRequest,
 } = {}) {
   return {
@@ -86,6 +88,7 @@ function sessionFor({
     policy,
     policyDigest,
     expiresAt,
+    allowedTransitions: [...allowedTransitions],
     ...(pendingSigningRequest ? { pendingSigningRequest } : {}),
   };
 }
@@ -135,7 +138,7 @@ function invitationAcceptResult(overrides = {}) {
   };
 }
 
-function nextResult({ state, nextAction, pendingSigningRequest, retryAfterMs } = {}) {
+function nextResult({ state, nextAction, pendingSigningRequest, retryAfterMs, allowedTransitions } = {}) {
   const sessionId = "sess_semantic_012345";
   const role = pendingSigningRequest?.role ?? "INITIATOR";
   const stateVersion = state === "INVITED" ? 0 : 1;
@@ -148,6 +151,7 @@ function nextResult({ state, nextAction, pendingSigningRequest, retryAfterMs } =
       role,
       state,
       policyDigest,
+      allowedTransitions,
       pendingSigningRequest: pendingSigningRequest
         ? { ...pendingSigningRequest, sessionId, role, stateVersion, policyDigest }
         : undefined,
@@ -189,7 +193,9 @@ function sampleForSchema(fragment) {
     const min = fragment.minItems ?? 1;
     return Array.from({ length: min }, (_, index) => {
       const value = sampleForSchema(fragment.items ?? {});
-      return fragment.uniqueItems && typeof value === "string" ? `${value}_${index}` : value;
+      return fragment.uniqueItems && typeof value === "string" && !fragment.items?.$ref && !fragment.items?.enum
+        ? `${value}_${index}`
+        : value;
     });
   }
   if (fragment.type === "object" || fragment.properties || fragment.required) {
@@ -245,6 +251,22 @@ test("constants mirror the normative schema enums exactly", () => {
     "agent_handshake_session_resume",
   ]);
   assert.deepEqual(HANDSHAKE_V3_RESPONDER_REQUIRED_TOOLS, HANDSHAKE_V3_INITIATOR_REQUIRED_TOOLS);
+  assert.deepEqual(HANDSHAKE_V3_ALLOWED_TRANSITIONS_BY_STATE, {
+    INVITED: ["CLAIM_INVITATION", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"],
+    CLAIMED: ["PREPARE_POLICY", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"],
+    POLICY_READY: ["BIND_PARTIES", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"],
+    PARTIES_BOUND: ["SUBMIT_PROPOSAL", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"],
+    PROPOSAL_PENDING: ["SUBMIT_ACCEPTANCE", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"],
+    ACCEPTANCE_PENDING: ["CONFIRM_ANCHOR", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"],
+    ANCHORING: ["ISSUE_CERTIFICATE", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"],
+    CERTIFICATE_ISSUED: ["ISSUE_CONTINUATION", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"],
+    CONTINUATION_ISSUED: ["COMPLETE", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"],
+    COMPLETED: ["REVOKE"],
+    FAILED_CLOSED: [],
+    CANCELLED: [],
+    EXPIRED: [],
+    REVOKED: [],
+  });
   assert.equal(HANDSHAKE_V3_NEXT_ACTION_BY_STATE.PROPOSAL_PENDING, "SIGN_AND_SUBMIT");
   assert.equal(HANDSHAKE_V3_NEXT_ACTION_BY_STATE.CERTIFICATE_ISSUED, "FETCH_RESULT");
   assert.deepEqual(HANDSHAKE_V3_TOOL_NAMES, schema.tools.map((tool) => tool.name));
@@ -418,6 +440,21 @@ test("invitation create rejects swapped roles and inconsistent creator bindings"
     ...invitationCreateResult(),
     roleGrant: grantFor({ role: "INITIATOR", allowedTools: ["agent_handshake_session_next"] }),
   }), { code: "SCHEMA_INVALID" });
+  assert.throws(() => validateHandshakeV3ToolResult("agent_handshake_invitation_create", {
+    ...invitationCreateResult(),
+    roleGrant: grantFor({
+      role: "INITIATOR",
+      allowedTools: [...HANDSHAKE_V3_INITIATOR_REQUIRED_TOOLS, "agent_handshake_operator_request"],
+    }),
+  }), { code: "SCHEMA_INVALID" });
+  assert.throws(() => validateHandshakeV3ToolResult("agent_handshake_invitation_create", {
+    ...invitationCreateResult(),
+    session: sessionFor({
+      role: "INITIATOR",
+      state: "INVITED",
+      allowedTransitions: [...HANDSHAKE_V3_ALLOWED_TRANSITIONS_BY_STATE.INVITED, "PREPARE_POLICY"],
+    }),
+  }), { code: "SCHEMA_INVALID" });
 });
 
 test("invitation accept rejects swapped roles and inconsistent responder bindings", () => {
@@ -441,6 +478,21 @@ test("invitation accept rejects swapped roles and inconsistent responder binding
   assert.throws(() => validateHandshakeV3ToolResult("agent_handshake_invitation_accept", {
     ...invitationAcceptResult(),
     roleGrant: grantFor({ role: "RESPONDER", allowedTools: ["agent_handshake_session_next"] }),
+  }), { code: "SCHEMA_INVALID" });
+  assert.throws(() => validateHandshakeV3ToolResult("agent_handshake_invitation_accept", {
+    ...invitationAcceptResult(),
+    roleGrant: grantFor({
+      role: "RESPONDER",
+      allowedTools: [...HANDSHAKE_V3_RESPONDER_REQUIRED_TOOLS, "agent_handshake_operator_request"],
+    }),
+  }), { code: "SCHEMA_INVALID" });
+  assert.throws(() => validateHandshakeV3ToolResult("agent_handshake_invitation_accept", {
+    ...invitationAcceptResult(),
+    session: sessionFor({
+      role: "RESPONDER",
+      state: "CLAIMED",
+      allowedTransitions: ["CLAIM_INVITATION", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"],
+    }),
   }), { code: "SCHEMA_INVALID" });
 });
 
@@ -573,6 +625,13 @@ test("session next rejects inconsistent nextAction state and signing request pai
     nextAction: "WAIT",
     retryAfterMs: 1000,
   })), { code: "SCHEMA_INVALID" });
+  assert.throws(() => validateHandshakeV3ToolResult("agent_handshake_session_next", nextResult({
+    state: "PROPOSAL_PENDING",
+    nextAction: "SIGN_AND_SUBMIT",
+    pendingSigningRequest: signingRequestSample("PROPOSAL", "INITIATOR", 1),
+    retryAfterMs: 0,
+    allowedTransitions: ["SUBMIT_ACCEPTANCE", "FAIL_CLOSED", "CANCEL", "EXPIRE"],
+  })), { code: "SCHEMA_INVALID" });
 });
 
 test("session cancel is a role-bound input requiring roleGrantId", () => {
@@ -608,14 +667,13 @@ test("documented external-agent response shapes are schema-reachable without sha
     principalDigest: digestB,
     proofKeyThumbprint: digest,
   };
-  const invitedSession = {
-    ...sessionSample(),
+  const invitedSession = sessionFor({
     sessionId,
     role: "INITIATOR",
     state: "INVITED",
     policy,
     policyDigest: digest,
-  };
+  });
   const create = validateHandshakeV3ToolResult("agent_handshake_invitation_create", {
     invitationId: "inv_reachability_012345",
     invitationToken: "tok_reachability_012345",
@@ -648,7 +706,7 @@ test("documented external-agent response shapes are schema-reachable without sha
     sessionId,
     roleGrant: responderGrant,
     tenantRelation: tenantRelationSample("RESPONDER_ACCEPTED"),
-    session: { ...invitedSession, role: "RESPONDER", state: "CLAIMED", stateVersion: 1 },
+    session: sessionFor({ sessionId, role: "RESPONDER", state: "CLAIMED", policy, policyDigest: digest }),
   });
 
   assert.equal(create.roleGrant.role, "INITIATOR");

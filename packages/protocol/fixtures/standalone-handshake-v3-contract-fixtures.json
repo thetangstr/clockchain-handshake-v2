@@ -258,6 +258,48 @@
       "reason": "creator-view invitation result must bind the INITIATOR role grant"
     },
     {
+      "id": "creator-grant-extra-operator-tool",
+      "resultTool": "agent_handshake_invitation_create",
+      "value": {
+        "invitationId": "inv_creator_0123456789",
+        "invitationToken": "tok_creator_0123456789",
+        "sessionId": "sess_creator_0123456789",
+        "roleGrant": {
+          "roleGrantId": "grant_creator_0123456789",
+          "sessionId": "sess_creator_0123456789",
+          "role": "INITIATOR",
+          "principalDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "proofKeyThumbprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "allowedTools": ["agent_handshake_session_join", "agent_handshake_session_next", "agent_handshake_session_submit_checkpoint", "agent_handshake_session_submit", "agent_handshake_session_cancel", "agent_handshake_session_resume", "agent_handshake_operator_request"],
+          "expiresAt": "2026-08-29T21:00:00Z"
+        },
+        "tenantRelation": {
+          "relationType": "INITIATOR_CREATED",
+          "localTenantDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "counterpartyTenantDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "binding": "FIRST_AUTHENTICATED_CLAIM",
+          "visibility": "CREATOR_VIEW"
+        },
+        "session": {
+          "sessionId": "sess_creator_0123456789",
+          "role": "INITIATOR",
+          "state": "INVITED",
+          "stateVersion": 0,
+          "policy": { "scope": ["agent-contract:a2a-after-handshake"], "constraints": { "businessAction": "none" }, "externalBusinessActionsAllowed": false, "expiresAt": "2026-08-29T21:00:00Z" },
+          "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expiresAt": "2026-08-29T21:00:00Z",
+          "allowedTransitions": ["CLAIM_INVITATION", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"],
+          "eventCursor": "cursor_creator_0123456789"
+        },
+        "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "statementDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "ISSUED",
+        "expiresAt": "2026-08-29T21:00:00Z"
+      },
+      "expectedError": "SCHEMA_INVALID",
+      "reason": "roleGrant.allowedTools must be the exact role-owned set and never include operator tools"
+    },
+    {
       "id": "accept-result-wrong-state",
       "resultTool": "agent_handshake_invitation_accept",
       "value": {
@@ -292,6 +334,42 @@
       },
       "expectedError": "SCHEMA_INVALID",
       "reason": "accepted invitation result must expose a CLAIMED responder-view session"
+    },
+    {
+      "id": "accept-result-wrong-allowed-transitions",
+      "resultTool": "agent_handshake_invitation_accept",
+      "value": {
+        "sessionId": "sess_creator_0123456789",
+        "roleGrant": {
+          "roleGrantId": "grant_responder_0123456789",
+          "sessionId": "sess_creator_0123456789",
+          "role": "RESPONDER",
+          "principalDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "proofKeyThumbprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "allowedTools": ["agent_handshake_session_join", "agent_handshake_session_next", "agent_handshake_session_submit_checkpoint", "agent_handshake_session_submit", "agent_handshake_session_cancel", "agent_handshake_session_resume"],
+          "expiresAt": "2026-08-29T21:00:00Z"
+        },
+        "tenantRelation": {
+          "relationType": "RESPONDER_ACCEPTED",
+          "localTenantDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "counterpartyTenantDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "binding": "FIRST_AUTHENTICATED_CLAIM",
+          "visibility": "RESPONDER_VIEW"
+        },
+        "session": {
+          "sessionId": "sess_creator_0123456789",
+          "role": "RESPONDER",
+          "state": "CLAIMED",
+          "stateVersion": 1,
+          "policy": { "scope": ["agent-contract:a2a-after-handshake"], "constraints": { "businessAction": "none" }, "externalBusinessActionsAllowed": false, "expiresAt": "2026-08-29T21:00:00Z" },
+          "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expiresAt": "2026-08-29T21:00:00Z",
+          "allowedTransitions": ["CLAIM_INVITATION", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"],
+          "eventCursor": "cursor_creator_0123456789"
+        }
+      },
+      "expectedError": "SCHEMA_INVALID",
+      "reason": "session.allowedTransitions must exactly match the canonical transition table for the session state"
     },
     {
       "id": "tenant-relation-raw-id",
@@ -352,6 +430,46 @@
       },
       "expectedError": "SCHEMA_INVALID",
       "reason": "SIGN_AND_SUBMIT requires the pending signing request that the role will sign"
+    },
+    {
+      "id": "next-action-wrong-allowed-transitions",
+      "resultTool": "agent_handshake_session_next",
+      "value": {
+        "changed": true,
+        "nextAction": "SIGN_AND_SUBMIT",
+        "session": {
+          "sessionId": "sess_creator_0123456789",
+          "role": "INITIATOR",
+          "state": "PROPOSAL_PENDING",
+          "stateVersion": 4,
+          "policy": { "scope": ["agent-contract:a2a-after-handshake"], "constraints": { "businessAction": "none" }, "externalBusinessActionsAllowed": false, "expiresAt": "2026-08-29T21:00:00Z" },
+          "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "expiresAt": "2026-08-29T21:00:00Z",
+          "allowedTransitions": ["SUBMIT_ACCEPTANCE", "FAIL_CLOSED", "CANCEL", "EXPIRE"],
+          "pendingSigningRequest": {
+            "signingRequestId": "signreq_0123456789abcdef",
+            "actionType": "PROPOSAL",
+            "domainSeparator": "CLOCKCHAIN_AGENT_HANDSHAKE_V3",
+            "canonicalization": "RFC8785",
+            "payloadSchemaId": "https://schemas.clockchain.network/agent-handshake/v3/signing-payload.schema.json",
+            "sessionId": "sess_creator_0123456789",
+            "stateVersion": 4,
+            "role": "INITIATOR",
+            "policyDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "statementDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "nonce": "nonce_0123456789abcdef",
+            "issuedAt": "2026-08-29T20:00:00Z",
+            "expiresAt": "2026-08-29T20:05:00Z",
+            "canonicalBytesBase64Url": "ZXhhY3QtY2Fub25pY2FsLWJ5dGVz",
+            "signingDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          },
+          "eventCursor": "cursor_creator_0123456789"
+        },
+        "events": [],
+        "retryAfterMs": 0
+      },
+      "expectedError": "SCHEMA_INVALID",
+      "reason": "session_next must expose the exact canonical allowedTransitions for the reported state"
     },
     {
       "id": "preaccept-inspection-claim-marker",

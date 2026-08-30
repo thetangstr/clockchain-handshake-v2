@@ -242,6 +242,7 @@
       }
     },
     "nextAction": { "enum": ["WAIT", "SIGN_AND_SUBMIT", "SUBMIT_CHECKPOINT", "FETCH_RESULT", "STOP_AFTER_VERIFICATION", "TERMINAL"] },
+    "transitionAction": { "enum": ["CLAIM_INVITATION", "PREPARE_POLICY", "BIND_PARTIES", "SUBMIT_PROPOSAL", "SUBMIT_ACCEPTANCE", "CONFIRM_ANCHOR", "ISSUE_CERTIFICATE", "ISSUE_CONTINUATION", "COMPLETE", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"] },
     "signingRequest": {
       "type": "object", "additionalProperties": false,
       "required": ["signingRequestId", "actionType", "domainSeparator", "canonicalization", "payloadSchemaId", "sessionId", "stateVersion", "role", "policyDigest", "statementDigest", "nonce", "issuedAt", "expiresAt", "canonicalBytesBase64Url", "signingDigest"],
@@ -289,7 +290,7 @@
         "policyDigest": { "$ref": "#/$defs/digest" },
         "partyDigests": { "type": "array", "maxItems": 2, "items": { "$ref": "#/$defs/digest" } },
         "expiresAt": { "type": "string", "format": "date-time" },
-        "allowedTransitions": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+        "allowedTransitions": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/transitionAction" } },
         "pendingSigningRequest": { "$ref": "#/$defs/signingRequest" },
         "eventCursor": { "$ref": "#/$defs/opaqueId" }
       }

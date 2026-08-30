@@ -58,6 +58,39 @@ export const HANDSHAKE_V3_ROLE_TOOLS = Object.freeze([
 export const HANDSHAKE_V3_INITIATOR_REQUIRED_TOOLS = Object.freeze([...HANDSHAKE_V3_ROLE_TOOLS]);
 export const HANDSHAKE_V3_RESPONDER_REQUIRED_TOOLS = Object.freeze([...HANDSHAKE_V3_ROLE_TOOLS]);
 
+export const HANDSHAKE_V3_TRANSITION_ACTIONS = Object.freeze([
+  "CLAIM_INVITATION",
+  "PREPARE_POLICY",
+  "BIND_PARTIES",
+  "SUBMIT_PROPOSAL",
+  "SUBMIT_ACCEPTANCE",
+  "CONFIRM_ANCHOR",
+  "ISSUE_CERTIFICATE",
+  "ISSUE_CONTINUATION",
+  "COMPLETE",
+  "FAIL_CLOSED",
+  "CANCEL",
+  "EXPIRE",
+  "REVOKE",
+]);
+
+export const HANDSHAKE_V3_ALLOWED_TRANSITIONS_BY_STATE = Object.freeze({
+  INVITED: Object.freeze(["CLAIM_INVITATION", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"]),
+  CLAIMED: Object.freeze(["PREPARE_POLICY", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"]),
+  POLICY_READY: Object.freeze(["BIND_PARTIES", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"]),
+  PARTIES_BOUND: Object.freeze(["SUBMIT_PROPOSAL", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"]),
+  PROPOSAL_PENDING: Object.freeze(["SUBMIT_ACCEPTANCE", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"]),
+  ACCEPTANCE_PENDING: Object.freeze(["CONFIRM_ANCHOR", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"]),
+  ANCHORING: Object.freeze(["ISSUE_CERTIFICATE", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"]),
+  CERTIFICATE_ISSUED: Object.freeze(["ISSUE_CONTINUATION", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"]),
+  CONTINUATION_ISSUED: Object.freeze(["COMPLETE", "FAIL_CLOSED", "CANCEL", "EXPIRE", "REVOKE"]),
+  COMPLETED: Object.freeze(["REVOKE"]),
+  FAILED_CLOSED: Object.freeze([]),
+  CANCELLED: Object.freeze([]),
+  EXPIRED: Object.freeze([]),
+  REVOKED: Object.freeze([]),
+});
+
 export const HANDSHAKE_V3_NEXT_ACTION_BY_STATE = Object.freeze({
   INVITED: "WAIT",
   CLAIMED: "WAIT",
@@ -132,10 +165,10 @@ export const HANDSHAKE_V3_CONTRACT_PROVENANCE = Object.freeze({
   approvedProtocolSourceCommit: "d2cdedb705cf6855657381a908e47f71df959145",
   contractSchemaPath: "packages/protocol/schemas/standalone-handshake-v3-contract.schema.json",
   contractSchemaOriginalPath: "docs/superpowers/specs/standalone-handshake-v3-contract.schema.json",
-  contractSchemaSha256: "4d58b53caabc04570da17ac4cd712112c6863d86318a50303f28cfc7c90c468c",
+  contractSchemaSha256: "579f2e07475fbf1e0209df9f082218837b766aab507430e514962971625d2991",
   contractFixturesPath: "packages/protocol/fixtures/standalone-handshake-v3-contract-fixtures.json",
   contractFixturesOriginalPath: "docs/superpowers/specs/standalone-handshake-v3-contract-fixtures.json",
-  contractFixturesSha256: "96ca5f773bdc3b02bdc3d7cd1326b1352ae13e007614a8f09f0f244018ab60bb",
+  contractFixturesSha256: "56c7ee85b0b5a0b838e55b0caea4051b9f2d5585b7ca86f162a4da554a97ad7d",
   packageName: "@clockchain/handshake-protocol",
   runtimeBoundary: "no MCP server, HTTP gateway, OAuth/JWKS validator, tenant store, persistence, Supervisor, Agent Contract delivery, or demo controller",
 });
