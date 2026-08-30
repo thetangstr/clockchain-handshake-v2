@@ -16,8 +16,8 @@ const commandsWithInput = new Set([
   "validate-tool-input",
   "validate-tool-result",
   "prepare-signing",
-  "verify-result",
-  "verify-certificate",
+  "verify-result-fixture",
+  "verify-certificate-fixture",
 ]);
 let output;
 try {

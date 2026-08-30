@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": false,
   "type": "module",
-  "description": "Offline client helpers for the Clockchain standalone agent handshake.",
+  "description": "Offline Clockchain handshake SDK helpers; verification delegates only to caller-supplied trust, revocation, and replay callbacks.",
   "engines": {
     "node": ">=22"
   },

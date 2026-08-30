@@ -89,3 +89,15 @@ test("CLI source stays offline and non-authoritative", async () => {
     }
   }
 });
+
+test("CLI package documentation states fixture verification is not Clockchain trust", async () => {
+  const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+  const text = `${manifest.description}\n${readme}`;
+
+  assert.match(text, /fixture verification commands do not establish Clockchain trust/i);
+  assert.match(text, /verify-result-fixture/i);
+  assert.match(text, /verify-certificate-fixture/i);
+  assert.doesNotMatch(text, /\bverify-result\b(?!-fixture)/);
+  assert.doesNotMatch(text, /\bverify-certificate\b(?!-fixture)/);
+});

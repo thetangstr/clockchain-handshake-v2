@@ -140,6 +140,8 @@ test("SDK result-shape helper validates JSON CLI envelopes only", () => {
   const value = validateHandshakeV3CliResultShape({
     ok: true,
     command: "contract",
+    verificationMode: "explicit_fixture_only",
+    clockchainTrustVerified: false,
     externalBusinessActionPerformed: false,
     result: {
       protocolVersion: "3.0",
@@ -149,7 +151,15 @@ test("SDK result-shape helper validates JSON CLI envelopes only", () => {
   assert.throws(() => validateHandshakeV3CliResultShape({
     ok: true,
     command: "contract",
+    verificationMode: "explicit_fixture_only",
+    clockchainTrustVerified: false,
     externalBusinessActionPerformed: true,
+    result: {},
+  }), { code: "SCHEMA_INVALID" });
+  assert.throws(() => validateHandshakeV3CliResultShape({
+    ok: true,
+    command: "contract",
+    externalBusinessActionPerformed: false,
     result: {},
   }), { code: "SCHEMA_INVALID" });
 });

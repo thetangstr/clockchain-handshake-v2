@@ -9,10 +9,22 @@ import {
   verifyHandshakeV3SdkContinuation,
 } from "@clockchain/handshake-sdk";
 
+const COMMANDS = Object.freeze([
+  "help",
+  "contract",
+  "validate-tool-input",
+  "validate-tool-result",
+  "prepare-signing",
+  "verify-result-fixture",
+  "verify-certificate-fixture",
+]);
+
 function success(command, result) {
   return validateHandshakeV3CliResultShape({
     ok: true,
     command,
+    verificationMode: "explicit_fixture_only",
+    clockchainTrustVerified: false,
     externalBusinessActionPerformed: false,
     result,
   });
@@ -52,6 +64,13 @@ export async function runHandshakeCliCommand(command, input = {}, options = {}) 
         tools: listHandshakeV3Tools(),
       });
     }
+    if (command === "help" || command === "--help") {
+      return success(command, {
+        commands: COMMANDS,
+        input: "Commands except help and contract read one JSON object from stdin.",
+        trustBoundary: "Fixture verification commands do not establish Clockchain trust; they only exercise explicitly supplied local fixture callbacks.",
+      });
+    }
     if (command === "validate-tool-input") {
       return success(command, validateHandshakeV3SdkToolInput(options.toolName, input));
     }
@@ -61,7 +80,7 @@ export async function runHandshakeCliCommand(command, input = {}, options = {}) 
     if (command === "prepare-signing") {
       return success(command, prepareHandshakeV3Signing(input));
     }
-    if (command === "verify-result") {
+    if (command === "verify-result-fixture") {
       const adapter = fixtureAdapter(input.fixtureTrustAdapter);
       if (!adapter) throw Object.assign(new Error("explicit verification fixture required"), { code: "RESULT_VERIFICATION_FAILED" });
       return success(command, await verifyHandshakeV3SdkContinuation({
@@ -73,7 +92,7 @@ export async function runHandshakeCliCommand(command, input = {}, options = {}) 
         ...adapter,
       }));
     }
-    if (command === "verify-certificate") {
+    if (command === "verify-certificate-fixture") {
       const adapter = fixtureAdapter(input.fixtureTrustAdapter);
       if (!adapter) throw Object.assign(new Error("explicit verification fixture required"), { code: "RESULT_VERIFICATION_FAILED" });
       return success(command, await verifyHandshakeV3SdkCertificate({

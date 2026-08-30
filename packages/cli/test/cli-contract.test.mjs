@@ -41,13 +41,31 @@ async function runCliRejects(args, input) {
   return JSON.parse(result.stdout);
 }
 
+function assertFixtureMode(output) {
+  assert.equal(output.verificationMode, "explicit_fixture_only");
+  assert.equal(output.clockchainTrustVerified, false);
+  assert.equal(output.externalBusinessActionPerformed, false);
+}
+
 test("CLI prints JSON contract discovery without stdin or side effects", async () => {
   const output = await runCli(["contract"]);
   assert.equal(output.ok, true);
   assert.equal(output.command, "contract");
-  assert.equal(output.externalBusinessActionPerformed, false);
+  assertFixtureMode(output);
   assert.equal(output.result.protocolVersion, "3.0");
   assert.equal(output.result.tools.includes("agent_handshake_session_submit"), true);
+});
+
+test("CLI help is JSON and states fixture verification does not establish Clockchain trust", async () => {
+  const output = await runCli(["help"]);
+  const flagOutput = await runCli(["--help"]);
+
+  assert.equal(output.ok, true);
+  assertFixtureMode(output);
+  assert.equal(output.result.commands.includes("verify-result-fixture"), true);
+  assert.equal(output.result.commands.includes("verify-result"), false);
+  assert.match(output.result.trustBoundary, /fixture verification commands do not establish Clockchain trust/i);
+  assert.deepEqual(flagOutput.result.commands, output.result.commands);
 });
 
 test("CLI validates tool input/result JSON from stdin", async () => {
@@ -55,6 +73,7 @@ test("CLI validates tool input/result JSON from stdin", async () => {
     sessionId: "sess_cli_0123456789",
   });
   assert.equal(validInput.ok, true);
+  assertFixtureMode(validInput);
   assert.equal(validInput.result.tool, "agent_handshake_session_get_result");
 
   const validResult = await runCli(["validate-tool-result", "agent_handshake_session_cancel"], {
@@ -62,6 +81,7 @@ test("CLI validates tool input/result JSON from stdin", async () => {
     state: "CANCELLED",
   });
   assert.equal(validResult.ok, true);
+  assertFixtureMode(validResult);
   assert.equal(validResult.result.state, "CANCELLED");
 
   const invalid = await runCliRejects(["validate-tool-input", "agent_handshake_session_get_result"], {
@@ -87,14 +107,30 @@ test("CLI prepares signing request JSON but does not sign", async () => {
   });
 
   assert.equal(output.ok, true);
+  assertFixtureMode(output);
   assert.equal(output.result.request.actionType, "ACCEPTANCE");
   assert.equal(output.result.externalBusinessActionPerformed, false);
   assert.equal(output.result.signature, undefined);
   assert.equal(output.result.privateKey, undefined);
 });
 
-test("CLI verification refuses to run without explicit trust and replay fixtures", async () => {
-  const output = await runCliRejects(["verify-result"], {
+test("CLI ambiguous legacy verification commands are unknown", async () => {
+  const resultOutput = await runCliRejects(["verify-result"], {
+    certificate: {},
+    continuation: {},
+    now: "2026-08-29T20:01:00Z",
+  });
+  const certificateOutput = await runCliRejects(["verify-certificate"], {
+    certificate: {},
+    now: "2026-08-29T20:01:00Z",
+  });
+
+  assert.equal(resultOutput.error.code, "SCHEMA_INVALID");
+  assert.equal(certificateOutput.error.code, "SCHEMA_INVALID");
+});
+
+test("CLI fixture verification refuses to run without explicit trust and replay fixtures", async () => {
+  const output = await runCliRejects(["verify-result-fixture"], {
     certificate: {},
     continuation: {},
     now: "2026-08-29T20:01:00Z",

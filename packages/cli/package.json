@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": false,
   "type": "module",
-  "description": "Offline JSON CLI helpers for the Clockchain standalone agent handshake.",
+  "description": "Offline JSON Clockchain handshake CLI; fixture verification commands do not establish Clockchain trust.",
   "engines": {
     "node": ">=22"
   },

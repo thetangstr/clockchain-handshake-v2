@@ -94,6 +94,8 @@ export function validateHandshakeV3CliResultShape(value) {
   if (typeof value.command !== "string" || value.command.length === 0) cliShapeInvalid();
   if (value.externalBusinessActionPerformed !== false) cliShapeInvalid();
   if (value.ok) {
+    if (value.verificationMode !== "explicit_fixture_only") cliShapeInvalid();
+    if (value.clockchainTrustVerified !== false) cliShapeInvalid();
     if (!Object.hasOwn(value, "result")) cliShapeInvalid();
     if (Object.hasOwn(value, "error")) cliShapeInvalid();
   } else {

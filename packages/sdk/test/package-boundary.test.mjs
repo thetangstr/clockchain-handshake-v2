@@ -88,3 +88,14 @@ test("SDK source imports only the protocol package and no authority-bearing runt
     }
   }
 });
+
+test("SDK package documentation states caller-owned verification authority", async () => {
+  const manifest = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+  const text = `${manifest.description}\n${readme}`;
+
+  assert.match(text, /caller-supplied trust, revocation, and replay callbacks/i);
+  assert.match(text, /does not sign/i);
+  assert.match(text, /no network/i);
+  assert.match(text, /no persistence/i);
+});
