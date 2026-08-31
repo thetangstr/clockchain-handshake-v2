@@ -1,0 +1,172 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { gzipSync } from "node:zlib";
+import test from "node:test";
+
+import {
+  executeDirectAgentSigningRequest,
+  validateDirectAgentSigningResult,
+} from "../src/direct-agent-signer/adapter.mjs";
+import { canonicalBytes } from "../src/core/canonical.mjs";
+import { buildAgentCliFixture } from "./support/agent-cli-fixture.mjs";
+
+const SCHEMA = "clockchain.direct-agent-signer-request/v1";
+const PURPOSE = "agent_contract_direct_signature";
+
+function directRequest(fixture, payload = { schema: "local.test/v1", value: "sign exactly this" }) {
+  const bytes = canonicalBytes(payload);
+  return {
+    schema: SCHEMA,
+    role: "initiator",
+    purpose: PURPOSE,
+    sessionId: fixture.request.sessionId,
+    repositorySha: fixture.request.repositorySha,
+    sessionDeadlineMs: fixture.request.sessionDeadlineMs,
+    retainedV2Certificate: fixture.resultEnvelope,
+    bytesGzipBase64Url: gzipSync(bytes).toString("base64url"),
+    bytesSha256: createHash("sha256").update(bytes).digest("hex"),
+    externalBusinessActionPerformed: false,
+  };
+}
+
+test("signs exact canonical JSON bytes after local wallet, policy, and v2 certificate bindings match", async () => {
+  const fixture = await buildAgentCliFixture();
+  const request = directRequest(fixture);
+  let calls = 0;
+
+  const result = await executeDirectAgentSigningRequest({
+    address: fixture.parties.initiator.sessionKeyAddress,
+    localPolicy: fixture.policy,
+    nowMs: fixture.nowMs,
+    registration: fixture.parties.initiator.erc8004,
+    request,
+    rootKeyRing: fixture.rootKeyRing,
+    sign: async (input) => {
+      calls += 1;
+      assert.equal(input.bytesGzipBase64Url, request.bytesGzipBase64Url);
+      return {
+        address: fixture.parties.initiator.sessionKeyAddress,
+        bytesSha256: request.bytesSha256,
+        signatureHex: "0x" + "2".repeat(130),
+      };
+    },
+  });
+
+  assert.deepEqual(result, {
+    schema: "clockchain.direct-agent-signer-result/v1",
+    adapterVersion: "1.0.0",
+    address: fixture.parties.initiator.sessionKeyAddress,
+    bytesSha256: request.bytesSha256,
+    purpose: PURPOSE,
+    role: "initiator",
+    sessionId: fixture.request.sessionId,
+    signatureHex: "0x" + "2".repeat(130),
+  });
+  assert.equal(calls, 1);
+});
+
+test("validates exact public result provenance for endpoint adapters", async () => {
+  const fixture = await buildAgentCliFixture();
+  const result = {
+    schema: "clockchain.direct-agent-signer-result/v1",
+    adapterVersion: "1.0.0",
+    address: fixture.parties.initiator.sessionKeyAddress,
+    bytesSha256: fixture.request.bytesSha256,
+    purpose: PURPOSE,
+    role: "initiator",
+    sessionId: fixture.request.sessionId,
+    signatureHex: "0x" + "2".repeat(130),
+  };
+
+  assert.deepEqual(validateDirectAgentSigningResult(result), result);
+  for (const mutated of [
+    { ...result, schema: "clockchain.direct-agent-signer-result/v2" },
+    { ...result, adapterVersion: "1.0.1" },
+    { ...result, purpose: "unknown" },
+    { ...result, extra: true },
+    Object.fromEntries(Object.entries(result).filter(([key]) => key !== "adapterVersion")),
+  ]) {
+    assert.throws(() => validateDirectAgentSigningResult(mutated));
+  }
+});
+
+test("rejects request and binding mutations before the signer is reached", async () => {
+  const fixture = await buildAgentCliFixture();
+  const request = directRequest(fixture);
+  let calls = 0;
+  const sign = async () => {
+    calls += 1;
+    return {};
+  };
+  const mutations = [
+    { ...request, schema: "clockchain.direct-agent-signer-request/v2" },
+    { ...request, role: "responder" },
+    { ...request, purpose: "unknown" },
+    { ...request, sessionId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" },
+    { ...request, repositorySha: "e".repeat(40) },
+    { ...request, sessionDeadlineMs: "1786337000000" },
+    { ...request, retainedV2Certificate: { ...request.retainedV2Certificate, extra: true } },
+    { ...request, bytesSha256: "f".repeat(64) },
+    { ...request, externalBusinessActionPerformed: true },
+    { ...request, extra: true },
+  ];
+
+  for (const mutated of mutations) {
+    await assert.rejects(() => executeDirectAgentSigningRequest({
+      address: fixture.parties.initiator.sessionKeyAddress,
+      localPolicy: fixture.policy,
+      nowMs: fixture.nowMs,
+      registration: fixture.parties.initiator.erc8004,
+      request: mutated,
+      rootKeyRing: fixture.rootKeyRing,
+      sign,
+    }));
+  }
+
+  await assert.rejects(() => executeDirectAgentSigningRequest({
+    address: fixture.parties.responder.sessionKeyAddress,
+    localPolicy: fixture.policy,
+    nowMs: fixture.nowMs,
+    registration: fixture.parties.initiator.erc8004,
+    request,
+    rootKeyRing: fixture.rootKeyRing,
+    sign,
+  }));
+  await assert.rejects(() => executeDirectAgentSigningRequest({
+    address: fixture.parties.initiator.sessionKeyAddress,
+    localPolicy: { ...fixture.policy, role: "responder" },
+    nowMs: fixture.nowMs,
+    registration: fixture.parties.initiator.erc8004,
+    request,
+    rootKeyRing: fixture.rootKeyRing,
+    sign,
+  }));
+
+  assert.equal(calls, 0);
+});
+
+test("rejects non-canonical JSON bytes without inspecting business semantics", async () => {
+  const fixture = await buildAgentCliFixture();
+  const raw = Buffer.from("{\"value\":\"sign exactly this\",\"schema\":\"local.test/v1\"}", "utf8");
+  const request = {
+    ...directRequest(fixture),
+    bytesGzipBase64Url: gzipSync(raw).toString("base64url"),
+    bytesSha256: createHash("sha256").update(raw).digest("hex"),
+  };
+  let calls = 0;
+
+  await assert.rejects(() => executeDirectAgentSigningRequest({
+    address: fixture.parties.initiator.sessionKeyAddress,
+    localPolicy: fixture.policy,
+    nowMs: fixture.nowMs,
+    registration: fixture.parties.initiator.erc8004,
+    request,
+    rootKeyRing: fixture.rootKeyRing,
+    sign: async () => {
+      calls += 1;
+      return {};
+    },
+  }));
+
+  assert.equal(calls, 0);
+});

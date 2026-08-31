@@ -21,6 +21,7 @@
     "canary:hermes-v2": "PATH=/opt/homebrew/opt/node@24/bin:$PATH node scripts/run-hermes-v2-live.mjs",
     "negative": "node scripts/negative-checks.mjs",
     "agent-cli:bundle": "node scripts/build-agent-handshake-release.mjs bundle dist/clockchain-agent-handshake.cjs",
+    "direct-agent-signer:bundle": "node scripts/build-direct-agent-signer.mjs bundle dist/clockchain-direct-agent-signer.cjs",
     "agent-cli:sea": "node scripts/build-agent-handshake-release.mjs sea dist/clockchain-agent-handshake",
     "agent-cli:npm:build": "node scripts/build-agent-handshake-npm.mjs",
     "agent-cli:release:verify": "node --test test/agent-cli-release.test.mjs test/agent-cli-clean-platform.test.mjs",
