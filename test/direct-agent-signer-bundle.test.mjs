@@ -23,6 +23,7 @@ test("builds one separate local direct signer bundle with no dynamic or external
   assert.deepEqual(audit.externalImports, []);
   assert.ok(audit.inputs.some((input) => input.endsWith("bin/clockchain-direct-agent-signer.mjs")));
   assert.ok(audit.inputs.some((input) => input.endsWith("src/direct-agent-signer/adapter.mjs")));
+  assert.ok(audit.inputs.some((input) => input.endsWith("src/direct-agent-signer/checkpoint.mjs")));
   assert.ok(audit.inputs.some((input) => input.endsWith("src/agent-cli/policy.mjs")));
   assert.ok(audit.inputs.some((input) => input.endsWith("src/core/wallet-bridge.mjs")));
   assert.ok(bytes.length > 0);

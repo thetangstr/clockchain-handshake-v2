@@ -14,13 +14,23 @@ import {
   EMBEDDED_HOST_ROOT_KEY_RING,
   validateHostRootKeyRing,
 } from "../agent-cli/trust-roots.mjs";
-
-export const DIRECT_AGENT_SIGNER_VERSION = "1.0.0";
-export const DIRECT_AGENT_SIGNER_REQUEST_SCHEMA = "clockchain.direct-agent-signer-request/v1";
-export const DIRECT_AGENT_SIGNER_RESULT_SCHEMA = "clockchain.direct-agent-signer-result/v1";
-export const DIRECT_AGENT_SIGNER_PURPOSES = Object.freeze([
-  "agent_contract_direct_signature",
-]);
+import {
+  executeDirectAgentCheckpointRequest,
+  validateDirectAgentCheckpointResult,
+} from "./checkpoint.mjs";
+export {
+  DIRECT_AGENT_SIGNER_PURPOSES,
+  DIRECT_AGENT_SIGNER_REQUEST_SCHEMA,
+  DIRECT_AGENT_SIGNER_RESULT_SCHEMA,
+  DIRECT_AGENT_SIGNER_VERSION,
+} from "./constants.mjs";
+import {
+  DIRECT_AGENT_SIGNER_PURPOSES,
+  DIRECT_AGENT_SIGNER_REQUEST_SCHEMA,
+  DIRECT_AGENT_SIGNER_RESULT_SCHEMA,
+  DIRECT_AGENT_SIGNER_VERSION,
+} from "./constants.mjs";
+import { normalizeRegistrationForDirectSigner } from "./bindings.mjs";
 
 const SAFE_MESSAGE = "Direct agent signer failed safely.";
 const REQUEST_KEYS = Object.freeze([
@@ -80,48 +90,6 @@ function pathFor(stateDir) {
   return join(stateDir, "wallet.json");
 }
 
-function publicRegistration(record, identityPolicy) {
-  if (identityPolicy.erc8004 === "not_required") return null;
-  if (
-    record?.schema !== "clockchain.handshake-registration-recovery/v1" ||
-    typeof record.agentId !== "string" ||
-    typeof record.identityReference !== "string" ||
-    typeof record.registerTx !== "string" ||
-    typeof record.registerBlock !== "string"
-  ) invalid();
-  return {
-    agentId: record.agentId,
-    chainId: identityPolicy.chainId,
-    registryAddress: identityPolicy.registryAddress,
-    reference: record.identityReference,
-    registrationTx: record.registerTx.toLowerCase(),
-    registrationBlock: record.registerBlock,
-  };
-}
-
-function normalizeRegistration(record, identityPolicy) {
-  if (identityPolicy.erc8004 === "not_required") return null;
-  if (
-    record?.schema === undefined &&
-    typeof record?.agentId === "string" &&
-    record.chainId === identityPolicy.chainId &&
-    record.registryAddress === identityPolicy.registryAddress &&
-    typeof record.reference === "string" &&
-    typeof record.registrationTx === "string" &&
-    typeof record.registrationBlock === "string"
-  ) {
-    return {
-      agentId: record.agentId,
-      chainId: record.chainId,
-      registryAddress: record.registryAddress,
-      reference: record.reference,
-      registrationTx: record.registrationTx.toLowerCase(),
-      registrationBlock: record.registrationBlock,
-    };
-  }
-  return publicRegistration(record, identityPolicy);
-}
-
 function validateRequest(input, policy) {
   const request = exact(input, REQUEST_KEYS);
   if (
@@ -152,6 +120,17 @@ function verifyCanonicalJsonBytes(request) {
     invalid();
   }
   if (!canonicalBytes(parsed).equals(raw)) invalid();
+}
+
+function validateLocalRoleBinding({ address, policy, registration }) {
+  const policyDigest = localPolicyDigest(policy);
+  const identityPolicy = validateIdentityPolicy(policy.identityPolicy);
+  const party = validateAgentHandshakeV2Party({
+    sessionKeyAddress: address,
+    policyDigest,
+    erc8004: normalizeRegistrationForDirectSigner(registration, identityPolicy),
+  }, { identityPolicy });
+  return { identityPolicy, party, policyDigest };
 }
 
 export function validateDirectAgentSigningResult(input) {
@@ -185,13 +164,20 @@ export function validateDirectAgentSigningRequest({
     !Number.isSafeInteger(nowMs) ||
     nowMs >= Number(request.sessionDeadlineMs)
   ) invalid();
-  const policyDigest = localPolicyDigest(policy);
-  const identityPolicy = validateIdentityPolicy(policy.identityPolicy);
-  const party = validateAgentHandshakeV2Party({
-    sessionKeyAddress: address,
-    policyDigest,
-    erc8004: normalizeRegistration(registration, identityPolicy),
-  }, { identityPolicy });
+  const { party, policyDigest } = validateLocalRoleBinding({ address, policy, registration });
+  verifyCanonicalJsonBytes(request);
+  if (request.purpose === "agent_contract_direct_identity") {
+    if (request.retainedV2Certificate !== null) invalid();
+    return Object.freeze({
+      address,
+      bytesGzipBase64Url: request.bytesGzipBase64Url,
+      bytesSha256: request.bytesSha256,
+      purpose: request.purpose,
+      role: request.role,
+      sessionId: request.sessionId,
+    });
+  }
+  if (request.retainedV2Certificate === null) invalid();
   const activeRootKeyRing = validateHostRootKeyRing(rootKeyRing, { nowMs });
   const verified = verifyAgentHandshakeV2Result(request.retainedV2Certificate, {
     expectedParty: party,
@@ -210,7 +196,6 @@ export function validateDirectAgentSigningRequest({
     verified.role !== request.role ||
     verified.sessionId !== request.sessionId
   ) invalid();
-  verifyCanonicalJsonBytes(request);
   return Object.freeze({
     address,
     bytesGzipBase64Url: request.bytesGzipBase64Url,
@@ -255,7 +240,7 @@ export function createDirectAgentSignerOperations({
   runIcacls,
 } = {}) {
   async function dispatch({ operation, stateDir, payload } = {}) {
-    if (operation !== "sign") invalid();
+    if (!["sign", "checkpoint"].includes(operation)) invalid();
     try {
       const committed = await readAgentPolicy({ stateDir, platform, runIcacls });
       const wallet = await bridge.inspectWallet({
@@ -263,6 +248,21 @@ export function createDirectAgentSignerOperations({
         platform,
         runIcacls,
       });
+      if (operation === "checkpoint") {
+        return validateDirectAgentCheckpointResult(await executeDirectAgentCheckpointRequest({
+          address: wallet.address.toLowerCase(),
+          localPolicy: committed.policy,
+          nowMs: now(),
+          registration: wallet.registration,
+          request: payload,
+          sign: (input) => bridge.signExactBytes({
+            bytesHex: input.bytesHex,
+            statePath: pathFor(stateDir),
+            platform,
+            runIcacls,
+          }),
+        }));
+      }
       return await executeDirectAgentSigningRequest({
         address: wallet.address.toLowerCase(),
         localPolicy: committed.policy,
@@ -282,5 +282,5 @@ export function createDirectAgentSignerOperations({
       invalid();
     }
   }
-  return Object.freeze({ dispatch, names: Object.freeze(["sign"]) });
+  return Object.freeze({ dispatch, names: Object.freeze(["sign", "checkpoint"]) });
 }

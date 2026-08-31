@@ -12,6 +12,7 @@ import { buildAgentCliFixture } from "./support/agent-cli-fixture.mjs";
 
 const SCHEMA = "clockchain.direct-agent-signer-request/v1";
 const PURPOSE = "agent_contract_direct_signature";
+const IDENTITY_PURPOSE = "agent_contract_direct_identity";
 
 function directRequest(fixture, payload = { schema: "local.test/v1", value: "sign exactly this" }) {
   const bytes = canonicalBytes(payload);
@@ -54,7 +55,7 @@ test("signs exact canonical JSON bytes after local wallet, policy, and v2 certif
 
   assert.deepEqual(result, {
     schema: "clockchain.direct-agent-signer-result/v1",
-    adapterVersion: "1.0.0",
+    adapterVersion: "1.1.0",
     address: fixture.parties.initiator.sessionKeyAddress,
     bytesSha256: request.bytesSha256,
     purpose: PURPOSE,
@@ -69,7 +70,7 @@ test("validates exact public result provenance for endpoint adapters", async () 
   const fixture = await buildAgentCliFixture();
   const result = {
     schema: "clockchain.direct-agent-signer-result/v1",
-    adapterVersion: "1.0.0",
+    adapterVersion: "1.1.0",
     address: fixture.parties.initiator.sessionKeyAddress,
     bytesSha256: fixture.request.bytesSha256,
     purpose: PURPOSE,
@@ -81,7 +82,7 @@ test("validates exact public result provenance for endpoint adapters", async () 
   assert.deepEqual(validateDirectAgentSigningResult(result), result);
   for (const mutated of [
     { ...result, schema: "clockchain.direct-agent-signer-result/v2" },
-    { ...result, adapterVersion: "1.0.1" },
+    { ...result, adapterVersion: "1.0.0" },
     { ...result, purpose: "unknown" },
     { ...result, extra: true },
     Object.fromEntries(Object.entries(result).filter(([key]) => key !== "adapterVersion")),
@@ -141,6 +142,86 @@ test("rejects request and binding mutations before the signer is reached", async
     rootKeyRing: fixture.rootKeyRing,
     sign,
   }));
+
+  assert.equal(calls, 0);
+});
+
+test("signs exact canonical identity JSON before a retained v2 certificate exists", async () => {
+  const fixture = await buildAgentCliFixture();
+  const request = {
+    ...directRequest(fixture, {
+      schema: "local.identity/v1",
+      role: "initiator",
+      sessionId: fixture.request.sessionId,
+      repositorySha: fixture.request.repositorySha,
+      sessionDeadlineMs: fixture.request.sessionDeadlineMs,
+    }),
+    purpose: IDENTITY_PURPOSE,
+    retainedV2Certificate: null,
+  };
+  let calls = 0;
+
+  const result = await executeDirectAgentSigningRequest({
+    address: fixture.parties.initiator.sessionKeyAddress,
+    localPolicy: fixture.policy,
+    nowMs: fixture.nowMs,
+    registration: fixture.parties.initiator.erc8004,
+    request,
+    rootKeyRing: fixture.rootKeyRing,
+    sign: async (input) => {
+      calls += 1;
+      assert.equal(input.bytesGzipBase64Url, request.bytesGzipBase64Url);
+      return {
+        address: fixture.parties.initiator.sessionKeyAddress,
+        bytesSha256: request.bytesSha256,
+        signatureHex: "0x" + "4".repeat(130),
+      };
+    },
+  });
+
+  assert.deepEqual(result, {
+    schema: "clockchain.direct-agent-signer-result/v1",
+    adapterVersion: "1.1.0",
+    address: fixture.parties.initiator.sessionKeyAddress,
+    bytesSha256: request.bytesSha256,
+    purpose: IDENTITY_PURPOSE,
+    role: "initiator",
+    sessionId: fixture.request.sessionId,
+    signatureHex: "0x" + "4".repeat(130),
+  });
+  assert.equal(calls, 1);
+});
+
+test("keeps business signing certificate-required and rejects purpose/certificate substitution", async () => {
+  const fixture = await buildAgentCliFixture();
+  const businessRequest = directRequest(fixture);
+  const identityRequest = {
+    ...businessRequest,
+    purpose: IDENTITY_PURPOSE,
+    retainedV2Certificate: null,
+  };
+  let calls = 0;
+  const sign = async () => {
+    calls += 1;
+    return {};
+  };
+
+  for (const request of [
+    { ...businessRequest, retainedV2Certificate: null },
+    { ...identityRequest, retainedV2Certificate: fixture.resultEnvelope },
+    { ...identityRequest, purpose: PURPOSE, retainedV2Certificate: null },
+    { ...businessRequest, purpose: IDENTITY_PURPOSE },
+  ]) {
+    await assert.rejects(() => executeDirectAgentSigningRequest({
+      address: fixture.parties.initiator.sessionKeyAddress,
+      localPolicy: fixture.policy,
+      nowMs: fixture.nowMs,
+      registration: fixture.parties.initiator.erc8004,
+      request,
+      rootKeyRing: fixture.rootKeyRing,
+      sign,
+    }));
+  }
 
   assert.equal(calls, 0);
 });

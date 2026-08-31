@@ -6,6 +6,7 @@ import {
   DIRECT_AGENT_SIGNER_VERSION,
   validateDirectAgentSigningResult,
 } from "./adapter.mjs";
+import { validateDirectAgentCheckpointResult } from "./checkpoint.mjs";
 
 function invalid() {
   throw new Error("Direct agent signer failed safely.");
@@ -49,9 +50,12 @@ export async function runDirectAgentSignerCli(argv, {
   }
   if (typeof values["state-dir"] !== "string" || !isAbsolute(values["state-dir"])) invalid();
   if (!Object.hasOwn(values, "payload-base64url")) invalid();
-  return validateDirectAgentSigningResult(await operations.dispatch({
+  const result = await operations.dispatch({
     operation,
     stateDir: values["state-dir"],
     payload: payload(values["payload-base64url"]),
-  }));
+  });
+  return operation === "sign"
+    ? validateDirectAgentSigningResult(result)
+    : validateDirectAgentCheckpointResult(result);
 }
