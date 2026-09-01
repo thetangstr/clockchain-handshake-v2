@@ -31,7 +31,7 @@ export function normalizeRegistrationForDirectSigner(record, identityPolicy) {
     agentId: record.agentId,
     chainId: identityPolicy.chainId,
     registryAddress: identityPolicy.registryAddress,
-    reference: record.identityReference,
+    reference: `${identityPolicy.chainId}:${identityPolicy.registryAddress}:${record.agentId}`,
     registrationTx: record.registerTx.toLowerCase(),
     registrationBlock: record.registerBlock,
   };

@@ -94,6 +94,39 @@ test("creates a proposal checkpoint from the role wallet without requiring a fin
   assert.equal(calls, 1);
 });
 
+test("creates a proposal checkpoint from a raw registration recovery with an external identity reference", async () => {
+  const fixture = await buildAgentCliFixture();
+  const address = fixture.parties.initiator.sessionKeyAddress;
+  const registered = fixture.parties.initiator.erc8004;
+  const recovery = {
+    schema: "clockchain.handshake-registration-recovery/v1",
+    agentId: registered.agentId,
+    address,
+    displayName: "Direct participant",
+    identityReference: "https://identity.example/direct-participant.json",
+    registerTx: registered.registrationTx,
+    registerBlock: registered.registrationBlock,
+    metadataTx: null,
+    metadataBlock: null,
+  };
+
+  const result = await executeDirectAgentCheckpointRequest({
+    address,
+    localPolicy: fixture.policies.initiator,
+    nowMs: fixture.nowMs,
+    registration: recovery,
+    request: requestFor(fixture, "proposal"),
+    sign: async (input) => ({
+      address,
+      bytesSha256: input.expectedBytesSha256,
+      signatureHex: "0x" + "7".repeat(130),
+    }),
+  });
+
+  assert.equal(result.checkpoint.role, "initiator");
+  assert.equal(result.checkpoint.artifactType, "proposal");
+});
+
 test("creates an acceptance checkpoint chained to the proposal checkpoint", async () => {
   const fixture = await buildAgentCliFixture();
   const initiator = fixture.parties.initiator.sessionKeyAddress;
