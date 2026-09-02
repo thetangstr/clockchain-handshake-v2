@@ -129,7 +129,13 @@ function verifyCanonicalJsonBytes(request) {
   } catch {
     invalid("DIRECT_SIGNER_CANONICAL_DOMAIN_INVALID");
   }
-  if (!canonical.equals(raw)) {
+  let matches;
+  try {
+    matches = canonical.equals(raw);
+  } catch {
+    invalid("DIRECT_SIGNER_CANONICAL_COMPARISON_INTERNAL_FAILURE");
+  }
+  if (!matches) {
     invalid("DIRECT_SIGNER_CANONICAL_BYTES_MISMATCH");
   }
 }

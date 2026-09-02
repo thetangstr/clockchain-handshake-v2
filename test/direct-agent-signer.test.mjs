@@ -327,3 +327,35 @@ test("classifies safe validation failures without exposing request material", as
     nowMs: Number(request.sessionDeadlineMs),
   }, "DIRECT_SIGNER_SESSION_EXPIRED");
 });
+
+test("classifies a canonical byte comparison runtime failure without exposing bytes", async () => {
+  const fixture = await buildAgentCliFixture();
+  const request = directRequest(fixture);
+  const originalEquals = Buffer.prototype.equals;
+  Buffer.prototype.equals = () => {
+    throw new Error("runtime comparison failure with protected bytes");
+  };
+  try {
+    assert.throws(
+      () => validateDirectAgentSigningRequest({
+        address: fixture.parties.initiator.sessionKeyAddress,
+        localPolicy: fixture.policy,
+        nowMs: fixture.nowMs,
+        registration: fixture.parties.initiator.erc8004,
+        request,
+        rootKeyRing: fixture.rootKeyRing,
+      }),
+      (error) => {
+        assert.equal(error.message, "Direct agent signer failed safely.");
+        assert.equal(
+          error.diagnosticCode,
+          "DIRECT_SIGNER_CANONICAL_COMPARISON_INTERNAL_FAILURE",
+        );
+        assert.equal(error.message.includes(request.bytesSha256), false);
+        return true;
+      },
+    );
+  } finally {
+    Buffer.prototype.equals = originalEquals;
+  }
+});
