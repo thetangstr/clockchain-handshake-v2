@@ -90,3 +90,35 @@ test("inspect reports a committed required-fresh policy before registration", as
     registration: null,
   });
 });
+
+test("register dispatch preserves only the safe bridge diagnostic code", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "clockchain-agent-register-diagnostic-"));
+  await rm(stateDir, { recursive: true });
+  t.after(() => rm(stateDir, { force: true, recursive: true }));
+  const fixture = await buildAgentCliFixture();
+  const address = fixture.parties.initiator.sessionKeyAddress;
+  const privateCanary = "bridge-network-detail-must-not-escape";
+  const operations = createAgentCliOperations({
+    bridge: {
+      initializeWallet: async () => ({ address }),
+      inspectWallet: async () => ({ address, registration: null }),
+      registerWalletIdentity: async () => {
+        const error = new Error(privateCanary);
+        error.diagnosticCode = "AGENT_HANDSHAKE_REGISTER_NETWORK";
+        throw error;
+      },
+    },
+  });
+
+  await operations.dispatch({ operation: "init", stateDir });
+  await operations.dispatch({ operation: "policy", stateDir, payload: fixture.policy });
+  await assert.rejects(
+    () => operations.dispatch({ operation: "register", stateDir }),
+    (error) => {
+      assert.equal(error.message, "Agent handshake operation failed safely.");
+      assert.equal(error.diagnosticCode, "AGENT_HANDSHAKE_REGISTER_NETWORK");
+      assert.equal(JSON.stringify(error).includes(privateCanary), false);
+      return true;
+    },
+  );
+});

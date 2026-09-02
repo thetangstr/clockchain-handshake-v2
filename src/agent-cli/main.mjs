@@ -4,7 +4,29 @@ import { parseArgs } from "node:util";
 import { createAgentCliOperations } from "./operations.mjs";
 import { AGENT_HANDSHAKE_HELPER_VERSION } from "./signing-request.mjs";
 
+const SAFE_DIAGNOSTIC_CODES = new Set([
+  "AGENT_HANDSHAKE_REGISTER_NETWORK",
+  "AGENT_HANDSHAKE_REGISTER_CONFIGURATION",
+  "AGENT_HANDSHAKE_REGISTER_PARTIAL_NETWORK",
+  "AGENT_HANDSHAKE_REGISTER_PARTIAL_CONFIGURATION",
+  "AGENT_HANDSHAKE_REGISTER_PARTIAL_PROTOCOL",
+  "AGENT_HANDSHAKE_REGISTER_INTERNAL_FAILURE",
+]);
+
 function invalid() { throw new Error("Agent handshake operation failed safely."); }
+
+export function agentHandshakeCliSafeError(error) {
+  const diagnosticCode = SAFE_DIAGNOSTIC_CODES.has(error?.diagnosticCode)
+    ? error.diagnosticCode
+    : "AGENT_HANDSHAKE_INTERNAL_FAILURE";
+  return Object.freeze({
+    error: Object.freeze({
+      code: "AGENT_HANDSHAKE_FAILED",
+      diagnosticCode,
+      message: "Agent handshake operation failed safely.",
+    }),
+  });
+}
 
 function payload(value) {
   if (typeof value !== "string" || value.length === 0 || !/^[A-Za-z0-9_-]+$/.test(value)) invalid();

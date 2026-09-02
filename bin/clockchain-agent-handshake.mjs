@@ -1,17 +1,13 @@
 #!/usr/bin/env node
-import { runAgentHandshakeCli } from "../src/agent-cli/main.mjs";
-
-const SAFE_ERROR = Object.freeze({
-  error: {
-    code: "AGENT_HANDSHAKE_FAILED",
-    message: "Agent handshake operation failed safely.",
-  },
-});
+import {
+  agentHandshakeCliSafeError,
+  runAgentHandshakeCli,
+} from "../src/agent-cli/main.mjs";
 
 runAgentHandshakeCli(process.argv.slice(2)).then(
   (value) => process.stdout.write(JSON.stringify(value) + "\n"),
-  () => {
-    process.stderr.write(JSON.stringify(SAFE_ERROR) + "\n");
+  (error) => {
+    process.stderr.write(JSON.stringify(agentHandshakeCliSafeError(error)) + "\n");
     process.exitCode = 1;
   },
 );

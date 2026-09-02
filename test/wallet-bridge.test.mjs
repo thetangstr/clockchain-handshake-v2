@@ -122,6 +122,26 @@ async function rejectSafe(operation) {
   return error;
 }
 
+test("registration preserves only a fixed non-secret failure class", async (t) => {
+  const { statePath } = await initializeDeterministicWallet(t);
+  const privateCanary = "registration-network-detail-must-not-escape";
+  const networkError = new Error(privateCanary);
+  networkError.code = "HANDSHAKE_REGISTRATION_NETWORK";
+  networkError.category = "network";
+
+  const error = await rejectSafe(() => registerWalletIdentity({
+    statePath,
+    displayName: "Hermes party",
+    platform: "darwin",
+    registration: {
+      registerIdentity: async () => { throw networkError; },
+    },
+  }));
+
+  assert.equal(error.diagnosticCode, "AGENT_HANDSHAKE_REGISTER_NETWORK");
+  assert.equal(JSON.stringify(error).includes(privateCanary), false);
+});
+
 function fakeRegistrationEvidence(address = ADDRESS) {
   return {
     agentId: "42",

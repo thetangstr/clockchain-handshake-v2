@@ -30,13 +30,42 @@ const MAX_SIGNING_GZIP_BASE64URL_CHARS = Math.ceil(
 );
 const MAX_SIGNING_RAW_BYTES = 256 * 1024;
 
-function fail() {
-  throw new Error(BRIDGE_ERROR_MESSAGE);
+function fail(diagnosticCode) {
+  const error = new Error(BRIDGE_ERROR_MESSAGE);
+  if (diagnosticCode !== undefined) {
+    Object.defineProperty(error, "diagnosticCode", {
+      value: diagnosticCode,
+      enumerable: false,
+      writable: false,
+      configurable: false,
+    });
+  }
+  throw error;
 }
 
 function sanitize(error) {
   if (error?.message === BRIDGE_ERROR_MESSAGE) throw error;
   fail();
+}
+
+function sanitizeRegistration(error) {
+  if (error?.message === BRIDGE_ERROR_MESSAGE) throw error;
+  if (error?.code === "HANDSHAKE_REGISTRATION_NETWORK") {
+    fail("AGENT_HANDSHAKE_REGISTER_NETWORK");
+  }
+  if (error?.code === "HANDSHAKE_REGISTRATION_CONFIGURATION") {
+    fail("AGENT_HANDSHAKE_REGISTER_CONFIGURATION");
+  }
+  if (error?.code === "ERC8004_PARTIAL_REGISTRATION") {
+    if (error?.category === "network") {
+      fail("AGENT_HANDSHAKE_REGISTER_PARTIAL_NETWORK");
+    }
+    if (error?.category === "configuration") {
+      fail("AGENT_HANDSHAKE_REGISTER_PARTIAL_CONFIGURATION");
+    }
+    fail("AGENT_HANDSHAKE_REGISTER_PARTIAL_PROTOCOL");
+  }
+  fail("AGENT_HANDSHAKE_REGISTER_INTERNAL_FAILURE");
 }
 
 function jsonBytes(value) {
@@ -458,7 +487,7 @@ export async function registerWalletIdentity({
           });
     return publicRegistrationEvidence(evidence);
   } catch (error) {
-    sanitize(error);
+    sanitizeRegistration(error);
   }
   fail();
 }

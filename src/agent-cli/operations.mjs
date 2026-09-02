@@ -28,7 +28,27 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const SHA = /^[0-9a-f]{40}$/;
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 
-function invalid() { throw new Error("Agent handshake operation failed safely."); }
+const HELPER_DIAGNOSTIC_CODES = new Set([
+  "AGENT_HANDSHAKE_REGISTER_NETWORK",
+  "AGENT_HANDSHAKE_REGISTER_CONFIGURATION",
+  "AGENT_HANDSHAKE_REGISTER_PARTIAL_NETWORK",
+  "AGENT_HANDSHAKE_REGISTER_PARTIAL_CONFIGURATION",
+  "AGENT_HANDSHAKE_REGISTER_PARTIAL_PROTOCOL",
+  "AGENT_HANDSHAKE_REGISTER_INTERNAL_FAILURE",
+]);
+
+function invalid(diagnosticCode) {
+  const error = new Error("Agent handshake operation failed safely.");
+  if (HELPER_DIAGNOSTIC_CODES.has(diagnosticCode)) {
+    Object.defineProperty(error, "diagnosticCode", {
+      value: diagnosticCode,
+      enumerable: false,
+      writable: false,
+      configurable: false,
+    });
+  }
+  throw error;
+}
 function pathFor(stateDir) {
   if (typeof stateDir !== "string" || !isAbsolute(stateDir)) invalid();
   return join(stateDir, "wallet.json");
@@ -160,6 +180,9 @@ export function createAgentCliOperations({
       }));
     } catch (error) {
       if (error?.message === "Agent handshake operation failed safely.") throw error;
+      if (operation === "register" && HELPER_DIAGNOSTIC_CODES.has(error?.diagnosticCode)) {
+        invalid(error.diagnosticCode);
+      }
       invalid();
     }
   }

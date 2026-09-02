@@ -30,13 +30,47 @@ test("real CLI emits public JSON only and one generic failure", async (t) => {
   const failed = await run(["shell", "--state-dir", stateDir, "--raw-invitation", "secret"]);
   assert.notEqual(failed.code, 0);
   assert.deepEqual(JSON.parse(failed.stderr), {
-    error: { code: "AGENT_HANDSHAKE_FAILED", message: "Agent handshake operation failed safely." },
+    error: {
+      code: "AGENT_HANDSHAKE_FAILED",
+      diagnosticCode: "AGENT_HANDSHAKE_INTERNAL_FAILURE",
+      message: "Agent handshake operation failed safely.",
+    },
   });
   for (const output of [initialized.stdout, initialized.stderr, failed.stdout, failed.stderr]) {
     assert.equal(output.includes(stateDir), false);
     assert.equal(output.includes("secret"), false);
     assert.equal(output.toLowerCase().includes("privatekey"), false);
     assert.equal(output.toLowerCase().includes("roleaccess"), false);
+  }
+});
+
+test("CLI error projection retains only an allowlisted registration failure class", async () => {
+  const { agentHandshakeCliSafeError } = await import("../src/agent-cli/main.mjs");
+  const privateCanary = "private-registration-detail-must-not-escape";
+  const classified = new Error(`Registration failed: ${privateCanary}`);
+  classified.diagnosticCode = "AGENT_HANDSHAKE_REGISTER_NETWORK";
+  assert.deepEqual(agentHandshakeCliSafeError(classified), {
+    error: {
+      code: "AGENT_HANDSHAKE_FAILED",
+      diagnosticCode: "AGENT_HANDSHAKE_REGISTER_NETWORK",
+      message: "Agent handshake operation failed safely.",
+    },
+  });
+  assert.equal(JSON.stringify(agentHandshakeCliSafeError(classified)).includes(privateCanary), false);
+  for (const diagnosticCode of [
+    "secret-value",
+    "AGENT_HANDSHAKE_REGISTER_NETWORK_EXTRA",
+    "AGENT_HANDSHAKE_SIGN_INTERNAL_FAILURE",
+  ]) {
+    const rejected = new Error(privateCanary);
+    rejected.diagnosticCode = diagnosticCode;
+    assert.deepEqual(agentHandshakeCliSafeError(rejected), {
+      error: {
+        code: "AGENT_HANDSHAKE_FAILED",
+        diagnosticCode: "AGENT_HANDSHAKE_INTERNAL_FAILURE",
+        message: "Agent handshake operation failed safely.",
+      },
+    });
   }
 });
 
