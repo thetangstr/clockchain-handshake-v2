@@ -67,6 +67,40 @@ test("signs exact canonical JSON bytes after local wallet, policy, and v2 certif
   assert.equal(calls, 1);
 });
 
+test("signs canonical Agent Contract business JSON containing finite numeric fields", async () => {
+  const fixture = await buildAgentCliFixture();
+  const bytes = Buffer.from(
+    '{"deliveryHours":12,"schema":"agent-contract/v1","sequence":1}',
+    "utf8",
+  );
+  const request = {
+    ...directRequest(fixture),
+    bytesGzipBase64Url: gzipSync(bytes).toString("base64url"),
+    bytesSha256: createHash("sha256").update(bytes).digest("hex"),
+  };
+  let calls = 0;
+
+  const result = await executeDirectAgentSigningRequest({
+    address: fixture.parties.initiator.sessionKeyAddress,
+    localPolicy: fixture.policy,
+    nowMs: fixture.nowMs,
+    registration: fixture.parties.initiator.erc8004,
+    request,
+    rootKeyRing: fixture.rootKeyRing,
+    sign: async () => {
+      calls += 1;
+      return {
+        address: fixture.parties.initiator.sessionKeyAddress,
+        bytesSha256: request.bytesSha256,
+        signatureHex: "0x" + "3".repeat(130),
+      };
+    },
+  });
+
+  assert.equal(result.bytesSha256, request.bytesSha256);
+  assert.equal(calls, 1);
+});
+
 test("validates exact public result provenance for endpoint adapters", async () => {
   const fixture = await buildAgentCliFixture();
   const result = {
@@ -286,7 +320,7 @@ test("classifies safe validation failures without exposing request material", as
       bytesSha256: createHash("sha256").update(noncanonical).digest("hex"),
     },
   }, "DIRECT_SIGNER_CANONICAL_BYTES_MISMATCH");
-  const outsideDomain = Buffer.from('{"schema":"local.test/v1","value":1}', "utf8");
+  const outsideDomain = Buffer.from('["top-level arrays are not signable"]', "utf8");
   expectCode({
     ...base,
     request: {

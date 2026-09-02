@@ -3,7 +3,10 @@ import { isAbsolute, join } from "node:path";
 import { types } from "node:util";
 
 import * as walletBridge from "../core/wallet-bridge.mjs";
-import { canonicalBytes } from "../core/canonical.mjs";
+import {
+  canonicalizeReceiptEventValue,
+  isPlainObject,
+} from "../core/canonical-v1.mjs";
 import { validateAgentHandshakeV2Party } from "../agent-handshake/v2/party.mjs";
 import { validateLocalPolicy, localPolicyDigest } from "../agent-handshake/v2/policy.mjs";
 import { verifyAgentHandshakeV2Result } from "../agent-handshake/v2/result.mjs";
@@ -125,7 +128,15 @@ function verifyCanonicalJsonBytes(request) {
   }
   let canonical;
   try {
-    canonical = canonicalBytes(parsed);
+    if (!isPlainObject(parsed) || Array.isArray(parsed)) {
+      invalid("DIRECT_SIGNER_CANONICAL_DOMAIN_INVALID");
+    }
+    // Agent Contract business envelopes use canonical finite numbers; the
+    // narrower Clockchain bilateral-authorization profile intentionally does not.
+    canonical = Buffer.from(
+      JSON.stringify(canonicalizeReceiptEventValue(parsed)),
+      "utf8",
+    );
   } catch {
     invalid("DIRECT_SIGNER_CANONICAL_DOMAIN_INVALID");
   }
