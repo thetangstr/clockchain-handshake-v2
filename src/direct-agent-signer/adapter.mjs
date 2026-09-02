@@ -112,16 +112,26 @@ function verifyCanonicalJsonBytes(request) {
   try {
     raw = decodeSigningBytes({ bytesGzipBase64Url: request.bytesGzipBase64Url });
   } catch {
-    invalid();
+    invalid("DIRECT_SIGNER_BYTES_ENCODING_INVALID");
   }
-  if (createHash("sha256").update(raw).digest("hex") !== request.bytesSha256) invalid();
+  if (createHash("sha256").update(raw).digest("hex") !== request.bytesSha256) {
+    invalid("DIRECT_SIGNER_BYTES_DIGEST_MISMATCH");
+  }
   let parsed;
   try {
     parsed = JSON.parse(raw.toString("utf8"));
   } catch {
-    invalid();
+    invalid("DIRECT_SIGNER_JSON_BYTES_INVALID");
   }
-  if (!canonicalBytes(parsed).equals(raw)) invalid();
+  let canonical;
+  try {
+    canonical = canonicalBytes(parsed);
+  } catch {
+    invalid("DIRECT_SIGNER_CANONICAL_DOMAIN_INVALID");
+  }
+  if (!canonical.equals(raw)) {
+    invalid("DIRECT_SIGNER_CANONICAL_BYTES_MISMATCH");
+  }
 }
 
 function validateLocalRoleBinding({ address, policy, registration }) {
@@ -190,11 +200,7 @@ export function validateDirectAgentSigningRequest({
   } catch {
     invalid("DIRECT_SIGNER_LOCAL_BINDING_INVALID");
   }
-  try {
-    verifyCanonicalJsonBytes(request);
-  } catch {
-    invalid("DIRECT_SIGNER_CANONICAL_BYTES_INVALID");
-  }
+  verifyCanonicalJsonBytes(request);
   if (request.purpose === "agent_contract_direct_identity") {
     if (request.retainedV2Certificate !== null) {
       invalid("DIRECT_SIGNER_CERTIFICATE_BOUNDARY_INVALID");

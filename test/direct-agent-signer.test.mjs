@@ -285,7 +285,32 @@ test("classifies safe validation failures without exposing request material", as
       bytesGzipBase64Url: gzipSync(noncanonical).toString("base64url"),
       bytesSha256: createHash("sha256").update(noncanonical).digest("hex"),
     },
-  }, "DIRECT_SIGNER_CANONICAL_BYTES_INVALID");
+  }, "DIRECT_SIGNER_CANONICAL_BYTES_MISMATCH");
+  const outsideDomain = Buffer.from('{"schema":"local.test/v1","value":1}', "utf8");
+  expectCode({
+    ...base,
+    request: {
+      ...request,
+      bytesGzipBase64Url: gzipSync(outsideDomain).toString("base64url"),
+      bytesSha256: createHash("sha256").update(outsideDomain).digest("hex"),
+    },
+  }, "DIRECT_SIGNER_CANONICAL_DOMAIN_INVALID");
+  const invalidJson = Buffer.from('{"schema":', "utf8");
+  expectCode({
+    ...base,
+    request: {
+      ...request,
+      bytesGzipBase64Url: gzipSync(invalidJson).toString("base64url"),
+      bytesSha256: createHash("sha256").update(invalidJson).digest("hex"),
+    },
+  }, "DIRECT_SIGNER_JSON_BYTES_INVALID");
+  expectCode({
+    ...base,
+    request: {
+      ...request,
+      bytesSha256: "f".repeat(64),
+    },
+  }, "DIRECT_SIGNER_BYTES_DIGEST_MISMATCH");
   expectCode({
     ...base,
     request: {
