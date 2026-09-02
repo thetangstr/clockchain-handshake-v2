@@ -180,7 +180,7 @@ export function createFileFundingBudgetStore({
   async function load() {
     try {
       const text = await readPrivateText({
-        maxBytes: 64 * 1024,
+        maxBytes: 1024 * 1024,
         path,
         platform,
       });

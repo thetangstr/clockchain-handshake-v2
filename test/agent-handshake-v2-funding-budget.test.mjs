@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, lstat, mkdtemp } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -162,4 +162,22 @@ test("file store is restart-safe and remains mode 0600", async () => {
     identityMode: "required_existing_or_fresh",
     sessionId: "22222222-3333-4444-8555-666666666666",
   }));
+});
+
+test("file store loads a valid retained ledger after it grows beyond 64 KiB", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "funding-budget-capacity-"));
+  await chmod(parent, 0o700);
+  const path = join(parent, "ledger.jsonl");
+  const rows = Array.from({ length: 500 }, (_, index) => ({
+    address: A,
+    amountEth: "0.01",
+    atMs: 1_000_000 + index,
+    sessionId: "22222222-3333-4444-8555-666666666666",
+  }));
+  const ledger = rows.map((row) => JSON.stringify(row)).join("\n") + "\n";
+  assert.ok(Buffer.byteLength(ledger, "utf8") > 64 * 1024);
+  await writeFile(path, ledger, { mode: 0o600 });
+
+  const store = createFileFundingBudgetStore({ path });
+  assert.equal((await store.load()).length, rows.length);
 });
