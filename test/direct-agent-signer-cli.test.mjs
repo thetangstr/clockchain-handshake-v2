@@ -114,6 +114,7 @@ test("binary emits sanitized JSON version output and failure output", async () =
     assert.deepEqual(JSON.parse(error.stderr), {
       error: {
         code: "DIRECT_AGENT_SIGNER_FAILED",
+        diagnosticCode: "DIRECT_SIGNER_REQUEST_INVALID",
         message: "Direct agent signer failed safely.",
       },
     });

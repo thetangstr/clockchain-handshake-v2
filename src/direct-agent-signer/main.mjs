@@ -9,7 +9,9 @@ import {
 import { validateDirectAgentCheckpointResult } from "./checkpoint.mjs";
 
 function invalid() {
-  throw new Error("Direct agent signer failed safely.");
+  const error = new Error("Direct agent signer failed safely.");
+  error.diagnosticCode = "DIRECT_SIGNER_REQUEST_INVALID";
+  throw error;
 }
 
 function payload(value) {

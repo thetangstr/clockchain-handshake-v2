@@ -62,8 +62,10 @@ const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 const SIGNATURE = /^0x[0-9a-f]{130}$/;
 
-function invalid() {
-  throw new Error(SAFE_MESSAGE);
+function invalid(diagnosticCode = "DIRECT_SIGNER_INTERNAL_FAILURE") {
+  const error = new Error(SAFE_MESSAGE);
+  error.diagnosticCode = diagnosticCode;
+  throw error;
 }
 
 function exact(value, keys) {
@@ -134,7 +136,12 @@ function validateLocalRoleBinding({ address, policy, registration }) {
 }
 
 export function validateDirectAgentSigningResult(input) {
-  const result = exact(input, RESULT_KEYS);
+  let result;
+  try {
+    result = exact(input, RESULT_KEYS);
+  } catch {
+    invalid("DIRECT_SIGNER_RESULT_INVALID");
+  }
   if (
     result.schema !== DIRECT_AGENT_SIGNER_RESULT_SCHEMA ||
     result.adapterVersion !== DIRECT_AGENT_SIGNER_VERSION ||
@@ -144,7 +151,7 @@ export function validateDirectAgentSigningResult(input) {
     !["initiator", "responder"].includes(result.role) ||
     !UUID.test(result.sessionId) ||
     !SIGNATURE.test(result.signatureHex)
-  ) invalid();
+  ) invalid("DIRECT_SIGNER_RESULT_INVALID");
   return Object.freeze(result);
 }
 
@@ -156,18 +163,42 @@ export function validateDirectAgentSigningRequest({
   request: input,
   rootKeyRing,
 } = {}) {
-  const policy = validateLocalPolicy(localPolicy);
-  const request = validateRequest(input, policy);
+  let policy;
+  try {
+    policy = validateLocalPolicy(localPolicy);
+  } catch {
+    invalid("DIRECT_SIGNER_LOCAL_POLICY_INVALID");
+  }
+  let request;
+  try {
+    request = validateRequest(input, policy);
+  } catch {
+    invalid("DIRECT_SIGNER_REQUEST_INVALID");
+  }
   if (
     typeof address !== "string" ||
     !ADDRESS.test(address) ||
-    !Number.isSafeInteger(nowMs) ||
-    nowMs >= Number(request.sessionDeadlineMs)
-  ) invalid();
-  const { party, policyDigest } = validateLocalRoleBinding({ address, policy, registration });
-  verifyCanonicalJsonBytes(request);
+    !Number.isSafeInteger(nowMs)
+  ) invalid("DIRECT_SIGNER_REQUEST_INVALID");
+  if (nowMs >= Number(request.sessionDeadlineMs)) {
+    invalid("DIRECT_SIGNER_SESSION_EXPIRED");
+  }
+  let party;
+  let policyDigest;
+  try {
+    ({ party, policyDigest } = validateLocalRoleBinding({ address, policy, registration }));
+  } catch {
+    invalid("DIRECT_SIGNER_LOCAL_BINDING_INVALID");
+  }
+  try {
+    verifyCanonicalJsonBytes(request);
+  } catch {
+    invalid("DIRECT_SIGNER_CANONICAL_BYTES_INVALID");
+  }
   if (request.purpose === "agent_contract_direct_identity") {
-    if (request.retainedV2Certificate !== null) invalid();
+    if (request.retainedV2Certificate !== null) {
+      invalid("DIRECT_SIGNER_CERTIFICATE_BOUNDARY_INVALID");
+    }
     return Object.freeze({
       address,
       bytesGzipBase64Url: request.bytesGzipBase64Url,
@@ -177,25 +208,37 @@ export function validateDirectAgentSigningRequest({
       sessionId: request.sessionId,
     });
   }
-  if (request.retainedV2Certificate === null) invalid();
-  const activeRootKeyRing = validateHostRootKeyRing(rootKeyRing, { nowMs });
-  const verified = verifyAgentHandshakeV2Result(request.retainedV2Certificate, {
-    expectedParty: party,
-    expectedPolicyDigest: policyDigest,
-    expectedRepositorySha: request.repositorySha,
-    expectedRole: request.role,
-    expectedSessionId: request.sessionId,
-    nowMs,
-    rootKeyRing: activeRootKeyRing,
-    sessionDeadlineMs: Number(request.sessionDeadlineMs),
-  });
+  if (request.retainedV2Certificate === null) {
+    invalid("DIRECT_SIGNER_CERTIFICATE_REQUIRED");
+  }
+  let activeRootKeyRing;
+  try {
+    activeRootKeyRing = validateHostRootKeyRing(rootKeyRing, { nowMs });
+  } catch {
+    invalid("DIRECT_SIGNER_ROOT_RING_INVALID");
+  }
+  let verified;
+  try {
+    verified = verifyAgentHandshakeV2Result(request.retainedV2Certificate, {
+      expectedParty: party,
+      expectedPolicyDigest: policyDigest,
+      expectedRepositorySha: request.repositorySha,
+      expectedRole: request.role,
+      expectedSessionId: request.sessionId,
+      nowMs,
+      rootKeyRing: activeRootKeyRing,
+      sessionDeadlineMs: Number(request.sessionDeadlineMs),
+    });
+  } catch {
+    invalid("DIRECT_SIGNER_CERTIFICATE_INVALID");
+  }
   if (
     verified.externalBusinessActionPerformed !== false ||
     verified.identity.sessionKeyAddress !== address ||
     verified.policyDigest !== policyDigest ||
     verified.role !== request.role ||
     verified.sessionId !== request.sessionId
-  ) invalid();
+  ) invalid("DIRECT_SIGNER_CERTIFICATE_BINDING_INVALID");
   return Object.freeze({
     address,
     bytesGzipBase64Url: request.bytesGzipBase64Url,
@@ -209,13 +252,20 @@ export function validateDirectAgentSigningRequest({
 export async function executeDirectAgentSigningRequest(options = {}) {
   try {
     const verified = validateDirectAgentSigningRequest(options);
-    if (typeof options.sign !== "function") invalid();
-    const signed = await options.sign({ bytesGzipBase64Url: verified.bytesGzipBase64Url });
+    if (typeof options.sign !== "function") {
+      invalid("DIRECT_SIGNER_SIGNING_BACKEND_INVALID");
+    }
+    let signed;
+    try {
+      signed = await options.sign({ bytesGzipBase64Url: verified.bytesGzipBase64Url });
+    } catch {
+      invalid("DIRECT_SIGNER_SIGNING_FAILED");
+    }
     if (
       signed?.address?.toLowerCase() !== verified.address ||
       signed?.bytesSha256 !== verified.bytesSha256 ||
       !SIGNATURE.test(signed?.signatureHex)
-    ) invalid();
+    ) invalid("DIRECT_SIGNER_SIGNING_RESULT_INVALID");
     return validateDirectAgentSigningResult({
       schema: DIRECT_AGENT_SIGNER_RESULT_SCHEMA,
       adapterVersion: DIRECT_AGENT_SIGNER_VERSION,
@@ -227,7 +277,7 @@ export async function executeDirectAgentSigningRequest(options = {}) {
       signatureHex: signed.signatureHex,
     });
   } catch (error) {
-    if (error?.message === SAFE_MESSAGE) throw error;
+    if (error?.message === SAFE_MESSAGE && typeof error?.diagnosticCode === "string") throw error;
     invalid();
   }
 }
@@ -242,12 +292,22 @@ export function createDirectAgentSignerOperations({
   async function dispatch({ operation, stateDir, payload } = {}) {
     if (!["sign", "checkpoint"].includes(operation)) invalid();
     try {
-      const committed = await readAgentPolicy({ stateDir, platform, runIcacls });
-      const wallet = await bridge.inspectWallet({
-        statePath: pathFor(stateDir),
-        platform,
-        runIcacls,
-      });
+      let committed;
+      try {
+        committed = await readAgentPolicy({ stateDir, platform, runIcacls });
+      } catch {
+        invalid("DIRECT_SIGNER_LOCAL_POLICY_STATE_INVALID");
+      }
+      let wallet;
+      try {
+        wallet = await bridge.inspectWallet({
+          statePath: pathFor(stateDir),
+          platform,
+          runIcacls,
+        });
+      } catch {
+        invalid("DIRECT_SIGNER_ROLE_WALLET_STATE_INVALID");
+      }
       if (operation === "checkpoint") {
         return validateDirectAgentCheckpointResult(await executeDirectAgentCheckpointRequest({
           address: wallet.address.toLowerCase(),
@@ -278,7 +338,7 @@ export function createDirectAgentSignerOperations({
         }),
       });
     } catch (error) {
-      if (error?.message === SAFE_MESSAGE) throw error;
+      if (error?.message === SAFE_MESSAGE && typeof error?.diagnosticCode === "string") throw error;
       invalid();
     }
   }

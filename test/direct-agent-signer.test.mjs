@@ -5,6 +5,7 @@ import test from "node:test";
 
 import {
   executeDirectAgentSigningRequest,
+  validateDirectAgentSigningRequest,
   validateDirectAgentSigningResult,
 } from "../src/direct-agent-signer/adapter.mjs";
 import { canonicalBytes } from "../src/core/canonical.mjs";
@@ -250,4 +251,54 @@ test("rejects non-canonical JSON bytes without inspecting business semantics", a
   }));
 
   assert.equal(calls, 0);
+});
+
+test("classifies safe validation failures without exposing request material", async () => {
+  const fixture = await buildAgentCliFixture("responder");
+  const request = {
+    ...directRequest(fixture),
+    role: "responder",
+  };
+  const base = {
+    address: fixture.parties.responder.sessionKeyAddress,
+    localPolicy: fixture.policies.responder,
+    nowMs: fixture.nowMs,
+    registration: fixture.parties.responder.erc8004,
+    request,
+    rootKeyRing: fixture.rootKeyRing,
+  };
+  const expectCode = (input, diagnosticCode) => assert.throws(
+    () => validateDirectAgentSigningRequest(input),
+    (error) => {
+      assert.equal(error.message, "Direct agent signer failed safely.");
+      assert.equal(error.diagnosticCode, diagnosticCode);
+      assert.equal(error.message.includes(request.sessionId), false);
+      return true;
+    },
+  );
+
+  const noncanonical = Buffer.from('{"value":"x","schema":"local.test/v1"}', "utf8");
+  expectCode({
+    ...base,
+    request: {
+      ...request,
+      bytesGzipBase64Url: gzipSync(noncanonical).toString("base64url"),
+      bytesSha256: createHash("sha256").update(noncanonical).digest("hex"),
+    },
+  }, "DIRECT_SIGNER_CANONICAL_BYTES_INVALID");
+  expectCode({
+    ...base,
+    request: {
+      ...request,
+      retainedV2Certificate: { ...request.retainedV2Certificate, extra: true },
+    },
+  }, "DIRECT_SIGNER_CERTIFICATE_INVALID");
+  expectCode({
+    ...base,
+    rootKeyRing: [{ ...fixture.rootKeyRing[0], fingerprint: "f".repeat(64) }],
+  }, "DIRECT_SIGNER_ROOT_RING_INVALID");
+  expectCode({
+    ...base,
+    nowMs: Number(request.sessionDeadlineMs),
+  }, "DIRECT_SIGNER_SESSION_EXPIRED");
 });
