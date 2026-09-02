@@ -319,7 +319,25 @@ test("classifies checkpoint failures without exposing validation details", async
     registration: fixture.parties.initiator.erc8004,
     request,
     sign: validSign,
-  }), "DIRECT_SIGNER_CHECKPOINT_LOCAL_BINDING_INVALID");
+  }), "DIRECT_SIGNER_CHECKPOINT_ROLE_INVALID");
+
+  await rejectsWithDiagnosticCode(() => executeDirectAgentCheckpointRequest({
+    address,
+    localPolicy: {},
+    nowMs: fixture.nowMs,
+    registration: fixture.parties.initiator.erc8004,
+    request,
+    sign: validSign,
+  }), "DIRECT_SIGNER_CHECKPOINT_LOCAL_POLICY_INVALID");
+
+  await rejectsWithDiagnosticCode(() => executeDirectAgentCheckpointRequest({
+    address,
+    localPolicy: fixture.policies.initiator,
+    nowMs: fixture.nowMs,
+    registration: null,
+    request,
+    sign: validSign,
+  }), "DIRECT_SIGNER_CHECKPOINT_REGISTRATION_INVALID");
 
   await rejectsWithDiagnosticCode(() => executeDirectAgentCheckpointRequest({
     address,

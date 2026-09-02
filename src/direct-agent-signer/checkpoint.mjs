@@ -203,14 +203,27 @@ function request(input) {
 }
 
 function verifyParty({ address, localPolicy, registration }) {
-  const policy = validateLocalPolicy(localPolicy);
+  const policy = classify(
+    "DIRECT_SIGNER_CHECKPOINT_LOCAL_POLICY_INVALID",
+    () => validateLocalPolicy(localPolicy),
+  );
   const policyDigest = localPolicyDigest(policy);
-  const identityPolicy = validateIdentityPolicy(policy.identityPolicy);
-  const party = validateAgentHandshakeV2Party({
-    sessionKeyAddress: address,
-    policyDigest,
-    erc8004: normalizeRegistrationForDirectSigner(registration, identityPolicy),
-  }, { identityPolicy });
+  const identityPolicy = classify(
+    "DIRECT_SIGNER_CHECKPOINT_IDENTITY_POLICY_INVALID",
+    () => validateIdentityPolicy(policy.identityPolicy),
+  );
+  const erc8004 = classify(
+    "DIRECT_SIGNER_CHECKPOINT_REGISTRATION_INVALID",
+    () => normalizeRegistrationForDirectSigner(registration, identityPolicy),
+  );
+  const party = classify(
+    "DIRECT_SIGNER_CHECKPOINT_PARTY_INVALID",
+    () => validateAgentHandshakeV2Party({
+      sessionKeyAddress: address,
+      policyDigest,
+      erc8004,
+    }, { identityPolicy }),
+  );
   return { party, policy, policyDigest };
 }
 
@@ -329,12 +342,9 @@ export async function executeDirectAgentCheckpointRequest({
       nowMs >= Number(checkpointRequest.expiresAtMs) ||
       nowMs >= Number(checkpointRequest.sessionDeadlineMs)
     ) invalid("DIRECT_SIGNER_CHECKPOINT_SESSION_EXPIRED");
-    const { party, policy, policyDigest } = classify(
-      "DIRECT_SIGNER_CHECKPOINT_LOCAL_BINDING_INVALID",
-      () => verifyParty({ address, localPolicy, registration }),
-    );
+    const { party, policy, policyDigest } = verifyParty({ address, localPolicy, registration });
     if (policy.role !== checkpointRequest.role) {
-      invalid("DIRECT_SIGNER_CHECKPOINT_LOCAL_BINDING_INVALID");
+      invalid("DIRECT_SIGNER_CHECKPOINT_ROLE_INVALID");
     }
     const artifactPayload = classify("DIRECT_SIGNER_CHECKPOINT_ARTIFACT_INVALID", () => validateArtifactPayload({
       address,
