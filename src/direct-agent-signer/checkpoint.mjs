@@ -212,10 +212,7 @@ function verifyParty({ address, localPolicy, registration }) {
     "DIRECT_SIGNER_CHECKPOINT_IDENTITY_POLICY_INVALID",
     () => validateIdentityPolicy(policy.identityPolicy),
   );
-  const erc8004 = classify(
-    "DIRECT_SIGNER_CHECKPOINT_REGISTRATION_INVALID",
-    () => normalizeRegistrationForDirectSigner(registration, identityPolicy),
-  );
+  const erc8004 = checkpointRegistration(registration, identityPolicy);
   const party = classify(
     "DIRECT_SIGNER_CHECKPOINT_PARTY_INVALID",
     () => validateAgentHandshakeV2Party({
@@ -225,6 +222,31 @@ function verifyParty({ address, localPolicy, registration }) {
     }, { identityPolicy }),
   );
   return { party, policy, policyDigest };
+}
+
+function checkpointRegistration(registration, identityPolicy) {
+  if (identityPolicy.erc8004 === "not_required") {
+    return classify(
+      "DIRECT_SIGNER_CHECKPOINT_REGISTRATION_BINDING_INVALID",
+      () => normalizeRegistrationForDirectSigner(registration, identityPolicy),
+    );
+  }
+  if (registration === null || registration === undefined) {
+    invalid("DIRECT_SIGNER_CHECKPOINT_REGISTRATION_MISSING");
+  }
+  if (registration?.schema === "clockchain.handshake-registration-intent/v1") {
+    invalid("DIRECT_SIGNER_CHECKPOINT_REGISTRATION_PENDING");
+  }
+  if (registration?.schema === "clockchain.handshake-registration-recovery/v1") {
+    return classify(
+      "DIRECT_SIGNER_CHECKPOINT_REGISTRATION_RECOVERY_INVALID",
+      () => normalizeRegistrationForDirectSigner(registration, identityPolicy),
+    );
+  }
+  return classify(
+    "DIRECT_SIGNER_CHECKPOINT_REGISTRATION_BINDING_INVALID",
+    () => normalizeRegistrationForDirectSigner(registration, identityPolicy),
+  );
 }
 
 function same(left, right) {

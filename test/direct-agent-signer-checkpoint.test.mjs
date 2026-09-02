@@ -337,7 +337,45 @@ test("classifies checkpoint failures without exposing validation details", async
     registration: null,
     request,
     sign: validSign,
-  }), "DIRECT_SIGNER_CHECKPOINT_REGISTRATION_INVALID");
+  }), "DIRECT_SIGNER_CHECKPOINT_REGISTRATION_MISSING");
+
+  await rejectsWithDiagnosticCode(() => executeDirectAgentCheckpointRequest({
+    address,
+    localPolicy: fixture.policies.initiator,
+    nowMs: fixture.nowMs,
+    registration: {
+      schema: "clockchain.handshake-registration-intent/v1",
+      address,
+      displayName: "Pending direct participant",
+      registerNonce: "1",
+    },
+    request,
+    sign: validSign,
+  }), "DIRECT_SIGNER_CHECKPOINT_REGISTRATION_PENDING");
+
+  await rejectsWithDiagnosticCode(() => executeDirectAgentCheckpointRequest({
+    address,
+    localPolicy: fixture.policies.initiator,
+    nowMs: fixture.nowMs,
+    registration: {
+      schema: "clockchain.handshake-registration-recovery/v1",
+      agentId: fixture.parties.initiator.erc8004.agentId,
+    },
+    request,
+    sign: validSign,
+  }), "DIRECT_SIGNER_CHECKPOINT_REGISTRATION_RECOVERY_INVALID");
+
+  await rejectsWithDiagnosticCode(() => executeDirectAgentCheckpointRequest({
+    address,
+    localPolicy: fixture.policies.initiator,
+    nowMs: fixture.nowMs,
+    registration: {
+      ...fixture.parties.initiator.erc8004,
+      chainId: "eip155:1",
+    },
+    request,
+    sign: validSign,
+  }), "DIRECT_SIGNER_CHECKPOINT_REGISTRATION_BINDING_INVALID");
 
   await rejectsWithDiagnosticCode(() => executeDirectAgentCheckpointRequest({
     address,
