@@ -16,6 +16,14 @@ const SCHEMA = "clockchain.direct-agent-signer-checkpoint-request/v1";
 const RESULT_SCHEMA = "clockchain.direct-agent-signer-checkpoint-result/v1";
 const VERSION = "1.1.0";
 
+async function rejectsWithDiagnosticCode(operation, diagnosticCode) {
+  await assert.rejects(operation, (error) => {
+    assert.equal(error?.message, "Direct agent signer failed safely.");
+    assert.equal(error?.diagnosticCode, diagnosticCode);
+    return true;
+  });
+}
+
 function requestFor(fixture, artifactType, previousCheckpoint = null) {
   const envelope = artifactType === "proposal"
     ? fixture.proposalEnvelope
@@ -274,4 +282,95 @@ test("rejects checkpoint request and binding mutations before signing", async ()
     sign,
   }));
   assert.equal(calls, 0);
+});
+
+test("classifies checkpoint failures without exposing validation details", async () => {
+  const fixture = await buildAgentCliFixture();
+  const request = requestFor(fixture, "proposal");
+  const address = fixture.parties.initiator.sessionKeyAddress;
+  const validSign = async (input) => ({
+    address,
+    bytesSha256: input.expectedBytesSha256,
+    signatureHex: "0x" + "3".repeat(130),
+  });
+
+  await rejectsWithDiagnosticCode(() => executeDirectAgentCheckpointRequest({
+    address,
+    localPolicy: fixture.policies.initiator,
+    nowMs: fixture.nowMs,
+    registration: fixture.parties.initiator.erc8004,
+    request: { ...request, schema: "clockchain.direct-agent-signer-checkpoint-request/v2" },
+    sign: validSign,
+  }), "DIRECT_SIGNER_CHECKPOINT_REQUEST_INVALID");
+
+  await rejectsWithDiagnosticCode(() => executeDirectAgentCheckpointRequest({
+    address,
+    localPolicy: fixture.policies.initiator,
+    nowMs: Number(request.expiresAtMs),
+    registration: fixture.parties.initiator.erc8004,
+    request,
+    sign: validSign,
+  }), "DIRECT_SIGNER_CHECKPOINT_SESSION_EXPIRED");
+
+  await rejectsWithDiagnosticCode(() => executeDirectAgentCheckpointRequest({
+    address,
+    localPolicy: { ...fixture.policies.initiator, role: "responder" },
+    nowMs: fixture.nowMs,
+    registration: fixture.parties.initiator.erc8004,
+    request,
+    sign: validSign,
+  }), "DIRECT_SIGNER_CHECKPOINT_LOCAL_BINDING_INVALID");
+
+  await rejectsWithDiagnosticCode(() => executeDirectAgentCheckpointRequest({
+    address,
+    localPolicy: fixture.policies.initiator,
+    nowMs: fixture.nowMs,
+    registration: fixture.parties.initiator.erc8004,
+    request: {
+      ...request,
+      artifactPayload: {
+        ...request.artifactPayload,
+        sessionId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      },
+    },
+    sign: validSign,
+  }), "DIRECT_SIGNER_CHECKPOINT_ARTIFACT_INVALID");
+
+  await rejectsWithDiagnosticCode(() => executeDirectAgentCheckpointRequest({
+    address,
+    localPolicy: fixture.policies.initiator,
+    nowMs: fixture.nowMs,
+    registration: fixture.parties.initiator.erc8004,
+    request: { ...request, artifactSignatureHex: "0x" + "1".repeat(130) },
+    sign: validSign,
+  }), "DIRECT_SIGNER_CHECKPOINT_ARTIFACT_SIGNATURE_INVALID");
+
+  await rejectsWithDiagnosticCode(() => executeDirectAgentCheckpointRequest({
+    address: fixture.parties.responder.sessionKeyAddress,
+    localPolicy: fixture.policies.responder,
+    nowMs: fixture.nowMs,
+    registration: fixture.parties.responder.erc8004,
+    request: requestFor(fixture, "acceptance", null),
+    sign: validSign,
+  }), "DIRECT_SIGNER_CHECKPOINT_PREVIOUS_INVALID");
+
+  await rejectsWithDiagnosticCode(() => executeDirectAgentCheckpointRequest({
+    address,
+    localPolicy: fixture.policies.initiator,
+    nowMs: fixture.nowMs,
+    registration: fixture.parties.initiator.erc8004,
+    request,
+    sign: async () => {
+      throw new Error("private signer failure");
+    },
+  }), "DIRECT_SIGNER_CHECKPOINT_SIGNING_FAILED");
+
+  await rejectsWithDiagnosticCode(() => executeDirectAgentCheckpointRequest({
+    address,
+    localPolicy: fixture.policies.initiator,
+    nowMs: fixture.nowMs,
+    registration: fixture.parties.initiator.erc8004,
+    request,
+    sign: async () => ({}),
+  }), "DIRECT_SIGNER_CHECKPOINT_SIGNING_RESULT_INVALID");
 });

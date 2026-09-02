@@ -67,8 +67,26 @@ const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const ADDRESS = /^0x[0-9a-f]{40}$/;
 const SIGNATURE = /^0x[0-9a-f]{130}$/;
 
-function invalid() {
-  throw new Error(SAFE_MESSAGE);
+function invalid(diagnosticCode = "DIRECT_SIGNER_CHECKPOINT_INTERNAL_FAILURE") {
+  const error = new Error(SAFE_MESSAGE);
+  error.diagnosticCode = diagnosticCode;
+  throw error;
+}
+
+function classify(code, operation) {
+  try {
+    return operation();
+  } catch {
+    invalid(code);
+  }
+}
+
+async function classifyAsync(code, operation) {
+  try {
+    return await operation();
+  } catch {
+    invalid(code);
+  }
 }
 
 function exact(value, keys) {
@@ -299,35 +317,42 @@ export async function executeDirectAgentCheckpointRequest({
   sign,
 } = {}) {
   try {
-    const checkpointRequest = request(input);
+    const checkpointRequest = classify("DIRECT_SIGNER_CHECKPOINT_REQUEST_INVALID", () => request(input));
     if (
       typeof address !== "string" ||
       !ADDRESS.test(address) ||
       !Number.isSafeInteger(nowMs) ||
       Number(checkpointRequest.issuedAtMs) > nowMs ||
-      nowMs >= Number(checkpointRequest.expiresAtMs) ||
-      nowMs >= Number(checkpointRequest.sessionDeadlineMs) ||
       typeof sign !== "function"
-    ) invalid();
-    const { party, policy, policyDigest } = verifyParty({ address, localPolicy, registration });
-    if (policy.role !== checkpointRequest.role) invalid();
-    const artifactPayload = validateArtifactPayload({
+    ) invalid("DIRECT_SIGNER_CHECKPOINT_REQUEST_INVALID");
+    if (
+      nowMs >= Number(checkpointRequest.expiresAtMs) ||
+      nowMs >= Number(checkpointRequest.sessionDeadlineMs)
+    ) invalid("DIRECT_SIGNER_CHECKPOINT_SESSION_EXPIRED");
+    const { party, policy, policyDigest } = classify(
+      "DIRECT_SIGNER_CHECKPOINT_LOCAL_BINDING_INVALID",
+      () => verifyParty({ address, localPolicy, registration }),
+    );
+    if (policy.role !== checkpointRequest.role) {
+      invalid("DIRECT_SIGNER_CHECKPOINT_LOCAL_BINDING_INVALID");
+    }
+    const artifactPayload = classify("DIRECT_SIGNER_CHECKPOINT_ARTIFACT_INVALID", () => validateArtifactPayload({
       address,
       localPolicy: policy,
       party,
       policyDigest,
       request: checkpointRequest,
-    });
-    await verifyArtifactSignature({
+    }));
+    await classifyAsync("DIRECT_SIGNER_CHECKPOINT_ARTIFACT_SIGNATURE_INVALID", () => verifyArtifactSignature({
       address,
       artifactPayload,
       artifactSignatureHex: checkpointRequest.artifactSignatureHex,
-    });
-    const previous = validatePrevious({
+    }));
+    const previous = classify("DIRECT_SIGNER_CHECKPOINT_PREVIOUS_INVALID", () => validatePrevious({
       nowMs,
       previousCheckpoint: checkpointRequest.previousCheckpoint,
       request: checkpointRequest,
-    });
+    }));
     const unsigned = buildUnsignedCheckpoint({
       address,
       artifactPayload,
@@ -336,20 +361,20 @@ export async function executeDirectAgentCheckpointRequest({
     });
     const bytes = checkpointCanonicalBytes(unsigned);
     const expectedBytesSha256 = createHash("sha256").update(bytes).digest("hex");
-    const signed = await sign({
+    const signed = await classifyAsync("DIRECT_SIGNER_CHECKPOINT_SIGNING_FAILED", () => sign({
       bytesHex: `0x${bytes.toString("hex")}`,
       expectedBytesSha256,
-    });
+    }));
     if (
       signed?.address?.toLowerCase() !== address ||
       signed?.bytesSha256 !== expectedBytesSha256 ||
       !SIGNATURE.test(signed?.signatureHex)
-    ) invalid();
-    const checkpoint = validateCommitmentCheckpoint({
+    ) invalid("DIRECT_SIGNER_CHECKPOINT_SIGNING_RESULT_INVALID");
+    const checkpoint = classify("DIRECT_SIGNER_CHECKPOINT_RESULT_INVALID", () => validateCommitmentCheckpoint({
       ...unsigned,
       signature: { address, algorithm: "eip191", value: signed.signatureHex },
-    });
-    return validateDirectAgentCheckpointResult({
+    }));
+    return classify("DIRECT_SIGNER_CHECKPOINT_RESULT_INVALID", () => validateDirectAgentCheckpointResult({
       schema: DIRECT_AGENT_CHECKPOINT_RESULT_SCHEMA,
       adapterVersion: DIRECT_AGENT_SIGNER_VERSION,
       role: checkpoint.role,
@@ -358,9 +383,9 @@ export async function executeDirectAgentCheckpointRequest({
       checkpoint,
       checkpointDigest: commitmentCheckpointDigest(checkpoint),
       signerAddress: checkpoint.signerAddress,
-    });
+    }));
   } catch (error) {
-    if (error?.message === SAFE_MESSAGE) throw error;
-    invalid();
+    if (error?.message === SAFE_MESSAGE && typeof error?.diagnosticCode === "string") throw error;
+    invalid("DIRECT_SIGNER_CHECKPOINT_INTERNAL_FAILURE");
   }
 }
