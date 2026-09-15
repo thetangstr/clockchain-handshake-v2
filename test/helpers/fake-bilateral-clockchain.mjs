@@ -1,7 +1,7 @@
 import { McpRateLimitedError } from "../../src/core/clockchain.mjs";
 
 const BASE_HEIGHT = 3375600;
-const BASE_TIME_MS = 1784923200000;
+export const BASE_TIME_MS = 1784923200000;
 const DEFAULT_PROPOSER =
   "0x1111111111111111111111111111111111111111";
 
@@ -105,6 +105,7 @@ export function createFakeBilateralClockchain(options = {}) {
   };
   const observedSequence = [];
   let writeCount = 0;
+  let blockIndex = 0;
 
   function recordCall(name, args) {
     const detachedArgs = cloned(args);
@@ -165,9 +166,10 @@ export function createFakeBilateralClockchain(options = {}) {
         );
       }
       writeCount += 1;
+      blockIndex += 1;
       const ledgerId = ledgerIdFor(writeCount);
-      const blockHeight = String(baseHeight + writeCount);
-      const blockTime = blockTimeFor(writeCount);
+      const blockHeight = String(baseHeight + blockIndex);
+      const blockTime = blockTimeFor(blockIndex);
       records.push({
         assetHash: args.asset_hash,
         assetReferenceId: args.asset_reference_id,
@@ -182,6 +184,22 @@ export function createFakeBilateralClockchain(options = {}) {
       });
       maybeThrowWrite("after-storage");
       return { blockHeight, ledgerId };
+    },
+
+    // Mines a neutral block: a height and timestamp with NO ledger record. A real
+    // chain keeps producing blocks from unrelated traffic; the frozen ledger uses
+    // this to stand in for the block that follows the final anchored transition,
+    // so a verifier's h+1 upper bound resolves exactly as it would on the live
+    // chain. It is not an MCP call and is deliberately absent from `calls`.
+    async mineBlock() {
+      blockIndex += 1;
+      const blockHeight = String(baseHeight + blockIndex);
+      blocks.set(blockHeight, {
+        blockHeight,
+        blockTime: blockTimeFor(blockIndex),
+        proposerAddress: options.proposerAddress ?? DEFAULT_PROPOSER,
+      });
+      return { blockHeight };
     },
 
     async searchActions(args) {

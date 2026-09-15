@@ -752,6 +752,258 @@ test("role repository root is fixed from the role module location", () => {
   );
 });
 
+// The payee (provider) decision seam: an external agent's only degree of freedom is the
+// go/no-go decision on the discovered proposal. These tests pin the gate's contract —
+// affirmative accept proceeds exactly like the default, and every other answer (decline,
+// throw, malformed) fails closed so that no acceptance is ever written.
+async function runPayeeWithDecision(t, decidePayee) {
+  const directory = await outputDirectory(t);
+  const {
+    descriptor: sessionDescriptor,
+    envelope,
+    repositoryPublicKey,
+  } = signedDescriptor();
+  const fake = configuredFake();
+  const sessionDigest = dSession(sessionDescriptor);
+  const proposal = buildProposal({
+    amount: { currency: "USD", value: "100" },
+    descriptor: sessionDescriptor,
+    sessionDigest,
+  });
+  await fake.logAction(writeArgs(proposal));
+  let monotonicMs = 0;
+  const run = runPayeeRole({
+    acknowledgmentPollDurationMs: 20000,
+    client: fake,
+    decidePayee,
+    descriptorEnvelope: envelope,
+    jitter: () => 0,
+    monotonicNow: () => monotonicMs,
+    now: () => 1784923200000,
+    outputDirectory: directory,
+    ownerOf,
+    publishEvidence: async () => {},
+    repositoryPublicKey,
+    signMessage: (bytes) =>
+      PAYEE_ACCOUNT.signMessage({ message: { raw: bytes } }),
+    sleeper: async (delayMs) => {
+      monotonicMs += delayMs;
+    },
+  });
+  return { fake, run };
+}
+
+function assertFailedClosed(error) {
+  assert.ok(error instanceof ProtocolFailureError);
+  assert.equal(error.terminalCode, "FAILED");
+  return true;
+}
+
+test("payee decision hook: an affirmative { accept: true } proceeds exactly like the default accept", async (t) => {
+  let seen;
+  const { fake, run } = await runPayeeWithDecision(t, (context) => {
+    seen = context;
+    return { accept: true };
+  });
+  const result = await run;
+  assert.equal(result.state, "ACCEPTED");
+  assert.deepEqual(
+    result.transitions.map(({ message }) => message.kind),
+    ["proposal", "acceptance"],
+  );
+  // proposal (pre-logged) + acceptance = two ledger writes, identical to the default path.
+  assert.equal(fake.calls.logAction.length, 2);
+  // The hook received a frozen, read-only view of the proposed terms — including
+  // the exact amount the anchored proposal carries, not just the option list.
+  assert.ok(Object.isFrozen(seen));
+  assert.deepEqual(seen.amount, {
+    currency: "USD",
+    moved: false,
+    value: "100",
+  });
+  assert.ok(Array.isArray(seen.amountOptions));
+  assert.equal(typeof seen.deadlineMs, "string");
+  // The window is a duration after the anchor block, not a ledger epoch the
+  // deciding agent would misread against wall-clock time.
+  assert.equal(seen.windowMs, "600000");
+  assert.equal(typeof seen.sessionId, "string");
+  assert.equal(typeof seen.payer.agentId, "string");
+  assert.equal(typeof seen.payee.agentId, "string");
+});
+
+test("payee decision hook: a bare boolean true also accepts", async (t) => {
+  const { fake, run } = await runPayeeWithDecision(t, () => true);
+  const result = await run;
+  assert.equal(result.state, "ACCEPTED");
+  assert.equal(fake.calls.logAction.length, 2);
+});
+
+test("payee decision hook: a decline fails closed and writes no acceptance", async (t) => {
+  const { fake, run } = await runPayeeWithDecision(t, () => ({ accept: false }));
+  await assert.rejects(run, assertFailedClosed);
+  // Only the pre-logged proposal remains; the acceptance was never written.
+  assert.equal(fake.calls.logAction.length, 1);
+});
+
+test("payee decision hook: a throwing decision adapter fails closed and writes no acceptance", async (t) => {
+  const { fake, run } = await runPayeeWithDecision(t, () => {
+    throw new Error("model unreachable");
+  });
+  await assert.rejects(run, assertFailedClosed);
+  assert.equal(fake.calls.logAction.length, 1);
+});
+
+test("payee decision hook: a malformed decision without an accept flag fails closed", async (t) => {
+  const { fake, run } = await runPayeeWithDecision(t, () => ({ maybe: "later" }));
+  await assert.rejects(run, assertFailedClosed);
+  assert.equal(fake.calls.logAction.length, 1);
+});
+
+test("payee decision hook: a non-function decidePayee is refused", async (t) => {
+  const directory = await outputDirectory(t);
+  const { envelope, repositoryPublicKey } = signedDescriptor();
+  await assert.rejects(
+    runPayeeRole({
+      client: configuredFake(),
+      decidePayee: "yes",
+      descriptorEnvelope: envelope,
+      outputDirectory: directory,
+      ownerOf,
+      repositoryPublicKey,
+      signMessage: (bytes) =>
+        PAYEE_ACCOUNT.signMessage({ message: { raw: bytes } }),
+    }),
+    (error) => error instanceof ProtocolFailureError,
+  );
+});
+
+// The payer's proposed amount is an explicit input, not the hardcoded demo value:
+// proposalAmount pins any one of the signed descriptor's amountOptions, and the
+// default remains USD 100 so every existing caller is unchanged.
+test("payer proposes the caller-pinned amount when it is a signed amount option", async (t) => {
+  const directory = await outputDirectory(t);
+  const {
+    descriptor: sessionDescriptor,
+    envelope,
+    repositoryPublicKey,
+  } = signedDescriptor();
+  const fake = configuredFake();
+  const sessionDigest = dSession(sessionDescriptor);
+  // The fixture's second option is USD 250; the acceptance written mid-poll must
+  // bind to the 250 proposal for the run to complete.
+  const proposal = buildProposal({
+    amount: { currency: "USD", value: "250" },
+    descriptor: sessionDescriptor,
+    sessionDigest,
+  });
+  let monotonicMs = 0;
+  let acceptanceWritten = false;
+
+  const result = await runPayerRole({
+    client: fake,
+    descriptorEnvelope: envelope,
+    jitter: () => 0,
+    monotonicNow: () => monotonicMs,
+    outputDirectory: directory,
+    ownerOf,
+    proposalAmount: { currency: "USD", value: "250" },
+    publishEvidence: async () => {},
+    repositoryPublicKey,
+    signMessage: (bytes) =>
+      PAYER_ACCOUNT.signMessage({
+        message: { raw: bytes },
+      }),
+    sleeper: async (delayMs) => {
+      monotonicMs += delayMs;
+      if (acceptanceWritten) {
+        return;
+      }
+      acceptanceWritten = true;
+      const [proposalRecord] = await fake.searchActions({
+        asset_reference_id: sessionKey(
+          sessionDigest,
+          "proposal",
+        ),
+      });
+      const acceptance = buildAcceptance({
+        proposal,
+        proposalTriple: triple(
+          "proposal",
+          proposalRecord,
+        ),
+      });
+      await fake.logAction(writeArgs(acceptance));
+    },
+  });
+
+  assert.equal(result.state, "ACKNOWLEDGED");
+  assert.equal(result.transitions.length, 3);
+  assert.deepEqual(result.transitions[0].message.amount, {
+    currency: "USD",
+    moved: false,
+    value: "250",
+  });
+  assert.deepEqual(
+    fake.calls.logAction.map(
+      ({ asset_reference_id }) => asset_reference_id,
+    ),
+    [
+      sessionKey(sessionDigest, "proposal"),
+      sessionKey(sessionDigest, "acceptance"),
+      sessionKey(sessionDigest, "acknowledgment"),
+    ],
+  );
+});
+
+test("a proposalAmount outside the signed amount options fails AMOUNT_UNRESOLVED", async (t) => {
+  const directory = await outputDirectory(t);
+  const { envelope, repositoryPublicKey } = signedDescriptor();
+  const fake = configuredFake();
+
+  await assert.rejects(
+    runPayerRole({
+      client: fake,
+      descriptorEnvelope: envelope,
+      outputDirectory: directory,
+      ownerOf,
+      proposalAmount: { currency: "USD", value: "999" },
+      repositoryPublicKey,
+      signMessage: (bytes) =>
+        PAYER_ACCOUNT.signMessage({ message: { raw: bytes } }),
+    }),
+    (error) =>
+      error instanceof ProtocolFailureError &&
+      error.terminalCode === "AMOUNT_UNRESOLVED",
+  );
+  assert.equal(fake.calls.logAction.length, 0);
+});
+
+test("a malformed proposalAmount is refused at the input boundary", async (t) => {
+  const directory = await outputDirectory(t);
+  const { envelope, repositoryPublicKey } = signedDescriptor();
+
+  for (const proposalAmount of [
+    "USD 100",
+    { currency: "USD" },
+    { currency: "USD", extra: true, value: "100" },
+    { currency: 100, value: "100" },
+  ]) {
+    await assert.rejects(
+      runPayerRole({
+        client: configuredFake(),
+        descriptorEnvelope: envelope,
+        outputDirectory: directory,
+        ownerOf,
+        proposalAmount,
+        repositoryPublicKey,
+        signMessage: (bytes) =>
+          PAYER_ACCOUNT.signMessage({ message: { raw: bytes } }),
+      }),
+      (error) => error instanceof ProtocolFailureError,
+    );
+  }
+});
+
 
 
 

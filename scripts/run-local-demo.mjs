@@ -31,11 +31,23 @@ import { verifyBilateralAuthorization } from "../src/core/verdict.mjs";
 import { openFundingWallet } from "../src/core/funding/wallet.mjs";
 import { ERC8004_ABI } from "../src/core/registration.mjs";
 import { CHAIN_ID, REGISTRY_ADDRESS, RPC_URL } from "../src/core/constants.mjs";
+import { makeAgentDecider, resolveDeciderModel } from "./agent-decider.mjs";
 
 const KEYSTORE = process.env.HANDSHAKE_KEYSTORE ?? join(process.cwd(), "keys/funding-wallet.json");
 const FUND_AMOUNT = parseEther("0.01");
 const REPO_SHA = process.env.HANDSHAKE_SHA ?? "0".repeat(40);
 const STUB = process.argv.includes("--stub");
+
+// Optional: let a locally hosted Hermes agent (GLM-5.3-flash by default) genuinely decide
+// the provider's go/no-go on the proposal, instead of the default unconditional accept.
+//   --agent-decider [--decider-model glm-5.3-flash|kimi-k3|<model>]
+const AGENT_DECIDER = process.argv.includes("--agent-decider");
+function argValue(flag, fallback) {
+  const index = process.argv.indexOf(flag);
+  const next = index >= 0 ? process.argv[index + 1] : undefined;
+  return next !== undefined && !next.startsWith("--") ? next : fallback;
+}
+const DECIDER_MODEL_NAME = argValue("--decider-model", "glm-5.3-flash");
 
 // Business-language progress. Every line carries paymentMoved:false because a
 // live audience is reading this and that fact is the point.
@@ -128,9 +140,28 @@ async function main() {
   // the verifier recomputes both and refuses any mismatch.
   const sessionUuid = randomUUID();
   const intakeRequestId = randomUUID();
-  const issuedAtMs = Date.now();
+  // Offline stub runs must build every timestamp on the SAME deterministic clock the
+  // fake ledger stamps blocks with (BASE_TIME_MS + index*1100). The verifier anchors
+  // its commercial-intent check at the PROPOSED transition's block time; if the mandate
+  // window were built from the wall clock (~46 days after BASE_TIME_MS) that anchor would
+  // fall before mandateIssuedAtMs and verification fails closed with EXPIRED. Bracket the
+  // deterministic ledger clock instead — still a >= 30 min human-paced window, no chain,
+  // no keys, no network.
+  let stubBaseTimeMs = 0;
+  if (STUB) {
+    ({ BASE_TIME_MS: stubBaseTimeMs } = await import(
+      "../test/helpers/fake-bilateral-clockchain.mjs"
+    ));
+  }
+  const issuedAtMs = STUB ? stubBaseTimeMs - 60_000 : Date.now();
   const expiresAtMs = issuedAtMs + 45 * 60_000;   // >= 30 min: published before a human-paced wait
-  const amount = { currency: "USD", value: "100" };
+  // Amount is overridable (--amount, --currency) so the live agent decider can be exercised
+  // on both reasonable and implausible terms: the payer signs a mandate for this amount and
+  // proposes exactly it on-chain. It defaults to an ordinary invoice.
+  const amount = {
+    currency: argValue("--currency", "USD"),
+    value: argValue("--amount", "100"),
+  };
   const intakeDigest = createHash("sha256").update(intakeRequestId).digest("hex");
 
   const mandateEnvelope = await signPayerMandate({
@@ -254,6 +285,21 @@ async function main() {
   // Both roles run concurrently: the payer anchors PROPOSED and watches for the
   // requestor's ACCEPTED, the requestor watches for PROPOSED and answers it.
   const clockOpts = STUB ? { now: () => stubClock } : {};
+
+  // When enabled, a locally hosted Hermes agent authors the provider's accept/decline
+  // decision. It only influences the go/no-go gate — the acceptance content stays bound to
+  // the proposal — so this is a genuine foreign-agent decision, not free-text authoring.
+  let decidePayee;
+  if (AGENT_DECIDER) {
+    const { provider, model } = resolveDeciderModel(DECIDER_MODEL_NAME);
+    say("REQUEST_SUBMITTED", `Provider decision delegated to a live agent (${provider}/${model}).`);
+    decidePayee = makeAgentDecider({
+      provider,
+      model,
+      log: (line) => process.stdout.write(`${line}\n`),
+    });
+  }
+
   const [payerResult, payeeResult] = await Promise.all([
     runPayerRole({
       ...clockOpts,
@@ -261,11 +307,13 @@ async function main() {
       descriptorEnvelope: envelope,
       outputDirectory: payerDirectory,
       ownerOf,
+      proposalAmount: amount,
       repositoryPublicKey,
       signMessage: (bytes) => payer.account.signMessage({ message: { raw: bytes } }),
     }),
     runPayeeRole({
       ...clockOpts,
+      ...(decidePayee ? { decidePayee } : {}),
       client: makeClient(),
       descriptorEnvelope: envelope,
       outputDirectory: payeeDirectory,
@@ -279,6 +327,16 @@ async function main() {
     payer: payerResult?.state ?? "complete",
     requestor: payeeResult?.state ?? "complete",
   });
+
+  if (STUB) {
+    // The independent verifier bounds the FINAL transition (acknowledgment) by reading the
+    // block that follows it — on a real chain, unrelated activity always produces one. The
+    // frozen fake ledger stops after the three handshake writes, so mine a single neutral
+    // block here to represent the chain continuing past that boundary. It writes no record:
+    // the audited proposal/acceptance/acknowledgment counts stay at exactly one each, the
+    // session namespace is untouched, and no money moves.
+    await makeClient().mineBlock();
+  }
 
   say("VERIFYING", "An independent verifier is now re-checking every piece of evidence from scratch.");
   const verdict = await verifyBilateralAuthorization({

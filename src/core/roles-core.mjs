@@ -78,6 +78,13 @@ export const ROLE_READY_SCHEMA =
   "clockchain.bilateral-role-ready/v1";
 
 const SIGNATURE_PATTERN = /^0x[0-9a-f]{130}$/;
+// The payer proposes this amount unless the caller pins a different one via
+// proposalAmount. Any chosen amount must appear in the signed descriptor's
+// amountOptions — the check below fails AMOUNT_UNRESOLVED when it does not.
+const DEFAULT_PROPOSAL_AMOUNT = Object.freeze({
+  currency: "USD",
+  value: "100",
+});
 const ADDRESS_PATTERN = /^0x[0-9a-f]{40}$/;
 const DECIMAL_PATTERN = /^(?:0|[1-9][0-9]*)$/;
 const POOL_HEALTH = Object.freeze({
@@ -94,6 +101,7 @@ const ROLE_INPUT_KEYS = new Set([
   "acknowledgmentPollDurationMs",
   "canaries",
   "client",
+  "decidePayee",
   "descriptorEnvelope",
   "fileSystem",
   "jitter",
@@ -102,6 +110,7 @@ const ROLE_INPUT_KEYS = new Set([
   "outputDirectory",
   "ownerOf",
   "notifyReady",
+  "proposalAmount",
   "proposalPollDurationMs",
   "publishEvidence",
   "repositoryPublicKey",
@@ -129,6 +138,41 @@ function terminal(code = "FAILED") {
     "Bilateral role execution failed closed.",
     code,
   );
+}
+
+/**
+ * Build the read-only view of the terms a provider (payee) agent is deciding on.
+ *
+ * Returned to a caller-supplied decidePayee hook so an external agent can make a genuine
+ * go/no-go decision. It is a deep CLONE of the descriptor's public terms — never the live
+ * descriptor — so a decision adapter cannot mutate anything that later flows into the
+ * cryptographically bound acceptance. The adapter's only influence on the run is its
+ * return value (accept or decline); it can read these terms but change nothing.
+ */
+function payeeDecisionContext(descriptor, proposal, proposed) {
+  // windowMs is the deadline expressed as a duration after the proposal's anchor
+  // block time — the form a foreign agent can actually evaluate. The absolute
+  // deadline is ledger-clock epoch, which is meaningless (and misleading) to a
+  // model comparing it against wall-clock time.
+  let windowMs = null;
+  try {
+    windowMs = String(
+      BigInt(proposed.deadlineMs) -
+        BigInt(proposed.transition.blockTimeMs),
+    );
+  } catch {
+    windowMs = null;
+  }
+  return Object.freeze({
+    amount: structuredClone(proposal.amount ?? null),
+    amountOptions: structuredClone(descriptor.amountOptions ?? null),
+    deadlineMs: String(proposed.deadlineMs),
+    windowMs,
+    payee: structuredClone(descriptor.payee ?? null),
+    payer: structuredClone(descriptor.payer ?? null),
+    protocol: descriptor.protocol,
+    sessionId: descriptor.sessionId,
+  });
 }
 
 function isProtocolFailure(error) {
@@ -198,6 +242,23 @@ function ownDataField(value, key) {
     : null;
 }
 
+function isAmountOption(value) {
+  if (!isPlainObject(value)) {
+    return false;
+  }
+  const keys = Reflect.ownKeys(value);
+  return (
+    keys.length === 2 &&
+    keys.every(
+      (key) =>
+        typeof key === "string" &&
+        (key === "currency" || key === "value"),
+    ) &&
+    typeof ownDataField(value, "currency") === "string" &&
+    typeof ownDataField(value, "value") === "string"
+  );
+}
+
 function snapshotInput(input) {
   if (!isPlainObject(input)) {
     throw terminal();
@@ -241,6 +302,14 @@ function snapshotInput(input) {
     (
       snapshot.publishEvidence !== undefined &&
       typeof snapshot.publishEvidence !== "function"
+    ) ||
+    (
+      snapshot.decidePayee !== undefined &&
+      typeof snapshot.decidePayee !== "function"
+    ) ||
+    (
+      snapshot.proposalAmount !== undefined &&
+      !isAmountOption(snapshot.proposalAmount)
     ) ||
     (
       snapshot.notifyReady !== undefined &&
@@ -501,18 +570,33 @@ export async function runPayerRole(input) {
       descriptor,
       snapshot.ownerOf,
     );
+    // The amount the payer proposes is an explicit input, not a constant:
+    // proposalAmount pins it, and the default keeps every existing caller on
+    // the demo's USD 100 invoice. Whatever is chosen must be one of the signed
+    // descriptor's amountOptions — the same membership rule buildProposal
+    // enforces, surfaced here as the named AMOUNT_UNRESOLVED terminal code.
+    const proposalAmount =
+      snapshot.proposalAmount === undefined
+        ? DEFAULT_PROPOSAL_AMOUNT
+        : Object.freeze({
+            currency: ownDataField(
+              snapshot.proposalAmount,
+              "currency",
+            ),
+            value: ownDataField(snapshot.proposalAmount, "value"),
+          });
     if (
       !descriptor.amountOptions.some(
         (option) =>
-          option.currency === "USD" &&
-          option.value === "100",
+          option.currency === proposalAmount.currency &&
+          option.value === proposalAmount.value,
       )
     ) {
       throw terminal("AMOUNT_UNRESOLVED");
     }
     const stateMachine = createRunnerStateMachine();
     const proposal = buildProposal({
-      amount: { currency: "USD", value: "100" },
+      amount: proposalAmount,
       descriptor,
       sessionDigest,
     });
@@ -793,6 +877,30 @@ export async function runPayeeRole(input) {
       "proposal",
       proposed,
     );
+    // Foreign-agent decision seam. The bound CONTENT of the acceptance is derived
+    // cryptographically from the discovered proposal below and can never be authored
+    // freely — so the one real degree of freedom a provider agent holds is the go/no-go
+    // decision on THIS proposal. When the caller supplies decidePayee, the provider
+    // proceeds to accept only when the decision AFFIRMATIVELY returns true (or
+    // { accept: true }); any decline, thrown error, or malformed answer fails closed, so
+    // no acceptance is written and the run cannot be authorized. Absent the hook the
+    // behaviour is unchanged (accept), preserving every existing caller and fixture.
+    if (typeof snapshot.decidePayee === "function") {
+      let decision;
+      try {
+        decision = await snapshot.decidePayee(
+          payeeDecisionContext(descriptor, proposal, proposed),
+        );
+      } catch {
+        throw terminal("FAILED");
+      }
+      const accepted =
+        decision === true ||
+        (isPlainObject(decision) && decision.accept === true);
+      if (!accepted) {
+        throw terminal("FAILED");
+      }
+    }
     const acceptance = buildAcceptance({
       proposal,
       proposalTriple,

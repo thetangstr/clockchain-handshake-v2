@@ -36,6 +36,7 @@ import {
 import {
   deadlineMs,
   liveUpperBoundMs,
+  parseBlockTime,
 } from "../src/core/blocktime.mjs";
 import { canonicalBytes } from "../src/core/canonical.mjs";
 import {
@@ -605,6 +606,7 @@ async function completeFixture(t, { subjectRun = "stakeholder" } = {}) {
   });
 
   return {
+    clockchain,
     descriptor,
     descriptorEnvelope,
     mandateEnvelope,
@@ -1561,6 +1563,52 @@ test("uses h+1 when present and falls back only for a branded MCP network failur
       "ANCHOR_UNVERIFIED",
     );
   }
+});
+
+test("a mined block supplies the h+1 bound without adding a ledger record", async (t) => {
+  const fixture = await completeFixture(t);
+  const finalHeight =
+    fixture.transitions[2].onChain.blockHeight;
+  const nextHeight = String(BigInt(finalHeight) + 1n);
+  const mined = await fixture.clockchain.mineBlock();
+  assert.equal(mined.blockHeight, nextHeight);
+  // The mined block carries no record: the audited transition counts are
+  // untouched and no session reference id exists for it.
+  for (const kind of [
+    "proposal",
+    "acceptance",
+    "acknowledgment",
+  ]) {
+    const audit = await fixture.clockchain.generateAuditTrail({
+      asset_reference_id: sessionKey(
+        fixture.sessionDigest,
+        kind,
+      ),
+    });
+    assert.equal(audit.count, "1");
+  }
+  // Give the verifier the RAW fake, not the fixture's wrapped client — the
+  // wrapper brands a missing h+1 as a network failure, which would exercise the
+  // fallback bound instead of reading the mined block.
+  const verdict = await verifyBilateralAuthorization({
+    ...fixture.input,
+    clockchain: fixture.clockchain,
+  });
+  assert.equal(verdict.outcome, "AUTHORIZED");
+  const nextBlock = await fixture.clockchain.getBlock({
+    height: nextHeight,
+  });
+  assert.equal(
+    verdict.transitions[2].upperBoundMs,
+    String(parseBlockTime(nextBlock.blockTime)),
+  );
+  // A write after the mined block lands at the next height, not on top of it.
+  const late = await fixture.clockchain.logAction({
+    asset_hash: "0".repeat(64),
+    asset_reference_id: "cbv1:post",
+    hash_type: "SHA-256",
+  });
+  assert.equal(late.blockHeight, String(BigInt(nextHeight) + 1n));
 });
 
 test("uses verifier next-block bounds and expires a late acceptance upper bound", async (t) => {
