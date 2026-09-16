@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clockchain — bilateral payment authorization</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #12161f;
+    --panel2: #171c27;
+    --line: #232a38;
+    --text: #d6dde8;
+    --dim: #7d8899;
+    --accent: #6ee7b7;
+    --amber: #fbbf24;
+    --red: #f87171;
+    --blue: #7dd3fc;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  header {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    padding: 18px 22px;
+    border-bottom: 1px solid var(--line);
+  }
+  h1 { font-size: 16px; font-weight: 600; margin: 0; letter-spacing: 0.02em; }
+  .badge {
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 11px;
+  }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 14px;
+    padding: 14px 22px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+  }
+  label { display: block; color: var(--dim); font-size: 11px; margin-bottom: 4px; }
+  input, select {
+    background: var(--panel2);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    color: var(--text);
+    font: inherit;
+    padding: 6px 9px;
+    width: 130px;
+  }
+  select { width: auto; }
+  button {
+    background: var(--accent);
+    border: 0;
+    border-radius: 5px;
+    color: #06251a;
+    cursor: pointer;
+    font: 600 13px/1 inherit;
+    padding: 9px 18px;
+  }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.stop { background: var(--red); color: #2b0606; }
+  main {
+    display: grid;
+    gap: 14px;
+    grid-template-columns: 1.4fr 1fr;
+    padding: 16px 22px 28px;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    min-height: 120px;
+    padding: 12px 14px;
+  }
+  .panel h2 {
+    color: var(--dim);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    margin: 0 0 10px;
+    text-transform: uppercase;
+  }
+  #timeline { grid-row: span 2; }
+  .stage {
+    border-left: 2px solid var(--line);
+    padding: 5px 0 5px 12px;
+    position: relative;
+  }
+  .stage::before {
+    background: var(--line);
+    border-radius: 50%;
+    content: "";
+    height: 7px;
+    left: -4.5px;
+    position: absolute;
+    top: 11px;
+    width: 7px;
+  }
+  .stage.latest { border-left-color: var(--blue); }
+  .stage.latest::before { background: var(--blue); box-shadow: 0 0 8px var(--blue); }
+  .stage .name { color: var(--blue); font-size: 11px; letter-spacing: 0.08em; }
+  .stage .msg { color: var(--text); }
+  .stage .extra { color: var(--dim); font-size: 12px; }
+  #agent .decision {
+    border-radius: 6px;
+    font-weight: 700;
+    margin-top: 8px;
+    padding: 8px 10px;
+  }
+  .decision.accept { background: rgba(110,231,183,.12); color: var(--accent); }
+  .decision.decline { background: rgba(248,113,113,.12); color: var(--red); }
+  .reason { color: var(--dim); margin-top: 6px; }
+  .agentline { color: var(--amber); margin-top: 4px; }
+  .transitions { display: flex; flex-direction: column; gap: 8px; }
+  .tx {
+    background: var(--panel2);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 10px;
+  }
+  .tx .kind { color: var(--text); font-weight: 600; }
+  .tx .meta { color: var(--dim); font-size: 12px; text-align: right; }
+  #verdictBox {
+    align-items: center;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 140px;
+    text-align: center;
+  }
+  .outcome { font-size: 26px; font-weight: 800; letter-spacing: 0.06em; }
+  .outcome.ok { color: var(--accent); }
+  .outcome.bad { color: var(--red); }
+  .outcome.idle { color: var(--dim); font-size: 15px; }
+  .sub { color: var(--dim); margin-top: 8px; }
+  .pending { color: var(--dim); font-style: italic; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Clockchain — bilateral payment authorization</h1>
+  <span class="badge">paymentMoved: false</span>
+</header>
+
+<div class="controls">
+  <div>
+    <label for="amount">Amount</label>
+    <input id="amount" value="100" inputmode="numeric">
+  </div>
+  <div>
+    <label for="currency">Currency</label>
+    <input id="currency" value="USD" maxlength="3" style="width:70px">
+  </div>
+  <div>
+    <label for="mode">Ledger</label>
+    <select id="mode">
+      <option value="stub" selected>stub (offline, deterministic)</option>
+      <option value="live">live (Clockchain + Sepolia)</option>
+    </select>
+  </div>
+  <div>
+    <label for="agent">Provider decision</label>
+    <select id="agent">
+      <option value="1" selected>live agent decides</option>
+      <option value="0">auto-accept</option>
+    </select>
+  </div>
+  <div>
+    <label for="model">Agent model</label>
+    <input id="model" value="glm-5.3-flash">
+  </div>
+  <button id="run">Run handshake</button>
+  <button id="stop" class="stop" disabled>Stop</button>
+</div>
+
+<main>
+  <section class="panel" id="timeline">
+    <h2>Timeline</h2>
+    <div id="stages"><div class="pending">No run yet — press “Run handshake”.</div></div>
+  </section>
+
+  <section class="panel" id="agentPanel">
+    <h2>Provider agent decision</h2>
+    <div id="agent"><div class="pending">Waiting for a proposal…</div></div>
+  </section>
+
+  <section class="panel">
+    <h2>Anchored transitions</h2>
+    <div class="transitions" id="txs"><div class="pending">Nothing anchored yet.</div></div>
+  </section>
+
+  <section class="panel" id="verdictBox">
+    <div class="outcome idle" id="outcome">—</div>
+    <div class="sub" id="sub">The independent verifier re-checks all evidence from scratch.</div>
+  </section>
+</main>
+
+<script>
+const stages = document.getElementById("stages");
+const agentBox = document.getElementById("agent");
+const txs = document.getElementById("txs");
+const outcome = document.getElementById("outcome");
+const sub = document.getElementById("sub");
+const runBtn = document.getElementById("run");
+const stopBtn = document.getElementById("stop");
+let es = null;
+
+function reset() {
+  stages.innerHTML = "";
+  agentBox.innerHTML = '<div class="pending">Waiting for a proposal…</div>';
+  txs.innerHTML = "";
+  outcome.className = "outcome idle";
+  outcome.textContent = "—";
+  sub.textContent = "The independent verifier re-checks all evidence from scratch.";
+}
+
+function addStage(d) {
+  const last = stages.lastElementChild;
+  if (last && !last.querySelector(".name") && last.textContent === d.message) {
+    last.remove();
+  }
+  for (const el of stages.querySelectorAll(".stage")) el.classList.remove("latest");
+  const div = document.createElement("div");
+  div.className = "stage latest";
+  const extras = Object.entries(d)
+    .filter(([k]) => !["stage", "message", "paymentMoved"].includes(k))
+    .map(([k, v]) => `${k}: ${v}`)
+    .join("   ");
+  div.innerHTML =
+    `<div class="name"></div><div class="msg"></div>` +
+    (extras ? `<div class="extra"></div>` : "");
+  div.querySelector(".name").textContent = d.stage;
+  div.querySelector(".msg").textContent = d.message;
+  if (extras) div.querySelector(".extra").textContent = extras;
+  stages.appendChild(div);
+  div.scrollIntoView({ block: "nearest" });
+}
+
+function addLog(line) {
+  const last = stages.lastElementChild;
+  if (last?.querySelector(".name") && last.querySelector(".msg")?.textContent === line) {
+    return;
+  }
+  const div = document.createElement("div");
+  div.className = "stage";
+  div.innerHTML = '<div class="msg extra"></div>';
+  div.querySelector(".msg").textContent = line;
+  stages.appendChild(div);
+}
+
+function addAgentLine(line) {
+  const pending = agentBox.querySelector(".pending");
+  if (pending) pending.remove();
+  const div = document.createElement("div");
+  div.className = "agentline";
+  div.textContent = line;
+  agentBox.appendChild(div);
+  const m = /decided (ACCEPT|DECLINE) — (.*)$/.exec(line);
+  if (m) {
+    const chip = document.createElement("div");
+    chip.className = "decision " + (m[1] === "ACCEPT" ? "accept" : "decline");
+    chip.textContent = m[1];
+    const why = document.createElement("div");
+    why.className = "reason";
+    why.textContent = m[2];
+    agentBox.appendChild(chip);
+    agentBox.appendChild(why);
+  }
+}
+
+function addTransition(t) {
+  const pending = txs.querySelector(".pending");
+  if (pending) pending.remove();
+  const div = document.createElement("div");
+  div.className = "tx";
+  div.innerHTML =
+    '<span class="kind"></span>' +
+    '<span class="meta">block <b></b><br>ledger <b></b></span>';
+  div.querySelector(".kind").textContent = t.kind;
+  const bolds = div.querySelectorAll("b");
+  bolds[0].textContent = t.block;
+  bolds[1].textContent = t.ledger;
+  txs.appendChild(div);
+}
+
+function setVerdict(v) {
+  outcome.className = "outcome " + (v === "AUTHORIZED" ? "ok" : "bad");
+  outcome.textContent = v;
+}
+
+function setRunning(running) {
+  runBtn.disabled = running;
+  stopBtn.disabled = !running;
+}
+
+function stop() {
+  if (es) es.close();
+  es = null;
+  setRunning(false);
+  sub.textContent = "Run stopped.";
+}
+
+runBtn.onclick = () => {
+  if (es) es.close();
+  reset();
+  setRunning(true);
+  const q = new URLSearchParams({
+    agent: document.getElementById("agent").value,
+    amount: document.getElementById("amount").value.trim() || "100",
+    currency: document.getElementById("currency").value.trim().toUpperCase() || "USD",
+    mode: document.getElementById("mode").value,
+    model: document.getElementById("model").value.trim() || "glm-5.3-flash",
+  });
+  es = new EventSource("/run?" + q);
+  es.addEventListener("started", (e) => {
+    const d = JSON.parse(e.data);
+    addLog("run-local-demo.mjs " + d.args.join(" ") + (d.live ? " (live)" : " (stub)"));
+  });
+  es.addEventListener("stage", (e) => addStage(JSON.parse(e.data)));
+  es.addEventListener("status", (e) => {
+    const d = JSON.parse(e.data);
+    if (d.reason) sub.textContent = "Stopped: " + d.reason;
+  });
+  es.addEventListener("log", (e) => addLog(JSON.parse(e.data).line));
+  es.addEventListener("agent", (e) => addAgentLine(JSON.parse(e.data).line));
+  es.addEventListener("transition", (e) => addTransition(JSON.parse(e.data)));
+  es.addEventListener("verdict", (e) => setVerdict(JSON.parse(e.data).outcome));
+  es.addEventListener("nomove", (e) => {
+    sub.textContent = "No money moved: " + JSON.parse(e.data).value;
+  });
+  es.addEventListener("run-error", (e) => {
+    sub.textContent = JSON.parse(e.data).message;
+    outcome.className = "outcome bad";
+    outcome.textContent = "INVALID INPUT";
+    setRunning(false);
+  });
+  es.addEventListener("exit", (e) => {
+    const { code } = JSON.parse(e.data);
+    if (code !== 0 && outcome.textContent === "—") {
+      outcome.className = "outcome bad";
+      outcome.textContent = "FAILED CLOSED";
+    }
+    setRunning(false);
+    es.close();
+    es = null;
+  });
+  es.onerror = () => {
+    es.close();
+    es = null;
+    setRunning(false);
+    if (outcome.textContent === "—") {
+      sub.textContent = "Connection lost before the run finished.";
+    }
+  };
+};
+stopBtn.onclick = stop;
+</script>
+</body>
+</html>
