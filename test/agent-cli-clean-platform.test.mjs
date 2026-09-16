@@ -70,9 +70,10 @@ test("npm developer fallback executes the same public CLI entry point", async (t
   const packageDir = join(directory, "package");
   const buildScript = new URL("../scripts/build-agent-handshake-npm.mjs", import.meta.url).pathname;
   const built = await execFileAsync(process.execPath, [buildScript, packageDir], { cwd: directory });
-  assert.equal(JSON.parse(built.stdout).version, "2.1.0");
+  assert.equal(JSON.parse(built.stdout).version, "2.1.3");
   const packageJson = JSON.parse(await readFile(join(packageDir, "package.json"), "utf8"));
   assert.deepEqual(packageJson.bin, { "clockchain-agent-handshake": "index.cjs" });
+  assert.deepEqual(packageJson.engines, { node: ">=24" });
   const stateDir = join(directory, "npm-state");
   const executed = await execFileAsync(process.execPath, [join(packageDir, "index.cjs"), "init", "--state-dir", stateDir], { cwd: directory });
   assert.equal(JSON.parse(executed.stdout).operation, "init");

@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import {
+  AGENT_HANDSHAKE_HELPER_VERSION,
+  AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX,
+} from "../src/agent-handshake/v2/constants.mjs";
 import {
   CLOCKCHAIN_HANDSHAKE_MCP_URL,
   VERIFIED_HELPER_BOOTSTRAP,
@@ -116,6 +122,36 @@ test("requires independent Research and MCP release pins to agree exactly", () =
     { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: "f".repeat(64), hostRoots: [ROOT] } },
     { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: ["9".repeat(64)] } }
   ]) assert.throws(() => validateReleaseAgreement(candidate));
+});
+
+test("verified helper bootstrap rejects a manifest pinned to a different Node major", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "fresh-agent-bootstrap-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const helperPath = join(directory, "clockchain-agent-handshake.cjs");
+  const manifestPath = join(directory, "manifest.json");
+  const helperBytes = Buffer.from("process.exit(42);");
+  await writeFile(helperPath, helperBytes);
+  const manifestBytes = (nodeRuntime) => Buffer.from(JSON.stringify({
+    schema: "clockchain.agent-handshake-release-manifest/v1",
+    version: AGENT_HANDSHAKE_HELPER_VERSION,
+    sourceCommit: "a".repeat(40),
+    nodeRuntime,
+    assets: [{
+      filename: "clockchain-agent-handshake.cjs",
+      url: `${AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX}clockchain-agent-handshake.cjs`,
+      sha256: createHash("sha256").update(helperBytes).digest("hex"),
+    }],
+  }));
+  const run = async (nodeRuntime) => {
+    const bytes = manifestBytes(nodeRuntime);
+    await writeFile(manifestPath, bytes);
+    return spawnSync(process.execPath, [
+      "--input-type=commonjs", "--eval", VERIFIED_HELPER_BOOTSTRAP,
+      createHash("sha256").update(bytes).digest("hex"), manifestPath, helperPath, "--version",
+    ], { cwd: directory }).status;
+  };
+  assert.equal(await run("24.9.0"), 42);
+  assert.equal(await run("20.11.0"), 86);
 });
 
 test("allows only pinned downloads and a hash-verifying in-memory helper bootstrap", () => {

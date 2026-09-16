@@ -1,8 +1,8 @@
 {
-  "version": "2.1.0",
-  "sourceCommit": "61d939c3c9bcb6631d615c32671bf737baf57ebb",
-  "manifestDigest": "032290c4082c4427e4a800ea065a361bbb4d05989e9c87f6c5a21ac6caf758e4",
-  "allowedAssetPrefix": "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.0/",
+  "version": "2.1.3",
+  "sourceCommit": "edea81c48ad443bc2b46e1a3c4c953e2f6bd752c",
+  "manifestDigest": "cc744e287f2f1dfc4b4b67ed460611543fc44c00c2385120cac1b37e28a56342",
+  "allowedAssetPrefix": "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.3/",
   "hostRoots": [
     {
       "kid": "root-2026-08",

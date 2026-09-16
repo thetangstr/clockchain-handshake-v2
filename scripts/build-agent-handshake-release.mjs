@@ -9,6 +9,8 @@ import { createRequire } from "node:module";
 
 import { build } from "esbuild";
 
+import { AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX } from "../src/agent-handshake/v2/constants.mjs";
+
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
 const { inject } = require("postject");
@@ -97,7 +99,7 @@ export async function recordAgentHandshakeAsset({
     arch,
     upstreamSupport,
     filename,
-    url: `https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.0/${filename}`,
+    url: `${AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX}${filename}`,
     byteLength: String(bytes.length),
     sha256: createHash("sha256").update(bytes).digest("hex"),
     nativeSignature: {

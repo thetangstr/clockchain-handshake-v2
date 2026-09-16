@@ -14,3 +14,14 @@ export const AGENT_HANDSHAKE_V2_ROLES = Object.freeze([
   "responder",
 ]);
 export const AGENT_HANDSHAKE_V2_MAX_VALID_FOR_SECONDS = 90n;
+
+// The one place the released helper version is declared. The distribution tag,
+// the release asset URL prefix, the npm fallback version, the manifest version
+// the verifier accepts, and the helperVersion the agent CLI expects in signing
+// requests are all derived from this — they may not drift apart, because the
+// published release embeds the same value in every surface.
+export const AGENT_HANDSHAKE_HELPER_VERSION = "2.1.3";
+export const AGENT_HANDSHAKE_HELPER_NODE_MAJOR = "24";
+export const AGENT_HANDSHAKE_RELEASE_TAG = `v${AGENT_HANDSHAKE_HELPER_VERSION}`;
+export const AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX =
+  `https://github.com/thetangstr/clockchain-handshake-v2/releases/download/${AGENT_HANDSHAKE_RELEASE_TAG}/`;

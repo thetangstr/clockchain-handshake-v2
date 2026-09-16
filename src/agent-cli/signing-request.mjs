@@ -14,8 +14,9 @@ import {
   validateAgentHandshakeV2Terms,
 } from "../agent-handshake/v2/terms.mjs";
 import { verifyPinnedHostSessionKey } from "./trust-roots.mjs";
+import { AGENT_HANDSHAKE_HELPER_VERSION } from "../agent-handshake/v2/constants.mjs";
 
-export const AGENT_HANDSHAKE_HELPER_VERSION = "2.1.0";
+export { AGENT_HANDSHAKE_HELPER_VERSION };
 export const AGENT_SIGNING_REQUEST_SCHEMA = "clockchain.agent-handshake-signing-request/v1";
 
 const REQUEST_KEYS = Object.freeze([
