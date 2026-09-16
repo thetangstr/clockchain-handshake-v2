@@ -46,12 +46,12 @@ test("verified bootstrap hashes the manifest and exact helper bytes before every
   const helperBytes = await readFile(helperPath);
   const manifestBytes = Buffer.from(JSON.stringify({
     schema: "clockchain.agent-handshake-release-manifest/v1",
-    version: "2.1.0",
+    version: "2.1.3",
     sourceCommit: "a".repeat(40),
     nodeRuntime: "24.19.0",
     assets: [{
       filename: "clockchain-agent-handshake.cjs",
-      url: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.0/clockchain-agent-handshake.cjs",
+      url: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.3/clockchain-agent-handshake.cjs",
       sha256: createHash("sha256").update(helperBytes).digest("hex"),
     }],
   }));

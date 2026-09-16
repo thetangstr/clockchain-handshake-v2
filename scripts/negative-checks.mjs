@@ -34,9 +34,8 @@
  *     the journal is a byte-faithful pure port that must not be edited, so this
  *     script reports the code the journal actually raises.
  *
- * scripts/check-invariants.sh reports both codes as "emitted" because its grep
- * cannot tell a thrown code from a display label. That is a gap in that check,
- * not evidence that these two paths exist.
+ * scripts/check-invariants.sh reports both codes as registered/display-only
+ * pending codes, not as emitted runtime reasons.
  */
 
 import { createHash, generateKeyPairSync } from "node:crypto";
@@ -854,9 +853,8 @@ async function main() {
       "      namespace, and the journal is a pure port that must not be edited.\n",
   );
   stdout.write(
-    "    check-invariants.sh reports both codes as 'emitted' because its grep\n" +
-      "      cannot tell a thrown code from a display label. That is a gap in\n" +
-      "      that check, not evidence that these two paths exist.\n",
+    "    check-invariants.sh reports both codes as registered/display-only\n" +
+      "      pending codes, not as emitted runtime reasons.\n",
   );
   stdout.write(
     "    REPLAY and REPLAY_ANCHORED do not share a code. The anchored sibling\n" +

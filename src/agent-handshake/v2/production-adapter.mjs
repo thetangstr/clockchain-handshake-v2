@@ -124,6 +124,7 @@ export async function loadAgentHandshakeV2Session({
     sessionOpenedBlock,
     hostSessionKeyCertificate,
     externalBusinessActionPerformed: false,
+    terms,
   });
   await relayClient.createSession({ relayUrl, sessionId, discovery });
   return Object.freeze({

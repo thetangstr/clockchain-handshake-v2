@@ -103,21 +103,24 @@ printf '\n== 4. Reason-code emission sites ==\n'
 # nobody wrote down. The reverse direction was added after an audit found two
 # unregistered codes shipping.
 PENDING=0
+DISPLAY_REASON_SURFACES='^src/monitor/(snapshot|control-plane/messages)\.mjs$'
 for CODE in RENDEZVOUS_UNAVAILABLE EXPIRED MISSING DUPLICATE REORDERED MALFORMED \
             AMBIGUOUS_WRITE BINDING_MISMATCH ANCHOR_UNVERIFIED ROLE_ALREADY_BOUND \
-            RATE_BLOCKED AMOUNT_UNRESOLVED FUNDING_REPLAYED FAILED; do
-  if grep -rq "\"$CODE\"" src 2>/dev/null; then
-    printf '      %-22s emitted\n' "$CODE"
+            RATE_BLOCKED AMOUNT_UNRESOLVED FUNDING_REPLAYED FAILED \
+            REHEARSAL_NOT_AUTHORIZABLE REHEARSAL_SUBJECT_MISMATCH; do
+  EMIT_SITES=$(grep -rl "\"$CODE\"" src 2>/dev/null | grep -vE "$DISPLAY_REASON_SURFACES" || true)
+  if [ -n "$EMIT_SITES" ]; then
+    printf '      %-30s emitted\n' "$CODE"
   else
     case "$CODE" in
       REORDERED)
-        printf '      %-22s PENDING (M1a: src/verifier/run.mjs order check)\n' "$CODE"
+        printf '      %-30s registered/display-only; PENDING (M1a: src/verifier/run.mjs order check)\n' "$CODE"
         PENDING=$((PENDING + 1)) ;;
       RENDEZVOUS_UNAVAILABLE|ROLE_ALREADY_BOUND|RATE_BLOCKED)
-        printf '      %-22s PENDING (M1a: relay client)\n' "$CODE"
+        printf '      %-30s PENDING (M1a: relay client)\n' "$CODE"
         PENDING=$((PENDING + 1)) ;;
       FUNDING_REPLAYED)
-        printf '      %-22s PENDING (M1a: funding journal refusal path)\n' "$CODE"
+        printf '      %-30s registered/display-only; PENDING (M1a: funding journal refusal path)\n' "$CODE"
         PENDING=$((PENDING + 1)) ;;
       *)
         fail "$CODE has no emission site and no milestone that owns it" ;;
@@ -152,7 +155,7 @@ if [ "$PENDING" -gt 0 ]; then
     info "$PENDING code(s) pending, each owned by a named later milestone"
   fi
 else
-  pass "every frozen reason code has an emission site"
+  pass "every frozen reason code has a runtime emission site"
 fi
 
 printf '\n== 5. Single version-identity source ==\n'

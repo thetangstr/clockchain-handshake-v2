@@ -36,6 +36,11 @@ test("production session publishes a root-signed host key before discovery with 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].discovery.sessionOpenedBlock, "6999");
   assert.deepEqual(calls[0].discovery.hostSessionKeyCertificate, session.hostSessionKeyCertificate);
+  assert.deepEqual(calls[0].discovery.terms, session.terms);
+  assert.equal(
+    agentHandshakeV2StatementDigest(calls[0].discovery.terms),
+    agentHandshakeV2StatementDigest(session.terms),
+  );
   verifyHostSessionKeyCertificate(session.hostSessionKeyCertificate, {
     expectedRepositorySha: session.repositorySha,
     expectedSessionId: session.sessionId,
