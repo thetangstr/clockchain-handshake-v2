@@ -306,8 +306,18 @@ export async function preloadVerifiedReleaseAssets({ fetchAsset, manifestDigest,
   await writeFile(join(workspace, "clockchain-agent-handshake.cjs"), helperBytes, { mode: 0o600 });
 }
 
-function adapterExecutable(runtimeExecPath, publicKeyDer, completionDeadlineMs) {
-  return `#!${runtimeExecPath}\n` + String.raw`"use strict";
+// The launcher keeps the exact command name but carries no logic: Node picks
+// CJS vs ESM for an extensionless file from the nearest package.json, so a
+// workspace nested under a "type":"module" scope would parse a CJS body as ESM
+// and die on require(). A bare dynamic import() is valid under both module
+// systems; the .cjs suffix pins the payload to CommonJS regardless of scope.
+function adapterExecutable(runtimeExecPath) {
+  return `#!${runtimeExecPath}\n` +
+    `import("./clockchain-agent-authorize.cjs").catch(()=>{process.stderr.write('{"code":"HELPER_COMMAND_MISMATCH"}\\n');process.exit(86)});\n`;
+}
+
+function adapterPayload(publicKeyDer, completionDeadlineMs) {
+  return String.raw`"use strict";
 const { spawnSync }=require("node:child_process");
 const { createHash,createPublicKey,verify }=require("node:crypto");
 const { createConnection }=require("node:net");
@@ -520,7 +530,11 @@ export async function createVerifiedReleaseActionRecorder(input = {}) {
   const publicKeyDer = publicKey.export({ type: "spki", format: "der" }).toString("base64");
   const trustedAdapterPublicKey = rawEd25519PublicKey(publicKey);
   const executable = join(bin, "clockchain-agent-authorize");
-  await writePrivateFile({ path: executable, bytes: Buffer.from(adapterExecutable(runtime, publicKeyDer, completionDeadlineMs), "utf8") });
+  await writePrivateFile({ path: executable, bytes: Buffer.from(adapterExecutable(runtime), "utf8") });
+  await writePrivateFile({
+    path: join(bin, "clockchain-agent-authorize.cjs"),
+    bytes: Buffer.from(adapterPayload(publicKeyDer, completionDeadlineMs), "utf8"),
+  });
   await chmod(executable, 0o500);
   let completionHandlerSet = false;
   const retainedByCommand = new Map();

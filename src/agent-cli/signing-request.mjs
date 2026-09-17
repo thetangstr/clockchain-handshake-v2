@@ -10,6 +10,11 @@ import {
 } from "../agent-handshake/v2/protocol.mjs";
 import { validateAgentHandshakeV2EvidenceResult } from "../agent-handshake/v2/evidence.mjs";
 import {
+  agentHandshakeV2DescriptorDigest,
+  verifyAgentHandshakeV2DescriptorEnvelope,
+} from "../agent-handshake/v2/descriptor.mjs";
+import { hostSessionKeyCertificateDigest } from "../agent-handshake/v2/host-key-certificate.mjs";
+import {
   agentHandshakeV2StatementDigest,
   validateAgentHandshakeV2Terms,
 } from "../agent-handshake/v2/terms.mjs";
@@ -22,7 +27,8 @@ export const AGENT_SIGNING_REQUEST_SCHEMA = "clockchain.agent-handshake-signing-
 const REQUEST_KEYS = Object.freeze([
   "schema", "helperVersion", "operation", "role", "sessionId", "repositorySha",
   "sessionDeadlineMs", "hostSessionKeyCertificate", "terms", "policyDigest",
-  "bytesGzipBase64Url", "bytesSha256", "externalBusinessActionPerformed",
+  "descriptorEnvelope", "bytesGzipBase64Url", "bytesSha256",
+  "externalBusinessActionPerformed",
 ]);
 const OPERATIONS = Object.freeze(["identity_claim", "proposal", "acceptance", "evidence"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -75,7 +81,7 @@ function payloadFor(operation, value, identityPolicy) {
 
 function assertPayloadBinding(payload, request, address, policy, statementDigest) {
   if (
-    payload.sessionId !== request.sessionId ||
+    payload.sessionId !== undefined && payload.sessionId !== request.sessionId ||
     payload.repositorySha !== request.repositorySha ||
     payload.role !== undefined && payload.role !== request.role ||
     payload.statementDigest !== statementDigest ||
@@ -128,13 +134,34 @@ export function validateAgentSigningRequest({ address, localPolicy, nowMs, reque
   ) invalid();
   const statementDigest = agentHandshakeV2StatementDigest(terms);
   if (statementDigest !== policy.statementDigest) invalid();
-  verifyPinnedHostSessionKey(request.hostSessionKeyCertificate, {
+  const hostSessionKey = verifyPinnedHostSessionKey(request.hostSessionKeyCertificate, {
     expectedRepositorySha: request.repositorySha,
     expectedSessionId: request.sessionId,
     nowMs,
     rootKeyRing,
     sessionDeadlineMs: Number(request.sessionDeadlineMs),
   });
+  // Evidence signing is session-bound: the endpoint carries the host-signed
+  // descriptor in the request so the helper can prove the signed evidence names
+  // this session. Every other operation must send descriptorEnvelope null.
+  let descriptor = null;
+  if (request.operation === "evidence") {
+    try {
+      descriptor = verifyAgentHandshakeV2DescriptorEnvelope(request.descriptorEnvelope, {
+        expectedHostSessionKeyCertificateDigest:
+          hostSessionKeyCertificateDigest(request.hostSessionKeyCertificate),
+        expectedPublicKey: hostSessionKey.certificate.sessionPublicKey,
+      }).descriptor;
+    } catch { invalid(); }
+    if (
+      descriptor.sessionId !== request.sessionId ||
+      descriptor.repositorySha !== request.repositorySha ||
+      descriptor.reference !== terms.reference ||
+      descriptor.statementDigest !== statementDigest ||
+      !same(descriptor.identityPolicy, policy.identityPolicy) ||
+      BigInt(descriptor.agreementExpiresAtMs) > BigInt(request.sessionDeadlineMs)
+    ) invalid();
+  } else if (request.descriptorEnvelope !== null) invalid();
   let raw;
   try { raw = decodeSigningBytes({ bytesGzipBase64Url: request.bytesGzipBase64Url }); } catch { invalid(); }
   if (createHash("sha256").update(raw).digest("hex") !== request.bytesSha256) invalid();
@@ -143,6 +170,12 @@ export function validateAgentSigningRequest({ address, localPolicy, nowMs, reque
   const payload = payloadFor(request.operation, parsed, policy.identityPolicy);
   if (!canonicalBytes(payload).equals(raw)) invalid();
   assertPayloadBinding(payload, { ...request, nowMs }, address, policy, statementDigest);
+  if (
+    descriptor !== null && (
+      payload.sessionDigest !== agentHandshakeV2DescriptorDigest(descriptor) ||
+      !same(descriptor[request.role], payload.party)
+    )
+  ) invalid();
   return Object.freeze({
     bytesGzipBase64Url: request.bytesGzipBase64Url,
     bytesSha256: request.bytesSha256,
