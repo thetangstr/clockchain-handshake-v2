@@ -23,6 +23,7 @@ import {
   VERIFIED_HELPER_BOOTSTRAP,
 } from "../harness/verified-release-action-recorder.mjs";
 import { AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX } from "../agent-handshake/v2/constants.mjs";
+import { monitorEvidenceMatches } from "./fresh-agent-monitor.mjs";
 
 const ROLES = Object.freeze(["initiator", "responder"]);
 const HELPER_OPERATIONS = Object.freeze([
@@ -1504,8 +1505,8 @@ export async function runFreshAgentHandshake({
     if (initiator.sessionId !== responder.sessionId || initiator.certificateDigest !== responder.certificateDigest) fail();
     if (initiator.address === responder.address || initiator.erc8004.agentId === responder.erc8004.agentId || initiator.policyDigest === responder.policyDigest) fail();
     const monitorResult = await monitor({ sessionId: initiator.sessionId });
-    const chronology = monitorResult?.chronology;
-    if (monitorResult?.sessionId !== initiator.sessionId || !Array.isArray(chronology) || chronology.at(-1) !== "CERTIFIED") fail();
+    if (!monitorEvidenceMatches(monitorResult, { sessionId: initiator.sessionId, certificateDigest: initiator.certificateDigest })) fail();
+    const chronology = monitorResult.chronology;
     const evidence = Object.freeze({
       schema: EVIDENCE_SCHEMA,
       runId: run.runId,
