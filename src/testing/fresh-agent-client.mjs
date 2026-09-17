@@ -48,6 +48,10 @@ const MAX_OUTPUT_BYTES = 1024 * 1024;
 const TERMINAL_SCHEMA = "clockchain.fresh-agent-terminal-proof/v1";
 const EVIDENCE_SCHEMA = "clockchain.fresh-agent-canary-evidence/v1";
 const RESPONDER_INVITATION_PLACEHOLDER = "<PASTE THE INITIATOR INVITATION>";
+// Substituted with a randomUUID() at send time so the model never invents an
+// acceptanceIdempotencyKey that fails server validation inside the short
+// invitation window.
+const RESPONDER_ACCEPTANCE_KEY_PLACEHOLDER = "<GENERATED ACCEPTANCE IDEMPOTENCY KEY>";
 
 function fail() {
   throw new Error("Fresh agent compatibility check failed safely.");
@@ -591,11 +595,16 @@ function sendPrompt(child, value) {
   child.stdin.end(value);
 }
 
-function responderPrompt(template, value) {
+export function responderPrompt(template, value) {
   if (typeof template !== "string") fail();
   const first = template.indexOf(RESPONDER_INVITATION_PLACEHOLDER);
   if (first < 0 || first !== template.lastIndexOf(RESPONDER_INVITATION_PLACEHOLDER)) fail();
-  return template.replace(RESPONDER_INVITATION_PLACEHOLDER, invitation(value));
+  const keyFirst = template.indexOf(RESPONDER_ACCEPTANCE_KEY_PLACEHOLDER);
+  if (keyFirst < 0 || keyFirst !== template.lastIndexOf(RESPONDER_ACCEPTANCE_KEY_PLACEHOLDER)) fail();
+  const acceptanceKey = randomUUID();
+  return template
+    .replace(RESPONDER_INVITATION_PLACEHOLDER, invitation(value))
+    .replace(RESPONDER_ACCEPTANCE_KEY_PLACEHOLDER, acceptanceKey);
 }
 
 function childEnvironment(room, credentials, { adapterBin } = {}) {
