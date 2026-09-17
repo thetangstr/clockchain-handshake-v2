@@ -1536,7 +1536,7 @@ test("runFreshAgentHandshake records secret-safe per-role diagnostics without ra
   assert.equal(initiator.lastMcpLocalActionOperation, "sign");
   assert.equal(initiator.lastAdapterOperation, "sign");
   assert.equal(initiator.lastMcpToolResultFailed, false);
-  assert.deepEqual(initiator.adapterCompletion, { operation: null, state: "none" });
+  assert.deepEqual(initiator.adapterCompletion, { continuation: null, operation: null, state: "none" });
   assert.deepEqual(initiator.mcpToolNames, ["agent_handshake_invite", "agent_handshake_next", "agent_handshake_status"]);
   assert.deepEqual(initiator.permissionDeniedTools, ["Bash"]);
   assert.equal(initiator.stdoutLines, 4);
@@ -1558,7 +1558,11 @@ test("trackAdapterCompletion records accepted, failed, and never-invoked states"
   const accepted = { operation: null, state: "none" };
   const acceptedHandler = trackAdapterCompletion(async () => Object.freeze({ accepted: true }), accepted);
   await acceptedHandler({ operation: "sign", argv: ["secret"], result: { raw: true } });
-  assert.deepEqual(accepted, { operation: "sign", state: "accepted" });
+  assert.deepEqual(accepted, { continuation: "agent_handshake_submit", operation: "sign", state: "accepted" });
+  const free = { operation: null, state: "none" };
+  const freeHandler = trackAdapterCompletion(async () => Object.freeze({ accepted: true }), free);
+  await freeHandler({ operation: "init", result: {} });
+  assert.deepEqual(free, { continuation: null, operation: "init", state: "accepted" });
 
   const failed = { operation: null, state: "none" };
   const failedHandler = trackAdapterCompletion(async () => { throw new Error("boom"); }, failed);
