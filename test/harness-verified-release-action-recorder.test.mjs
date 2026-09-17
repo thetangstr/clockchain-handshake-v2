@@ -690,25 +690,21 @@ test("local adapter MCP server lists one zero-input tool and executes ordered ac
   assert.equal(listed.result.tools.length, 1);
   assert.equal(listed.result.tools[0].name, "authorize_local_action");
   assert.deepEqual(listed.result.tools[0].inputSchema, { type: "object", properties: {}, additionalProperties: false });
-  const results = [];
-  for (let index = 0; index < steps.length; index += 1) {
-    const response = await call("tools/call", { name: "authorize_local_action", arguments: {} });
-    assert.equal(response.result.isError ?? false, false);
-    assert.equal(response.result.content.length, 2);
-    // First block is the exact helper stdout JSON: the model passes it
-    // verbatim to agent_handshake_submit/next, so no wrapping is allowed.
-    assert.equal(response.result.content[0].text, JSON.stringify({ ok: true, signed: "proposal" }));
-    results.push(JSON.parse(response.result.content[0].text).signed);
-    if (index + 1 < steps.length) {
-      assert.deepEqual(await readdir(recorder.pending), [`${steps[index + 1].commandSha256}.json`]);
-    }
-  }
-  assert.deepEqual(results, ["proposal", "proposal", "proposal"]);
+  // One zero-input call drains every staged action in order; the model never
+  // repeats calls for steps the adapter already executed.
+  const response = await call("tools/call", { name: "authorize_local_action", arguments: {} });
+  assert.equal(response.result.isError ?? false, false);
+  assert.equal(response.result.content.length, 2);
+  // First block is the exact helper stdout JSON of the last drained action:
+  // the model passes it verbatim to agent_handshake_submit/next, so no
+  // wrapping is allowed.
+  assert.equal(response.result.content[0].text, JSON.stringify({ ok: true, signed: "proposal" }));
   assert.deepEqual(completions.map((completion) => completion.operation), ["init", "policy", "inspect"]);
   assert.equal((await readdir(recorder.pending)).length, 0);
+  assert.equal((await readdir(recorder.queued)).length, 0);
 });
 
-const EXPECTED_CONTINUATION = "Staged local action executed. Execute any remaining staged helper steps in order, then follow the afterSuccess/terminalProof/nextAction instruction from the Clockchain response that issued this action, passing the exact helper output in the first content block. Never end after a local action before terminal certificate verification.";
+const EXPECTED_STATUS = "Staged local actions executed; their trusted Clockchain follow-up calls were completed by the adapter. Call agent_handshake_next with your unchanged role access to continue the protocol, and emit the terminal proof once local certificate verification succeeds. Never replay agent_handshake_join, agent_handshake_submit, or agent_handshake_submit_checkpoint for an executed local action.";
 
 test("local adapter MCP success response appends the fixed continuation instruction", async (t) => {
   const { fixture, recorder, tmp, workspace } = await makeContext(t);
@@ -721,9 +717,92 @@ test("local adapter MCP success response appends the fixed continuation instruct
     assert.equal(response.result.isError ?? false, false, operation);
     assert.deepEqual(response.result.content, [
       { type: "text", text: JSON.stringify({ ok: true, signed: "proposal" }) },
-      { type: "text", text: EXPECTED_CONTINUATION },
+      { type: "text", text: EXPECTED_STATUS },
     ], operation);
   }
+});
+
+test("local adapter MCP drain stops at the fixed action bound", async (t) => {
+  const { fixture, recorder, tmp, workspace } = await makeContext(t);
+  const completions = [];
+  recorder.setCompletionHandler(async (completion) => {
+    completions.push(completion);
+    return { accepted: true };
+  });
+  const DRAIN_BOUND = 16;
+  for (let index = 0; index < DRAIN_BOUND + 1; index += 1) {
+    const payload = Buffer.from(JSON.stringify({
+      operation: "init", role: "initiator", sessionId: SESSION, n: index,
+    })).toString("base64url");
+    recorder.record(helperStep({ manifestDigest: fixture.manifestDigest, operation: "init", payload }));
+  }
+  const call = mcpClient(t, recorder.mcpServer, workspace, tmp);
+  await call("initialize", {});
+  const response = await call("tools/call", { name: "authorize_local_action" });
+  assert.equal(response.result.isError, true);
+  assert.equal(completions.length, DRAIN_BOUND);
+});
+
+test("local adapter MCP drain stops on helper failure without consuming later actions", async (t) => {
+  const { fixture, recorder, tmp, workspace } = await makeContext(t);
+  const completions = [];
+  recorder.setCompletionHandler(async (completion) => {
+    completions.push(completion);
+    if (completion.operation === "policy") throw new Error("down");
+    return { accepted: true };
+  });
+  const steps = ["init", "policy", "inspect"].map((operation) =>
+    helperStep({ manifestDigest: fixture.manifestDigest, operation }));
+  steps.forEach((step) => recorder.record(step));
+  const call = mcpClient(t, recorder.mcpServer, workspace, tmp);
+  await call("initialize", {});
+  const response = await call("tools/call", { name: "authorize_local_action" });
+  assert.equal(response.result.isError, true);
+  assert.match(response.result.content[0].text, /HELPER_COMPLETION_FAILED/);
+  assert.deepEqual(completions.map((completion) => completion.operation), ["init", "policy"]);
+  // The never-executed third action remains queued, not pending.
+  assert.deepEqual(await readdir(recorder.queued), [`000002-${steps[2].commandSha256}.json`]);
+  assert.equal((await readdir(recorder.pending)).length, 0);
+});
+
+test("local adapter MCP server rejects a call with no staged action", async (t) => {
+  const { recorder, tmp, workspace } = await makeContext(t);
+  recorder.setCompletionHandler(async () => ({ accepted: true }));
+  const call = mcpClient(t, recorder.mcpServer, workspace, tmp);
+  await call("initialize", {});
+  const response = await call("tools/call", { name: "authorize_local_action" });
+  assert.equal(response.result.isError, true);
+});
+
+test("local adapter MCP drain fails closed on a malformed pending entry", async (t) => {
+  const { fixture, recorder, tmp, workspace } = await makeContext(t);
+  recorder.setCompletionHandler(async () => ({ accepted: true }));
+  const step = helperStep({ manifestDigest: fixture.manifestDigest });
+  recorder.record(step);
+  recorder.record(helperStep({ manifestDigest: fixture.manifestDigest, operation: "policy" }));
+  // A foreign entry beside the promoted pending action is corrupt state.
+  await writeFile(join(recorder.pending, "not-an-action.json"), "{}\n", { mode: 0o600 });
+  const call = mcpClient(t, recorder.mcpServer, workspace, tmp);
+  await call("initialize", {});
+  const response = await call("tools/call", { name: "authorize_local_action" });
+  assert.equal(response.result.isError, true);
+});
+
+test("local adapter MCP status block cannot duplicate a trusted continuation", async (t) => {
+  const { fixture, recorder, tmp, workspace } = await makeContext(t);
+  recorder.setCompletionHandler(async () => ({ accepted: true }));
+  recorder.record(helperStep({ manifestDigest: fixture.manifestDigest }));
+  const call = mcpClient(t, recorder.mcpServer, workspace, tmp);
+  await call("initialize", {});
+  const response = await call("tools/call", { name: "authorize_local_action" });
+  assert.equal(response.result.isError ?? false, false);
+  const status = response.result.content[1].text;
+  assert.equal(status, EXPECTED_STATUS);
+  // The model is told to poll next with unchanged access and is explicitly
+  // forbidden from replaying join/submit for the executed action.
+  assert.match(status, /agent_handshake_next/);
+  assert.match(status, /Never replay agent_handshake_join, agent_handshake_submit/);
+  assert.doesNotMatch(status, /afterSuccess|helper output in the first content block/);
 });
 
 test("local adapter MCP server rejects any tool input or unknown tool without executing", async (t) => {
