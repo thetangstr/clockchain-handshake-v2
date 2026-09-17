@@ -1,15 +1,19 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 
 import { assertSecretFree } from "../core/redact.mjs";
 import { validateAgentHandshakeReleasePin } from "../../scripts/verify-agent-handshake-release.mjs";
 import {
-  AGENT_HANDSHAKE_HELPER_NODE_MAJOR,
-  AGENT_HANDSHAKE_HELPER_VERSION,
-  AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX,
-} from "../agent-handshake/v2/constants.mjs";
+  createCheckpointCompletionHandler,
+  createStreamableMcpClient,
+  ROLE_ACCESS_HANDLE,
+  roleAccessBinding,
+} from "../harness/checkpoint-completion.mjs";
+import { createVerifiedReleaseActionRecorder, VERIFIED_HELPER_BOOTSTRAP } from "../harness/verified-release-action-recorder.mjs";
+import { AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX } from "../agent-handshake/v2/constants.mjs";
 
 const ROLES = Object.freeze(["initiator", "responder"]);
 const HELPER_OPERATIONS = Object.freeze([
@@ -25,10 +29,11 @@ export const CLOCKCHAIN_HANDSHAKE_TOOLS = Object.freeze([
   "agent_handshake_join",
   "agent_handshake_status",
   "agent_handshake_next",
+  "agent_handshake_submit_checkpoint",
   "agent_handshake_submit",
   "agent_handshake_get_certificate",
 ]);
-export const VERIFIED_HELPER_BOOTSTRAP = `const fs=require("node:fs");const crypto=require("node:crypto");const Module=require("node:module");const argv=process.argv.slice(1);const expected=argv.shift();const manifestPath=argv.shift();const helperPath=argv.shift();const manifestBytes=fs.readFileSync(manifestPath);const manifestDigest=crypto.createHash("sha256").update(manifestBytes).digest("hex");if(manifestDigest!==expected)process.exit(86);const manifest=JSON.parse(manifestBytes);if(manifest.schema!=="clockchain.agent-handshake-release-manifest/v1"||manifest.version!=="${AGENT_HANDSHAKE_HELPER_VERSION}"||!/^${AGENT_HANDSHAKE_HELPER_NODE_MAJOR}\\./.test(manifest.nodeRuntime)||!/^${AGENT_HANDSHAKE_HELPER_NODE_MAJOR}\\./.test(process.versions.node)||!Array.isArray(manifest.assets)||manifest.assets.length!==1)process.exit(86);const asset=manifest.assets[0];if(asset.filename!=="clockchain-agent-handshake.cjs"||asset.url!=="${RELEASE_PREFIX}clockchain-agent-handshake.cjs"||typeof asset.sha256!=="string"||!/^[0-9a-f]{64}$/.test(asset.sha256))process.exit(86);const helperBytes=fs.readFileSync(helperPath);const helperDigest=crypto.createHash("sha256").update(helperBytes).digest("hex");if(helperDigest!==asset.sha256)process.exit(86);process.argv=[process.execPath].concat(helperPath).concat(argv);const loaded=new Module(helperPath);loaded.filename=helperPath;loaded.paths=[];const compile=loaded._compile.bind(loaded);compile(...[helperBytes.toString("utf8")].concat(helperPath));`;
+export { VERIFIED_HELPER_BOOTSTRAP };
 
 const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -153,17 +158,15 @@ async function fetchVerifiedReleaseAssets(agreement, releasePin, fetchAsset) {
   return Object.freeze({ helperBytes, manifestBytes });
 }
 
-function verifiedHelperCommand(manifestDigest, helperArguments) {
-  if (!SHA256.test(manifestDigest) || !Array.isArray(helperArguments)) fail();
-  return `Bash(node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${manifestDigest} ./manifest.json ./clockchain-agent-handshake.cjs ${helperArguments.join(" ")})`;
-}
-
-function claudeLocalAuthorityTools(manifestDigest) {
+// The adapter boundary is the only local authority a model needs: signed helper
+// actions are executed through the digest-bound executable the harness places on
+// PATH, and the pinned release bytes are preloaded for inspection. Downloads and
+// direct helper invocations are intentionally not granted.
+function claudeAdapterTools() {
   return Object.freeze([
-    `Bash(curl --fail --location --proto =https --proto-redir =https --output ./manifest.json ${RELEASE_PREFIX}manifest.json)`,
-    `Bash(curl --fail --location --proto =https --proto-redir =https --output ./clockchain-agent-handshake.cjs ${RELEASE_PREFIX}clockchain-agent-handshake.cjs)`,
-    verifiedHelperCommand(manifestDigest, ["--version"]),
-    ...HELPER_OPERATIONS.map((operation) => verifiedHelperCommand(manifestDigest, [operation, "*"])),
+    "Bash(clockchain-agent-authorize *)",
+    "Read(./manifest.json)",
+    "Read(./clockchain-agent-handshake.cjs)",
   ]);
 }
 
@@ -247,7 +250,7 @@ export function buildClientCommands({ client, manifestDigest, prompt, workspace 
         "--verbose",
         "--allowedTools", CLOCKCHAIN_HANDSHAKE_TOOLS
           .map((tool) => `mcp__clockchain-handshake__${tool}`)
-          .concat(claudeLocalAuthorityTools(manifestDigest))
+          .concat(claudeAdapterTools())
           .join(","),
       ]),
       file: "claude",
@@ -353,6 +356,143 @@ function mergeObserved(left, right) {
   return merged;
 }
 
+// Walks a streamed client event (objects, arrays, and JSON-bearing strings) and
+// returns every localAction helper step the endpoint made visible to the model.
+// Presence is enough — the adapter re-validates each step before retaining it.
+function collectHelperSteps(value, found = [], depth = 0) {
+  if (depth > 12) fail();
+  if (typeof value === "string") {
+    const parsed = parseJsonString(value);
+    if (parsed !== null) collectHelperSteps(parsed, found, depth + 1);
+    return found;
+  }
+  if (value === null || typeof value !== "object") return found;
+  if (Array.isArray(value)) {
+    for (const entry of value) collectHelperSteps(entry, found, depth + 1);
+    return found;
+  }
+  const localAction = value.localAction;
+  if (localAction !== null && typeof localAction === "object" && !Array.isArray(localAction)) {
+    if (localAction.helperStep !== undefined && localAction.helperStep !== null) {
+      found.push(localAction.helperStep);
+    }
+    if (localAction.helperSteps !== undefined) {
+      if (!Array.isArray(localAction.helperSteps)) fail();
+      for (const step of localAction.helperSteps) {
+        if (step !== null) found.push(step);
+      }
+    }
+  }
+  for (const entry of Object.values(value)) {
+    collectHelperSteps(entry, found, depth + 1);
+  }
+  return found;
+}
+
+function isClockchainMcpToolName(value) {
+  return typeof value === "string" && CLOCKCHAIN_HANDSHAKE_TOOLS.some(
+    (name) => value === name || value.endsWith(`__${name}`),
+  );
+}
+
+function mcpToolName(item) {
+  const value = item?.tool ?? item?.name;
+  return isClockchainMcpToolName(value) ? value : null;
+}
+
+export function recordClaudeMcpToolCalls(event, calls) {
+  if (event?.type !== "assistant" || !Array.isArray(event?.message?.content)) return;
+  for (const block of event.message.content) {
+    if (
+      block?.type === "tool_use" && typeof block.id === "string" && block.id.length > 0 &&
+      isClockchainMcpToolName(block.name)
+    ) {
+      calls.set(block.id, CLOCKCHAIN_HANDSHAKE_TOOLS.find((name) => (
+        block.name === name || block.name.endsWith(`__${name}`)
+      )));
+    }
+  }
+}
+
+// Finds the role access value inside a completed MCP tool result: either an
+// opaque ccra_ handle paired with a sessionId sibling, or a <claims>.<sig>
+// token whose embedded role/sessionId claims are decoded and verified.
+export function roleAccessFromValue(value, expectedRole) {
+  const pending = [value];
+  let found = null;
+  let visited = 0;
+  while (pending.length > 0) {
+    if (++visited > 10_000) fail();
+    const current = pending.pop();
+    if (typeof current === "string") {
+      const parsed = parseJsonString(current);
+      if (parsed !== null) pending.push(parsed);
+      continue;
+    }
+    if (current === null || typeof current !== "object") continue;
+    if (Array.isArray(current)) {
+      pending.push(...current);
+      continue;
+    }
+    if (Object.hasOwn(current, "roleAccess")) {
+      let binding;
+      if (typeof current.roleAccess === "string" && ROLE_TOKEN.test(current.roleAccess)) {
+        binding = roleAccessBinding(current.roleAccess);
+        if (Object.hasOwn(current, "sessionId") && current.sessionId !== binding.sessionId) fail();
+      } else {
+        binding = Object.hasOwn(current, "sessionId")
+          ? roleAccessBinding({
+              access: current.roleAccess,
+              role: expectedRole,
+              sessionId: current.sessionId,
+            })
+          : roleAccessBinding(current.roleAccess);
+      }
+      if (typeof binding !== "string" && binding.role !== expectedRole) fail();
+      if (found !== null) {
+        const foundAccess = typeof found === "string" ? found : found.access;
+        const bindingAccess = typeof binding === "string" ? binding : binding.access;
+        if (foundAccess !== bindingAccess) fail();
+        if (typeof found !== "string" && typeof binding !== "string" &&
+            JSON.stringify(found) !== JSON.stringify(binding)) fail();
+      }
+      if (found === null || (typeof found === "string" && typeof binding !== "string")) found = binding;
+    }
+    pending.push(...Object.values(current));
+  }
+  return found;
+}
+
+// Values the model could not have authored: Codex completed mcp_tool_call
+// results on a Clockchain tool, and Claude tool_result blocks whose
+// tool_use_id was recorded from an assistant tool_use naming a Clockchain MCP
+// tool. Only these values may yield helper steps or role access — generic
+// assistant/user text carrying a look-alike localAction is never trusted.
+function completedMcpToolResults(event, claudeMcpToolCalls) {
+  const values = [];
+  if (
+    event?.type === "item.completed" && event?.item?.type === "mcp_tool_call" &&
+    event.item.status === "completed" && mcpToolName(event.item) !== null
+  ) values.push(event.item.result);
+  if (event?.type === "user" && Array.isArray(event?.message?.content)) {
+    for (const block of event.message.content) {
+      if (
+        block?.type === "tool_result" && block.is_error !== true &&
+        typeof block.tool_use_id === "string" && claudeMcpToolCalls.has(block.tool_use_id)
+      ) values.push(block.content);
+    }
+  }
+  return values;
+}
+
+export function bindCompletedRoleAccess(event, claudeMcpToolCalls, adapter, expectedRole) {
+  for (const value of completedMcpToolResults(event, claudeMcpToolCalls)) {
+    const access = roleAccessFromValue(value, expectedRole);
+    if (access === null) continue;
+    adapter.bindRoleAccess(access);
+  }
+}
+
 function killProcessGroup(child) {
   if (!child || child.__freshAgentClosed === true) return;
   child.__freshAgentClosed = true;
@@ -362,7 +502,11 @@ function killProcessGroup(child) {
   } catch { child.kill?.("SIGTERM"); }
 }
 
-function observeChild(child, role, all, canaries, { requireInvitation = false } = {}) {
+function observeChild(child, role, all, canaries, { adapter, requireInvitation = false } = {}) {
+  if (
+    adapter === null || typeof adapter !== "object" ||
+    typeof adapter.record !== "function" || typeof adapter.bindRoleAccess !== "function"
+  ) fail();
   let resolveInvitation;
   let rejectInvitation;
   const invitationPromise = requireInvitation ? new Promise((resolvePromise, rejectPromise) => {
@@ -375,10 +519,22 @@ function observeChild(child, role, all, canaries, { requireInvitation = false } 
     let lineBuffer = "";
     let observed = {};
     let settled = false;
+    const claudeMcpToolCalls = new Map();
     function processLine(line) {
       if (line.trim().length === 0) return;
       let event;
       try { event = JSON.parse(line); } catch { fail(); }
+      recordClaudeMcpToolCalls(event, claudeMcpToolCalls);
+      bindCompletedRoleAccess(event, claudeMcpToolCalls, adapter, role);
+      for (const value of completedMcpToolResults(event, claudeMcpToolCalls)) {
+        for (const step of collectHelperSteps(value)) {
+          if (
+            step !== null && typeof step === "object" && !Array.isArray(step) &&
+            ROLES.includes(step.role) && step.role !== role
+          ) continue;
+          adapter.record(step);
+        }
+      }
       observed = mergeObserved(observed, inspectEvent(event, role));
       if (observed.invitation !== undefined && resolveInvitation !== undefined) {
         resolveInvitation(observed.invitation);
@@ -442,11 +598,14 @@ function responderPrompt(template, value) {
   return template.replace(RESPONDER_INVITATION_PLACEHOLDER, invitation(value));
 }
 
-function childEnvironment(room, credentials) {
+function childEnvironment(room, credentials, { adapterBin } = {}) {
   if (credentials === null || typeof credentials !== "object" || Array.isArray(credentials)) fail();
   for (const [key, value] of Object.entries(credentials)) {
     if (!/^[A-Z][A-Z0-9_]*$/.test(key) || typeof value !== "string" || value.length === 0) fail();
   }
+  const path = adapterBin === undefined
+    ? process.env.PATH ?? "/usr/bin:/bin"
+    : `${descendant(room.workspace, adapterBin)}:${process.env.PATH ?? "/usr/bin:/bin"}`;
   return Object.freeze({
     ...credentials,
     CODEX_HOME: room.home,
@@ -455,7 +614,7 @@ function childEnvironment(room, credentials) {
     GIT_CONFIG_NOSYSTEM: "1",
     LANG: "C.UTF-8",
     LC_ALL: "C.UTF-8",
-    PATH: process.env.PATH ?? "/usr/bin:/bin",
+    PATH: path,
     TMPDIR: room.tmp,
     XDG_CACHE_HOME: room.cache,
   });
@@ -486,6 +645,8 @@ export async function runFreshAgentHandshake({
   spawnProcess = spawn,
   fetchReleaseAsset = defaultFetchReleaseAsset,
   releasePin,
+  checkpointClientFactory = () => createStreamableMcpClient({ endpoint: CLOCKCHAIN_HANDSHAKE_MCP_URL }),
+  contractClientFactory = () => createStreamableMcpClient({ endpoint: CLOCKCHAIN_HANDSHAKE_MCP_URL }),
   timeoutMs = 10 * 60 * 1000,
 } = {}) {
   exactObject(clients, ROLES);
@@ -498,22 +659,89 @@ export async function runFreshAgentHandshake({
   const canaries = ROLES.flatMap((role) => Object.values(modelEnvironment[role]));
   let run;
   const children = [];
+  const adapters = [];
+  const checkpointState = {};
+  let checkpointClientPromise = null;
+  const getCheckpointClient = async () => {
+    if (checkpointClientPromise === null) {
+      checkpointClientPromise = (async () => {
+        const client = checkpointClientFactory();
+        if (client === null || typeof client?.connect !== "function" || typeof client?.callTool !== "function") fail();
+        await client.connect();
+        return client;
+      })();
+    }
+    return checkpointClientPromise;
+  };
   let timer;
   try {
+    // Preflight the endpoint contract before any workspace or model exists: the
+    // private checkpoint flow is only coherent against the eight-tool surface.
+    let contractTools;
+    try {
+      const contractClient = contractClientFactory();
+      if (
+        contractClient === null || typeof contractClient !== "object" ||
+        typeof contractClient.connect !== "function" || typeof contractClient.listTools !== "function"
+      ) fail();
+      await contractClient.connect();
+      contractTools = await contractClient.listTools();
+    } catch {
+      fail();
+    }
+    if (
+      !Array.isArray(contractTools) ||
+      contractTools.length !== CLOCKCHAIN_HANDSHAKE_TOOLS.length ||
+      new Set(contractTools).size !== contractTools.length ||
+      JSON.stringify([...contractTools].sort()) !== JSON.stringify([...CLOCKCHAIN_HANDSHAKE_TOOLS].sort())
+    ) fail();
     const checkedInPin = releasePin === undefined ? await loadReleasePin() : releasePin;
     run = await createFreshAgentRun({ parent });
     const releaseAssets = await fetchVerifiedReleaseAssets(pin, checkedInPin, fetchReleaseAsset);
-    for (const role of ROLES) {
-      await writeFile(join(run.roles[role].workspace, "manifest.json"), releaseAssets.manifestBytes, { mode: 0o600 });
-      await writeFile(join(run.roles[role].workspace, "clockchain-agent-handshake.cjs"), releaseAssets.helperBytes, { mode: 0o600 });
-    }
     const prepared = {};
     for (const role of ROLES) {
+      const room = run.roles[role];
+      await writeFile(join(room.workspace, "manifest.json"), releaseAssets.manifestBytes, { mode: 0o600 });
+      await writeFile(join(room.workspace, "clockchain-agent-handshake.cjs"), releaseAssets.helperBytes, { mode: 0o600 });
+      const adapterTmp = join(room.workspace, ".tmp");
+      await privateDirectory(adapterTmp);
+      const adapterRoom = Object.freeze({ ...room, tmp: adapterTmp });
+      const socketRoot = await mkdtemp(join(tmpdir(), "clockchain-adapter-"));
+      let recorder;
+      try {
+        recorder = await createVerifiedReleaseActionRecorder({
+          manifestDigest: pin.manifestDigest,
+          releaseAssets,
+          room: adapterRoom,
+          runtimeExecPath: process.execPath,
+          socketRoot,
+        });
+      } catch (error) {
+        await rm(socketRoot, { recursive: true, force: true }).catch(() => {});
+        throw error;
+      }
+      // The completion handler must be installed before any retained action is
+      // recorded so the first helper completion is never dropped. It builds,
+      // signs, and submits the private proposal/acceptance checkpoints.
+      const completionBinding = createCheckpointCompletionHandler({
+        checkpointState,
+        getCheckpointClient,
+      });
+      recorder.setCompletionHandler(completionBinding.handler);
+      const adapter = Object.freeze({
+        ...recorder,
+        bindRoleAccess: completionBinding.bindRoleAccess,
+        async close() {
+          await recorder.close();
+          await rm(socketRoot, { recursive: true, force: true });
+        },
+      });
+      adapters.push(adapter);
       const client = cleanClient(clients[role]);
-      const env = childEnvironment(run.roles[role], modelEnvironment[role]);
-      const configure = buildClientCommands({ client, manifestDigest: pin.manifestDigest, prompt: "configured later", workspace: run.roles[role].workspace }).configure;
-      await configureClient(Object.freeze({ client, command: configure, env, role, room: run.roles[role] }));
-      prepared[role] = { client, env };
+      const env = childEnvironment(adapterRoom, modelEnvironment[role], { adapterBin: recorder.bin });
+      const configure = buildClientCommands({ client, manifestDigest: pin.manifestDigest, prompt: "configured later", workspace: room.workspace }).configure;
+      await configureClient(Object.freeze({ client, command: configure, env, role, room: adapterRoom }));
+      prepared[role] = { adapter, client, env };
     }
     const timedOut = new Promise((_, rejectPromise) => {
       timer = setTimeout(() => {
@@ -534,7 +762,7 @@ export async function runFreshAgentHandshake({
       stdio: ["pipe", "pipe", "pipe"],
     });
     children.push(initiatorChild);
-    const initiatorObserved = observeChild(initiatorChild, "initiator", children, canaries, { requireInvitation: true });
+    const initiatorObserved = observeChild(initiatorChild, "initiator", children, canaries, { adapter: prepared.initiator.adapter, requireInvitation: true });
     sendPrompt(initiatorChild, initiatorCommands.launch.input);
     const actualInvitation = await Promise.race([
       initiatorObserved.invitation,
@@ -554,7 +782,7 @@ export async function runFreshAgentHandshake({
       stdio: ["pipe", "pipe", "pipe"],
     });
     children.push(responderChild);
-    const responderObserved = observeChild(responderChild, "responder", children, canaries);
+    const responderObserved = observeChild(responderChild, "responder", children, canaries, { adapter: prepared.responder.adapter });
     sendPrompt(responderChild, responderCommands.launch.input);
     const results = await Promise.race([
       Promise.all([initiatorObserved.result, responderObserved.result]),
@@ -586,6 +814,7 @@ export async function runFreshAgentHandshake({
   } finally {
     if (timer !== undefined) clearTimeout(timer);
     children.forEach(killProcessGroup);
+    for (const adapter of adapters) await adapter.close().catch(() => {});
     if (run !== undefined) await rm(run.root, { recursive: true, force: true }).catch(() => {});
   }
 }
