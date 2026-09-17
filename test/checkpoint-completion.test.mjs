@@ -65,14 +65,27 @@ async function signResult(request, stateDir) {
   };
 }
 
-function fakeCheckpointClient({ digestOverride } = {}) {
+function fakeCheckpointClient({ digestOverride, joinResult, nextResult, role = "initiator", submitResult, submitError } = {}) {
   const calls = [];
   const client = {
     calls,
     connect: async () => {},
     callTool: async (name, args) => {
       calls.push({ name, args });
-      return { checkpointDigest: digestOverride ?? commitmentCheckpointDigest(args.checkpoint) };
+      if (name === "agent_handshake_submit_checkpoint") {
+        return { checkpointDigest: digestOverride ?? commitmentCheckpointDigest(args.checkpoint) };
+      }
+      if (name === "agent_handshake_join") {
+        return joinResult ?? { role, sessionId: SESSION, stage: "sign_identity" };
+      }
+      if (name === "agent_handshake_next") {
+        return nextResult ?? { role, sessionId: SESSION, stage: "party_ready" };
+      }
+      if (name === "agent_handshake_submit") {
+        if (submitError !== undefined) throw submitError;
+        return submitResult ?? { role, sessionId: SESSION, stage: "proposal_submitted" };
+      }
+      throw new Error(`unexpected tool ${name}`);
     },
   };
   return client;
@@ -185,24 +198,19 @@ test("roleAccessBinding accepts handle and token formats, rejects mismatches", (
   }
 });
 
-test("completion handler accepts non-checkpoint operations without a client", async (t) => {
+test("completion handler accepts continuation-free operations without a client", async (t) => {
   const stateDir = await mkdtemp(join(tmpdir(), "cc-state-"));
   t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const client = fakeCheckpointClient();
   const { handler } = createCheckpointCompletionHandler({
     checkpointState: {},
-    getCheckpointClient: async () => { throw new Error("must not connect"); },
+    getCheckpointClient: async () => client,
   });
-  for (const operation of ["init", "policy", "inspect", "register", "verify-certificate"]) {
+  for (const operation of ["init", "policy", "verify-certificate"]) {
     const accepted = await handler(completionFor({ operation, result: { ok: true }, argv: ["node"], stateDir }));
     assert.deepEqual(accepted, { accepted: true });
   }
-  const identityRequest = signingRequest({ operation: "identity_claim" });
-  const accepted = await handler(completionFor({
-    argv: signingArgv(identityRequest, stateDir),
-    result: { schema: HELPER_RESULT_SCHEMA },
-    stateDir,
-  }));
-  assert.deepEqual(accepted, { accepted: true });
+  assert.equal(client.calls.length, 0);
 });
 
 test("completion handler fails closed on malformed results", async (t) => {
@@ -236,7 +244,7 @@ test("proposal sign submits a verified private checkpoint bound to role access",
     stateDir,
   }));
   assert.deepEqual(accepted, { accepted: true });
-  assert.equal(client.calls.length, 1);
+  assert.equal(client.calls.length, 2);
   const { name, args } = client.calls[0];
   assert.equal(name, "agent_handshake_submit_checkpoint");
   assert.equal(args.access, HANDLE);
@@ -255,7 +263,9 @@ test("acceptance sign requires the retained proposal checkpoint and chains it", 
   const stateDir = await mkdtemp(join(tmpdir(), "cc-state-"));
   t.after(() => rm(stateDir, { recursive: true, force: true }));
   const checkpointState = {};
-  const client = fakeCheckpointClient();
+  const client = fakeCheckpointClient({
+    submitResult: { role: "responder", sessionId: SESSION, stage: "acceptance_submitted" },
+  });
   const { bindRoleAccess, handler } = createCheckpointCompletionHandler({
     checkpointState,
     getCheckpointClient: async () => client,
@@ -290,8 +300,8 @@ test("acceptance sign requires the retained proposal checkpoint and chains it", 
     role: "responder",
     stateDir,
   }));
-  assert.deepEqual(accepted, { accepted: true });
-  assert.equal(client.calls.length, 1);
+  assert.equal(accepted.accepted, true);
+  assert.equal(client.calls.length, 2);
   const checkpoint = client.calls[0].args.checkpoint;
   assert.equal(checkpoint.artifactType, "acceptance");
   assert.equal(checkpoint.sequence, "2");
@@ -409,4 +419,317 @@ test("checkpoint submission fails on digest mismatch, wallet mismatch, and bad r
     bindRoleAccess({ access: HANDLE, role: "initiator", sessionId: SESSION });
     await assert.rejects(() => handler(completion({ stateDir: foreign })), /failed safely/);
   }
+});
+
+function inspectResult({ address = ACCOUNT.address, policyDigest = POLICY_DIGEST } = {}) {
+  return {
+    schema: HELPER_RESULT_SCHEMA,
+    helperVersion: AGENT_HANDSHAKE_HELPER_VERSION,
+    operation: "inspect",
+    address,
+    policyDigest,
+    registration: null,
+  };
+}
+
+function registerResult({ address = ACCOUNT.address } = {}) {
+  return {
+    schema: HELPER_RESULT_SCHEMA,
+    helperVersion: AGENT_HANDSHAKE_HELPER_VERSION,
+    operation: "register",
+    address,
+    registration: { agentId: "1", registrationTx: `0x${"a".repeat(64)}` },
+  };
+}
+
+// Mirrors the production recordSteps contract: extracts same-role helper
+// steps from the trusted result, enqueues them, and returns the count.
+function countingSteps(recorded, role = "initiator") {
+  return (result) => {
+    const steps = [];
+    const action = result?.localAction;
+    if (action?.helperStep) steps.push(action.helperStep);
+    if (Array.isArray(action?.helperSteps)) steps.push(...action.helperSteps);
+    for (const step of steps) {
+      if (["initiator", "responder"].includes(step?.role) && step.role !== role) {
+        throw new Error("cross-role step");
+      }
+    }
+    recorded.push(...steps);
+    return steps.length;
+  };
+}
+
+test("inspect completion performs the join continuation with exact helper fields", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "cc-state-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const recorded = [];
+  const joinStep = { operation: "sign", role: "initiator", sessionId: SESSION };
+  const client = fakeCheckpointClient({
+    joinResult: { role: "initiator", sessionId: SESSION, localAction: { helperStep: joinStep } },
+  });
+  const { bindRoleAccess, handler } = createCheckpointCompletionHandler({
+    checkpointState: {},
+    getCheckpointClient: async () => client,
+    recordSteps: countingSteps(recorded),
+  });
+  bindRoleAccess({ access: HANDLE, role: "initiator", sessionId: SESSION });
+  const accepted = await handler(completionFor({
+    operation: "inspect",
+    argv: ["node"],
+    result: inspectResult(),
+    stateDir,
+  }));
+  assert.deepEqual(accepted, { accepted: true });
+  assert.deepEqual(client.calls.map((entry) => entry.name), ["agent_handshake_join"]);
+  assert.deepEqual(client.calls[0].args, {
+    access: HANDLE,
+    helperVersion: AGENT_HANDSHAKE_HELPER_VERSION,
+    sessionKeyAddress: ACCOUNT.address,
+    policyDigest: POLICY_DIGEST,
+  });
+  // The trusted join result is handed to the recorder so newly issued local
+  // actions queue; the model never sees it.
+  assert.deepEqual(recorded, [joinStep]);
+});
+
+test("register completion performs a bounded next continuation and requeues steps", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "cc-state-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const recorded = [];
+  const nextStep = { operation: "sign", role: "responder", sessionId: SESSION };
+  const client = fakeCheckpointClient({
+    nextResult: { role: "responder", sessionId: SESSION, stage: "sign_acceptance", localAction: { helperStep: nextStep } },
+  });
+  const { bindRoleAccess, handler } = createCheckpointCompletionHandler({
+    checkpointState: {},
+    getCheckpointClient: async () => client,
+    recordSteps: countingSteps(recorded, "responder"),
+  });
+  bindRoleAccess({ access: HANDLE, role: "responder", sessionId: SESSION });
+  const accepted = await handler(completionFor({
+    operation: "register",
+    argv: ["node"],
+    result: registerResult(),
+    role: "responder",
+    stateDir,
+  }));
+  assert.deepEqual(accepted, { accepted: true });
+  assert.deepEqual(client.calls.map((entry) => entry.name), ["agent_handshake_next"]);
+  assert.deepEqual(client.calls[0].args, { access: HANDLE, waitMs: 0 });
+  assert.deepEqual(recorded, [nextStep]);
+});
+
+test("identity_claim sign submits the exact signature with the unchanged policy digest", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "cc-state-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const request = signingRequest({ operation: "identity_claim" });
+  const result = await signResult(request, stateDir);
+  const client = fakeCheckpointClient({
+    submitResult: { role: "initiator", sessionId: SESSION, stage: "identity_claimed" },
+  });
+  const { bindRoleAccess, handler } = createCheckpointCompletionHandler({
+    checkpointState: {},
+    getCheckpointClient: async () => client,
+  });
+  bindRoleAccess({ access: HANDLE, role: "initiator", sessionId: SESSION });
+  const accepted = await handler(completionFor({
+    argv: signingArgv(request, stateDir),
+    result,
+    role: "initiator",
+    stateDir,
+  }));
+  assert.deepEqual(accepted, { accepted: true });
+  // identity_claim carries no private checkpoint: submit is the only call.
+  assert.deepEqual(client.calls.map((entry) => entry.name), ["agent_handshake_submit"]);
+  assert.deepEqual(client.calls[0].args, {
+    access: HANDLE,
+    policyDigest: POLICY_DIGEST,
+    signatureHex: result.signatureHex,
+  });
+});
+
+test("proposal sign keeps checkpoint-before-submit ordering", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "cc-state-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const request = signingRequest({ operation: "proposal", role: "initiator" });
+  const result = await signResult(request, stateDir);
+  const client = fakeCheckpointClient();
+  const { bindRoleAccess, handler } = createCheckpointCompletionHandler({
+    checkpointState: {},
+    getCheckpointClient: async () => client,
+  });
+  bindRoleAccess({ access: HANDLE, role: "initiator", sessionId: SESSION });
+  const accepted = await handler(completionFor({
+    argv: signingArgv(request, stateDir),
+    result,
+    role: "initiator",
+    stateDir,
+  }));
+  assert.deepEqual(accepted, { accepted: true });
+  assert.deepEqual(
+    client.calls.map((entry) => entry.name),
+    ["agent_handshake_submit_checkpoint", "agent_handshake_submit"],
+  );
+  assert.deepEqual(client.calls[1].args, {
+    access: HANDLE,
+    policyDigest: POLICY_DIGEST,
+    signatureHex: result.signatureHex,
+  });
+});
+
+test("continuation fails closed on tool errors, mismatches, and malformed results", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "cc-state-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const request = signingRequest({ operation: "identity_claim" });
+  const result = await signResult(request, stateDir);
+  const signCompletion = () => completionFor({
+    argv: signingArgv(request, stateDir),
+    result,
+    role: "initiator",
+    stateDir,
+  });
+  const inspectCompletion = () => completionFor({
+    operation: "inspect",
+    argv: ["node"],
+    result: inspectResult(),
+    stateDir,
+  });
+  const make = (client, recordSteps) => {
+    const { bindRoleAccess, handler } = createCheckpointCompletionHandler({
+      checkpointState: {},
+      getCheckpointClient: async () => client,
+      recordSteps,
+    });
+    bindRoleAccess({ access: HANDLE, role: "initiator", sessionId: SESSION });
+    return handler;
+  };
+  // Remote tool error rejects the completion.
+  await assert.rejects(() => make(fakeCheckpointClient({ submitError: new Error("down") }))(signCompletion()), /failed safely/);
+  // Submit stage/role/session must match the retained action exactly.
+  for (const submitResult of [
+    { role: "initiator", sessionId: SESSION, stage: "proposal_submitted" },
+    { role: "responder", sessionId: SESSION, stage: "identity_claimed" },
+    { role: "initiator", sessionId: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff", stage: "identity_claimed" },
+    { role: "initiator", sessionId: SESSION },
+    "not-an-object",
+  ]) {
+    await assert.rejects(
+      () => make(fakeCheckpointClient({ submitResult }))(signCompletion()),
+      /failed safely/,
+      JSON.stringify(submitResult),
+    );
+  }
+  // Join must return the same role/sessionId as the retained action.
+  for (const joinResult of [
+    { role: "responder", sessionId: SESSION },
+    { role: "initiator", sessionId: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff" },
+    "not-an-object",
+  ]) {
+    await assert.rejects(
+      () => make(fakeCheckpointClient({ joinResult }))(inspectCompletion()),
+      /failed safely/,
+      JSON.stringify(joinResult),
+    );
+  }
+  // Malformed inspect results never reach join.
+  for (const mutate of [
+    { policyDigest: null },
+    { policyDigest: "zz" },
+    { address: "0xzz" },
+    { operation: "init" },
+    { schema: "wrong" },
+  ]) {
+    const client = fakeCheckpointClient();
+    const { bindRoleAccess, handler } = createCheckpointCompletionHandler({
+      checkpointState: {},
+      getCheckpointClient: async () => client,
+    });
+    bindRoleAccess({ access: HANDLE, role: "initiator", sessionId: SESSION });
+    await assert.rejects(() => handler(completionFor({
+      operation: "inspect",
+      argv: ["node"],
+      result: { ...inspectResult(), ...mutate },
+      stateDir,
+    })), /failed safely/, JSON.stringify(mutate));
+    assert.equal(client.calls.length, 0);
+  }
+  // Unbound role access rejects continuation-driving operations.
+  for (const completion of [inspectCompletion(), signCompletion()]) {
+    const { handler } = createCheckpointCompletionHandler({
+      checkpointState: {},
+      getCheckpointClient: async () => fakeCheckpointClient(),
+    });
+    await assert.rejects(() => handler(completion), /failed safely/);
+  }
+  // A recorder failure rejects the completion rather than dropping the result.
+  await assert.rejects(
+    () => make(fakeCheckpointClient(), () => { throw new Error("queue failed"); })(inspectCompletion()),
+    /failed safely/,
+  );
+  // Join must enqueue at least one same-role helper step: a result with no
+  // localAction (or a recorder reporting zero) rejects the completion.
+  for (const joinResult of [
+    { role: "initiator", sessionId: SESSION },
+    { role: "initiator", sessionId: SESSION, localAction: {} },
+  ]) {
+    await assert.rejects(
+      () => make(fakeCheckpointClient({ joinResult }), countingSteps([]))(inspectCompletion()),
+      /failed safely/,
+      JSON.stringify(joinResult),
+    );
+  }
+  await assert.rejects(
+    () => make(fakeCheckpointClient(), () => 0)(inspectCompletion()),
+    /failed safely/,
+  );
+  // A join result whose only step belongs to the counterpart role rejects.
+  await assert.rejects(
+    () => make(
+      fakeCheckpointClient({
+        joinResult: {
+          role: "initiator",
+          sessionId: SESSION,
+          localAction: { helperStep: { operation: "sign", role: "responder", sessionId: SESSION } },
+        },
+      }),
+      countingSteps([]),
+    )(inspectCompletion()),
+    /failed safely/,
+  );
+  // Client acquisition failure is the same generic completion error.
+  for (const completion of [inspectCompletion(), signCompletion()]) {
+    const { bindRoleAccess, handler } = createCheckpointCompletionHandler({
+      checkpointState: {},
+      getCheckpointClient: async () => { throw new Error("no client"); },
+      recordSteps: countingSteps([]),
+    });
+    bindRoleAccess({ access: HANDLE, role: "initiator", sessionId: SESSION });
+    await assert.rejects(() => handler(completion), /failed safely/);
+  }
+});
+
+test("register completion accepts a wait/no-action next response", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "cc-state-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const recorded = [];
+  const client = fakeCheckpointClient({
+    role: "responder",
+    nextResult: { needed: "proposal", retryAfterMs: 5000, role: "responder", sessionId: SESSION, stage: "awaiting_proposal" },
+  });
+  const { bindRoleAccess, handler } = createCheckpointCompletionHandler({
+    checkpointState: {},
+    getCheckpointClient: async () => client,
+    recordSteps: countingSteps(recorded, "responder"),
+  });
+  bindRoleAccess({ access: HANDLE, role: "responder", sessionId: SESSION });
+  const accepted = await handler(completionFor({
+    operation: "register",
+    argv: ["node"],
+    result: registerResult(),
+    role: "responder",
+    stateDir,
+  }));
+  assert.deepEqual(accepted, { accepted: true });
+  assert.equal(recorded.length, 0);
 });

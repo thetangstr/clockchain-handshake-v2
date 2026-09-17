@@ -23,6 +23,7 @@ import {
   createFreshAgentRun,
   evaluateClaudeBashPermission,
   recordClaudeMcpToolCalls,
+  recordTrustedHelperSteps,
   responderPrompt,
   roleAccessFromValue,
   runClaudePermissionPreflight,
@@ -1536,7 +1537,7 @@ test("runFreshAgentHandshake records secret-safe per-role diagnostics without ra
   assert.equal(initiator.lastMcpLocalActionOperation, "sign");
   assert.equal(initiator.lastAdapterOperation, "sign");
   assert.equal(initiator.lastMcpToolResultFailed, false);
-  assert.deepEqual(initiator.adapterCompletion, { operation: null, state: "none" });
+  assert.deepEqual(initiator.adapterCompletion, { continuation: null, operation: null, state: "none" });
   assert.deepEqual(initiator.mcpToolNames, ["agent_handshake_invite", "agent_handshake_next", "agent_handshake_status"]);
   assert.deepEqual(initiator.permissionDeniedTools, ["Bash"]);
   assert.equal(initiator.stdoutLines, 4);
@@ -1558,7 +1559,11 @@ test("trackAdapterCompletion records accepted, failed, and never-invoked states"
   const accepted = { operation: null, state: "none" };
   const acceptedHandler = trackAdapterCompletion(async () => Object.freeze({ accepted: true }), accepted);
   await acceptedHandler({ operation: "sign", argv: ["secret"], result: { raw: true } });
-  assert.deepEqual(accepted, { operation: "sign", state: "accepted" });
+  assert.deepEqual(accepted, { continuation: "agent_handshake_submit", operation: "sign", state: "accepted" });
+  const free = { operation: null, state: "none" };
+  const freeHandler = trackAdapterCompletion(async () => Object.freeze({ accepted: true }), free);
+  await freeHandler({ operation: "init", result: {} });
+  assert.deepEqual(free, { continuation: null, operation: "init", state: "accepted" });
 
   const failed = { operation: null, state: "none" };
   const failedHandler = trackAdapterCompletion(async () => { throw new Error("boom"); }, failed);
@@ -1568,4 +1573,38 @@ test("trackAdapterCompletion records accepted, failed, and never-invoked states"
   // Raw completion input never leaks into the tracked state.
   assert.equal(JSON.stringify(accepted).includes("secret"), false);
   assert.equal(JSON.stringify(failed).includes("raw"), false);
+});
+
+test("recordTrustedHelperSteps enqueues same-role steps and rejects cross-role", () => {
+  const step = (role) => ({
+    approvalTool: "mcp__clockchain-local-adapter__authorize_local_action",
+    operation: "sign",
+    role,
+    sessionId: SESSION,
+    shellCommand: "node helper sign",
+    commandLength: 17,
+    commandSha256: "b".repeat(64),
+  });
+  const result = {
+    localAction: { helperSteps: [step("initiator"), step("initiator")] },
+    nested: { localAction: { helperStep: step("initiator") } },
+  };
+  const recorded = [];
+  const count = recordTrustedHelperSteps(result, { record: (value) => recorded.push(value), role: "initiator" });
+  assert.equal(count, 3);
+  assert.equal(recorded.length, 3);
+  // A step claiming the counterpart role is corrupt, not skippable.
+  assert.throws(
+    () => recordTrustedHelperSteps(
+      { localAction: { helperStep: step("responder") } },
+      { record: () => {}, role: "initiator" },
+    ),
+    /failed safely/,
+  );
+  // Recorder failures propagate so the completion is rejected.
+  assert.throws(
+    () => recordTrustedHelperSteps(result, { record: () => { throw new Error("queue"); }, role: "initiator" }),
+    /queue/,
+  );
+  assert.equal(recordTrustedHelperSteps({ stage: "party_ready" }, { record: () => {}, role: "initiator" }), 0);
 });

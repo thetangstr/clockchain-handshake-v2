@@ -295,16 +295,30 @@ function signingPayload(request) {
   try { return JSON.parse(bytes.toString("utf8")); } catch { fail(); }
 }
 
+export const CONTINUATION_TOOL_BY_OPERATION = Object.freeze({
+  inspect: "agent_handshake_join",
+  register: "agent_handshake_next",
+  sign: "agent_handshake_submit",
+});
+const CONTINUATION_FREE = Object.freeze(["init", "policy", "verify-certificate"]);
+
 // Per-role completion boundary for the verified-release action recorder. The
 // handler is invoked only after the adapter executable has run the retained
-// helper action; for proposal/acceptance sign operations it additionally
-// builds, signs, and submits the private commitment checkpoint before
-// acknowledging completion. bindRoleAccess must be fed the role access the
-// model observed in its MCP stream before any checkpoint submission is
-// possible — submissions without a bound handle fail closed.
-export function createCheckpointCompletionHandler({ checkpointState, getCheckpointClient, now = Date.now } = {}) {
+// helper action; it then performs the allowlisted deterministic continuation
+// for that operation — join after the final setup helper, a bounded next after
+// registration, and submit after every signing operation — over the trusted
+// authenticated client with the bound role access, so progress never depends
+// on the model choosing to continue. For proposal/acceptance sign operations
+// it additionally builds, signs, and submits the private commitment
+// checkpoint before the public submit. Every trusted continuation result is
+// handed to recordSteps so newly issued local actions queue before the
+// completion is acknowledged. bindRoleAccess must be fed the role access the
+// model observed in its MCP stream before any continuation is possible —
+// submissions without a bound handle fail closed.
+export function createCheckpointCompletionHandler({ checkpointState, getCheckpointClient, recordSteps, now = Date.now } = {}) {
   if (checkpointState === null || typeof checkpointState !== "object" || Array.isArray(checkpointState)) fail();
   if (typeof getCheckpointClient !== "function") fail();
+  if (recordSteps !== undefined && typeof recordSteps !== "function") fail();
   let roleAccess = null;
 
   function bindRoleAccess(value) {
@@ -317,14 +331,85 @@ export function createCheckpointCompletionHandler({ checkpointState, getCheckpoi
     roleAccess = binding;
   }
 
+  // The recorder turns each trusted continuation result into newly staged
+  // actions. A recorder failure must reject the completion rather than let a
+  // silently dropped local action strand the handshake. Continuations that
+  // must yield a next action (join) require at least one enqueued step.
+  async function requeueTrusted(result, { required = false } = {}) {
+    if (recordSteps === undefined) {
+      if (required) fail();
+      return;
+    }
+    let count;
+    try { count = await recordSteps(result); } catch { fail(); }
+    if (!Number.isSafeInteger(count) || count < 0 || (required && count < 1)) fail();
+  }
+
+  async function clientOrFail() {
+    let client;
+    try { client = await getCheckpointClient(); } catch { fail(); }
+    if (client === null || typeof client?.callTool !== "function") fail();
+    return client;
+  }
+
+  function boundAccessFor(completion) {
+    if (roleAccess === null) fail();
+    if (roleAccess.role !== completion.role || roleAccess.sessionId !== completion.sessionId) fail();
+    return roleAccess;
+  }
+
+  // Deterministic continuation for non-signing operations: the final setup
+  // helper (inspect) carries the committed wallet address and policy digest,
+  // so the trusted channel performs the join; register is followed by a
+  // bounded next so the model only ever resumes from the next response.
+  async function continueNonSigning(completion) {
+    const tool = CONTINUATION_TOOL_BY_OPERATION[completion.operation];
+    if (tool === undefined) {
+      if (CONTINUATION_FREE.includes(completion.operation)) return Object.freeze({ accepted: true });
+      fail();
+    }
+    const access = boundAccessFor(completion);
+    const result = completion.result;
+    if (
+      result.schema !== HELPER_RESULT_SCHEMA ||
+      result.helperVersion !== AGENT_HANDSHAKE_HELPER_VERSION ||
+      result.operation !== completion.operation
+    ) fail();
+    const client = await clientOrFail();
+    if (tool === "agent_handshake_join") {
+      if (!PUBLIC_ADDRESS.test(result.address ?? "") || !DIGEST.test(result.policyDigest ?? "")) fail();
+      let joined;
+      try {
+        joined = await client.callTool(tool, {
+          access: access.access,
+          helperVersion: AGENT_HANDSHAKE_HELPER_VERSION,
+          sessionKeyAddress: result.address,
+          policyDigest: result.policyDigest,
+        });
+      } catch { fail(); }
+      if (joined?.role !== completion.role || joined?.sessionId !== completion.sessionId) fail();
+      await requeueTrusted(joined, { required: true });
+    } else {
+      if (!PUBLIC_ADDRESS.test(result.address ?? "")) fail();
+      let advanced;
+      try {
+        advanced = await client.callTool(tool, { access: access.access, waitMs: 0 });
+      } catch { fail(); }
+      if (advanced === null || typeof advanced !== "object" || Array.isArray(advanced)) fail();
+      if (advanced.role !== undefined && advanced.role !== completion.role) fail();
+      if (advanced.sessionId !== undefined && advanced.sessionId !== completion.sessionId) fail();
+      await requeueTrusted(advanced);
+    }
+    return Object.freeze({ accepted: true });
+  }
+
   async function handler(completion) {
     if (
       completion === null || typeof completion !== "object" || Array.isArray(completion) ||
       completion.result === null || typeof completion.result !== "object" || Array.isArray(completion.result)
     ) fail();
-    if (completion.operation !== "sign") return Object.freeze({ accepted: true });
+    if (completion.operation !== "sign") return continueNonSigning(completion);
     const request = extractSigningRequestFromArgv(completion.argv);
-    if (!CHECKPOINT_OPERATIONS.includes(request.operation)) return Object.freeze({ accepted: true });
     if (roleAccess === null) fail();
     if (roleAccess.role !== request.role || roleAccess.sessionId !== request.sessionId) fail();
     if (request.role !== completion.role || request.sessionId !== completion.sessionId) fail();
@@ -345,30 +430,48 @@ export function createCheckpointCompletionHandler({ checkpointState, getCheckpoi
     const account = privateKeyToAccount(wallet.privateKey);
     const address = account.address.toLowerCase();
     if (address !== String(wallet.address ?? "").toLowerCase() || address !== helperResult.address.toLowerCase()) fail();
-    const previousCheckpoint = request.operation === "proposal" ? null : checkpointState.proposal;
-    if (request.operation === "acceptance" && previousCheckpoint === undefined) fail();
-    const checkpoint = await createCommitmentCheckpoint({
-      artifactPayload: signingPayload(request),
-      artifactSignatureHex: helperResult.signatureHex,
-      artifactType: request.operation,
-      nowMs: now(),
-      previousCheckpoint,
-      role: request.role,
-      sessionId: request.sessionId,
-      signerAddress: address,
-      signMessage: ({ raw }) => account.signMessage({ message: { raw } }),
-    });
-    if (JSON.stringify(checkpoint).includes(wallet.privateKey.slice(2).toLowerCase())) fail();
-    const client = await getCheckpointClient();
-    if (client === null || typeof client?.callTool !== "function") fail();
-    const submitted = await client.callTool("agent_handshake_submit_checkpoint", {
-      access: roleAccess.access,
-      artifactSignatureHex: helperResult.signatureHex,
-      checkpoint,
-    });
-    const checkpointDigest = commitmentCheckpointDigest(checkpoint);
-    if (submitted?.checkpointDigest !== checkpointDigest) fail();
-    checkpointState[request.operation] = checkpoint;
+    const client = await clientOrFail();
+    if (CHECKPOINT_OPERATIONS.includes(request.operation)) {
+      const previousCheckpoint = request.operation === "proposal" ? null : checkpointState.proposal;
+      if (request.operation === "acceptance" && previousCheckpoint === undefined) fail();
+      const checkpoint = await createCommitmentCheckpoint({
+        artifactPayload: signingPayload(request),
+        artifactSignatureHex: helperResult.signatureHex,
+        artifactType: request.operation,
+        nowMs: now(),
+        previousCheckpoint,
+        role: request.role,
+        sessionId: request.sessionId,
+        signerAddress: address,
+        signMessage: ({ raw }) => account.signMessage({ message: { raw } }),
+      });
+      if (JSON.stringify(checkpoint).includes(wallet.privateKey.slice(2).toLowerCase())) fail();
+      let submittedCheckpoint;
+      try {
+        submittedCheckpoint = await client.callTool("agent_handshake_submit_checkpoint", {
+          access: roleAccess.access,
+          artifactSignatureHex: helperResult.signatureHex,
+          checkpoint,
+        });
+      } catch { fail(); }
+      const checkpointDigest = commitmentCheckpointDigest(checkpoint);
+      if (submittedCheckpoint?.checkpointDigest !== checkpointDigest) fail();
+      checkpointState[request.operation] = checkpoint;
+    }
+    let submitted;
+    try {
+      submitted = await client.callTool("agent_handshake_submit", {
+        access: roleAccess.access,
+        policyDigest: request.policyDigest,
+        signatureHex: helperResult.signatureHex,
+      });
+    } catch { fail(); }
+    const expectedStage = request.operation === "identity_claim" ? "identity_claimed" : `${request.operation}_submitted`;
+    if (
+      submitted?.role !== request.role || submitted?.sessionId !== request.sessionId ||
+      submitted?.stage !== expectedStage
+    ) fail();
+    await requeueTrusted(submitted);
     return Object.freeze({ accepted: true });
   }
 
