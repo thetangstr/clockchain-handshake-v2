@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { runFreshAgentHandshake } from "../src/testing/fresh-agent-client.mjs";
+import { monitorSession } from "../src/testing/fresh-agent-monitor.mjs";
 
 const execFileAsync = promisify(execFile);
 const SAFE_ERROR = "Fresh agent compatibility check failed safely.\n";
@@ -38,26 +39,16 @@ async function configureClient({ command, env }) {
   });
 }
 
-async function monitor({ sessionId }) {
-  const endpoint = value("CLOCKCHAIN_RESEARCH_MONITOR_URL");
-  const chronology = [];
-  const deadline = Date.now() + 120_000;
-  while (Date.now() < deadline) {
-    const response = await fetch(endpoint, { cache: "no-store" });
-    if (!response.ok) throw new Error("invalid");
-    const snapshot = await response.json();
-    if (snapshot.sessionId === sessionId) {
-      for (const entry of snapshot.stageHistory ?? []) {
-        if (typeof entry?.status === "string" && chronology.at(-1) !== entry.status) chronology.push(entry.status);
-      }
-      if (snapshot.certificate !== null && snapshot.certificate !== undefined) {
-        if (chronology.at(-1) !== "CERTIFIED") chronology.push("CERTIFIED");
-        return { chronology, sessionId };
-      }
-    }
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 1_000));
-  }
-  throw new Error("invalid");
+// The monitor URL must be a session-scoped relay template such as
+// <base>/v1/sessions/{sessionId}/snapshot. The auth-protected research proxy
+// cannot serve anonymous canary polling, and any endpoint that cannot also
+// provide the signed result envelope cannot produce a certificateDigest in
+// the trusted-proof domain — so non-template URLs fail closed.
+function monitor({ sessionId }) {
+  return monitorSession({
+    endpoint: value("CLOCKCHAIN_RESEARCH_MONITOR_URL"),
+    sessionId,
+  });
 }
 
 async function main() {
