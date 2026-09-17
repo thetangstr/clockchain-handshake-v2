@@ -9,9 +9,14 @@ import {
   validateAgentHandshakeReleasePin,
   validateAgentHandshakeReleaseManifest,
 } from "../scripts/verify-agent-handshake-release.mjs";
+import {
+  AGENT_HANDSHAKE_HELPER_VERSION,
+  AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX,
+  AGENT_HANDSHAKE_RELEASE_TAG,
+} from "../src/agent-handshake/v2/constants.mjs";
 import { canonicalBytes } from "../src/core/canonical.mjs";
 
-const prefix = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.3/";
+const prefix = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.4/";
 const sourceCommit = "a".repeat(40);
 const bytes = Buffer.from("asset");
 const sha256 = createHash("sha256").update(bytes).digest("hex");
@@ -40,7 +45,7 @@ function asset() {
 function manifest() {
   return {
     schema: "clockchain.agent-handshake-release-manifest/v1",
-    version: "2.1.3",
+    version: "2.1.4",
     sourceCommit,
     nodeRuntime: "24.6.0",
     assets: [asset()],
@@ -75,7 +80,7 @@ test("binds the post-release pin to exact manifest bytes, helper bytes, and host
   const value = manifest();
   const manifestBytes = canonicalBytes(value);
   const pin = {
-    version: "2.1.3",
+    version: "2.1.4",
     sourceCommit,
     manifestDigest: createHash("sha256").update(manifestBytes).digest("hex"),
     allowedAssetPrefix: prefix,
@@ -103,12 +108,37 @@ test("tracks the independently published helper in a separate post-release pin",
     version: "2.1.3",
     sourceCommit: "edea81c48ad443bc2b46e1a3c4c953e2f6bd752c",
     manifestDigest: "cc744e287f2f1dfc4b4b67ed460611543fc44c00c2385120cac1b37e28a56342",
-    allowedAssetPrefix: prefix,
+    allowedAssetPrefix: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.3/",
     hostRoots: [{
       kid: "root-2026-08",
       fingerprint: "da2771c36bf2298525d2bbd8351b6122bb67115e9979624e8bb56537bcf71ed8",
     }],
   });
+});
+
+test("the published post-release pin and its schema stay internally consistent", async () => {
+  // pin.json records the LAST PUBLISHED release (v2.1.3, measured after the
+  // immutable GitHub release existed). Its manifest digest cannot be known
+  // before publication, so the pin must NOT be required to equal the
+  // in-flight build version — only to agree exactly with its own schema.
+  const pin = JSON.parse(await readFile(new URL("../release/agent-handshake/pin.json", import.meta.url), "utf8"));
+  const schema = JSON.parse(await readFile(new URL("../release/agent-handshake/pin.schema.json", import.meta.url), "utf8"));
+  assert.equal(pin.version, schema.properties.version.const);
+  assert.equal(pin.allowedAssetPrefix, schema.properties.allowedAssetPrefix.const);
+});
+
+test("workflow tag, title, asset prefix, and manifest schema track the helper version constant", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/agent-handshake-cli-release.yml", import.meta.url), "utf8");
+  const manifestSchema = JSON.parse(await readFile(new URL("../release/agent-handshake/manifest.schema.json", import.meta.url), "utf8"));
+  assert.equal(AGENT_HANDSHAKE_RELEASE_TAG, `v${AGENT_HANDSHAKE_HELPER_VERSION}`);
+  assert.ok(
+    AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX.endsWith(`/download/${AGENT_HANDSHAKE_RELEASE_TAG}/`),
+    "asset prefix must name the same tag the workflow publishes",
+  );
+  assert.ok(workflow.includes(`tags: ["${AGENT_HANDSHAKE_RELEASE_TAG}"]`), "workflow trigger tag");
+  assert.ok(workflow.includes(`gh release create ${AGENT_HANDSHAKE_RELEASE_TAG}`), "release create tag");
+  assert.ok(workflow.includes(`--title "Clockchain Agent Handshake ${AGENT_HANDSHAKE_HELPER_VERSION}"`), "release title");
+  assert.equal(manifestSchema.properties.version.const, AGENT_HANDSHAKE_HELPER_VERSION);
 });
 
 test("rejects unknown keys, duplicates, redirects, digest drift, and native executable substitutions", () => {
@@ -137,7 +167,7 @@ test("release workflow publishes only the portable helper without external signi
   for (const required of [
     "24.18.0", "ubuntu-24.04", "build-agent-handshake-release.mjs bundle",
     "dist/clockchain-agent-handshake.cjs", "actions/attest-build-provenance@v2",
-    "gh release create v2.1.3",
+    "gh release create v2.1.4",
   ]) assert.ok(workflow.includes(required), required);
   assert.equal(workflow.includes("self-hosted"), false);
   for (const forbidden of [

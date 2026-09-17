@@ -20,7 +20,7 @@ export const AGENT_HANDSHAKE_V2_MAX_VALID_FOR_SECONDS = 90n;
 // the verifier accepts, and the helperVersion the agent CLI expects in signing
 // requests are all derived from this — they may not drift apart, because the
 // published release embeds the same value in every surface.
-export const AGENT_HANDSHAKE_HELPER_VERSION = "2.1.3";
+export const AGENT_HANDSHAKE_HELPER_VERSION = "2.1.4";
 export const AGENT_HANDSHAKE_HELPER_NODE_MAJOR = "24";
 export const AGENT_HANDSHAKE_RELEASE_TAG = `v${AGENT_HANDSHAKE_HELPER_VERSION}`;
 export const AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX =
