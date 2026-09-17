@@ -76,6 +76,23 @@ function signStep({ manifestDigest, role = "initiator", sessionId = SESSION }) {
   return helperStep({ manifestDigest, payload, role, sessionId, operation: "sign" });
 }
 
+// The coordinator's verify-certificate payload is schema-tagged and carries no
+// operation field — operation binding for it comes from the step envelope.
+function verifyCertificateStep({ manifestDigest, payloadRecord, role = "initiator", sessionId = SESSION }) {
+  const record = payloadRecord ?? {
+    schema: "clockchain.agent-handshake-certificate-verification/v1",
+    role,
+    sessionId,
+  };
+  return helperStep({
+    manifestDigest,
+    payload: Buffer.from(JSON.stringify(record)).toString("base64url"),
+    role,
+    sessionId,
+    operation: "verify-certificate",
+  });
+}
+
 async function makeContext(t, { actionTtlMs, completionDeadlineMs, releaseAssets = true } = {}) {
   const parent = await mkdtemp(join(tmpdir(), "adapter-recorder-"));
   const socketRoot = await mkdtemp(join(tmpdir(), "adapter-socket-"));
@@ -298,6 +315,35 @@ test("recorder binds signed payloads and rejects foreign operations and state di
   };
   mismatched.approvalTool = "mcp__clockchain-local-adapter__authorize_local_action";
   assert.throws(() => recorder.record(mismatched));
+});
+
+test("recorder binds the schema-tagged verify-certificate payload", async (t) => {
+  const { fixture, recorder } = await makeContext(t);
+  recorder.setCompletionHandler(async () => ({ accepted: true }));
+  // The deployed coordinator's certificate-verification payload carries no
+  // operation field — the step envelope binds the operation instead.
+  const step = verifyCertificateStep({ manifestDigest: fixture.manifestDigest });
+  const action = recorder.record(step);
+  assert.equal(action.operation, "verify-certificate");
+  const executed = await recorder.executeAuthorizedAction({
+    actionId: action.actionId,
+    commandSha256: action.commandSha256,
+    role: action.role,
+    sessionId: action.sessionId,
+  });
+  assert.equal(executed.publicResult.ok, true);
+  // Wrong schema, cross-role, and foreign-session payloads still fail.
+  for (const payloadRecord of [
+    { role: "initiator", sessionId: SESSION },
+    { schema: "clockchain.agent-handshake-certificate-verification/v2", role: "initiator", sessionId: SESSION },
+    { schema: "clockchain.agent-handshake-certificate-verification/v1", role: "responder", sessionId: SESSION },
+    { schema: "clockchain.agent-handshake-certificate-verification/v1", role: "initiator", sessionId: "22222222-2222-4333-8444-555555555555" },
+  ]) {
+    assert.throws(() => recorder.record(verifyCertificateStep({
+      manifestDigest: fixture.manifestDigest,
+      payloadRecord,
+    })));
+  }
 });
 
 test("recorder rejects malformed, tampered, and foreign completions on the private socket", async (t) => {

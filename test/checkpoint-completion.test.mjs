@@ -9,6 +9,7 @@ import { gzipSync } from "node:zlib";
 import { privateKeyToAccount } from "viem/accounts";
 
 import { AGENT_HANDSHAKE_HELPER_VERSION } from "../src/agent-handshake/v2/constants.mjs";
+import { digestHex } from "../src/core/canonical.mjs";
 import {
   createCheckpointCompletionHandler,
   createCommitmentCheckpoint,
@@ -127,6 +128,102 @@ function completionFor({ operation = "sign", request, argv, stateDir, role = "in
   });
 }
 
+const COUNTERPART_ADDRESS = `0x${"2".repeat(40)}`;
+const REGISTRY_ADDRESS = `0x${"3".repeat(40)}`;
+
+function erc8004Record(agentId) {
+  return {
+    agentId,
+    chainId: "11155111",
+    registryAddress: REGISTRY_ADDRESS,
+    reference: `11155111:${REGISTRY_ADDRESS}:${agentId}`,
+    registrationTx: `0x${"f".repeat(64)}`,
+    registrationBlock: "1234",
+  };
+}
+
+// A coordinator-shaped certificate verification: the helper's flattened
+// result plus the verify-certificate payload carried in the step argv.
+function verifyFixture({ role = "initiator", sessionId = SESSION } = {}) {
+  const certResult = {
+    anchors: [
+      { blockHeight: "10", blockTimeRaw: "t1", digest: "a".repeat(64), kind: "proposal", ledgerId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeee10" },
+      { blockHeight: "11", blockTimeRaw: "t2", digest: "b".repeat(64), kind: "acceptance", ledgerId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeee11" },
+      { blockHeight: "12", blockTimeRaw: "t3", digest: "d".repeat(64), kind: "acknowledgment", ledgerId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeee12" },
+    ],
+    externalBusinessActionPerformed: false,
+    hostSessionKeyCertificateDigest: "1".repeat(64),
+    identityPolicy: { chainId: "11155111", erc8004: "required", registryAddress: REGISTRY_ADDRESS },
+    issuedAtMs: "1800000000000",
+    outcome: "VERIFIED",
+    parties: {
+      initiator: {
+        sessionKeyAddress: ACCOUNT.address.toLowerCase(),
+        policyDigest: POLICY_DIGEST,
+        erc8004: erc8004Record("42"),
+      },
+      responder: {
+        sessionKeyAddress: COUNTERPART_ADDRESS,
+        policyDigest: "e".repeat(64),
+        erc8004: erc8004Record("43"),
+      },
+    },
+    policyDigests: { initiator: POLICY_DIGEST, responder: "e".repeat(64) },
+    reference: "run-ref",
+    schema: "clockchain.agent-handshake-result/v2",
+    sessionDigest: "2".repeat(64),
+    sessionId,
+    statementDigest: "3".repeat(64),
+    subjectRun: "stakeholder",
+  };
+  const payload = {
+    schema: "clockchain.agent-handshake-certificate-verification/v1",
+    helperVersion: AGENT_HANDSHAKE_HELPER_VERSION,
+    role,
+    sessionId,
+    repositorySha: "0".repeat(40),
+    sessionDeadlineMs: "1800003600000",
+    certificate: { result: certResult, hostSessionKeyCertificate: { digest: "4".repeat(64) }, signer: { address: `0x${"5".repeat(40)}` } },
+    externalBusinessActionPerformed: false,
+  };
+  const argv = [
+    "node", "--input-type=commonjs", "--eval", "BOOTSTRAP", "f".repeat(64),
+    "./manifest.json", "./clockchain-agent-handshake.cjs",
+    "verify-certificate", "--state-dir", "/tmp/state",
+    "--payload-base64url", Buffer.from(JSON.stringify(payload), "utf8").toString("base64url"),
+  ];
+  const party = certResult.parties[role];
+  const result = {
+    schema: HELPER_RESULT_SCHEMA,
+    helperVersion: AGENT_HANDSHAKE_HELPER_VERSION,
+    operation: "verify-certificate",
+    certificateVerified: true,
+    externalBusinessActionPerformed: false,
+    identity: party,
+    outcome: "VERIFIED",
+    policyDigest: party.policyDigest,
+    role,
+    sessionId,
+    statementDigest: certResult.statementDigest,
+  };
+  return { argv, certResult, payload, result };
+}
+
+// Builds a verify-certificate completion; mutate(fixture) may alter
+// result/payload/certResult fields before the argv payload is re-encoded.
+function verifyCompletion(mutate, { role = "initiator", sessionId = SESSION } = {}) {
+  const fixture = verifyFixture({ role, sessionId });
+  mutate?.(fixture);
+  const argv = [...fixture.argv];
+  argv[argv.length - 1] = Buffer.from(JSON.stringify(fixture.payload), "utf8").toString("base64url");
+  return {
+    fixture,
+    completion: completionFor({
+      operation: "verify-certificate", argv, result: fixture.result, role, sessionId, stateDir: "/tmp/state",
+    }),
+  };
+}
+
 test("extractSigningRequestFromArgv validates the payload flag and request shape", () => {
   const request = signingRequest();
   const argv = signingArgv(request);
@@ -228,11 +325,128 @@ test("completion handler accepts continuation-free operations without a client",
     checkpointState: {},
     getCheckpointClient: async () => client,
   });
-  for (const operation of ["init", "policy", "verify-certificate"]) {
+  for (const operation of ["init", "policy"]) {
     const accepted = await handler(completionFor({ operation, result: { ok: true }, argv: ["node"], stateDir }));
     assert.deepEqual(accepted, { accepted: true });
   }
   assert.equal(client.calls.length, 0);
+});
+
+test("verify-certificate completion emits the trusted terminal proof from the helper result", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "cc-state-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const client = fakeCheckpointClient();
+  const terminals = [];
+  const { bindRoleAccess, handler } = createCheckpointCompletionHandler({
+    checkpointState: {},
+    getCheckpointClient: async () => client,
+    onTerminal: (proof) => terminals.push(proof),
+  });
+  bindRoleAccess({ access: HANDLE, role: "initiator", sessionId: SESSION });
+  const { fixture, completion } = verifyCompletion();
+  const accepted = await handler(completion);
+  assert.deepEqual(accepted, { accepted: true });
+  assert.equal(terminals.length, 1);
+  const proof = terminals[0];
+  assert.equal(proof.schema, "clockchain.fresh-agent-terminal-proof/v1");
+  assert.equal(proof.role, "initiator");
+  assert.equal(proof.sessionId, SESSION);
+  assert.equal(proof.policyDigest, POLICY_DIGEST);
+  assert.equal(proof.address, ACCOUNT.address.toLowerCase());
+  assert.deepEqual(proof.erc8004, {
+    agentId: "42",
+    reference: `11155111:${REGISTRY_ADDRESS}:42`,
+    registrationTx: `0x${"f".repeat(64)}`,
+    registrationBlock: "1234",
+  });
+  assert.deepEqual(proof.receiptIds, ["a".repeat(64), "b".repeat(64), "d".repeat(64)]);
+  assert.equal(proof.certificateDigest, digestHex(fixture.certResult));
+  assert.equal(proof.certificateVerified, true);
+  assert.equal(proof.externalBusinessActionPerformed, false);
+  // The trusted path consumes no coordinator calls and never asks the client.
+  assert.equal(client.calls.length, 0);
+});
+
+test("verify-certificate completion fails closed on mismatched or malformed results", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "cc-state-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const terminals = [];
+  const { bindRoleAccess, handler } = createCheckpointCompletionHandler({
+    checkpointState: {},
+    getCheckpointClient: async () => { throw new Error("unreachable"); },
+    onTerminal: (proof) => terminals.push(proof),
+  });
+  bindRoleAccess({ access: HANDLE, role: "initiator", sessionId: SESSION });
+  const mutations = [
+    // Result envelope and semantics.
+    (f) => { f.result.schema = "clockchain.agent-handshake-cli-result/v2"; },
+    (f) => { f.result.helperVersion = "2.1.3"; },
+    (f) => { f.result.operation = "sign"; },
+    (f) => { f.result.role = "responder"; },
+    (f) => { f.result.sessionId = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"; },
+    (f) => { f.result.certificateVerified = false; },
+    (f) => { f.result.outcome = "FAILED"; },
+    (f) => { f.result.externalBusinessActionPerformed = true; },
+    (f) => { f.result.policyDigest = "zz"; },
+    (f) => { f.result.statementDigest = "4".repeat(64); },
+    (f) => { delete f.result.identity; },
+    (f) => { f.result.identity = { ...f.result.identity, sessionKeyAddress: COUNTERPART_ADDRESS }; },
+    (f) => { f.result.identity = { ...f.result.identity, policyDigest: "5".repeat(64) }; },
+    (f) => { f.result.identity = { ...f.result.identity, erc8004: null }; },
+    (f) => { f.result.identity = { ...f.result.identity, erc8004: { ...f.result.identity.erc8004, agentId: "99" } }; },
+    (f) => { f.result.identity = { ...f.result.identity, erc8004: { ...f.result.identity.erc8004, registrationTx: "0x1234" } }; },
+    (f) => { f.result.identity = { ...f.result.identity, erc8004: { ...f.result.identity.erc8004, reference: "eip155:1:wrong" } }; },
+    // Payload binding.
+    (f) => { f.payload.schema = "clockchain.agent-handshake-signing-request/v1"; },
+    (f) => { f.payload.helperVersion = "2.1.3"; },
+    (f) => { f.payload.role = "responder"; },
+    (f) => { f.payload.sessionId = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"; },
+    (f) => { f.payload.externalBusinessActionPerformed = true; },
+    (f) => { delete f.payload.certificate; },
+    // Canonical result inside the certificate.
+    (f) => { f.certResult.schema = "clockchain.agent-handshake-result/v3"; },
+    (f) => { f.certResult.outcome = "FAILED"; },
+    (f) => { f.certResult.sessionId = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"; },
+    (f) => { f.certResult.statementDigest = "6".repeat(64); },
+    (f) => { f.certResult.externalBusinessActionPerformed = true; },
+    (f) => { f.certResult.policyDigests.initiator = "7".repeat(64); },
+    (f) => { f.certResult.parties.initiator = { ...f.certResult.parties.initiator, sessionKeyAddress: COUNTERPART_ADDRESS }; },
+    (f) => { f.certResult.parties.initiator = { ...f.certResult.parties.initiator, policyDigest: "7".repeat(64) }; },
+    (f) => { f.certResult.parties.initiator = { ...f.certResult.parties.initiator, erc8004: { ...f.certResult.parties.initiator.erc8004, agentId: "77" } }; },
+    // Anchors become the receiptIds.
+    (f) => { f.certResult.anchors = f.certResult.anchors.slice(0, 2); },
+    (f) => { f.certResult.anchors = [f.certResult.anchors[1], f.certResult.anchors[0], f.certResult.anchors[2]]; },
+    (f) => { f.certResult.anchors = f.certResult.anchors.map((a) => ({ ...a, digest: "a".repeat(64) })); },
+    (f) => { f.certResult.anchors = [...f.certResult.anchors.slice(0, 2), { ...f.certResult.anchors[2], digest: "not-hex" }]; },
+  ];
+  for (const mutate of mutations) {
+    const { completion } = verifyCompletion(mutate);
+    await assert.rejects(() => handler(completion), /failed safely/);
+    assert.equal(terminals.length, 0);
+  }
+  // A verify-certificate completion with no bound role access also fails.
+  const { handler: unbound } = createCheckpointCompletionHandler({
+    checkpointState: {},
+    getCheckpointClient: async () => { throw new Error("unreachable"); },
+    onTerminal: (proof) => terminals.push(proof),
+  });
+  const { completion } = verifyCompletion();
+  await assert.rejects(() => unbound(completion), /failed safely/);
+  // The responder's own proof binds to the responder party fields.
+  const responderTerminals = [];
+  const responderBinding = createCheckpointCompletionHandler({
+    checkpointState: {},
+    getCheckpointClient: async () => { throw new Error("unreachable"); },
+    onTerminal: (proof) => responderTerminals.push(proof),
+  });
+  responderBinding.bindRoleAccess({ access: HANDLE, role: "responder", sessionId: SESSION });
+  const responder = verifyCompletion(undefined, { role: "responder" });
+  assert.deepEqual(await responderBinding.handler(responder.completion), { accepted: true });
+  assert.equal(responderTerminals.length, 1);
+  assert.equal(responderTerminals[0].role, "responder");
+  assert.equal(responderTerminals[0].address, COUNTERPART_ADDRESS);
+  assert.equal(responderTerminals[0].policyDigest, "e".repeat(64));
+  assert.equal(responderTerminals[0].erc8004.agentId, "43");
 });
 
 test("completion handler fails closed on malformed results", async (t) => {
@@ -662,11 +876,13 @@ test("next advancement fails closed on budget exhaustion and the call bound", as
     };
     const request = signingRequest({ operation: "identity_claim" });
     const result = await signResult(request, stateDir);
+    const advances = [];
     const { bindRoleAccess, handler } = createCheckpointCompletionHandler({
       advanceBudgetMs: 45_000,
       checkpointState: {},
       getCheckpointClient: async () => client,
       now: () => clock,
+      onAdvance: (advance) => advances.push(advance),
       recordSteps: countingSteps([]),
     });
     bindRoleAccess({ access: HANDLE, role: "initiator", sessionId: SESSION });
@@ -679,6 +895,10 @@ test("next advancement fails closed on budget exhaustion and the call bound", as
     const waits = calls.filter((entry) => entry.name === "agent_handshake_next");
     assert.ok(waits.length >= 1 && waits.length <= 16);
     for (const entry of waits) assert.ok(entry.args.waitMs >= 0 && entry.args.waitMs <= 15_000);
+    assert.equal(advances.length, 1);
+    assert.equal(advances[0].error, "budget");
+    assert.equal(advances[0].calls, waits.length);
+    assert.equal(advances[0].stage, null);
   }
   // A perpetual immediate continue is bounded by the call cap, not the clock.
   {
@@ -697,9 +917,11 @@ test("next advancement fails closed on budget exhaustion and the call bound", as
     };
     const request = signingRequest({ operation: "identity_claim" });
     const result = await signResult(request, stateDir);
+    const advances = [];
     const { bindRoleAccess, handler } = createCheckpointCompletionHandler({
       checkpointState: {},
       getCheckpointClient: async () => client,
+      onAdvance: (advance) => advances.push(advance),
       recordSteps: countingSteps([]),
     });
     bindRoleAccess({ access: HANDLE, role: "initiator", sessionId: SESSION });
@@ -710,6 +932,83 @@ test("next advancement fails closed on budget exhaustion and the call bound", as
       stateDir,
     })), /failed safely/);
     assert.equal(calls.filter((entry) => entry.name === "agent_handshake_next").length, 16);
+    assert.equal(advances.length, 1);
+    assert.equal(advances[0].error, "bound");
+    assert.equal(advances[0].calls, 16);
+  }
+});
+
+test("next advancement reports bounded failure categories", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "cc-state-"));
+  t.after(() => rm(stateDir, { recursive: true, force: true }));
+  const run = async ({ nextResults, recordSteps }) => {
+    const client = {
+      calls: [],
+      connect: async () => {},
+      callTool: async (name) => {
+        client.calls.push(name);
+        if (name === "agent_handshake_submit") return { role: "initiator", sessionId: SESSION, stage: "identity_claimed" };
+        if (name === "agent_handshake_next") {
+          const next = nextResults.shift();
+          if (next instanceof Error) throw next;
+          return next ?? { needed: null, nextAction: "call_agent_handshake_next_with_unchanged_role_access", role: "initiator", sessionId: SESSION, stage: "party_ready" };
+        }
+        throw new Error("unexpected");
+      },
+    };
+    const request = signingRequest({ operation: "identity_claim" });
+    const result = await signResult(request, stateDir);
+    const advances = [];
+    const { bindRoleAccess, handler } = createCheckpointCompletionHandler({
+      checkpointState: {},
+      getCheckpointClient: async () => client,
+      onAdvance: (advance) => advances.push(advance),
+      recordSteps,
+    });
+    bindRoleAccess({ access: HANDLE, role: "initiator", sessionId: SESSION });
+    await assert.rejects(() => handler(completionFor({
+      argv: signingArgv(request, stateDir),
+      result,
+      role: "initiator",
+      stateDir,
+    })), /failed safely/);
+    return advances.at(-1);
+  };
+  // A rejected next call reports "call" with zero completed calls.
+  {
+    const advance = await run({ nextResults: [new Error("socket closed")], recordSteps: countingSteps([]) });
+    assert.equal(advance.error, "call");
+    assert.equal(advance.calls, 0);
+    assert.equal(advance.stage, null);
+    assert.ok(Number.isSafeInteger(advance.elapsedMs) && advance.elapsedMs >= 0);
+  }
+  // A malformed next result reports "classify" and the bounded stage label.
+  {
+    const advance = await run({
+      nextResults: [{ needed: null, nextAction: null, role: "initiator", sessionId: SESSION, stage: "imposter_stage" }],
+      recordSteps: countingSteps([]),
+    });
+    assert.equal(advance.error, "classify");
+    assert.equal(advance.calls, 1);
+    assert.equal(advance.stage, "imposter_stage");
+  }
+  // A requeue rejection reports "requeue".
+  {
+    const advance = await run({
+      nextResults: [{
+        localAction: { helperStep: { operation: "register", role: "initiator", sessionId: SESSION } },
+        role: "initiator",
+        sessionId: SESSION,
+        stage: "sign_identity",
+      }],
+      recordSteps: (result) => {
+        if (result?.localAction !== undefined && result.localAction !== null) throw new Error("rejected");
+        return 0;
+      },
+    });
+    assert.equal(advance.error, "requeue");
+    assert.equal(advance.calls, 1);
+    assert.equal(advance.stage, "sign_identity");
   }
 });
 
