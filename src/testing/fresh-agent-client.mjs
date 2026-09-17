@@ -944,6 +944,24 @@ function completedMcpToolResults(event, claudeMcpToolCalls) {
   return values;
 }
 
+// Records every helper step from a trusted (adapter completion) Clockchain
+// result into the retained-action recorder. Unlike the model-visible stream
+// path, a step claiming the counterpart role is corrupt state — it is
+// rejected rather than skipped. Returns the number of steps enqueued.
+export function recordTrustedHelperSteps(result, { record, role }) {
+  if (typeof record !== "function" || !ROLES.includes(role)) fail();
+  let count = 0;
+  for (const step of collectHelperSteps(result)) {
+    if (
+      step !== null && typeof step === "object" && !Array.isArray(step) &&
+      ROLES.includes(step.role) && step.role !== role
+    ) fail();
+    record(step);
+    count += 1;
+  }
+  return count;
+}
+
 export function bindCompletedRoleAccess(event, claudeMcpToolCalls, adapter, expectedRole) {
   for (const value of completedMcpToolResults(event, claudeMcpToolCalls)) {
     const access = roleAccessFromValue(value, expectedRole);
@@ -1363,15 +1381,7 @@ export async function runFreshAgentHandshake({
         // Trusted-channel continuation results (join/next/submit) are not
         // model-visible; newly issued helper steps must still stage through
         // the same recorder so the adapter executes them in order.
-        recordSteps: (result) => {
-          for (const step of collectHelperSteps(result)) {
-            if (
-              step !== null && typeof step === "object" && !Array.isArray(step) &&
-              ROLES.includes(step.role) && step.role !== role
-            ) continue;
-            recorder.record(step);
-          }
-        },
+        recordSteps: (result) => recordTrustedHelperSteps(result, { record: recorder.record, role }),
       });
       const adapterCompletion = { operation: null, state: "none" };
       recorder.setCompletionHandler(trackAdapterCompletion(completionBinding.handler, adapterCompletion));

@@ -333,10 +333,23 @@ export function createCheckpointCompletionHandler({ checkpointState, getCheckpoi
 
   // The recorder turns each trusted continuation result into newly staged
   // actions. A recorder failure must reject the completion rather than let a
-  // silently dropped local action strand the handshake.
-  async function requeueTrusted(result) {
-    if (recordSteps === undefined) return;
-    try { await recordSteps(result); } catch { fail(); }
+  // silently dropped local action strand the handshake. Continuations that
+  // must yield a next action (join) require at least one enqueued step.
+  async function requeueTrusted(result, { required = false } = {}) {
+    if (recordSteps === undefined) {
+      if (required) fail();
+      return;
+    }
+    let count;
+    try { count = await recordSteps(result); } catch { fail(); }
+    if (!Number.isSafeInteger(count) || count < 0 || (required && count < 1)) fail();
+  }
+
+  async function clientOrFail() {
+    let client;
+    try { client = await getCheckpointClient(); } catch { fail(); }
+    if (client === null || typeof client?.callTool !== "function") fail();
+    return client;
   }
 
   function boundAccessFor(completion) {
@@ -362,8 +375,7 @@ export function createCheckpointCompletionHandler({ checkpointState, getCheckpoi
       result.helperVersion !== AGENT_HANDSHAKE_HELPER_VERSION ||
       result.operation !== completion.operation
     ) fail();
-    const client = await getCheckpointClient();
-    if (client === null || typeof client?.callTool !== "function") fail();
+    const client = await clientOrFail();
     if (tool === "agent_handshake_join") {
       if (!PUBLIC_ADDRESS.test(result.address ?? "") || !DIGEST.test(result.policyDigest ?? "")) fail();
       let joined;
@@ -376,7 +388,7 @@ export function createCheckpointCompletionHandler({ checkpointState, getCheckpoi
         });
       } catch { fail(); }
       if (joined?.role !== completion.role || joined?.sessionId !== completion.sessionId) fail();
-      await requeueTrusted(joined);
+      await requeueTrusted(joined, { required: true });
     } else {
       if (!PUBLIC_ADDRESS.test(result.address ?? "")) fail();
       let advanced;
@@ -418,8 +430,7 @@ export function createCheckpointCompletionHandler({ checkpointState, getCheckpoi
     const account = privateKeyToAccount(wallet.privateKey);
     const address = account.address.toLowerCase();
     if (address !== String(wallet.address ?? "").toLowerCase() || address !== helperResult.address.toLowerCase()) fail();
-    const client = await getCheckpointClient();
-    if (client === null || typeof client?.callTool !== "function") fail();
+    const client = await clientOrFail();
     if (CHECKPOINT_OPERATIONS.includes(request.operation)) {
       const previousCheckpoint = request.operation === "proposal" ? null : checkpointState.proposal;
       if (request.operation === "acceptance" && previousCheckpoint === undefined) fail();
