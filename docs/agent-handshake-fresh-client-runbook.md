@@ -26,7 +26,7 @@ The canary remains disabled until all four values below agree with the independe
 - `CLOCKCHAIN_MCP_HOST_ROOT_FINGERPRINTS`
 - `CLOCKCHAIN_RESEARCH_HOST_ROOT_FINGERPRINTS`
 
-Set `CLOCKCHAIN_RESEARCH_MONITOR_URL=https://clockchain-research.vercel.app/api/handshake/monitor`. Supply model authentication through `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY`; the harness passes it only to the disposable client processes and scans retained proof for the exact canary values.
+Set `CLOCKCHAIN_RESEARCH_MONITOR_URL` to a session-scoped relay template — for the production relay, `http://44.249.47.220:8080/v1/sessions/{sessionId}/snapshot`. Any other value fails closed: only the session-scoped relay endpoints can provide the signed result envelope the monitor needs to bind its certificate digest to the trusted local terminal proof. The auth-protected research proxy serves only the coordinator's current session and reports the envelope-domain digest, so it is not a valid canary monitor source. The monitor polls the session snapshot, the signed result envelope, and the run history; it requires the exact session, a VERIFIED checker, a VERIFIED certificate, null failure, all three receipt anchors, a matching CERTIFIED/VERIFIED run record, and an envelope whose digest equals the snapshot certificate digest before returning `CERTIFIED` chronology and the result-object certificate digest, which must equal the digest both clients proved locally. Supply model authentication through `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY`; the harness passes it only to the disposable client processes and scans retained proof for the exact canary values.
 
 Before starting either fresh client, verify `node --version` reports Node 24. On this demo Mac, the isolated runtime is `/opt/homebrew/opt/node@24/bin/node`; launch the canary with `/opt/homebrew/opt/node@24/bin` first in `PATH`. No Apple Developer account, notarization credential, npm login, plugin, or repository checkout is required for this Apple-device demo path.
 
@@ -46,7 +46,7 @@ The automated canary starts the Initiator first, reads the actual single-use Res
 
 ## Required terminal proof
 
-Success requires both clients to report the same session and certificate digest, distinct addresses, policies, and ERC-8004 agent ids, three receipt ids, `certificateVerified: true`, and `externalBusinessActionPerformed: false`. The Research monitor must independently reach `CERTIFIED` for that session.
+Success requires both clients to report the same session and certificate digest, distinct addresses, policies, and ERC-8004 agent ids, three receipt ids, `certificateVerified: true`, and `externalBusinessActionPerformed: false`. The relay monitor must independently reach `CERTIFIED` for that exact session, and its certificate digest — taken from the validated signed result envelope — must equal the digest both clients proved locally; relay visibility can confirm but never establish success.
 
 The retained JSON contains only public evidence. Disposable homes, workspaces, caches, client configuration, helper state, local keys, role capabilities, invitations, transcripts, and raw stdout/stderr are removed on success and failure.
 
