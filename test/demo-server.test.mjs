@@ -38,6 +38,15 @@ function close(server) {
   return new Promise((resolve) => server.close(resolve));
 }
 
+async function waitFor(predicate, message) {
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail(message);
+}
+
 function makeHarness() {
   const children = [];
   const kills = [];
@@ -64,7 +73,7 @@ function makeHarness() {
   return { server, children, kills, timers };
 }
 
-async function req(base, path, { method = "GET", body, headers = {} } = {}) {
+async function req(base, path, { method = "GET", body, headers = {}, timeoutMs = 5_000 } = {}) {
   const url = new URL(path, base);
   return await new Promise((resolve, reject) => {
     const request = httpRequest(
@@ -93,6 +102,9 @@ async function req(base, path, { method = "GET", body, headers = {} } = {}) {
       },
     );
     request.on("error", reject);
+    request.setTimeout(timeoutMs, () => {
+      request.destroy(new Error(`request timed out: ${method} ${path}`));
+    });
     if (body !== undefined) request.end(typeof body === "string" ? body : JSON.stringify(body));
     else request.end();
   });
@@ -227,6 +239,67 @@ test("POST /runs starts one argv-only run, rejects active replacement, and enfor
   }
 });
 
+test("successful live-mode POST requires exact phrase and omits --stub", async () => {
+  const { server, children } = makeHarness();
+  const { base, origin } = await listen(server);
+  try {
+    const created = await req(base, "/runs", {
+      method: "POST",
+      body: validBody({
+        agent: false,
+        amount: "42",
+        mode: "live",
+        liveConfirmation: "RUN LIVE USD 42",
+      }),
+      headers: mutationHeaders(origin),
+    });
+    assert.equal(created.status, 201);
+    assert.equal(children.length, 1);
+    const [, args, options] = children[0].args;
+    assert.equal(options.shell, false);
+    assert.equal(args.includes("--stub"), false);
+    assert.deepEqual(args.slice(1, 5), ["--amount", "42", "--currency", "USD"]);
+  } finally {
+    await close(server);
+  }
+});
+
+test("malformed encoded run ids fail closed without hanging", async () => {
+  const { server, children } = makeHarness();
+  const { base } = await listen(server);
+  try {
+    const response = await req(base, "/runs/%ZZ/events");
+    assert.equal(response.status, 400);
+    assert.match(response.text, /BAD_RUN_ID/);
+    assert.equal(children.length, 0);
+  } finally {
+    await close(server);
+  }
+});
+
+test("synchronous spawn failures return a structured error and leave no active run", async () => {
+  const server = createDemoServer({
+    nonce: "nonce-test-value-with-enough-entropy",
+    spawnFn: () => {
+      throw new Error("spawn exploded");
+    },
+  });
+  const { base, origin } = await listen(server);
+  try {
+    const response = await req(base, "/runs", {
+      method: "POST",
+      body: validBody(),
+      headers: mutationHeaders(origin),
+    });
+    assert.equal(response.status, 500);
+    assert.match(response.text, /RUN_START_FAILED/);
+    assert.equal(server.demo.activeRunId, null);
+    assert.equal(server.demo.runs.size, 0);
+  } finally {
+    await close(server);
+  }
+});
+
 test("SSE replays buffered events and disconnecting does not cancel work", async () => {
   const { server, children, kills } = makeHarness();
   const { base, origin } = await listen(server);
@@ -264,6 +337,43 @@ test("SSE replays buffered events and disconnecting does not cancel work", async
   }
 });
 
+test("child close ends SSE subscribers and clears subscriber bookkeeping", async () => {
+  const { server, children } = makeHarness();
+  const { base, origin } = await listen(server);
+  try {
+    const created = await req(base, "/runs", {
+      method: "POST",
+      body: validBody(),
+      headers: mutationHeaders(origin),
+    });
+    const ended = new Promise((resolve, reject) => {
+      const request = httpRequest(new URL(created.json.events, base), (res) => {
+        let text = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          text += chunk;
+        });
+        res.on("end", () => resolve(text));
+      });
+      request.on("error", reject);
+      request.setTimeout(5_000, () => request.destroy(new Error("SSE did not end")));
+      request.end();
+    });
+    const run = server.demo.runs.get(created.json.runId);
+    await waitFor(() => run.subscribers.size === 1, "SSE subscriber was not registered");
+    assert.equal(run.subscribers.size, 1);
+    children[0].child.emit("close", 0, null);
+    const text = await ended;
+    assert.match(text, /event: exit/);
+    assert.equal(run.subscribers.size, 0);
+    const replay = await req(base, created.json.events);
+    assert.equal(replay.status, 200);
+    assert.match(replay.text, /event: exit/);
+  } finally {
+    await close(server);
+  }
+});
+
 test("DELETE cancels only the named run, escalates after grace, and is idempotent", async () => {
   const { server, children, kills, timers } = makeHarness();
   const { base, origin } = await listen(server);
@@ -293,6 +403,38 @@ test("DELETE cancels only the named run, escalates after grace, and is idempoten
   } finally {
     await close(server);
   }
+});
+
+test("server close cancels the active detached child and ends subscribers", async () => {
+  const { server, children, kills, timers } = makeHarness();
+  const { base, origin } = await listen(server);
+  const created = await req(base, "/runs", {
+    method: "POST",
+    body: validBody(),
+    headers: mutationHeaders(origin),
+  });
+  const ended = new Promise((resolve, reject) => {
+    const request = httpRequest(new URL(created.json.events, base), (res) => {
+      let text = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => {
+        text += chunk;
+      });
+      res.on("end", () => resolve(text));
+    });
+    request.on("error", reject);
+    request.setTimeout(5_000, () => request.destroy(new Error("SSE did not end on server close")));
+    request.end();
+  });
+  const run = server.demo.runs.get(created.json.runId);
+  await waitFor(() => run.subscribers.size === 1, "SSE subscriber was not registered");
+  assert.equal(run.subscribers.size, 1);
+  await close(server);
+  const text = await ended;
+  assert.match(text, /event: cancelled/);
+  assert.equal(run.subscribers.size, 0);
+  assert.deepEqual(kills[0], { pid: -9000, signal: "SIGTERM" });
+  assert.equal(timers[0].ms, 1500);
 });
 
 test("completed run pruning is bounded without evicting active run", async () => {

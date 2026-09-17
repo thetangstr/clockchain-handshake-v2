@@ -11,7 +11,7 @@ import {
 const execFileAsync = promisify(execFile);
 const ROOT = new URL("..", import.meta.url);
 
-test("canonical USD payment amount accepts only positive safe integer cents profile", () => {
+test("canonical USD payment amount accepts only positive safe integer strings", () => {
   for (const value of ["1", String(Number.MAX_SAFE_INTEGER)]) {
     const normalized = normalizeCanonicalUsdPaymentAmount(
       { currency: "USD", value },
@@ -64,7 +64,7 @@ test("canonical USD payment amount rejects hostile and non-exact shapes without 
 
 test("local demo rejects invalid payment amount before live setup progress or funding path", async () => {
   await assert.rejects(
-    execFileAsync(process.execPath, ["scripts/run-local-demo.mjs", "--stub", "--amount", "0"], {
+    execFileAsync(process.execPath, ["scripts/run-local-demo.mjs", "--amount", "0"], {
       cwd: ROOT,
       timeout: 10_000,
     }),

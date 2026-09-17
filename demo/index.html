@@ -394,8 +394,13 @@ function subscribe(path) {
   es.onerror = () => {
     es?.close();
     es = null;
+    if (runId) {
+      setRunning(true);
+      if (outcome.textContent === "—") sub.textContent = "Event stream disconnected; use Stop to cancel the active run.";
+      return;
+    }
     setRunning(false);
-    if (outcome.textContent === "—") sub.textContent = "Connection lost before the run finished.";
+    if (outcome.textContent === "—") sub.textContent = "Connection lost before the run started.";
   };
 }
 

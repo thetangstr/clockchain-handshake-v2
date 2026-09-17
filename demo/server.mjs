@@ -43,6 +43,14 @@ function writeError(res, status, code, message) {
   writeJson(res, status, { error: { code, message } });
 }
 
+function safeDecodeURIComponent(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
 function securityHeaders(extra = {}) {
   return {
     "cache-control": "no-store",
@@ -180,6 +188,13 @@ export function createDemoServer({
   let server;
   const terminate = makeTerminator({ killProcess, setTimeoutFn, clearTimeoutFn });
 
+  const endSubscribers = (run) => {
+    for (const subscriber of run.subscribers) {
+      if (!subscriber.writableEnded) subscriber.end();
+    }
+    run.subscribers.clear();
+  };
+
   const prune = () => {
     while (completedOrder.length > MAX_COMPLETED_RUNS) {
       const oldId = completedOrder.shift();
@@ -199,9 +214,18 @@ export function createDemoServer({
     run.terminal = true;
     if (clearKillTimer && run.clearKillTimer) run.clearKillTimer();
     emit(run, event, data);
+    endSubscribers(run);
     if (activeRunId === run.id) activeRunId = null;
     completedOrder.push(run.id);
     prune();
+  };
+
+  const shutdownActiveRun = () => {
+    if (activeRunId === null) return;
+    const run = runs.get(activeRunId);
+    if (!run || run.terminal) return;
+    terminate(run, "SIGTERM");
+    finishRun(run, "cancelled", { runId: run.id }, { clearKillTimer: false });
   };
 
   const classify = (run, line, fromStderr) => {
@@ -246,16 +270,21 @@ export function createDemoServer({
     const args = [SCRIPT, "--amount", body.amount, "--currency", "USD"];
     if (body.mode === "stub") args.push("--stub");
     if (body.agent) args.push("--agent-decider", "--decider-model", body.model);
-    const child = spawnFn(process.execPath, args, {
-      cwd: REPO_ROOT,
-      detached: process.platform !== "win32",
-      env: {
-        ...env,
-        CLOCKCHAIN_FUNDING_PASSWORD_FILE: env.CLOCKCHAIN_FUNDING_PASSWORD_FILE ?? join(REPO_ROOT, "keys/funding.password"),
-      },
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    let child;
+    try {
+      child = spawnFn(process.execPath, args, {
+        cwd: REPO_ROOT,
+        detached: process.platform !== "win32",
+        env: {
+          ...env,
+          CLOCKCHAIN_FUNDING_PASSWORD_FILE: env.CLOCKCHAIN_FUNDING_PASSWORD_FILE ?? join(REPO_ROOT, "keys/funding.password"),
+        },
+        shell: false,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch {
+      return null;
+    }
     const run = {
       child,
       events: [],
@@ -333,13 +362,21 @@ export function createDemoServer({
         return;
       }
       const run = startRun(validated.value);
+      if (!run) {
+        writeError(res, 500, "RUN_START_FAILED", "Demo run could not be started.");
+        return;
+      }
       writeJson(res, 201, { runId: run.id, events: `/runs/${encodeURIComponent(run.id)}/events` });
       return;
     }
 
     const runMatch = /^\/runs\/([^/]+)(?:\/events)?$/.exec(url.pathname);
     if (runMatch) {
-      const runId = decodeURIComponent(runMatch[1]);
+      const runId = safeDecodeURIComponent(runMatch[1]);
+      if (runId === null) {
+        writeError(res, 400, "BAD_RUN_ID", "Run id is malformed.");
+        return;
+      }
       const run = runs.get(runId);
       const isEventsPath = url.pathname.endsWith("/events");
       if (isEventsPath) {
@@ -358,6 +395,10 @@ export function createDemoServer({
           "x-accel-buffering": "no",
         });
         for (const item of run.events) sseWrite(res, item.event, item.data);
+        if (run.terminal) {
+          res.end();
+          return;
+        }
         run.subscribers.add(res);
         req.on("close", () => run.subscribers.delete(res));
         return;
@@ -383,11 +424,24 @@ export function createDemoServer({
   });
 
   server.demo = { runs, get activeRunId() { return activeRunId; } };
+  const originalClose = server.close.bind(server);
+  server.close = (...args) => {
+    shutdownActiveRun();
+    return originalClose(...args);
+  };
   return server;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const server = createDemoServer();
+  let shuttingDown = false;
+  const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    server.close();
+  };
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
   server.listen(DEFAULT_PORT, HOST, () => {
     process.stdout.write(
       `Clockchain browser demo: http://${HOST}:${DEFAULT_PORT}\n` +
