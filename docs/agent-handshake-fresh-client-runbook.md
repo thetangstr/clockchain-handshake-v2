@@ -4,7 +4,7 @@ This runbook proves the production stakeholder flow from two empty client homes.
 
 ## Public endpoint
 
-Both clients connect to the same dedicated seven-tool endpoint:
+Both clients connect to the same dedicated eight-tool endpoint:
 
 `https://mcp.clockchain.network/handshake/mcp`
 
@@ -15,7 +15,7 @@ codex mcp add clockchain-handshake --url https://mcp.clockchain.network/handshak
 claude mcp add --transport http --scope user clockchain-handshake https://mcp.clockchain.network/handshake/mcp
 ```
 
-The endpoint instructions provide the pinned helper manifest URL, the SHA-256 of the exact manifest bytes, supported operations, and protocol loop. For today's Apple-device path, the fresh client needs Node.js 24. Before either model starts, the harness fetches `manifest.json` and `clockchain-agent-handshake.cjs` from the pinned release prefix over HTTPS, verifies the manifest bytes against the agreed digest, verifies the helper bytes against the digest inside that verified manifest, and writes both files into each role's disposable workspace; a fetch or digest failure aborts the run before any client launches. Every helper invocation runs through one fixed bootstrap command that hashes the exact manifest bytes against the independently agreed pin, reads the helper SHA-256 from that verified manifest, hashes the helper, and executes only those already-verified helper bytes from memory. Claude receives no general `Write` permission and cannot bypass the bootstrap with a direct helper command. The local helper creates the role key, commits the exact local policy, registers a fresh ERC-8004 identity when the Initiator requires it, signs only policy-approved bytes, and verifies the final host certificate. The MCP server never receives a private key.
+The endpoint instructions provide the pinned helper manifest URL, the SHA-256 of the exact manifest bytes, supported operations, and protocol loop. For today's Apple-device path, the fresh client needs Node.js 24. Before either model starts, the harness fetches `manifest.json` and `clockchain-agent-handshake.cjs` from the pinned release prefix over HTTPS, verifies the manifest bytes against the agreed digest, verifies the helper bytes against the digest inside that verified manifest, and writes both files into each role's disposable workspace; a fetch or digest failure aborts the run before any client launches. The harness also installs a per-role adapter in each workspace: when a model-visible `localAction` carries a helper step, the harness retains a signed bound-action record privately and the model executes only `clockchain-agent-authorize <sha256>` from the adapter `bin` directory prepended to its `PATH`. That executable re-verifies the retained envelope, manifest, and helper digests, creates the role state directory under the workspace `TMPDIR`, runs the exact verified helper command, and returns only the validated helper result; each digest authorizes exactly one execution. Claude receives no general `Write` permission and cannot invoke the helper directly — its Bash authority is limited to the adapter's authorization command. The local helper creates the role key, commits the exact local policy, registers a fresh ERC-8004 identity when the Initiator requires it, signs only policy-approved bytes, and verifies the final host certificate. The MCP server never receives a private key.
 
 ## Preflight
 

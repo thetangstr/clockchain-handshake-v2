@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,9 +15,13 @@ import {
 import { canonicalBytes } from "../src/core/canonical.mjs";
 import {
   CLOCKCHAIN_HANDSHAKE_MCP_URL,
+  CLOCKCHAIN_HANDSHAKE_TOOLS,
   VERIFIED_HELPER_BOOTSTRAP,
+  bindCompletedRoleAccess,
   buildClientCommands,
   createFreshAgentRun,
+  recordClaudeMcpToolCalls,
+  roleAccessFromValue,
   runFreshAgentHandshake,
   validateHelperCommand,
   validateReleaseAgreement,
@@ -99,6 +103,24 @@ function releaseAgreement(manifestDigest) {
   return { mcp: { manifestDigest, hostRoots: [ROOT] }, research: { manifestDigest, hostRoots: [ROOT] } };
 }
 
+const ENDPOINT_TOOLS = Object.freeze([
+  "agent_handshake_invite",
+  "agent_handshake_accept_invitation",
+  "agent_handshake_join",
+  "agent_handshake_status",
+  "agent_handshake_next",
+  "agent_handshake_submit_checkpoint",
+  "agent_handshake_submit",
+  "agent_handshake_get_certificate",
+]);
+
+function stubContractClientFactory(tools = ENDPOINT_TOOLS) {
+  return () => ({
+    connect: async () => {},
+    listTools: async () => [...tools],
+  });
+}
+
 function roleResult(role) {
   return {
     schema: "clockchain.fresh-agent-terminal-proof/v1",
@@ -141,14 +163,12 @@ test("builds exact endpoint configuration for Codex and Claude Code", () => {
     "--allowedTools",
     [
       "agent_handshake_invite", "agent_handshake_accept_invitation", "agent_handshake_join",
-      "agent_handshake_status", "agent_handshake_next", "agent_handshake_submit",
-      "agent_handshake_get_certificate",
+      "agent_handshake_status", "agent_handshake_next", "agent_handshake_submit_checkpoint",
+      "agent_handshake_submit", "agent_handshake_get_certificate",
     ].map((tool) => `mcp__clockchain-handshake__${tool}`).concat([
-      "Bash(curl --fail --location --proto =https --proto-redir =https --output ./manifest.json https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.4/manifest.json)",
-      "Bash(curl --fail --location --proto =https --proto-redir =https --output ./clockchain-agent-handshake.cjs https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.4/clockchain-agent-handshake.cjs)",
-      `Bash(node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${DIGEST} ./manifest.json ./clockchain-agent-handshake.cjs --version)`,
-      ...["init", "policy", "inspect", "register", "sign", "verify-certificate"]
-        .map((operation) => `Bash(node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${DIGEST} ./manifest.json ./clockchain-agent-handshake.cjs ${operation} *)`),
+      "Bash(clockchain-agent-authorize *)",
+      "Read(./manifest.json)",
+      "Read(./clockchain-agent-handshake.cjs)",
     ]).join(","),
   ]);
   assert.equal(claude.launch.input, "hello");
@@ -289,6 +309,7 @@ test("preloads the digest-verified manifest and helper into both workspaces befo
     parent,
     prompts: { initiator: "init", responder: "consume <PASTE THE INITIATOR INVITATION> now" },
     release: releaseAgreement(fixture.manifestDigest),
+    contractClientFactory: stubContractClientFactory(),
     releasePin: fixture.releasePin,
     spawnProcess,
     fetchReleaseAsset: recordingFetch,
@@ -305,6 +326,167 @@ test("preloads the digest-verified manifest and helper into both workspaces befo
     "configure:codex",
     "configure:claude",
   ]);
+});
+
+function adapterHelperStep({ manifestDigest, role = "initiator", sessionId = SESSION }) {
+  const command = `node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${manifestDigest} ./manifest.json ./clockchain-agent-handshake.cjs init --state-dir "$TMPDIR/.clockchain/handshakes/${sessionId}/${role}"`;
+  const commandSha256 = createHash("sha256").update(command).digest("hex");
+  return {
+    approvalCommand: `clockchain-agent-authorize ${commandSha256}`,
+    commandLength: Buffer.byteLength(command),
+    commandSha256,
+    operation: "init",
+    role,
+    sessionId,
+    shellCommand: command,
+  };
+}
+
+test("retains model-visible helper steps in the per-role digest-bound adapter", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-adapter-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const fixture = releaseFixture();
+  const { fetchReleaseAsset } = fakeFetchReleaseAsset(fixture);
+  const initiatorStep = adapterHelperStep({ manifestDigest: fixture.manifestDigest });
+  const responderStep = adapterHelperStep({ manifestDigest: fixture.manifestDigest, role: "responder" });
+  const recorded = { initiator: [], responder: [] };
+  const paths = {};
+  const children = {};
+  const spawnProcess = (file, args, options) => {
+    paths[options.cwd] = options.env.PATH;
+    const role = children.initiator === undefined ? "initiator" : "responder";
+    const child = new EventEmitter();
+    child.pid = 4000 + Object.keys(children).length;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {} };
+    child.kill = () => {};
+    children[role] = child;
+    const pending = join(options.cwd, ".clockchain-adapter", "pending");
+    if (role === "initiator") {
+      queueMicrotask(() => {
+        child.stdout.emit("data", Buffer.from(streamEvent({
+          type: "item.completed",
+          item: {
+            type: "mcp_tool_call",
+            name: "agent_handshake_join",
+            status: "completed",
+            result: {
+              structuredContent: {
+                localAction: {
+                  stateDirectoryCommand: `mkdir -p -m 700 "$TMPDIR/.clockchain/handshakes/${SESSION}/initiator"`,
+                  helperSteps: [initiatorStep, responderStep],
+                },
+              },
+            },
+          },
+        })));
+        recorded.initiator = readdirSync(pending);
+        child.stdout.emit("data", Buffer.from(streamEvent({
+          type: "item.completed",
+          item: {
+            type: "mcp_tool_call",
+            name: "agent_handshake_invite",
+            status: "completed",
+            result: { structuredContent: { responderInvitation: INVITATION } },
+          },
+        })));
+      });
+    } else {
+      queueMicrotask(() => {
+        child.stdout.emit("data", Buffer.from(streamEvent({
+          type: "assistant",
+          message: {
+            content: [{
+              type: "tool_use",
+              id: "tu_join",
+              name: "mcp__clockchain-handshake__agent_handshake_join",
+            }],
+          },
+        })));
+        child.stdout.emit("data", Buffer.from(streamEvent({
+          type: "user",
+          message: {
+            content: [{
+              type: "tool_result",
+              tool_use_id: "tu_join",
+              content: JSON.stringify({ localAction: { helperStep: responderStep } }),
+            }],
+          },
+        })));
+        recorded.responder = readdirSync(pending);
+        children.initiator.stdout.emit("data", Buffer.from(terminalEvent(roleResult("initiator"))));
+        children.responder.stdout.emit("data", Buffer.from(claudeTerminalEvent(roleResult("responder"))));
+        children.initiator.emit("close", 0, null);
+        children.responder.emit("close", 0, null);
+      });
+    }
+    return child;
+  };
+  const result = await runFreshAgentHandshake({
+    clients: { initiator: "codex", responder: "claude" },
+    configureClient: async () => {},
+    modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
+    monitor: async () => ({ chronology: ["CERTIFIED"], sessionId: SESSION }),
+    parent,
+    prompts: { initiator: "init", responder: "consume <PASTE THE INITIATOR INVITATION> now" },
+    release: releaseAgreement(fixture.manifestDigest),
+    contractClientFactory: stubContractClientFactory(),
+    releasePin: fixture.releasePin,
+    spawnProcess,
+    fetchReleaseAsset,
+    timeoutMs: 2_000,
+  });
+  assert.equal(result.cleanup.completed, true);
+  assert.deepEqual(recorded.initiator, [`${initiatorStep.commandSha256}.json`]);
+  assert.deepEqual(recorded.responder, [`${responderStep.commandSha256}.json`]);
+  for (const [cwd, path] of Object.entries(paths)) {
+    assert.equal(path.startsWith(`${join(cwd, ".clockchain-adapter", "bin")}:`), true);
+  }
+});
+
+test("aborts the run when a model-visible helper step fails adapter validation", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-adapter-bad-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const fixture = releaseFixture();
+  const { fetchReleaseAsset } = fakeFetchReleaseAsset(fixture);
+  const step = adapterHelperStep({ manifestDigest: fixture.manifestDigest });
+  const malformed = { ...step, approvalCommand: `clockchain-agent-authorize ${"0".repeat(64)}` };
+  const spawnProcess = () => {
+    const child = new EventEmitter();
+    child.pid = 4100;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {} };
+    child.kill = () => {};
+    queueMicrotask(() => {
+      child.stdout.emit("data", Buffer.from(streamEvent({
+        type: "item.completed",
+        item: {
+          type: "mcp_tool_call",
+          name: "agent_handshake_join",
+          status: "completed",
+          result: { structuredContent: { localAction: { helperSteps: [malformed] } } },
+        },
+      })));
+    });
+    return child;
+  };
+  await assert.rejects(() => runFreshAgentHandshake({
+    clients: { initiator: "codex", responder: "claude" },
+    configureClient: async () => {},
+    modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
+    monitor: async () => { throw new Error("unreachable"); },
+    parent,
+    prompts: { initiator: "init", responder: "respond" },
+    release: releaseAgreement(fixture.manifestDigest),
+    contractClientFactory: stubContractClientFactory(),
+    releasePin: fixture.releasePin,
+    spawnProcess,
+    fetchReleaseAsset,
+    timeoutMs: 2_000,
+  }), /failed safely/);
+  assert.deepEqual(await readdir(parent), []);
 });
 
 test("refuses to launch either client when pinned asset preload fails", async (t) => {
@@ -354,6 +536,7 @@ test("refuses to launch either client when pinned asset preload fails", async (t
       parent,
       prompts: { initiator: "init", responder: "respond" },
       release: releaseAgreement(entry.pin ?? fixture.manifestDigest),
+      contractClientFactory: stubContractClientFactory(),
       releasePin: fixture.releasePin,
       spawnProcess: () => { spawned += 1; throw new Error("must not launch"); },
       fetchReleaseAsset,
@@ -426,6 +609,7 @@ test("default release fetch follows the signed GitHub CDN hop to load pinned byt
     parent,
     prompts: { initiator: "init", responder: "consume <PASTE THE INITIATOR INVITATION> now" },
     release: releaseAgreement(fixture.manifestDigest),
+    contractClientFactory: stubContractClientFactory(),
     releasePin: fixture.releasePin,
     spawnProcess,
     timeoutMs: 2_000,
@@ -474,6 +658,7 @@ test("default release fetch aborts before launch on unsafe redirects", async (t)
       parent,
       prompts: { initiator: "init", responder: "respond" },
       release: releaseAgreement(fixture.manifestDigest),
+      contractClientFactory: stubContractClientFactory(),
       releasePin: fixture.releasePin,
       spawnProcess: () => { spawned += 1; throw new Error("must not launch"); },
       timeoutMs: 2_000,
@@ -535,6 +720,7 @@ test("starts the Responder only after the Initiator emits its actual one-time in
     parent,
     prompts: { initiator: "init prompt", responder: "consume <PASTE THE INITIATOR INVITATION> now" },
     release: releaseAgreement(fixture.manifestDigest),
+    contractClientFactory: stubContractClientFactory(),
     releasePin: fixture.releasePin,
     spawnProcess,
     fetchReleaseAsset,
@@ -579,6 +765,7 @@ test("times out both process groups and removes both clean rooms", async (t) => 
     parent,
     prompts: { initiator: "init", responder: "respond" },
     release: releaseAgreement(fixture.manifestDigest),
+    contractClientFactory: stubContractClientFactory(),
     releasePin: fixture.releasePin,
     spawnProcess,
     fetchReleaseAsset,
@@ -616,6 +803,7 @@ test("rejects a three-segment invitation lookalike before starting the Responder
     parent,
     prompts: { initiator: "init", responder: `respond ${"<PASTE THE INITIATOR INVITATION>"}` },
     release: releaseAgreement(fixture.manifestDigest),
+    contractClientFactory: stubContractClientFactory(),
     releasePin: fixture.releasePin,
     spawnProcess,
     fetchReleaseAsset,
@@ -623,4 +811,226 @@ test("rejects a three-segment invitation lookalike before starting the Responder
   }), /failed safely/);
   assert.equal(spawned, 1);
   assert.deepEqual(await readdir(parent), []);
+});
+
+test("endpoint contract allowlist contains all eight tools including submit_checkpoint", () => {
+  assert.deepEqual([...CLOCKCHAIN_HANDSHAKE_TOOLS].sort(), [...ENDPOINT_TOOLS].sort());
+  assert.ok(CLOCKCHAIN_HANDSHAKE_TOOLS.includes("agent_handshake_submit_checkpoint"));
+  const claude = buildClientCommands({ client: "claude", manifestDigest: DIGEST, prompt: "p", workspace: "/tmp/b" });
+  const allowed = claude.launch.args[claude.launch.args.indexOf("--allowedTools") + 1].split(",");
+  for (const tool of ENDPOINT_TOOLS) {
+    assert.ok(allowed.includes(`mcp__clockchain-handshake__${tool}`), tool);
+  }
+  assert.ok(allowed.includes("Bash(clockchain-agent-authorize *)"));
+  assert.ok(allowed.includes("Read(./manifest.json)"));
+  assert.ok(allowed.includes("Read(./clockchain-agent-handshake.cjs)"));
+  assert.equal(allowed.some((entry) => entry.includes("curl")), false);
+});
+
+test("preflight aborts before launch when the endpoint contract lacks a required tool", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-contract-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const fixture = releaseFixture();
+  const { fetchReleaseAsset } = fakeFetchReleaseAsset(fixture);
+  let spawned = 0;
+  let configured = 0;
+  for (const tools of [
+    ENDPOINT_TOOLS.filter((name) => name !== "agent_handshake_submit_checkpoint"),
+    [...ENDPOINT_TOOLS, "agent_handshake_extra"],
+    ["agent_handshake_invite"],
+  ]) {
+    await assert.rejects(() => runFreshAgentHandshake({
+      clients: { initiator: "codex", responder: "claude" },
+      configureClient: async () => { configured += 1; },
+      modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
+      monitor: async () => { throw new Error("unreachable"); },
+      parent,
+      prompts: { initiator: "init", responder: "respond" },
+      release: releaseAgreement(fixture.manifestDigest),
+      contractClientFactory: stubContractClientFactory(tools),
+      releasePin: fixture.releasePin,
+      spawnProcess: () => { spawned += 1; throw new Error("must not launch"); },
+      fetchReleaseAsset,
+      timeoutMs: 2_000,
+    }), /failed safely/);
+    assert.equal(spawned, 0);
+    assert.equal(configured, 0);
+    assert.deepEqual(await readdir(parent), []);
+  }
+});
+
+test("roleAccess extraction binds handle and token formats from stream results", () => {
+  const handle = `ccra_${"h".repeat(22)}`;
+  const token = `${Buffer.from(JSON.stringify({ role: "initiator", sessionId: SESSION })).toString("base64url")}.${"s".repeat(20)}`;
+  // Opaque handle + sessionId sibling (the live invite shape).
+  assert.deepEqual(
+    roleAccessFromValue({ roleAccess: handle, sessionId: SESSION }, "initiator"),
+    { access: handle, role: "initiator", sessionId: SESSION },
+  );
+  // Token format embeds its own claims.
+  assert.deepEqual(
+    roleAccessFromValue({ roleAccess: token }, "initiator"),
+    { access: token, role: "initiator", sessionId: SESSION },
+  );
+  // JSON-bearing string results are traversed.
+  assert.deepEqual(
+    roleAccessFromValue({ content: [{ type: "text", text: JSON.stringify({ roleAccess: handle, sessionId: SESSION }) }] }, "initiator"),
+    { access: handle, role: "initiator", sessionId: SESSION },
+  );
+  // No roleAccess present.
+  assert.equal(roleAccessFromValue({ ok: true }, "initiator"), null);
+  // Role mismatch and divergent handles fail closed.
+  assert.throws(() => roleAccessFromValue({ roleAccess: token }, "responder"), /failed safely/);
+  assert.throws(() => roleAccessFromValue({ a: { roleAccess: handle, sessionId: SESSION }, b: { roleAccess: `ccra_${"z".repeat(22)}`, sessionId: SESSION } }, "initiator"), /failed safely/);
+  assert.throws(() => roleAccessFromValue({ a: { roleAccess: handle, sessionId: SESSION }, b: { roleAccess: handle, sessionId: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff" } }, "initiator"), /failed safely/);
+  assert.throws(() => roleAccessFromValue({ roleAccess: "bogus-access" }, "initiator"), /failed safely/);
+});
+
+test("bindCompletedRoleAccess binds Codex and Claude stream formats", () => {
+  const handle = `ccra_${"h".repeat(22)}`;
+  const bound = [];
+  const adapter = { bindRoleAccess: (value) => bound.push(value) };
+  const calls = new Map();
+
+  // Codex: item.completed mcp_tool_call with a completed status.
+  bindCompletedRoleAccess({
+    type: "item.completed",
+    item: {
+      type: "mcp_tool_call",
+      status: "completed",
+      tool: "agent_handshake_invite",
+      result: { structuredContent: { roleAccess: handle, sessionId: SESSION } },
+    },
+  }, calls, adapter, "initiator");
+  assert.deepEqual(bound, [{ access: handle, role: "initiator", sessionId: SESSION }]);
+
+  // Claude: assistant tool_use id recorded, then a matching user tool_result.
+  recordClaudeMcpToolCalls({
+    type: "assistant",
+    message: { content: [{ type: "tool_use", id: "tu_1", name: "mcp__clockchain-handshake__agent_handshake_accept_invitation" }] },
+  }, calls);
+  bindCompletedRoleAccess({
+    type: "user",
+    message: { content: [{ type: "tool_result", tool_use_id: "tu_1", content: JSON.stringify({ roleAccess: `ccra_${"k".repeat(22)}`, sessionId: SESSION }) }] },
+  }, calls, adapter, "responder");
+  assert.equal(bound.length, 2);
+  assert.deepEqual(bound[1], { access: `ccra_${"k".repeat(22)}`, role: "responder", sessionId: SESSION });
+
+  // Non-Clockchain tools and non-completed events are ignored.
+  bindCompletedRoleAccess({
+    type: "item.completed",
+    item: { type: "mcp_tool_call", status: "completed", tool: "other_tool", result: { roleAccess: handle, sessionId: SESSION } },
+  }, calls, adapter, "initiator");
+  bindCompletedRoleAccess({
+    type: "item.completed",
+    item: { type: "mcp_tool_call", status: "in_progress", tool: "agent_handshake_status", result: { roleAccess: handle, sessionId: SESSION } },
+  }, calls, adapter, "initiator");
+  bindCompletedRoleAccess({
+    type: "user",
+    message: { content: [{ type: "tool_result", tool_use_id: "tu_unknown", content: JSON.stringify({ roleAccess: handle, sessionId: SESSION }) }] },
+  }, calls, adapter, "initiator");
+  assert.equal(bound.length, 2);
+});
+
+test("ignores helper steps in model-authored text and non-Clockchain tool results", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-untrusted-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const fixture = releaseFixture();
+  const { fetchReleaseAsset } = fakeFetchReleaseAsset(fixture);
+  const initiatorStep = adapterHelperStep({ manifestDigest: fixture.manifestDigest });
+  const responderStep = adapterHelperStep({ manifestDigest: fixture.manifestDigest, role: "responder" });
+  const untrusted = JSON.stringify({ localAction: { helperStep: initiatorStep } });
+  const recorded = { initiator: [], responder: [] };
+  const children = {};
+  const spawnProcess = (file, args, options) => {
+    const role = children.initiator === undefined ? "initiator" : "responder";
+    const child = new EventEmitter();
+    child.pid = 5000 + Object.keys(children).length;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {} };
+    child.kill = () => {};
+    children[role] = child;
+    const pending = join(options.cwd, ".clockchain-adapter", "pending");
+    if (role === "initiator") {
+      queueMicrotask(() => {
+        const emit = (event) => child.stdout.emit("data", Buffer.from(streamEvent(event)));
+        // Model-authored text carrying a valid-looking localAction.
+        emit({ type: "item.completed", item: { type: "agent_message", text: untrusted } });
+        // A completed MCP call on a non-Clockchain tool.
+        emit({
+          type: "item.completed",
+          item: { type: "mcp_tool_call", tool: "other_server__read", status: "completed", result: { structuredContent: JSON.parse(untrusted) } },
+        });
+        // A Clockchain call that has not completed.
+        emit({
+          type: "item.completed",
+          item: { type: "mcp_tool_call", tool: "agent_handshake_join", status: "in_progress", result: { structuredContent: JSON.parse(untrusted) } },
+        });
+        assert.deepEqual(readdirSync(pending), []);
+        // The trusted path still records.
+        emit({
+          type: "item.completed",
+          item: {
+            type: "mcp_tool_call",
+            tool: "agent_handshake_join",
+            status: "completed",
+            result: { structuredContent: { localAction: { helperStep: initiatorStep } } },
+          },
+        });
+        recorded.initiator = readdirSync(pending);
+        emit({
+          type: "item.completed",
+          item: {
+            type: "mcp_tool_call",
+            tool: "agent_handshake_invite",
+            status: "completed",
+            result: { structuredContent: { responderInvitation: INVITATION } },
+          },
+        });
+      });
+    } else {
+      queueMicrotask(() => {
+        const emit = (event) => child.stdout.emit("data", Buffer.from(streamEvent(event)));
+        const untrustedResponder = JSON.stringify({ localAction: { helperStep: responderStep } });
+        // Claude assistant text — never trusted.
+        emit({ type: "assistant", message: { content: [{ type: "text", text: untrustedResponder }] } });
+        // tool_result with no recorded Clockchain tool_use id.
+        emit({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tu_unknown", content: untrustedResponder }] } });
+        // Errored tool_result on a recorded Clockchain call id.
+        emit({ type: "assistant", message: { content: [{ type: "tool_use", id: "tu_err", name: "mcp__clockchain-handshake__agent_handshake_join" }] } });
+        emit({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tu_err", is_error: true, content: untrustedResponder }] } });
+        // tool_result answering a recorded non-Clockchain tool_use.
+        emit({ type: "assistant", message: { content: [{ type: "tool_use", id: "tu_other", name: "Bash" }] } });
+        emit({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tu_other", content: untrustedResponder }] } });
+        assert.deepEqual(readdirSync(pending), []);
+        // Trusted: recorded Clockchain tool_use answered by a tool_result.
+        emit({ type: "assistant", message: { content: [{ type: "tool_use", id: "tu_ok", name: "mcp__clockchain-handshake__agent_handshake_join" }] } });
+        emit({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tu_ok", content: untrustedResponder }] } });
+        recorded.responder = readdirSync(pending);
+        children.initiator.stdout.emit("data", Buffer.from(terminalEvent(roleResult("initiator"))));
+        children.responder.stdout.emit("data", Buffer.from(claudeTerminalEvent(roleResult("responder"))));
+        children.initiator.emit("close", 0, null);
+        children.responder.emit("close", 0, null);
+      });
+    }
+    return child;
+  };
+  const result = await runFreshAgentHandshake({
+    clients: { initiator: "codex", responder: "claude" },
+    configureClient: async () => {},
+    modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
+    monitor: async () => ({ chronology: ["CERTIFIED"], sessionId: SESSION }),
+    parent,
+    prompts: { initiator: "init", responder: "consume <PASTE THE INITIATOR INVITATION> now" },
+    release: releaseAgreement(fixture.manifestDigest),
+    contractClientFactory: stubContractClientFactory(),
+    releasePin: fixture.releasePin,
+    spawnProcess,
+    fetchReleaseAsset,
+    timeoutMs: 2_000,
+  });
+  assert.equal(result.cleanup.completed, true);
+  assert.deepEqual(recorded.initiator, [`${initiatorStep.commandSha256}.json`]);
+  assert.deepEqual(recorded.responder, [`${responderStep.commandSha256}.json`]);
 });
