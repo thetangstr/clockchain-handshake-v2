@@ -105,10 +105,10 @@ test("binds the post-release pin to exact manifest bytes, helper bytes, and host
 test("tracks the independently published helper in a separate post-release pin", async () => {
   const pin = JSON.parse(await readFile(new URL("../release/agent-handshake/pin.json", import.meta.url), "utf8"));
   assert.deepEqual(pin, {
-    version: "2.1.3",
-    sourceCommit: "edea81c48ad443bc2b46e1a3c4c953e2f6bd752c",
-    manifestDigest: "cc744e287f2f1dfc4b4b67ed460611543fc44c00c2385120cac1b37e28a56342",
-    allowedAssetPrefix: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.3/",
+    version: "2.1.4",
+    sourceCommit: "d31f6f95bccab8c7db7f6b13f0e157c4aa773da4",
+    manifestDigest: "9dacf11985d9887916d8a257de49953bca77bcda0b85bf9a393c36601737f274",
+    allowedAssetPrefix: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.4/",
     hostRoots: [{
       kid: "root-2026-08",
       fingerprint: "da2771c36bf2298525d2bbd8351b6122bb67115e9979624e8bb56537bcf71ed8",
@@ -117,10 +117,11 @@ test("tracks the independently published helper in a separate post-release pin",
 });
 
 test("the published post-release pin and its schema stay internally consistent", async () => {
-  // pin.json records the LAST PUBLISHED release (v2.1.3, measured after the
-  // immutable GitHub release existed). Its manifest digest cannot be known
-  // before publication, so the pin must NOT be required to equal the
-  // in-flight build version — only to agree exactly with its own schema.
+  // pin.json records the LAST PUBLISHED release (v2.1.4, measured from the
+  // immutable GitHub release assets). Its manifest digest cannot be known
+  // before publication, so between a source bump and publication the pin may
+  // legitimately describe the previous release — but once published it must
+  // agree exactly with its own schema.
   const pin = JSON.parse(await readFile(new URL("../release/agent-handshake/pin.json", import.meta.url), "utf8"));
   const schema = JSON.parse(await readFile(new URL("../release/agent-handshake/pin.schema.json", import.meta.url), "utf8"));
   assert.equal(pin.version, schema.properties.version.const);
