@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign as signBytes } from "node:crypto";
 import { chmod, lstat, mkdir, unlink, writeFile } from "node:fs/promises";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify, types } from "node:util";
@@ -165,8 +165,15 @@ function parseLiteralShellWords(value) {
   return words;
 }
 
+// The model-facing handle for a local action is the local adapter MCP tool —
+// never a shell command. Claude receives no Bash grant at all; the tool takes
+// zero arguments and executes only the recorder's current pending action.
+export const ADAPTER_MCP_SERVER = "clockchain-local-adapter";
+export const ADAPTER_MCP_TOOL = "authorize_local_action";
+export const ADAPTER_APPROVAL_TOOL = `mcp__${ADAPTER_MCP_SERVER}__${ADAPTER_MCP_TOOL}`;
+
 function normalizeHelperStep(step) {
-  const allowed = ["approvalCommand", "commandLength", "commandSha256", "operation", "policyDigest", "role", "sessionId", "shellCommand"];
+  const allowed = ["approvalTool", "commandLength", "commandSha256", "operation", "policyDigest", "role", "sessionId", "shellCommand"];
   const item = snapshotObject(step, allowed, allowed.filter((key) => key !== "policyDigest"));
   const shellCommand = item.shellCommand;
   if (typeof shellCommand !== "string" || shellCommand.length < 1) fail();
@@ -175,12 +182,12 @@ function normalizeHelperStep(step) {
   const commandSha256 = createHash("sha256").update(shellCommand).digest("hex");
   if (
     item.commandLength !== commandLength || item.commandSha256 !== commandSha256 ||
-    item.approvalCommand !== `clockchain-agent-authorize ${commandSha256}` ||
+    item.approvalTool !== ADAPTER_APPROVAL_TOOL ||
     !OPERATIONS.includes(item.operation) || !ROLES.includes(item.role) ||
     !UUID.test(item.sessionId) || (item.policyDigest !== undefined && !SHA256.test(item.policyDigest))
   ) fail();
   return Object.freeze({
-    approvalCommand: item.approvalCommand,
+    approvalTool: item.approvalTool,
     argv: Object.freeze(argv),
     commandLength,
     commandSha256,
@@ -321,7 +328,7 @@ function adapterPayload(publicKeyDer, completionDeadlineMs) {
 const { spawnSync }=require("node:child_process");
 const { createHash,createPublicKey,verify }=require("node:crypto");
 const { createConnection }=require("node:net");
-const { mkdirSync,readFileSync,renameSync,rmSync,writeFileSync }=require("node:fs");
+const { mkdirSync,readFileSync,readdirSync,renameSync,rmSync,writeFileSync }=require("node:fs");
 const { dirname,join,resolve }=require("node:path");
 const SHA=/^[0-9a-f]{64}$/;const ROLES=new Set(["initiator","responder"]);const OPS=new Set(["init","policy","inspect","register","sign","verify-certificate"]);const MAX=65536;const COMPLETION_DEADLINE=${completionDeadlineMs};const COMPLETION_ATTEMPT=Math.max(1000,Math.floor(COMPLETION_DEADLINE/2));
 function stop(code="HELPER_COMMAND_MISMATCH"){try{process.stderr.write(JSON.stringify({code})+"\n")}catch{}process.exit(86)}
@@ -330,8 +337,59 @@ function envelope(path,digest){const e=JSON.parse(readFileSync(path,"utf8"));if(
 function assets(b){const a=b.args;if(a.length<9||a[0]!=="--input-type=commonjs"||a[1]!=="--eval"||a[3]!==b.manifestDigest||a[6]!==b.operation)stop();const mb=readFileSync(a[4]);if(createHash("sha256").update(mb).digest("hex")!==b.manifestDigest)stop();const m=JSON.parse(mb);if(m.schema!=="clockchain.agent-handshake-release-manifest/v1"||m.version!=="${AGENT_HANDSHAKE_HELPER_VERSION}"||!Array.isArray(m.assets)||m.assets.length!==1)stop();const x=m.assets[0];if(x.filename!=="clockchain-agent-handshake.cjs"||!SHA.test(x.sha256))stop();if(createHash("sha256").update(readFileSync(a[5])).digest("hex")!==x.sha256)stop()}
 function completeOnce(b,result){return new Promise((ok,bad)=>{const s=createConnection(b.completionSocket);let out="";const timer=setTimeout(()=>{s.destroy();bad(new Error("transport"))},COMPLETION_ATTEMPT);s.setEncoding("utf8");s.on("connect",()=>s.write(JSON.stringify({actionId:b.actionId,actionNonce:b.actionNonce,commandSha256:b.commandSha256,requestDigest:b.requestDigest,result})+"\n"));s.on("data",c=>{out+=c;if(Buffer.byteLength(out)>MAX){s.destroy();bad(new Error("rejected"))}});s.on("end",()=>{clearTimeout(timer);try{const a=exact(JSON.parse(out),["accepted"]);a.accepted===true?ok():bad(new Error("rejected"))}catch{bad(new Error("rejected"))}});s.on("error",()=>{clearTimeout(timer);bad(new Error("transport"))})})}
 async function complete(b,result){const started=Date.now();for(let attempt=0;attempt<3&&Date.now()-started<COMPLETION_DEADLINE;attempt++){try{return await completeOnce(b,result)}catch(e){if(e&&e.message==="rejected")throw e}if(attempt<2)await new Promise(r=>setTimeout(r,100))}throw new Error("completion")}
-async function main(){const digest=process.argv.length===3?process.argv[2]:"";if(!SHA.test(digest))stop();const root=dirname(dirname(__filename));const pending=join(root,"pending",digest+".json"),running=join(root,"running",digest+"."+process.pid+".json"),consumed=join(root,"consumed",digest+".json");let b;try{try{readFileSync(consumed);stop("HELPER_ACTION_REPLAYED")}catch(e){if(e&&e.code!=="ENOENT")stop()}b=envelope(pending,digest);assets(b);try{renameSync(pending,running)}catch{try{readFileSync(consumed);stop("HELPER_ACTION_REPLAYED")}catch{}stop()}writeFileSync(consumed,JSON.stringify({schema:"clockchain.agent-harness-consumed-action/v1",commandSha256:b.commandSha256})+"\n",{encoding:"utf8",flag:"wx",mode:0o600});mkdirSync(resolve(b.stateDir),{recursive:true,mode:0o700});const child=spawnSync(b.file,b.args,{cwd:b.cwd,env:process.env,encoding:"utf8",maxBuffer:MAX});if(child.error||!Number.isSafeInteger(child.status))stop("HELPER_EXECUTION_LAUNCH_FAILED");if(child.status!==0)stop("HELPER_OPERATION_FAILED");if(typeof child.stdout!=="string"||Buffer.byteLength(child.stdout)<2||Buffer.byteLength(child.stdout)>MAX||!child.stdout.endsWith("\n")||child.stdout.slice(0,-1).includes("\n"))stop("HELPER_OUTPUT_INVALID");let result;try{result=JSON.parse(child.stdout)}catch{stop("HELPER_OUTPUT_INVALID")}if(!result||typeof result!=="object"||Array.isArray(result))stop("HELPER_OUTPUT_INVALID");if(b.completionRequired){try{await complete(b,result)}catch{stop("HELPER_COMPLETION_FAILED")}}process.stdout.write(child.stdout)}catch{stop()}finally{try{rmSync(running,{force:true})}catch{}}}
+async function main(){if(process.argv.length!==2)stop();const root=dirname(dirname(__filename));const pendingDir=join(root,"pending"),queuedDir=join(root,"queued"),runningDir=join(root,"running"),consumedDir=join(root,"consumed");for(const e of readdirSync(queuedDir)){if(!/^[0-9]{6}-[0-9a-f]{64}\.json$/.test(e))stop()}for(const e of readdirSync(consumedDir)){if(!/^[0-9a-f]{64}\.json$/.test(e))stop()}if(readdirSync(runningDir).length!==0)stop();const entries=readdirSync(pendingDir);for(const e of entries){if(!/^[0-9a-f]{64}\.json$/.test(e))stop()}if(entries.length===0){if(readdirSync(consumedDir).length!==0)stop("HELPER_ACTION_REPLAYED");stop()}if(entries.length!==1)stop();const digest=entries[0].slice(0,-5);const pending=join(pendingDir,entries[0]),running=join(runningDir,digest+"."+process.pid+".json"),consumed=join(consumedDir,digest+".json");let b;try{try{readFileSync(consumed);stop("HELPER_ACTION_REPLAYED")}catch(e){if(e&&e.code!=="ENOENT")stop()}b=envelope(pending,digest);assets(b);try{renameSync(pending,running)}catch{try{readFileSync(consumed);stop("HELPER_ACTION_REPLAYED")}catch{}stop()}writeFileSync(consumed,JSON.stringify({schema:"clockchain.agent-harness-consumed-action/v1",commandSha256:b.commandSha256})+"\n",{encoding:"utf8",flag:"wx",mode:0o600});mkdirSync(resolve(b.stateDir),{recursive:true,mode:0o700});const child=spawnSync(b.file,b.args,{cwd:b.cwd,env:process.env,encoding:"utf8",maxBuffer:MAX});if(child.error||!Number.isSafeInteger(child.status))stop("HELPER_EXECUTION_LAUNCH_FAILED");if(child.status!==0)stop("HELPER_OPERATION_FAILED");if(typeof child.stdout!=="string"||Buffer.byteLength(child.stdout)<2||Buffer.byteLength(child.stdout)>MAX||!child.stdout.endsWith("\n")||child.stdout.slice(0,-1).includes("\n"))stop("HELPER_OUTPUT_INVALID");let result;try{result=JSON.parse(child.stdout)}catch{stop("HELPER_OUTPUT_INVALID")}if(!result||typeof result!=="object"||Array.isArray(result))stop("HELPER_OUTPUT_INVALID");if(b.completionRequired){try{await complete(b,result)}catch{stop("HELPER_COMPLETION_FAILED")}}process.stdout.write(child.stdout)}catch{stop()}finally{try{rmSync(running,{force:true})}catch{}}}
 main();
+`;
+}
+
+// Dependency-free stdio MCP server (newline-delimited JSON-RPC 2.0) exposing
+// exactly one zero-input tool. The tool carries no model-supplied parameters
+// at all — it delegates to the digest-bound executable, which internally
+// discovers the single staged pending action, so no action id, digest, path,
+// or command ever crosses the model boundary. stdout is the RPC channel, so
+// the helper result travels inside the tool response, never raw on stdout.
+function adapterMcpServer() {
+  return String.raw`"use strict";
+const { spawnSync }=require("node:child_process");
+const { join }=require("node:path");
+const { createInterface }=require("node:readline");
+const EXEC=join(__dirname,"bin","clockchain-agent-authorize");
+const TOOL="authorize_local_action";
+const MAX=65536;
+const HELPER_CODES=new Set(["HELPER_COMMAND_MISMATCH","HELPER_ACTION_EXPIRED","HELPER_ACTION_REPLAYED","HELPER_EXECUTION_LAUNCH_FAILED","HELPER_OPERATION_FAILED","HELPER_OUTPUT_INVALID","HELPER_COMPLETION_FAILED"]);
+function send(message){process.stdout.write(JSON.stringify(message)+"\n")}
+function result(id,value){send({jsonrpc:"2.0",id,result:value})}
+function error(id,code,message){send({jsonrpc:"2.0",id,error:{code,message}})}
+// Model-visible failure text is restricted to the allowlisted one-field
+// {"code":"HELPER_*"} contract; raw stderr (paths, runtime text) never crosses.
+function failureText(stderr){
+  if(typeof stderr==="string"&&stderr.trim().length>0&&Buffer.byteLength(stderr)<256){
+    try{const parsed=JSON.parse(stderr.trim());if(parsed&&typeof parsed==="object"&&!Array.isArray(parsed)&&Object.keys(parsed).join(",")==="code"&&HELPER_CODES.has(parsed.code))return parsed.code}catch{}
+  }
+  return"adapter rejected the action";
+}
+function call(id,params){
+  if(!params||typeof params!=="object"||Array.isArray(params))return error(id,-32602,"invalid params");
+  const keys=Object.keys(params);
+  if(params.name!==TOOL||keys.some((key)=>!["name","arguments","_meta"].includes(key)))return error(id,-32602,"unknown tool");
+  const args=params.arguments;
+  if(args!==undefined&&(!args||typeof args!=="object"||Array.isArray(args)||Object.keys(args).length!==0))return error(id,-32602,"tool takes no arguments");
+  const child=spawnSync(EXEC,[],{cwd:join(__dirname,".."),env:process.env,encoding:"utf8",maxBuffer:MAX});
+  if(child.error||!Number.isSafeInteger(child.status))return result(id,{content:[{type:"text",text:"adapter launch failed"}],isError:true});
+  if(child.status!==0)return result(id,{content:[{type:"text",text:failureText(child.stderr)}],isError:true});
+  return result(id,{content:[{type:"text",text:child.stdout.trim()}]});
+}
+createInterface({input:process.stdin,terminal:false}).on("line",(line)=>{
+  if(line.trim().length===0||Buffer.byteLength(line)>MAX)return;
+  let m;try{m=JSON.parse(line)}catch{return}
+  if(m===null||typeof m!=="object"||Array.isArray(m))return;
+  if(m.id===undefined||m.id===null)return;
+  if(m.method==="initialize")return result(m.id,{protocolVersion:"2024-11-05",capabilities:{tools:{listChanged:false}},serverInfo:{name:"clockchain-local-adapter",version:"1.0.0"}});
+  if(m.method==="ping")return result(m.id,{});
+  if(m.method==="tools/list")return result(m.id,{tools:[{name:TOOL,description:"Execute the one staged signed local action for this role; takes no arguments.",inputSchema:{type:"object",properties:{},additionalProperties:false}}]});
+  if(m.method==="tools/call")return call(m.id,m.params);
+  return error(m.id,-32601,"method not found");
+});
 `;
 }
 
@@ -352,8 +410,9 @@ function executionFailureStage(error) {
   })[parsed.code] ?? "execution-launch";
 }
 
-async function createCompletionSocket({ deadlineMs, platform, socketRoot }) {
+async function createCompletionSocket({ deadlineMs, onConsumed, platform, socketRoot }) {
   if (!["darwin", "linux"].includes(platform) || !Number.isSafeInteger(deadlineMs) || deadlineMs < 1) fail();
+  if (onConsumed !== undefined && typeof onConsumed !== "function") fail();
   const root = absolute(socketRoot);
   await ensurePrivateSocketRoot(root);
   const socketPath = join(root, "completion.sock");
@@ -431,6 +490,10 @@ async function createCompletionSocket({ deadlineMs, platform, socketRoot }) {
           }
           if (action.state === "failed" || action.completion === null) fail();
           await action.completion;
+          // Promotion is part of acceptance: the next queued action must be
+          // published before the adapter observes accepted:true, and a
+          // promotion failure rejects the completion.
+          onConsumed?.(action);
           socket.end('{"accepted":true}\n');
         } catch {
           socket.end('{"accepted":false}\n');
@@ -518,13 +581,42 @@ export async function createVerifiedReleaseActionRecorder(input = {}) {
   const root = join(workspace, ".clockchain-adapter");
   const bin = join(root, "bin");
   const pending = join(root, "pending");
+  const queued = join(root, "queued");
   const running = join(root, "running");
   const consumed = join(root, "consumed");
   try {
-    for (const path of [root, bin, pending, running, consumed]) await privateDirectory(path);
+    for (const path of [root, bin, pending, queued, running, consumed]) await privateDirectory(path);
   } catch (error) { restage(error, "adapter-layout"); }
+  let actionSeq = 0;
+  const QUEUED_NAME = /^[0-9]{6}-[0-9a-f]{64}\.json$/;
+  const PENDING_NAME = /^[0-9a-f]{64}\.json$/;
+  // Exposes at most one executable pending action at a time. A queued action is
+  // promoted only when the pending slot is empty and nothing is mid-flight —
+  // or unconditionally inside the completion-accept path of the previous
+  // action, before the accepted response is written (the consumed action's
+  // running entry is removed by the wrapper's own finally, so a leftover
+  // running file must not block that promotion). Any unexpected entry in
+  // pending or queued is corrupt state and fails closed.
+  function promoteNextAction({ force = false } = {}) {
+    const pendingEntries = readdirSync(pending);
+    for (const entry of pendingEntries) if (!PENDING_NAME.test(entry)) fail();
+    if (pendingEntries.length !== 0) return;
+    if (!force && readdirSync(running).length !== 0) return;
+    const entries = readdirSync(queued);
+    for (const entry of entries) if (!QUEUED_NAME.test(entry)) fail();
+    if (entries.length === 0) return;
+    const first = entries.sort()[0];
+    renameSync(join(queued, first), join(pending, `${first.slice(7, -5)}.json`));
+  }
   let completion;
-  try { completion = await createCompletionSocket({ deadlineMs: completionDeadlineMs, platform, socketRoot }); }
+  try {
+    completion = await createCompletionSocket({
+      deadlineMs: completionDeadlineMs,
+      onConsumed: () => promoteNextAction({ force: true }),
+      platform,
+      socketRoot,
+    });
+  }
   catch (error) { restage(error, "completion-socket"); }
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const publicKeyDer = publicKey.export({ type: "spki", format: "der" }).toString("base64");
@@ -535,6 +627,8 @@ export async function createVerifiedReleaseActionRecorder(input = {}) {
     path: join(bin, "clockchain-agent-authorize.cjs"),
     bytes: Buffer.from(adapterPayload(publicKeyDer, completionDeadlineMs), "utf8"),
   });
+  const mcpServer = join(root, "mcp-server.cjs");
+  await writePrivateFile({ path: mcpServer, bytes: Buffer.from(adapterMcpServer(), "utf8") });
   await chmod(executable, 0o500);
   let completionHandlerSet = false;
   const retainedByCommand = new Map();
@@ -609,9 +703,9 @@ export async function createVerifiedReleaseActionRecorder(input = {}) {
     });
     const signature = signBytes(null, Buffer.from(JSON.stringify(body)), privateKey).toString("base64");
     const bytes = `${JSON.stringify({ schema: "clockchain.agent-harness-bound-action/v1", body, signature })}\n`;
-    const target = join(pending, `${expected.commandSha256}.json`);
-    try { writeFileSync(target, bytes, { encoding: "utf8", flag: "wx", mode: 0o600 }); }
-    catch (error) { if (error?.code !== "EEXIST" || readFileSync(target, "utf8") !== bytes) fail(); }
+    // The completion registration must exist before the envelope can ever be
+    // published to pending — a pending file without a registered action is
+    // unreachable corrupt state.
     completion.actions.set(actionId, {
       actionNonce,
       argv: Object.freeze([...argv]),
@@ -625,6 +719,11 @@ export async function createVerifiedReleaseActionRecorder(input = {}) {
       completion: null,
       completionResultDigest: null,
     });
+    const staged = join(queued, `${String(actionSeq).padStart(6, "0")}-${expected.commandSha256}.json`);
+    actionSeq += 1;
+    try { writeFileSync(staged, bytes, { encoding: "utf8", flag: "wx", mode: 0o600 }); }
+    catch (error) { if (error?.code !== "EEXIST" || readFileSync(staged, "utf8") !== bytes) fail(); }
+    promoteNextAction();
     retainedByCommand.set(expected.commandSha256, action);
     return action;
   }
@@ -640,9 +739,21 @@ export async function createVerifiedReleaseActionRecorder(input = {}) {
       action === undefined || action.actionId !== input.actionId || action.role !== input.role ||
       action.sessionId !== input.sessionId
     ) fail();
+    // The wrapper discovers the pending action itself; this call site only
+    // verifies the requested action is the one currently executable. A consumed
+    // descriptor is replayed — reject it locally without spawning the wrapper,
+    // so a stale descriptor can never execute the *next* pending action under
+    // the wrong requested identity. The bare model-facing command may advance
+    // the queue; this descriptor API stays action-bound.
+    if (existsSync(join(consumed, `${input.commandSha256}.json`))) {
+      throw stagedFailure("execution-action-replayed");
+    }
+    const pendingEntries = readdirSync(pending);
+    for (const entry of pendingEntries) if (!PENDING_NAME.test(entry)) fail();
+    if (pendingEntries.length !== 1 || pendingEntries[0] !== `${input.commandSha256}.json`) fail();
     let stdout;
     try {
-      ({ stdout } = await execFileAsync(runtime, [executable, input.commandSha256], {
+      ({ stdout } = await execFileAsync(runtime, [executable], {
         cwd: workspace,
         encoding: "utf8",
         env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}`, TMPDIR: tmp },
@@ -675,11 +786,14 @@ export async function createVerifiedReleaseActionRecorder(input = {}) {
     actionRecorder: Object.freeze({ executeAuthorizedAction, record: recordRetainedAction }),
     bin,
     consumed,
+    mcpServer,
     pending,
+    queued,
     record: recordRetainedAction,
     recordRetainedAction,
     executeAuthorizedAction,
     root,
+    running,
     trustedAdapterPublicKey,
     setCompletionHandler(handler) {
       if (completionHandlerSet) fail();
