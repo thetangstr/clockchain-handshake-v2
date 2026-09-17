@@ -21,6 +21,7 @@ import {
   buildClientCommands,
   createFreshAgentRun,
   recordClaudeMcpToolCalls,
+  responderPrompt,
   roleAccessFromValue,
   runFreshAgentHandshake,
   validateHelperCommand,
@@ -257,6 +258,61 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
   for (const candidate of bad) assert.throws(() => validateHelperCommand(candidate));
 });
 
+test("fresh-agent prompts lock accept-first ordering and the adapter-only contract", async () => {
+  const fixture = JSON.parse(await readFile(new URL("./fixtures/fresh-agent/prompts.json", import.meta.url), "utf8"));
+  for (const [role, prompt] of [["initiator", fixture.initiator], ["responder", fixture.responder]]) {
+    assert.match(prompt, /agent_handshake_\* MCP tools/, `${role} must require MCP-first driving`);
+    assert.match(prompt, /localAction\.helperStep\.approvalCommand/, `${role} must name the approvalCommand field`);
+    assert.match(prompt, /clockchain-agent-authorize/, `${role} must name the adapter executable`);
+    assert.match(prompt, /never hand-sign/, `${role} must forbid manual cryptography`);
+    assert.match(prompt, /unavailable and forbidden/, `${role} must forbid generic shell and editing tools`);
+  }
+  assert.match(fixture.responder, /first tool call must be agent_handshake_accept_invitation/, "responder must accept before anything else");
+  assert.match(fixture.responder, /acceptanceIdempotencyKey "<GENERATED ACCEPTANCE IDEMPOTENCY KEY>"/, "responder must be given a pre-generated key");
+  assert.match(fixture.responder, /never invent your own/, "responder must not invent the key");
+  assert.doesNotMatch(fixture.responder, /agent_handshake_invite/, "responder must never invite");
+});
+
+test("responderPrompt substitutes a valid UUIDv4 acceptance key outside the model path", () => {
+  const invitation = `${"a".repeat(50)}.${"b".repeat(50)}`;
+  const template = 'respond <PASTE THE INITIATOR INVITATION> with key "<GENERATED ACCEPTANCE IDEMPOTENCY KEY>"';
+  const prompt = responderPrompt(template, invitation);
+  assert.match(prompt, /key "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"/);
+  assert.doesNotMatch(prompt, /<GENERATED ACCEPTANCE IDEMPOTENCY KEY>/);
+  assert.match(prompt, new RegExp(`respond ${invitation}`));
+});
+
+test("responderPrompt fails closed on missing or duplicate acceptance-key placeholders", () => {
+  const invitation = `${"a".repeat(50)}.${"b".repeat(50)}`;
+  const key = "<GENERATED ACCEPTANCE IDEMPOTENCY KEY>";
+  assert.throws(() => responderPrompt("respond <PASTE THE INITIATOR INVITATION> now", invitation), /failed safely/);
+  assert.throws(() => responderPrompt(`respond <PASTE THE INITIATOR INVITATION> ${key} ${key}`, invitation), /failed safely/);
+  assert.throws(() => responderPrompt(`respond ${key} twice`, invitation), /failed safely/);
+});
+
+test("claude launch allowedTools matches the prompt contract exactly", () => {
+  const commands = buildClientCommands({
+    client: "claude",
+    manifestDigest: DIGEST,
+    prompt: "respond <PASTE THE INITIATOR INVITATION> now",
+    workspace: "/tmp/role",
+  });
+  const flagIndex = commands.launch.args.indexOf("--allowedTools");
+  assert.ok(flagIndex > 0);
+  const tools = commands.launch.args[flagIndex + 1].split(",");
+  for (const tool of tools) {
+    const allowed =
+      CLOCKCHAIN_HANDSHAKE_TOOLS.some((name) => tool === `mcp__clockchain-handshake__${name}`) ||
+      tool === "Bash(clockchain-agent-authorize *)" ||
+      tool === "Read(./manifest.json)" ||
+      tool === "Read(./clockchain-agent-handshake.cjs)";
+    assert.ok(allowed, `unexpected tool grant: ${tool}`);
+  }
+  assert.ok(tools.includes("Bash(clockchain-agent-authorize *)"));
+  assert.ok(!tools.includes("Bash"), "bare Bash must never be granted");
+  assert.ok(!tools.includes("Edit"), "Edit must never be granted");
+});
+
 test("preloads the digest-verified manifest and helper into both workspaces before launch", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "fresh-agent-preload-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
@@ -307,7 +363,7 @@ test("preloads the digest-verified manifest and helper into both workspaces befo
     modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
     monitor: async () => ({ chronology: ["INVITATION_CREATED", "INVITATION_CLAIMED", "IDENTITIES_REGISTERED", "CERTIFIED"], sessionId: SESSION }),
     parent,
-    prompts: { initiator: "init", responder: "consume <PASTE THE INITIATOR INVITATION> now" },
+    prompts: { initiator: "init", responder: "consume <PASTE THE INITIATOR INVITATION> now <GENERATED ACCEPTANCE IDEMPOTENCY KEY>" },
     release: releaseAgreement(fixture.manifestDigest),
     contractClientFactory: stubContractClientFactory(),
     releasePin: fixture.releasePin,
@@ -429,7 +485,7 @@ test("retains model-visible helper steps in the per-role digest-bound adapter", 
     modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
     monitor: async () => ({ chronology: ["CERTIFIED"], sessionId: SESSION }),
     parent,
-    prompts: { initiator: "init", responder: "consume <PASTE THE INITIATOR INVITATION> now" },
+    prompts: { initiator: "init", responder: "consume <PASTE THE INITIATOR INVITATION> now <GENERATED ACCEPTANCE IDEMPOTENCY KEY>" },
     release: releaseAgreement(fixture.manifestDigest),
     contractClientFactory: stubContractClientFactory(),
     releasePin: fixture.releasePin,
@@ -607,7 +663,7 @@ test("default release fetch follows the signed GitHub CDN hop to load pinned byt
     modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
     monitor: async () => ({ chronology: ["INVITATION_CREATED", "CERTIFIED"], sessionId: SESSION }),
     parent,
-    prompts: { initiator: "init", responder: "consume <PASTE THE INITIATOR INVITATION> now" },
+    prompts: { initiator: "init", responder: "consume <PASTE THE INITIATOR INVITATION> now <GENERATED ACCEPTANCE IDEMPOTENCY KEY>" },
     release: releaseAgreement(fixture.manifestDigest),
     contractClientFactory: stubContractClientFactory(),
     releasePin: fixture.releasePin,
@@ -718,7 +774,7 @@ test("starts the Responder only after the Initiator emits its actual one-time in
     },
     monitor: async () => ({ chronology: ["INVITATION_CREATED", "INVITATION_CLAIMED", "IDENTITIES_REGISTERED", "CERTIFIED"], sessionId: SESSION }),
     parent,
-    prompts: { initiator: "init prompt", responder: "consume <PASTE THE INITIATOR INVITATION> now" },
+    prompts: { initiator: "init prompt", responder: "consume <PASTE THE INITIATOR INVITATION> now <GENERATED ACCEPTANCE IDEMPOTENCY KEY>" },
     release: releaseAgreement(fixture.manifestDigest),
     contractClientFactory: stubContractClientFactory(),
     releasePin: fixture.releasePin,
@@ -801,7 +857,7 @@ test("rejects a three-segment invitation lookalike before starting the Responder
     modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
     monitor: async () => { throw new Error("unreachable"); },
     parent,
-    prompts: { initiator: "init", responder: `respond ${"<PASTE THE INITIATOR INVITATION>"}` },
+    prompts: { initiator: "init", responder: `respond ${"<PASTE THE INITIATOR INVITATION>"} <GENERATED ACCEPTANCE IDEMPOTENCY KEY>` },
     release: releaseAgreement(fixture.manifestDigest),
     contractClientFactory: stubContractClientFactory(),
     releasePin: fixture.releasePin,
@@ -1022,7 +1078,7 @@ test("ignores helper steps in model-authored text and non-Clockchain tool result
     modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
     monitor: async () => ({ chronology: ["CERTIFIED"], sessionId: SESSION }),
     parent,
-    prompts: { initiator: "init", responder: "consume <PASTE THE INITIATOR INVITATION> now" },
+    prompts: { initiator: "init", responder: "consume <PASTE THE INITIATOR INVITATION> now <GENERATED ACCEPTANCE IDEMPOTENCY KEY>" },
     release: releaseAgreement(fixture.manifestDigest),
     contractClientFactory: stubContractClientFactory(),
     releasePin: fixture.releasePin,
