@@ -29,6 +29,55 @@ function ports(fixture, { existing = {}, registrationBlock } = {}) {
   };
 }
 
+function sessionFor(fixture) {
+  return {
+    expectedPublicKey: fixture.host.publicKey,
+    hostSessionKeyCertificate: fixture.hostSessionKeyCertificate,
+    keyId: fixture.host.keyId,
+    privateKeyPem: fixture.host.privateKeyPem,
+    protocol: "clockchain.agent-handshake/v2",
+    repositorySha: "d".repeat(40),
+    sessionDeadlineMs: 1786337600000,
+    sessionId: "22222222-3333-4444-8555-666666666666",
+    sessionOpenedAtMs: 1786337000000,
+    sessionOpenedBlock: "6999",
+    terms: {
+      reference: "NS-1847",
+      statement: "Northstar Logistics and Harbor Supply authorize these two independently controlled agents to communicate about shipment reference NS-1847 for 90 seconds.",
+      validForSeconds: "90",
+      identityPolicy: fixture.descriptorEnvelope.descriptor.identityPolicy,
+    },
+  };
+}
+
+function sessionPorts(fixture, overrides = {}) {
+  const active = ports(fixture);
+  const failed = [];
+  Object.assign(active, {
+    acceptanceSigned: async () => {},
+    anchorsRecorded: async () => {},
+    awaitAcceptance: async () => fixture.acceptanceEnvelope,
+    awaitAnchors: async () => ({
+      receipts: fixture.receipts,
+      transitions: fixture.transitions,
+    }),
+    awaitEvidence: async (role) => fixture.evidence[role],
+    awaitInvitationClaimed: async () => 1786337000001,
+    awaitProposal: async () => fixture.proposalEnvelope,
+    certificateIssued: async () => {},
+    checkerStage: async () => {},
+    evidenceReceived: async () => {},
+    failed: async (code) => { failed.push(code); },
+    partiesReady: async () => {},
+    proposalSigned: async () => {},
+    publishInitial: async () => {},
+    publishDescriptor: async () => {},
+    publishResult: async () => {},
+  });
+  Object.assign(active, overrides);
+  return { failed, ports: active };
+}
+
 test("required-fresh reserves both exact claims, funds role-tagged seats, then proves post-session ownership", async () => {
   const fixture = await buildV2Fixture();
   const active = ports(fixture);
@@ -111,53 +160,101 @@ test("duplicate claims, pre-session fresh registration, and party drift fail clo
 
 test("the v2 host verifies the full artifact chain and publishes one closing certificate", async () => {
   const fixture = await buildV2Fixture();
-  const active = ports(fixture);
+  const { ports: active } = sessionPorts(fixture);
   let publishedDescriptor = null;
   let publishedResult = null;
   Object.assign(active, {
-    acceptanceSigned: async () => {},
-    anchorsRecorded: async () => {},
-    awaitAcceptance: async () => fixture.acceptanceEnvelope,
-    awaitAnchors: async () => ({
-      receipts: fixture.receipts,
-      transitions: fixture.transitions,
-    }),
-    awaitEvidence: async (role) => fixture.evidence[role],
-    awaitInvitationClaimed: async () => 1786337000001,
-    awaitProposal: async () => fixture.proposalEnvelope,
-    certificateIssued: async () => {},
-    checkerStage: async () => {},
-    evidenceReceived: async () => {},
-    failed: async () => {},
-    partiesReady: async () => {},
-    proposalSigned: async () => {},
-    publishInitial: async () => {},
     publishDescriptor: async (value) => { publishedDescriptor = value; },
     publishResult: async (value) => { publishedResult = value; },
   });
   const result = await runAgentHandshakeV2HostSession({
     now: () => 1786337160000,
     ports: active,
-    session: {
-      expectedPublicKey: fixture.host.publicKey,
-      hostSessionKeyCertificate: fixture.hostSessionKeyCertificate,
-      keyId: fixture.host.keyId,
-      privateKeyPem: fixture.host.privateKeyPem,
-      protocol: "clockchain.agent-handshake/v2",
-      repositorySha: "d".repeat(40),
-      sessionDeadlineMs: 1786337600000,
-      sessionId: "22222222-3333-4444-8555-666666666666",
-      sessionOpenedAtMs: 1786337000000,
-      sessionOpenedBlock: "6999",
-      terms: {
-        reference: "NS-1847",
-        statement: "Northstar Logistics and Harbor Supply authorize these two independently controlled agents to communicate about shipment reference NS-1847 for 90 seconds.",
-        validForSeconds: "90",
-        identityPolicy: fixture.descriptorEnvelope.descriptor.identityPolicy,
-      },
-    },
+    session: sessionFor(fixture),
   });
   assert.deepEqual(publishedDescriptor, result.descriptorEnvelope);
   assert.deepEqual(publishedResult, result.certificate);
   assert.equal(result.verdict.outcome, "VERIFIED");
+});
+
+test("v2 host publishes funding-unavailable once when reservation fails and preserves the source error", async () => {
+  const fixture = await buildV2Fixture();
+  const source = new Error("budget exhausted");
+  const harness = sessionPorts(fixture, {
+    reserveFunding: async () => { throw source; },
+  });
+
+  await assert.rejects(
+    () => runAgentHandshakeV2HostSession({
+      now: () => 1786337160000,
+      ports: harness.ports,
+      session: sessionFor(fixture),
+    }),
+    (error) => error === source,
+  );
+  assert.deepEqual(harness.failed, ["AGENT_HANDSHAKE_V2_FUNDING_UNAVAILABLE"]);
+});
+
+test("v2 host publishes funding-unavailable once when either transfer fails and preserves the source error", async () => {
+  const fixture = await buildV2Fixture();
+  for (const failingRole of ["initiator", "responder"]) {
+    const source = new Error(`${failingRole} transfer failed`);
+    const harness = sessionPorts(fixture, {
+      fundIdentity: async ({ role }) => {
+        if (role === failingRole) throw source;
+      },
+    });
+
+    await assert.rejects(
+      () => runAgentHandshakeV2HostSession({
+        now: () => 1786337160000,
+        ports: harness.ports,
+        session: sessionFor(fixture),
+      }),
+      (error) => error === source,
+    );
+    assert.deepEqual(harness.failed, ["AGENT_HANDSHAKE_V2_FUNDING_UNAVAILABLE"]);
+  }
+});
+
+test("v2 host publishes identity-preparation-failed once for non-funding preparation failures", async () => {
+  const fixture = await buildV2Fixture();
+  const source = new Error("identity claim unavailable");
+  const harness = sessionPorts(fixture, {
+    awaitIdentityClaim: async () => { throw source; },
+  });
+
+  await assert.rejects(
+    () => runAgentHandshakeV2HostSession({
+      now: () => 1786337160000,
+      ports: harness.ports,
+      session: sessionFor(fixture),
+    }),
+    (error) => error === source,
+  );
+  assert.deepEqual(harness.failed, ["AGENT_HANDSHAKE_V2_IDENTITY_PREPARATION_FAILED"]);
+});
+
+test("v2 host keeps the preparation error when failure publication itself fails", async () => {
+  const fixture = await buildV2Fixture();
+  const source = new Error("transfer failed");
+  const publishFailure = new Error("monitor unavailable");
+  const failed = [];
+  const harness = sessionPorts(fixture, {
+    failed: async (code) => {
+      failed.push(code);
+      throw publishFailure;
+    },
+    fundIdentity: async () => { throw source; },
+  });
+
+  await assert.rejects(
+    () => runAgentHandshakeV2HostSession({
+      now: () => 1786337160000,
+      ports: harness.ports,
+      session: sessionFor(fixture),
+    }),
+    (error) => error === source,
+  );
+  assert.deepEqual(failed, ["AGENT_HANDSHAKE_V2_FUNDING_UNAVAILABLE"]);
 });

@@ -360,9 +360,9 @@ test("the message map covers every status and every frozen reason code exactly o
     assert.equal(typeof reasonMessage(code), "string");
     assert.ok(reasonMessage(code).length > 0);
   }
-  // The frozen public set has exactly 16 members (14 original + 2 rehearsal-
-  // gate additions, docs/deviations.md D7).
-  assert.equal(REASON_CODES.length, 16);
+  // The frozen public set has exactly 15 members (13 original + 2 rehearsal-
+  // gate additions, docs/deviations.md D7 and D10).
+  assert.equal(REASON_CODES.length, 15);
   assert.equal(STATUS_CODES.length, 12);
 });
 

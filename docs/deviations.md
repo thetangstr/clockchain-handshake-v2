@@ -84,3 +84,19 @@ the plan. Discovered by computing the import closure rather than reading the lis
 independently ordered anchor list exists there. The production path has both
 marker-bound party evidence and independently verified live anchors, so it can
 classify exact recognizable reorders without accepting a normalized document.
+
+## D10 — duplicate funding is not a legacy public reason
+**Plan/spec:** keep `FUNDING_REPLAYED` in the frozen public reason set and describe
+v2 funding as if the durable budget ledger stored transaction facts.
+**Done instead:** retired `FUNDING_REPLAYED` from the public monitor contract. The
+negative check reports the pure funding journal's actual internal code,
+`BILATERAL_FUNDING_REPLACED_TRANSFER`, and v2 host preparation failures now publish
+v2-specific monitor reasons: `AGENT_HANDSHAKE_V2_FUNDING_UNAVAILABLE` for funding
+reservation or transfer failure, and `AGENT_HANDSHAKE_V2_IDENTITY_PREPARATION_FAILED`
+for other identity-preparation failure.
+**Why:** the deployed v2 path has a durable reservation/budget ledger, not a
+transaction checkpoint journal. A crash after reservation may strand the session
+and budget fail-closed; translating that into a legacy public replay reason would
+claim behavior the product does not provide. Transaction checkpoint,
+reconciliation, and resume semantics are deferred to milestone
+`V2-FUNDING-RECONCILIATION`.

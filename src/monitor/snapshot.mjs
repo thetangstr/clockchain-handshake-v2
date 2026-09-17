@@ -57,7 +57,6 @@ export const REASON_CODES = Object.freeze([
   "ROLE_ALREADY_BOUND",
   "RATE_BLOCKED",
   "AMOUNT_UNRESOLVED",
-  "FUNDING_REPLAYED",
   "FAILED",
   "REHEARSAL_NOT_AUTHORIZABLE",
   "REHEARSAL_SUBJECT_MISMATCH",
@@ -493,8 +492,6 @@ export const REASON_MESSAGES = Object.freeze({
     "The request was temporarily blocked to prevent overload; it did not go through.",
   AMOUNT_UNRESOLVED:
     "The payment amount could not be pinned down to a single value.",
-  FUNDING_REPLAYED:
-    "A funding step was reused instead of happening fresh, so it was refused.",
   FAILED: "Something in the process failed and the run could not be authorized.",
   REHEARSAL_NOT_AUTHORIZABLE:
     "This was a private rehearsal, which is never allowed to reach a real authorization.",

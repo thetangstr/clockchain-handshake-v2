@@ -169,6 +169,12 @@ function requireSessionPorts(ports) {
   }
 }
 
+async function publishPreparationFailure(ports, code) {
+  try {
+    await ports.failed(code);
+  } catch {}
+}
+
 export async function runAgentHandshakeV2HostSession({
   now = Date.now,
   ports,
@@ -185,12 +191,48 @@ export async function runAgentHandshakeV2HostSession({
   ) invalid();
   await ports.publishInitial();
   await ports.awaitInvitationClaimed();
-  const parties = await prepareAgentHandshakeV2Identities({
-    identityPolicy: session.terms.identityPolicy,
-    ports,
-    sessionId: session.sessionId,
-    sessionOpenedBlock: session.sessionOpenedBlock,
-  });
+  let fundingPreparationError = undefined;
+  let sawFundingPreparationError = false;
+  const preparationPorts = { ...ports };
+  if (typeof ports.fundIdentity === "function") {
+    preparationPorts.fundIdentity = async (...args) => {
+      try {
+        return await ports.fundIdentity(...args);
+      } catch (error) {
+        sawFundingPreparationError = true;
+        fundingPreparationError = error;
+        throw error;
+      }
+    };
+  }
+  if (typeof ports.reserveFunding === "function") {
+    preparationPorts.reserveFunding = async (...args) => {
+      try {
+        return await ports.reserveFunding(...args);
+      } catch (error) {
+        sawFundingPreparationError = true;
+        fundingPreparationError = error;
+        throw error;
+      }
+    };
+  }
+  let parties;
+  try {
+    parties = await prepareAgentHandshakeV2Identities({
+      identityPolicy: session.terms.identityPolicy,
+      ports: preparationPorts,
+      sessionId: session.sessionId,
+      sessionOpenedBlock: session.sessionOpenedBlock,
+    });
+  } catch (error) {
+    await publishPreparationFailure(
+      ports,
+      sawFundingPreparationError && Object.is(error, fundingPreparationError)
+        ? "AGENT_HANDSHAKE_V2_FUNDING_UNAVAILABLE"
+        : "AGENT_HANDSHAKE_V2_IDENTITY_PREPARATION_FAILED",
+    );
+    throw error;
+  }
   await ports.partiesReady(parties);
   const proposalEnvelope = await ports.awaitProposal();
   const proposal = await verifyAgentHandshakeV2Proposal({

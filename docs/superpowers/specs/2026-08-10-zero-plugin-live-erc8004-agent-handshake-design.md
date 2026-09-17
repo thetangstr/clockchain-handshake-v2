@@ -462,7 +462,11 @@ ETH per address, once per session address; at most 0.02 per `required_fresh`
 session; at most 0.20 per rolling hour and 1.00 per UTC day across the public v2
 surface. Exhaustion or queue backpressure fails the session before either role is
 funded. The restart-safe budget ledger stores only public address, session,
-amount, and transaction facts. Production alerts fire before the hourly or daily
+amount, reservation, and budget facts. It does not checkpoint transaction nonce,
+hash, receipt, or reconciliation state; a crash after reservation may strand the
+session and reserved budget fail-closed rather than resume funding. Transaction
+checkpoint, reconciliation, and resume semantics are deferred to milestone
+`V2-FUNDING-RECONCILIATION`. Production alerts fire before the hourly or daily
 ceiling.
 
 The host still never creates a party key, signs a party artifact, chooses a

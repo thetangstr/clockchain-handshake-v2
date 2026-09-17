@@ -36,10 +36,10 @@ export const STATUS_CODES = Object.freeze([
   "VERIFYING",
 ]);
 
-// The frozen public reason-code set (14 original + 2 rehearsal-gate additions,
-// see docs/deviations.md D7). scripts/check-invariants.sh enforces this same
-// set on the verifier/relay/role surfaces; this map exists so the session host
-// dashboard never has to invent wording for a code live, mid-demo.
+// The frozen public reason-code set (13 original + 2 rehearsal-gate additions,
+// see docs/deviations.md D7 and D10). scripts/check-invariants.sh enforces this
+// same set on the verifier/relay/role surfaces; this map exists so the session
+// host dashboard never has to invent wording for a code live, mid-demo.
 export const REASON_CODES = Object.freeze([
   "RENDEZVOUS_UNAVAILABLE",
   "EXPIRED",
@@ -53,7 +53,6 @@ export const REASON_CODES = Object.freeze([
   "ROLE_ALREADY_BOUND",
   "RATE_BLOCKED",
   "AMOUNT_UNRESOLVED",
-  "FUNDING_REPLAYED",
   "FAILED",
   "REHEARSAL_NOT_AUTHORIZABLE",
   "REHEARSAL_SUBJECT_MISMATCH",
@@ -87,7 +86,6 @@ export const REASON_MESSAGES = Object.freeze({
   ROLE_ALREADY_BOUND: "A second agent tried to claim a role this session already bound.",
   RATE_BLOCKED: "Clockchain rate-limited this session's requests.",
   AMOUNT_UNRESOLVED: "The payment amount in the signed terms could not be resolved.",
-  FUNDING_REPLAYED: "A funding transfer was refused as a replay of one already recorded.",
   FAILED: "This step failed. No further detail is safe to show without risking a leak.",
   REHEARSAL_NOT_AUTHORIZABLE: "A rehearsal sub-run reached the emission gate and was correctly refused.",
   REHEARSAL_SUBJECT_MISMATCH: "The verifier was asked to rehearsal-check a stakeholder run and refused.",

@@ -1,8 +1,5 @@
 import assert from "node:assert/strict";
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
 import {
   NEGATIVE_CASES,
@@ -56,58 +53,17 @@ test("no negative case closes without a named code", () => {
 });
 
 // The public-vocabulary facts the script surfaces. They are asserted here so
-// that a later change which makes FUNDING_REPLAYED reachable, or which gives
-// replay-into-a-live-session its own code, breaks this test and forces the
-// script's recorded expectations to be updated with it.
+// that a later change which gives duplicate funding a public code breaks this
+// test and forces the script's recorded expectations to be updated with it.
 test("the reason codes the four cases actually reach are recorded, not assumed", () => {
   const byId = new Map(gating.map((result) => [result.id, result]));
   assert.equal(byId.get("REORDER").code, "REORDERED");
-  // (d) does NOT reach FUNDING_REPLAYED: the ported journal refuses in its own
-  // internal namespace, and the journal is a pure port that must not be edited.
+  // (d) reports the pure journal's own internal namespace. That journal is a
+  // pure port and duplicate-funding replay is not a legacy public reason.
   assert.equal(
     byId.get("DUPLICATE_FUNDING").code,
     "BILATERAL_FUNDING_REPLACED_TRANSFER",
   );
-  assert.notEqual(byId.get("DUPLICATE_FUNDING").code, "FUNDING_REPLAYED");
-});
-
-async function sourceFiles(directory) {
-  const entries = await readdir(directory, { withFileTypes: true });
-  const files = [];
-  for (const entry of entries) {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...(await sourceFiles(path)));
-    } else if (entry.name.endsWith(".mjs")) {
-      files.push(path);
-    }
-  }
-  return files;
-}
-
-test("FUNDING_REPLAYED remains the only display-only pending code", async () => {
-  const root = fileURLToPath(new URL("../src", import.meta.url));
-  const carriers = { FUNDING_REPLAYED: [] };
-  for (const path of await sourceFiles(root)) {
-    const source = await readFile(path, "utf8");
-    for (const code of Object.keys(carriers)) {
-      if (source.includes(`"${code}"`)) {
-        carriers[code].push(path.slice(root.length + 1));
-      }
-      // A thrown code always reaches fail()/terminalCode; a display map never does.
-      assert.doesNotMatch(
-        source,
-        new RegExp(`(fail|terminalCode:|throw[^\\n]*)\\(?\\s*"${code}"`),
-        `${path} appears to raise ${code}; the negative-check expectations must be updated`,
-      );
-    }
-  }
-  // The literal exists only as display labels. If that ever stops being true,
-  // the reason vocabulary has grown and this test should be revisited.
-  assert.deepEqual(carriers.FUNDING_REPLAYED, [
-    "monitor/control-plane/messages.mjs",
-    "monitor/snapshot.mjs",
-  ]);
 });
 
 test("replay into a session that anchored its own run lands on the catch-all", () => {

@@ -21,14 +21,10 @@
  * generic catch-all, the row says so, and the notes below record why. One
  * observation that a reader should not have to dig for:
  *
- *   - FUNDING_REPLAYED is never thrown: the literal appears only in the monitor
- *     display maps. The ported funding
- *     journal refuses the replay under its own prefixed internal namespace, and
- *     the journal is a byte-faithful pure port that must not be edited, so this
- *     script reports the code the journal actually raises.
- *
- * scripts/check-invariants.sh reports FUNDING_REPLAYED as the remaining
- * registered/display-only pending code, not as an emitted runtime reason.
+ *   - Duplicate funding is not translated into a legacy public reason. The
+ *     ported funding journal refuses the replay under its own prefixed internal
+ *     namespace, and the journal is a byte-faithful pure port that must not be
+ *     edited, so this script reports the code the journal actually raises.
  */
 
 import { createHash, generateKeyPairSync } from "node:crypto";
@@ -839,14 +835,9 @@ async function main() {
       "      evidence still reports MALFORMED.\n",
   );
   stdout.write(
-    "    FUNDING_REPLAYED is still not thrown. The ported funding journal\n" +
-      "      refuses the replay under its own internal namespace, and the\n" +
+    "    Duplicate funding reports BILATERAL_FUNDING_REPLACED_TRANSFER. The\n" +
+      "      ported funding journal raises that internal code directly, and the\n" +
       "      journal is a pure port that must not be edited.\n",
-  );
-  stdout.write(
-    "    check-invariants.sh reports FUNDING_REPLAYED as the remaining\n" +
-      "      registered/display-only pending code, not as an emitted runtime\n" +
-      "      reason.\n",
   );
   stdout.write(
     "    REPLAY and REPLAY_ANCHORED do not share a code. The anchored sibling\n" +
