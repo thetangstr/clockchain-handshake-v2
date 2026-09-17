@@ -694,8 +694,11 @@ test("local adapter MCP server lists one zero-input tool and executes ordered ac
   for (let index = 0; index < steps.length; index += 1) {
     const response = await call("tools/call", { name: "authorize_local_action", arguments: {} });
     assert.equal(response.result.isError ?? false, false);
-    const text = response.result.content[0].text;
-    results.push(JSON.parse(text).signed);
+    assert.equal(response.result.content.length, 2);
+    // First block is the exact helper stdout JSON: the model passes it
+    // verbatim to agent_handshake_submit/next, so no wrapping is allowed.
+    assert.equal(response.result.content[0].text, JSON.stringify({ ok: true, signed: "proposal" }));
+    results.push(JSON.parse(response.result.content[0].text).signed);
     if (index + 1 < steps.length) {
       assert.deepEqual(await readdir(recorder.pending), [`${steps[index + 1].commandSha256}.json`]);
     }
@@ -703,6 +706,24 @@ test("local adapter MCP server lists one zero-input tool and executes ordered ac
   assert.deepEqual(results, ["proposal", "proposal", "proposal"]);
   assert.deepEqual(completions.map((completion) => completion.operation), ["init", "policy", "inspect"]);
   assert.equal((await readdir(recorder.pending)).length, 0);
+});
+
+const EXPECTED_CONTINUATION = "Staged local action executed. Execute any remaining staged helper steps in order, then follow the afterSuccess/terminalProof/nextAction instruction from the Clockchain response that issued this action, passing the exact helper output in the first content block. Never end after a local action before terminal certificate verification.";
+
+test("local adapter MCP success response appends the fixed continuation instruction", async (t) => {
+  const { fixture, recorder, tmp, workspace } = await makeContext(t);
+  recorder.setCompletionHandler(async () => ({ accepted: true }));
+  for (const operation of ["init", "register", "sign", "verify-certificate"]) {
+    recorder.record(helperStep({ manifestDigest: fixture.manifestDigest, operation }));
+    const call = mcpClient(t, recorder.mcpServer, workspace, tmp);
+    await call("initialize", {});
+    const response = await call("tools/call", { name: "authorize_local_action" });
+    assert.equal(response.result.isError ?? false, false, operation);
+    assert.deepEqual(response.result.content, [
+      { type: "text", text: JSON.stringify({ ok: true, signed: "proposal" }) },
+      { type: "text", text: EXPECTED_CONTINUATION },
+    ], operation);
+  }
 });
 
 test("local adapter MCP server rejects any tool input or unknown tool without executing", async (t) => {
