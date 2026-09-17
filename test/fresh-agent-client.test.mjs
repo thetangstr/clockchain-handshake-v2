@@ -1537,7 +1537,7 @@ test("runFreshAgentHandshake records secret-safe per-role diagnostics without ra
   assert.equal(initiator.lastMcpLocalActionOperation, "sign");
   assert.equal(initiator.lastAdapterOperation, "sign");
   assert.equal(initiator.lastMcpToolResultFailed, false);
-  assert.deepEqual(initiator.adapterCompletion, { continuation: null, operation: null, state: "none" });
+  assert.deepEqual(initiator.adapterCompletion, { advanceCalls: null, advanceStage: null, continuation: null, operation: null, state: "none" });
   assert.deepEqual(initiator.mcpToolNames, ["agent_handshake_invite", "agent_handshake_next", "agent_handshake_status"]);
   assert.deepEqual(initiator.permissionDeniedTools, ["Bash"]);
   assert.equal(initiator.stdoutLines, 4);
