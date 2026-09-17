@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, realpath, rm } from "node:fs/promises";
+import { chmod, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 
 import { assertSecretFree } from "../core/redact.mjs";
+import { validateAgentHandshakeReleasePin } from "../../scripts/verify-agent-handshake-release.mjs";
 import {
   AGENT_HANDSHAKE_HELPER_NODE_MAJOR,
   AGENT_HANDSHAKE_HELPER_VERSION,
@@ -110,6 +111,46 @@ function validateAssetUrl(value) {
   const asset = raw.slice(RELEASE_PREFIX.length);
   if (!["manifest.json", "clockchain-agent-handshake.cjs"].includes(asset)) fail();
   return Object.freeze({ asset, url: raw });
+}
+
+const RELEASE_REDIRECT_HOST = /(^|\.)githubusercontent\.com$/;
+
+async function defaultFetchReleaseAsset(url) {
+  let current = url;
+  for (let hop = 0; hop < 6; hop += 1) {
+    const response = await fetch(current, { redirect: "manual", signal: AbortSignal.timeout(30_000) });
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get("location");
+      try { await response.body?.cancel(); } catch { /* discard redirect body */ }
+      let next;
+      try { next = new URL(location ?? "", current); } catch { fail(); }
+      if (next.protocol !== "https:" || (next.hostname !== "github.com" && !RELEASE_REDIRECT_HOST.test(next.hostname))) fail();
+      current = next.href;
+      continue;
+    }
+    if (!response.ok) fail();
+    return Buffer.from(await response.arrayBuffer());
+  }
+  fail();
+}
+
+async function loadReleasePin() {
+  try {
+    return JSON.parse(await readFile(new URL("../../release/agent-handshake/pin.json", import.meta.url), "utf8"));
+  } catch { fail(); }
+}
+
+async function fetchVerifiedReleaseAssets(agreement, releasePin, fetchAsset) {
+  const [manifestBytes, helperBytes] = (await Promise.all([
+    fetchAsset(validateAssetUrl(`${RELEASE_PREFIX}manifest.json`).url),
+    fetchAsset(validateAssetUrl(`${RELEASE_PREFIX}clockchain-agent-handshake.cjs`).url),
+  ])).map((bytes) => Buffer.from(bytes));
+  try {
+    validateAgentHandshakeReleasePin(releasePin, { manifestBytes, helperBytes });
+  } catch { fail(); }
+  const fingerprints = releasePin.hostRoots.map((root) => root.fingerprint).sort();
+  if (releasePin.manifestDigest !== agreement.manifestDigest || JSON.stringify(fingerprints) !== JSON.stringify(agreement.hostRoots)) fail();
+  return Object.freeze({ helperBytes, manifestBytes });
 }
 
 function verifiedHelperCommand(manifestDigest, helperArguments) {
@@ -443,12 +484,15 @@ export async function runFreshAgentHandshake({
   prompts,
   release,
   spawnProcess = spawn,
+  fetchReleaseAsset = defaultFetchReleaseAsset,
+  releasePin,
   timeoutMs = 10 * 60 * 1000,
 } = {}) {
   exactObject(clients, ROLES);
   exactObject(prompts, ROLES);
   exactObject(modelEnvironment, ROLES);
   if (typeof configureClient !== "function" || typeof monitor !== "function") fail();
+  if (typeof fetchReleaseAsset !== "function") fail();
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60 * 60 * 1000) fail();
   const pin = validateReleaseAgreement(release);
   const canaries = ROLES.flatMap((role) => Object.values(modelEnvironment[role]));
@@ -456,7 +500,13 @@ export async function runFreshAgentHandshake({
   const children = [];
   let timer;
   try {
+    const checkedInPin = releasePin === undefined ? await loadReleasePin() : releasePin;
     run = await createFreshAgentRun({ parent });
+    const releaseAssets = await fetchVerifiedReleaseAssets(pin, checkedInPin, fetchReleaseAsset);
+    for (const role of ROLES) {
+      await writeFile(join(run.roles[role].workspace, "manifest.json"), releaseAssets.manifestBytes, { mode: 0o600 });
+      await writeFile(join(run.roles[role].workspace, "clockchain-agent-handshake.cjs"), releaseAssets.helperBytes, { mode: 0o600 });
+    }
     const prepared = {};
     for (const role of ROLES) {
       const client = cleanClient(clients[role]);
