@@ -25,6 +25,7 @@ import { sepolia } from "viem/chains";
 import { createMcpClient, mintDemoToken } from "../src/core/clockchain.mjs";
 import { createSignedEnvelope, dSession } from "../src/core/descriptor.mjs";
 import { payerMandateDigest, signPayerMandate } from "../src/core/payer-mandate.mjs";
+import { isCanonicalUsdPaymentAmount } from "../src/core/payment-amount.mjs";
 import { paymentRequestDigest, signPaymentRequest } from "../src/core/payment-request.mjs";
 import { runPayerRole, runPayeeRole } from "../src/core/roles-core.mjs";
 import { verifyBilateralAuthorization } from "../src/core/verdict.mjs";
@@ -114,6 +115,17 @@ async function fundAndRegister(treasuryAccount, label) {
 }
 
 async function main() {
+  const amount = {
+    currency: argValue("--currency", "USD"),
+    value: argValue("--amount", "100"),
+  };
+  if (!isCanonicalUsdPaymentAmount(amount)) {
+    fail(
+      "INVALID_PAYMENT_AMOUNT",
+      "Payment amount must be USD with a positive canonical integer string up to Number.MAX_SAFE_INTEGER.",
+    );
+  }
+
   say("SESSION_STARTED", "Starting a payment-authorization handshake. No money will move at any point.");
 
   const treasury = STUB
@@ -155,13 +167,8 @@ async function main() {
   }
   const issuedAtMs = STUB ? stubBaseTimeMs - 60_000 : Date.now();
   const expiresAtMs = issuedAtMs + 45 * 60_000;   // >= 30 min: published before a human-paced wait
-  // Amount is overridable (--amount, --currency) so the live agent decider can be exercised
-  // on both reasonable and implausible terms: the payer signs a mandate for this amount and
-  // proposes exactly it on-chain. It defaults to an ordinary invoice.
-  const amount = {
-    currency: argValue("--currency", "USD"),
-    value: argValue("--amount", "100"),
-  };
+  // Amount is overridable (--amount, --currency), but the bilateral payment
+  // profile is fail-closed before treasury access or live protocol work.
   const intakeDigest = createHash("sha256").update(intakeRequestId).digest("hex");
 
   const mandateEnvelope = await signPayerMandate({
