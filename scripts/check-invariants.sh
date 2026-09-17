@@ -88,11 +88,14 @@ printf '\n== 3. Human-paced wait sweep ==\n'
 #     — the private adapter-completion roundtrip bound; machine-paced in-process
 #     socket exchange between the authorization executable and the harness, not
 #     a step a human or model waits on
-ALLOW='DEFAULT_REQUEST_TIMEOUT_MS|MAX_CONFIGURED_TIMEOUT_MS|MAX_RETRY_AFTER_MS|MAX_BACKOFF_DELAY_MS|MAX_TOTAL_RETRY_WAIT_MS|RATE_LIMIT_FLOOR_WAIT_MS|MIN_POLL_INTERVAL_MS|MAX_POLL_DURATION_MS|WRITE_RETRY_BACKOFF_MS|ACK_WRITE_BUDGET_MS|MIN_USABLE_POLL_MS|EXPIRY_WINDOW_MS|HUMAN_PACED_MINIMUM_MS|MAX_COMPLETION_DEADLINE_MS|COMPLETION_SOCKET_DEADLINE_MS|POLL_INTERVAL_MS|REQUEST_TIMEOUT_MS|DEFAULT_TIMEOUT_MS|DEFAULT_WAIT_MS|MAX_WAIT_MS'
+#   ADVANCE_WAIT_CAP_MS (src/harness/checkpoint-completion.mjs) — the per-call
+#     long-poll ceiling inside the trusted next-advancement loop; machine-paced
+#     and bounded by the 45s advance budget below the completion deadline
+ALLOW='DEFAULT_REQUEST_TIMEOUT_MS|MAX_CONFIGURED_TIMEOUT_MS|MAX_RETRY_AFTER_MS|MAX_BACKOFF_DELAY_MS|MAX_TOTAL_RETRY_WAIT_MS|RATE_LIMIT_FLOOR_WAIT_MS|MIN_POLL_INTERVAL_MS|MAX_POLL_DURATION_MS|WRITE_RETRY_BACKOFF_MS|ACK_WRITE_BUDGET_MS|MIN_USABLE_POLL_MS|EXPIRY_WINDOW_MS|HUMAN_PACED_MINIMUM_MS|MAX_COMPLETION_DEADLINE_MS|COMPLETION_SOCKET_DEADLINE_MS|POLL_INTERVAL_MS|REQUEST_TIMEOUT_MS|DEFAULT_TIMEOUT_MS|DEFAULT_WAIT_MS|MAX_WAIT_MS|ADVANCE_WAIT_CAP_MS'
 SHORT=$(grep -rnE '^(export )?const [A-Z_]*(TIMEOUT|DEADLINE|WINDOW|WAIT|POLL|EXPIR)[A-Z_]*_MS *=' src 2>/dev/null \
   | grep -vE "$ALLOW" || true)
 info "scanned: src/ for (TIMEOUT|DEADLINE|WINDOW|WAIT|POLL|EXPIR)*_MS constants"
-info "allowlisted machine-paced bounds: 17 names (see script comments for why)"
+info "allowlisted machine-paced bounds: 18 names (see script comments for why)"
 if [ -n "$SHORT" ]; then
   fail "unrecognised wait constant — classify it as human- or machine-paced:"
   printf '        %s\n' "$SHORT"

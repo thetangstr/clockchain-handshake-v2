@@ -1117,6 +1117,8 @@ function observeChild(child, role, all, canaries, { adapter, adapterCompletion, 
       if (typeof onDiagnostic !== "function") return;
       onDiagnostic(role, childDiagnostic({
         adapterCompletion: Object.freeze({
+          advanceCalls: Number.isSafeInteger(adapterCompletion?.advanceCalls) ? adapterCompletion.advanceCalls : null,
+          advanceStage: typeof adapterCompletion?.advanceStage === "string" ? adapterCompletion.advanceStage : null,
           continuation: typeof adapterCompletion?.continuation === "string" ? adapterCompletion.continuation : null,
           operation: typeof adapterCompletion?.operation === "string" ? adapterCompletion.operation : null,
           state: ADAPTER_COMPLETION_STATES.includes(adapterCompletion?.state) ? adapterCompletion.state : "none",
@@ -1375,15 +1377,19 @@ export async function runFreshAgentHandshake({
       // The completion handler must be installed before any retained action is
       // recorded so the first helper completion is never dropped. It builds,
       // signs, and submits the private proposal/acceptance checkpoints.
+      const adapterCompletion = { advanceCalls: null, advanceStage: null, operation: null, state: "none" };
       const completionBinding = createCheckpointCompletionHandler({
         checkpointState,
         getCheckpointClient,
+        onAdvance: ({ calls, stage }) => {
+          adapterCompletion.advanceCalls = calls;
+          adapterCompletion.advanceStage = stage;
+        },
         // Trusted-channel continuation results (join/next/submit) are not
         // model-visible; newly issued helper steps must still stage through
         // the same recorder so the adapter executes them in order.
         recordSteps: (result) => recordTrustedHelperSteps(result, { record: recorder.record, role }),
       });
-      const adapterCompletion = { operation: null, state: "none" };
       recorder.setCompletionHandler(trackAdapterCompletion(completionBinding.handler, adapterCompletion));
       const adapter = Object.freeze({
         ...recorder,

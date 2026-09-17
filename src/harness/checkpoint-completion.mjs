@@ -302,6 +302,50 @@ export const CONTINUATION_TOOL_BY_OPERATION = Object.freeze({
 });
 const CONTINUATION_FREE = Object.freeze(["init", "policy", "verify-certificate"]);
 
+// Bounded next-advancement contract: after a trusted submit or registration,
+// the completion handler itself polls agent_handshake_next over the
+// authenticated client until the coordinator issues the next local action.
+// The model never drives this loop; progress no longer depends on it
+// choosing to call next after an accepted local action.
+const NEXT_CONTINUE_ACTION = "call_agent_handshake_next_with_unchanged_role_access";
+const NEXT_JOIN_ACTION = "call_agent_handshake_join_now_with_access_and_exact_init_policy_inspect_outputs";
+const NEXT_FUNDING_ACTION = "wait_for_clockchain_host_funding_then_call_agent_handshake_next_with_unchanged_role_access";
+const NEXT_FUNDING_VISIBILITY_ACTION = "wait_for_clockchain_host_funding_visibility_then_call_agent_handshake_next_with_unchanged_role_access";
+const NEXT_ACTIONS = Object.freeze([NEXT_CONTINUE_ACTION, NEXT_JOIN_ACTION, NEXT_FUNDING_ACTION, NEXT_FUNDING_VISIBILITY_ACTION]);
+const NEXT_STAGES = Object.freeze([
+  "awaiting_anchors", "awaiting_certificate", "awaiting_counterpart",
+  "awaiting_descriptor", "awaiting_funding", "awaiting_funding_visibility",
+  "awaiting_identity_registration", "awaiting_proposal", "certificate_available",
+  "invited", "party_ready", "sign_acceptance", "sign_evidence", "sign_identity",
+  "sign_proposal",
+]);
+const NEXT_NEEDED = Object.freeze([
+  "agent_handshake_join", "certificate", "counterpart_identity",
+  "counterpart_transition", "descriptor", "erc8004_registration",
+  "funding_record", "funding_visibility", "proposal",
+]);
+// Each dependency-wait stage carries one exact needed/nextAction pair from
+// the coordinator contract; funding waits use their own literal directives.
+const WAIT_RESPONSE_BY_STAGE = Object.freeze({
+  awaiting_anchors: Object.freeze({ needed: "counterpart_transition", nextAction: NEXT_CONTINUE_ACTION }),
+  awaiting_certificate: Object.freeze({ needed: "certificate", nextAction: NEXT_CONTINUE_ACTION }),
+  awaiting_counterpart: Object.freeze({ needed: "counterpart_identity", nextAction: NEXT_CONTINUE_ACTION }),
+  awaiting_descriptor: Object.freeze({ needed: "descriptor", nextAction: NEXT_CONTINUE_ACTION }),
+  awaiting_funding: Object.freeze({ needed: "funding_record", nextAction: NEXT_FUNDING_ACTION }),
+  awaiting_funding_visibility: Object.freeze({ needed: "funding_visibility", nextAction: NEXT_FUNDING_VISIBILITY_ACTION }),
+  awaiting_proposal: Object.freeze({ needed: "proposal", nextAction: NEXT_CONTINUE_ACTION }),
+});
+const ADVANCE_MAX_CALLS = 16;
+const ADVANCE_WAIT_CAP_MS = 15_000;
+// The coordinator only emits 3000/5000; anything larger or non-positive is
+// treated as malformed rather than followed.
+const MAX_RETRY_AFTER_HINT_MS = 15_000;
+// The whole advance sequence must finish safely below the 60-second
+// completion-socket deadline; the reserve leaves room for the requeue and
+// the accepted write after the final call returns.
+const ADVANCE_BUDGET_MS = 45_000;
+const ADVANCE_RESERVE_MS = 5_000;
+
 // Per-role completion boundary for the verified-release action recorder. The
 // handler is invoked only after the adapter executable has run the retained
 // helper action; it then performs the allowlisted deterministic continuation
@@ -315,10 +359,12 @@ const CONTINUATION_FREE = Object.freeze(["init", "policy", "verify-certificate"]
 // completion is acknowledged. bindRoleAccess must be fed the role access the
 // model observed in its MCP stream before any continuation is possible —
 // submissions without a bound handle fail closed.
-export function createCheckpointCompletionHandler({ checkpointState, getCheckpointClient, recordSteps, now = Date.now } = {}) {
+export function createCheckpointCompletionHandler({ advanceBudgetMs = ADVANCE_BUDGET_MS, checkpointState, getCheckpointClient, onAdvance, recordSteps, now = Date.now } = {}) {
   if (checkpointState === null || typeof checkpointState !== "object" || Array.isArray(checkpointState)) fail();
   if (typeof getCheckpointClient !== "function") fail();
   if (recordSteps !== undefined && typeof recordSteps !== "function") fail();
+  if (onAdvance !== undefined && typeof onAdvance !== "function") fail();
+  if (!Number.isSafeInteger(advanceBudgetMs) || advanceBudgetMs < 1_000 || advanceBudgetMs > ADVANCE_BUDGET_MS) fail();
   let roleAccess = null;
 
   function bindRoleAccess(value) {
@@ -358,6 +404,104 @@ export function createCheckpointCompletionHandler({ checkpointState, getCheckpoi
     return roleAccess;
   }
 
+  // Validates one trusted agent_handshake_next result against the exact
+  // coordinator response contract: a localAction makes it actionable, a
+  // retryAfterMs marks a dependency wait, and party_ready with the continue
+  // nextAction is an immediate re-poll signal. Anything else fails closed.
+  function classifyNextResult(result, completion) {
+    if (result === null || typeof result !== "object" || Array.isArray(result)) fail();
+    if (result.role !== undefined && result.role !== completion.role) fail();
+    if (result.sessionId !== undefined && result.sessionId !== completion.sessionId) fail();
+    if (result.stage !== undefined && !NEXT_STAGES.includes(result.stage)) fail();
+    if (result.nextAction !== undefined && !NEXT_ACTIONS.includes(result.nextAction)) fail();
+    if (result.needed !== undefined && result.needed !== null && !NEXT_NEEDED.includes(result.needed)) fail();
+    const hasAction = result.localAction !== undefined && result.localAction !== null;
+    const hasWait = result.retryAfterMs !== undefined;
+    if (hasAction && hasWait) fail();
+    if (hasAction) {
+      if (typeof result.localAction !== "object" || Array.isArray(result.localAction)) fail();
+      if (result.stage === undefined) {
+        // The deployed coordinator's certificateResponse is the only
+        // stage-less action: exact top-level and summary contract, bound
+        // to this completion's role/session, carrying the verify-certificate
+        // helper step the recorder requeues.
+        if (result.role !== completion.role || result.sessionId !== completion.sessionId) fail();
+        if (result.needed !== undefined || result.nextAction !== undefined) fail();
+        const summary = result.certificateSummary;
+        if (summary === null || typeof summary !== "object" || Array.isArray(summary)) fail();
+        if (
+          summary.schema !== "clockchain.agent-handshake-certificate-summary/v1" ||
+          summary.outcome !== "VERIFIED" || !DIGEST.test(summary.resultDigest ?? "") ||
+          summary.role !== completion.role || summary.sessionId !== completion.sessionId
+        ) fail();
+        // The localAction envelope itself must be the exact certificate
+        // contract — a generic wrapper around a certificate-looking summary
+        // is not the coordinator's response.
+        const envelope = result.localAction;
+        if (
+          envelope.executor !== "pinned_helper" ||
+          envelope.operation !== "verify-certificate" ||
+          envelope.stateDir !== "reuse_exact_absolute_state_dir" ||
+          envelope.terminalProof !== "use_verified_helper_output_only"
+        ) fail();
+        const step = envelope.helperStep;
+        if (
+          step === null || typeof step !== "object" || Array.isArray(step) ||
+          step.operation !== "verify-certificate" ||
+          step.role !== completion.role || step.sessionId !== completion.sessionId
+        ) fail();
+        return "action";
+      }
+      if (!NEXT_STAGES.includes(result.stage)) fail();
+      return "action";
+    }
+    if (hasWait) {
+      // A wait is only valid as the full documented shape for its stage:
+      // the stage's exact needed dependency and nextAction literal, plus a
+      // positive bounded retryAfterMs. Bare or partial wait objects, and
+      // any stage/needed/action mix-and-match, fail closed.
+      if (!Number.isSafeInteger(result.retryAfterMs) || result.retryAfterMs <= 0 || result.retryAfterMs > MAX_RETRY_AFTER_HINT_MS) fail();
+      const waitSpec = WAIT_RESPONSE_BY_STAGE[result.stage];
+      if (waitSpec === undefined) fail();
+      if (result.needed !== waitSpec.needed || result.nextAction !== waitSpec.nextAction) fail();
+      return "wait";
+    }
+    if (result.stage === "party_ready" && result.needed === null && result.nextAction === NEXT_CONTINUE_ACTION) return "continue";
+    fail();
+  }
+
+  // Drives agent_handshake_next until the coordinator issues the next local
+  // action, which is requeued through the recorder so the adapter drain picks
+  // it up. The server long-polls each call for up to waitMs; the loop is
+  // bounded by both a fixed call count and a time budget kept safely below
+  // the completion-socket deadline. Waits and continues are followed; a
+  // malformed, mismatched, or unexpected result — including budget or bound
+  // exhaustion — rejects the completion.
+  async function advanceNext(client, access, completion) {
+    const deadline = now() + advanceBudgetMs;
+    for (let calls = 0; calls < ADVANCE_MAX_CALLS; calls += 1) {
+      const remaining = deadline - now();
+      if (remaining <= ADVANCE_RESERVE_MS) fail();
+      let result;
+      try {
+        result = await client.callTool("agent_handshake_next", {
+          access: access.access,
+          waitMs: Math.min(remaining - ADVANCE_RESERVE_MS, ADVANCE_WAIT_CAP_MS),
+        });
+      } catch { fail(); }
+      const kind = classifyNextResult(result, completion);
+      if (kind === "action") {
+        await requeueTrusted(result, { required: true });
+        onAdvance?.(Object.freeze({
+          calls: calls + 1,
+          stage: typeof result.stage === "string" ? result.stage : null,
+        }));
+        return;
+      }
+    }
+    fail();
+  }
+
   // Deterministic continuation for non-signing operations: the final setup
   // helper (inspect) carries the committed wallet address and policy digest,
   // so the trusted channel performs the join; register is followed by a
@@ -390,15 +534,10 @@ export function createCheckpointCompletionHandler({ checkpointState, getCheckpoi
       if (joined?.role !== completion.role || joined?.sessionId !== completion.sessionId) fail();
       await requeueTrusted(joined, { required: true });
     } else {
+      // register: the trusted channel advances next until the coordinator
+      // issues the following local action.
       if (!PUBLIC_ADDRESS.test(result.address ?? "")) fail();
-      let advanced;
-      try {
-        advanced = await client.callTool(tool, { access: access.access, waitMs: 0 });
-      } catch { fail(); }
-      if (advanced === null || typeof advanced !== "object" || Array.isArray(advanced)) fail();
-      if (advanced.role !== undefined && advanced.role !== completion.role) fail();
-      if (advanced.sessionId !== undefined && advanced.sessionId !== completion.sessionId) fail();
-      await requeueTrusted(advanced);
+      await advanceNext(client, access, completion);
     }
     return Object.freeze({ accepted: true });
   }
@@ -472,6 +611,10 @@ export function createCheckpointCompletionHandler({ checkpointState, getCheckpoi
       submitted?.stage !== expectedStage
     ) fail();
     await requeueTrusted(submitted);
+    // The model cannot be relied on to call next after an accepted sign —
+    // the trusted channel advances until the coordinator issues the next
+    // local action and requeues it for the adapter drain.
+    await advanceNext(client, roleAccess, completion);
     return Object.freeze({ accepted: true });
   }
 
