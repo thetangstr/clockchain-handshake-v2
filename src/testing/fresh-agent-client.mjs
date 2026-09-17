@@ -345,7 +345,11 @@ export async function runCodexAdapterPreflight({
   if (typeof executable !== "string" || executable.length === 0 || !SAFE_SEGMENT.test(basename(executable))) fail();
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 10 * 60 * 1000) fail();
   const adapterRoot = join(workspace, ".clockchain-adapter");
-  const markerPath = join(workspace, ".clockchain-preflight-marker");
+  // Per-invocation nonce-scoped marker: the stub embeds this exact path (Codex
+  // filters child-server env), so a marker can only be produced by this run's
+  // server. A stale marker from any prior run can never satisfy this check.
+  const markerPath = join(workspace, `.clockchain-preflight-marker-${randomUUID()}`);
+  await rm(markerPath, { force: true });
   await mkdir(adapterRoot, { recursive: true });
   await writeFile(join(adapterRoot, "mcp-server.cjs"), stubAdapterMcpServer(markerPath), { mode: 0o600 });
   const prompt = `Call the MCP tool "${ADAPTER_MCP_TOOL}" provided by the MCP server "${ADAPTER_MCP_SERVER}" exactly once with no arguments, then reply DONE.`;

@@ -1306,7 +1306,9 @@ test("runCodexAdapterPreflight passes when the stub MCP server executes the zero
     child.kill = () => {};
     queueMicrotask(() => {
       if (args[0] === "exec") {
-        writeFileSync(join(options.cwd, ".clockchain-preflight-marker"), "executed");
+        // The stub server writes the nonce-scoped path embedded at generation
+        // time; fakes must use the env-provided marker, never a fixed name.
+        writeFileSync(options.env.CLOCKCHAIN_PREFLIGHT_MARKER, "executed");
         child.stdout.emit("data", Buffer.from(streamEvent({
           type: "item.completed",
           item: {
@@ -1361,7 +1363,29 @@ test("runCodexAdapterPreflight fails when Codex demands approval for the adapter
   });
   assert.equal(report.pass, false);
   assert.equal(report.probes[0].observed, "denied");
-  assert.equal(existsSync(join(parent, ".clockchain-preflight-marker")), false);
+  assert.equal(readdirSync(parent).some((entry) => entry.startsWith(".clockchain-preflight-marker")), false);
+});
+
+test("runCodexAdapterPreflight cannot pass from a stale marker when the child never attempts the tool", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-codex-preflight-stale-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  // Stale evidence at the legacy fixed marker name must be irrelevant: the
+  // current invocation checks only its own nonce-scoped path.
+  writeFileSync(join(parent, ".clockchain-preflight-marker"), "executed");
+  const spawnProcess = () => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {} };
+    child.kill = () => {};
+    queueMicrotask(() => child.emit("close", 0, null));
+    return child;
+  };
+  const report = await runCodexAdapterPreflight({
+    cwd: parent, manifestDigest: DIGEST, spawnProcess, timeoutMs: 5_000,
+  });
+  assert.equal(report.pass, false);
+  assert.equal(report.probes[0].observed, "not_attempted");
 });
 
 test("runCodexAdapterPreflight fails when configure cannot register the adapter server", async (t) => {
