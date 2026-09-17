@@ -105,10 +105,10 @@ test("binds the post-release pin to exact manifest bytes, helper bytes, and host
 test("tracks the independently published helper in a separate post-release pin", async () => {
   const pin = JSON.parse(await readFile(new URL("../release/agent-handshake/pin.json", import.meta.url), "utf8"));
   assert.deepEqual(pin, {
-    version: "2.1.4",
-    sourceCommit: "d31f6f95bccab8c7db7f6b13f0e157c4aa773da4",
-    manifestDigest: "9dacf11985d9887916d8a257de49953bca77bcda0b85bf9a393c36601737f274",
-    allowedAssetPrefix: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.4/",
+    version: "2.1.5",
+    sourceCommit: "554d4e28dab2781e6d05ece9ee979f19f5656a8b",
+    manifestDigest: "0c94ca5d332b06cf3a01f6772a8ec139c256cdb0af25d99649076e1859fd4306",
+    allowedAssetPrefix: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.5/",
     hostRoots: [{
       kid: "root-2026-08",
       fingerprint: "da2771c36bf2298525d2bbd8351b6122bb67115e9979624e8bb56537bcf71ed8",
@@ -117,7 +117,7 @@ test("tracks the independently published helper in a separate post-release pin",
 });
 
 test("the published post-release pin and its schema stay internally consistent", async () => {
-  // pin.json records the LAST PUBLISHED release (v2.1.4, measured from the
+  // pin.json records the LAST PUBLISHED release (v2.1.5, measured from the
   // immutable GitHub release assets). Its manifest digest cannot be known
   // before publication, so between a source bump and publication the pin may
   // legitimately describe the previous release — but once published it must
