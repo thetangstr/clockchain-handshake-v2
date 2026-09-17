@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstat, mkdir, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -118,10 +118,16 @@ function sendCompletion(socketPath, value) {
 
 test("verified release recorder exposes only the digest-bound authorization executable on PATH", async (t) => {
   const { recorder } = await makeContext(t);
-  assert.equal((await readdir(recorder.bin)).join(","), "clockchain-agent-authorize");
+  assert.equal(
+    (await readdir(recorder.bin)).sort().join(","),
+    "clockchain-agent-authorize,clockchain-agent-authorize.cjs",
+  );
   const executable = await lstat(join(recorder.bin, "clockchain-agent-authorize"));
   assert.equal(executable.isFile(), true);
   assert.equal(executable.mode & 0o777, 0o500);
+  const payload = await lstat(join(recorder.bin, "clockchain-agent-authorize.cjs"));
+  assert.equal(payload.isFile(), true);
+  assert.equal(payload.mode & 0o111, 0);
   await assert.rejects(
     () => execFileAsync(join(recorder.bin, "clockchain-agent-authorize"), []),
     (error) => error.code === 86,
@@ -130,6 +136,50 @@ test("verified release recorder exposes only the digest-bound authorization exec
     () => execFileAsync(join(recorder.bin, "clockchain-agent-authorize"), ["not-a-digest"]),
     (error) => error.code === 86,
   );
+});
+
+test("authorization executable still runs under a type:module package scope", async (t) => {
+  const { fixture, recorder, workspace } = await makeContext(t);
+  await writeFile(join(workspace, "package.json"), '{"type":"module"}\n');
+  const attempts = [
+    () => execFileAsync(join(recorder.bin, "clockchain-agent-authorize"), []),
+    () => execFileAsync(join(recorder.bin, "clockchain-agent-authorize"), ["e".repeat(64)]),
+  ];
+  for (const attempt of attempts) {
+    await assert.rejects(attempt, (error) => {
+      assert.equal(error.code, 86);
+      assert.doesNotMatch(String(error.stderr), /require is not defined|import statement/);
+      return true;
+    });
+  }
+  // Positive path: the exact approval command runs the retained helper step
+  // end-to-end through the launcher and consumes the action exactly once.
+  const completions = [];
+  recorder.setCompletionHandler(async (completion) => {
+    completions.push(completion);
+    return { accepted: true };
+  });
+  const step = helperStep({ manifestDigest: fixture.manifestDigest });
+  const action = recorder.record(step);
+  const executed = await recorder.executeAuthorizedAction({
+    actionId: action.actionId,
+    commandSha256: action.commandSha256,
+    role: action.role,
+    sessionId: action.sessionId,
+  });
+  assert.deepEqual(executed.publicResult, { ok: true, signed: "proposal" });
+  assert.equal(executed.executed, true);
+  assert.equal(completions.length, 1);
+  assert.equal(completions[0].actionId, action.actionId);
+  assert.equal((await readdir(recorder.pending)).length, 0);
+  assert.deepEqual(await readdir(recorder.consumed), [`${step.commandSha256}.json`]);
+  const replay = await recorder.executeAuthorizedAction({
+    actionId: action.actionId,
+    commandSha256: action.commandSha256,
+    role: action.role,
+    sessionId: action.sessionId,
+  }).then(() => null, (error) => verifiedReleaseActionRecorderFailureStage(error));
+  assert.equal(replay, "execution-action-replayed");
 });
 
 test("recorder refuses to retain an action before the completion handler is installed", async (t) => {
