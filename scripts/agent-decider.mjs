@@ -1,22 +1,9 @@
-// A foreign-agent decision author for the payee (provider) side of the handshake.
-//
-// The wire protocol binds the CONTENT of an acceptance cryptographically to the discovered
-// proposal — it cannot be authored freely, and there is no DECLINE message. The one real
-// degree of freedom a provider agent holds is therefore the go/no-go decision on a proposal.
-// This module lets a locally hosted Hermes agent (GLM-5.3-flash by default, or another model)
-// make that decision genuinely: it is handed a read-only view of the proposed terms, reasons
-// over them, and returns { accept, reason }. roles-core proceeds to sign the acceptance only
-// when the agent AFFIRMATIVELY accepts; any decline, error, or unparseable reply fails closed.
-//
-// No key, no chain, and no network beyond the local Hermes model call: this is offline-safe.
-
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const MAX_DECIDER_STDOUT = 4096;
 
-// Friendly aliases → (provider, model) for `hermes -z`. Anything not listed is passed through
-// as a raw model name on the default provider, so new models work without editing this map.
 const DECIDER_MODELS = {
   "glm-5.3-flash": { provider: "zai", model: "glm-5.3-flash" },
   "kimi-k3": { provider: "zai", model: "kimi-k3" },
@@ -27,102 +14,89 @@ export function resolveDeciderModel(name) {
 }
 
 function formatAmount(amount) {
-  if (!amount || typeof amount !== "object") {
-    return "unspecified";
-  }
+  if (!amount || typeof amount !== "object") return "unspecified";
   return `${amount.currency ?? "?"} ${amount.value ?? "?"}`;
 }
 
 function formatAmounts(amountOptions) {
-  if (!Array.isArray(amountOptions) || amountOptions.length === 0) {
-    return "unspecified";
-  }
+  if (!Array.isArray(amountOptions) || amountOptions.length === 0) return "unspecified";
   return amountOptions.map(formatAmount).join(", ");
 }
 
-function buildPrompt(context, payeeName) {
+export function buildAgentDecisionPrompt(context, payeeName = "Agent Clint") {
   return [
     `You are ${payeeName}, an autonomous service-provider agent deciding whether to accept an`,
-    `agent-to-agent payment-authorization handshake. Accepting authorizes intent to transact`,
-    `ONLY: no money moves, and you are not yet agreeing to perform any work.`,
-    ``,
-    `Proposed terms:`,
+    "agent-to-agent payment-authorization handshake. Accepting authorizes intent to transact",
+    "ONLY: no money moves, and you are not yet agreeing to perform any work.",
+    "",
+    "Proposed terms:",
     `- Proposed payment amount: ${formatAmount(context.amount)}`,
     `- Amount option(s) the signed terms allow: ${formatAmounts(context.amountOptions)}`,
-    `- Authorization window: closes ${context.windowMs ?? "unknown"} ms after the proposal anchors on-chain (ledger block time)`,
-    `- Payer (buyer) agent id: ${context.payer?.agentId ?? "unknown"} (${context.payer?.address ?? "no address"})`,
-    `- Your (payee) agent id: ${context.payee?.agentId ?? "unknown"}`,
+    `- Authorization window: closes ${context.windowMs ?? "unknown"} ms after the proposal anchors on-chain`,
+    `- Payer agent id: ${context.payer?.agentId ?? "unknown"} (${context.payer?.address ?? "no address"})`,
+    `- Payee agent id: ${context.payee?.agentId ?? "unknown"}`,
     `- Protocol: ${context.protocol ?? "unknown"}`,
     `- Session: ${context.sessionId ?? "unknown"}`,
-    ``,
-    `Decide whether these terms are reasonable and safe to accept. Accept ordinary invoice-scale`,
-    `terms from a registered counterparty; decline only if something is clearly wrong — an`,
-    `implausible amount, a missing counterparty, or an unrecognized protocol.`,
-    ``,
-    `Reply with ONLY a compact JSON object and nothing else. No markdown, no prose, no code fence:`,
-    `{"accept": true or false, "reason": "<one sentence, at most 140 characters>"}`,
+    "",
+    "Decline if the amount is implausible, the counterparty is missing, or the protocol is unrecognized.",
+    "Reply with exactly this compact JSON shape and nothing else:",
+    "{\"accept\":true,\"reason\":\"one single-line sentence up to 140 chars\"}",
   ].join("\n");
 }
 
-// Pull the first balanced JSON object out of the model's reply and validate its shape.
-function parseDecision(raw) {
+export function parseAgentDecision(raw) {
   if (typeof raw !== "string") return null;
-  const match = raw.match(/\{[\s\S]*\}/);
-  if (!match) return null;
-  let obj;
+  if (Buffer.byteLength(raw, "utf8") > MAX_DECIDER_STDOUT) return null;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return null;
+  let parsed;
   try {
-    obj = JSON.parse(match[0]);
+    parsed = JSON.parse(trimmed);
   } catch {
     return null;
   }
-  if (obj === null || typeof obj !== "object" || typeof obj.accept !== "boolean") {
-    return null;
-  }
-  return {
-    accept: obj.accept,
-    reason: typeof obj.reason === "string" ? obj.reason.trim() : "",
-  };
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const keys = Object.keys(parsed).sort();
+  if (keys.length !== 2 || keys[0] !== "accept" || keys[1] !== "reason") return null;
+  if (typeof parsed.accept !== "boolean") return null;
+  if (typeof parsed.reason !== "string") return null;
+  if (parsed.reason !== parsed.reason.trim()) return null;
+  if (parsed.reason.length === 0 || parsed.reason.length > 140) return null;
+  if (/[\u0000-\u001f\u007f]/u.test(parsed.reason)) return null;
+  if (JSON.stringify(parsed) !== trimmed) return null;
+  return Object.freeze({ accept: parsed.accept, reason: parsed.reason });
 }
 
-/**
- * Build a decidePayee(context) function backed by a local Hermes model.
- *
- * @param {object} opts
- * @param {string} opts.provider   Hermes provider (e.g. "zai").
- * @param {string} opts.model      Model id (e.g. "glm-5.3-flash").
- * @param {string} [opts.payeeName] Display name used in the prompt.
- * @param {number} [opts.timeoutMs] Hard timeout for the model call.
- * @param {(line: string) => void} [opts.log] Sink for human-readable trace lines.
- * @returns {(context: object) => Promise<{accept: boolean, reason: string}>}
- */
 export function makeAgentDecider({
   provider,
   model,
   payeeName = "Agent Clint",
   timeoutMs = 120_000,
   log = () => {},
+  runHermes = execFileAsync,
 } = {}) {
   return async function decidePayee(context) {
-    const prompt = buildPrompt(context, payeeName);
-    log(`${payeeName} (${provider}/${model}) is evaluating the proposal…`);
+    const prompt = buildAgentDecisionPrompt(context, payeeName);
+    log(`${payeeName} (${provider}/${model}) is evaluating the proposal...`);
     let stdout;
     try {
-      ({ stdout } = await execFileAsync(
+      const result = await runHermes(
         "hermes",
         ["-z", prompt, "--provider", provider, "-m", model, "-t", "", "--ignore-rules"],
-        { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 },
-      ));
+        { timeout: timeoutMs, maxBuffer: MAX_DECIDER_STDOUT },
+      );
+      stdout = typeof result === "string" ? result : result?.stdout;
     } catch (error) {
       const detail = error?.killed ? `timed out after ${timeoutMs}ms` : error?.code ?? error?.message ?? "error";
-      log(`${payeeName} could not reach ${model} (${detail}); failing closed — no acceptance.`);
+      log(`${payeeName} could not reach ${model} (${detail}); failing closed.`);
       throw new Error("AGENT_DECISION_UNAVAILABLE");
     }
-    const decision = parseDecision(stdout);
+    const decision = parseAgentDecision(stdout);
     if (!decision) {
-      log(`${payeeName}'s ${model} reply was not a parseable decision; failing closed. Raw: ${String(stdout).trim().slice(0, 200)}`);
+      log(`${payeeName}'s ${model} reply was not a valid decision; failing closed.`);
       throw new Error("AGENT_DECISION_UNPARSEABLE");
     }
-    log(`${payeeName} decided ${decision.accept ? "ACCEPT" : "DECLINE"} — ${decision.reason || "(no reason given)"}`);
+    log(`${payeeName} decided ${decision.accept ? "ACCEPT" : "DECLINE"} - ${decision.reason}`);
     return decision;
   };
 }
