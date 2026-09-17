@@ -37,6 +37,7 @@ function sessionFor(fixture) {
     privateKeyPem: fixture.host.privateKeyPem,
     protocol: "clockchain.agent-handshake/v2",
     repositorySha: "d".repeat(40),
+    invitationExpiresAtMs: 1786337120000,
     sessionDeadlineMs: 1786337600000,
     sessionId: "22222222-3333-4444-8555-666666666666",
     sessionOpenedAtMs: 1786337000000,
