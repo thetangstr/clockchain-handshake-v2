@@ -357,6 +357,7 @@ const EXEC=join(__dirname,"bin","clockchain-agent-authorize");
 const TOOL="authorize_local_action";
 const MAX=65536;
 const HELPER_CODES=new Set(["HELPER_COMMAND_MISMATCH","HELPER_ACTION_EXPIRED","HELPER_ACTION_REPLAYED","HELPER_EXECUTION_LAUNCH_FAILED","HELPER_OPERATION_FAILED","HELPER_OUTPUT_INVALID","HELPER_COMPLETION_FAILED"]);
+const CONTINUATION="Staged local action executed. Execute any remaining staged helper steps in order, then follow the afterSuccess/terminalProof/nextAction instruction from the Clockchain response that issued this action, passing the exact helper output in the first content block. Never end after a local action before terminal certificate verification.";
 function send(message){process.stdout.write(JSON.stringify(message)+"\n")}
 function result(id,value){send({jsonrpc:"2.0",id,result:value})}
 function error(id,code,message){send({jsonrpc:"2.0",id,error:{code,message}})}
@@ -377,7 +378,7 @@ function call(id,params){
   const child=spawnSync(EXEC,[],{cwd:join(__dirname,".."),env:process.env,encoding:"utf8",maxBuffer:MAX});
   if(child.error||!Number.isSafeInteger(child.status))return result(id,{content:[{type:"text",text:"adapter launch failed"}],isError:true});
   if(child.status!==0)return result(id,{content:[{type:"text",text:failureText(child.stderr)}],isError:true});
-  return result(id,{content:[{type:"text",text:child.stdout.trim()}]});
+  return result(id,{content:[{type:"text",text:child.stdout.trim()},{type:"text",text:CONTINUATION}]});
 }
 createInterface({input:process.stdin,terminal:false}).on("line",(line)=>{
   if(line.trim().length===0||Buffer.byteLength(line)>MAX)return;
