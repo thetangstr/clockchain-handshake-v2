@@ -1,6 +1,6 @@
 {
   "schema": "handshake-release/v1",
-  "repositorySha": "d487fd5e8b673c0fe2b98fbcfcb5dfe12a25fef4",
-  "kitManifestDigest": "424337ee15423b32a5397c074f5cfceb27c6192ad05dd7f5e038f2df812f457d",
+  "repositorySha": "6d831bf5dcebebe5dda021a39bb8b30379a5b117",
+  "kitManifestDigest": "11657372dcd99f52f57b3f69804f0cf9819964b628d2477e69156d37b08a436f",
   "paymentMoved": false
 }
