@@ -19,6 +19,12 @@ const BASE64URL = /^[A-Za-z0-9_-]+$/;
 const ROLE_TOKEN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 export const ROLE_ACCESS_HANDLE = /^ccra_[A-Za-z0-9_-]{22}$/;
 const HELPER_RESULT_SCHEMA = "clockchain.agent-handshake-cli-result/v1";
+const VERIFY_CERTIFICATE_PAYLOAD_SCHEMA = "clockchain.agent-handshake-certificate-verification/v1";
+const TERMINAL_PROOF_SCHEMA = "clockchain.fresh-agent-terminal-proof/v1";
+const RESULT_SCHEMA = "clockchain.agent-handshake-result/v2";
+const ANCHOR_KINDS = Object.freeze(["proposal", "acceptance", "acknowledgment"]);
+const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
+const TRANSACTION = /^0x[0-9a-f]{64}$/;
 const CHECKPOINT_OPERATIONS = Object.freeze(["proposal", "acceptance"]);
 const CLOCKCHAIN_V2_TOOLS = Object.freeze([
   "agent_handshake_invite",
@@ -51,18 +57,22 @@ function exactObject(value, keys) {
   return result;
 }
 
-export function extractSigningRequestFromArgv(argv) {
+// Decodes the operation payload embedded in a step's argv.
+function argvPayload(argv) {
   if (!Array.isArray(argv) || argv.some((entry) => typeof entry !== "string")) fail();
   const flag = argv.indexOf("--payload-base64url");
   if (flag < 0 || flag !== argv.length - 2 || argv[flag + 1].length === 0) fail();
-  let request;
   try {
     const bytes = Buffer.from(argv[flag + 1], "base64url");
     if (bytes.toString("base64url") !== argv[flag + 1]) fail();
-    request = JSON.parse(bytes.toString("utf8"));
+    return JSON.parse(bytes.toString("utf8"));
   } catch {
     fail();
   }
+}
+
+export function extractSigningRequestFromArgv(argv) {
+  const request = argvPayload(argv);
   if (
     request?.schema !== "clockchain.agent-handshake-signing-request/v1" ||
     request?.helperVersion !== AGENT_HANDSHAKE_HELPER_VERSION ||
@@ -300,7 +310,7 @@ export const CONTINUATION_TOOL_BY_OPERATION = Object.freeze({
   register: "agent_handshake_next",
   sign: "agent_handshake_submit",
 });
-const CONTINUATION_FREE = Object.freeze(["init", "policy", "verify-certificate"]);
+const CONTINUATION_FREE = Object.freeze(["init", "policy"]);
 
 // Bounded next-advancement contract: after a trusted submit or registration,
 // the completion handler itself polls agent_handshake_next over the
@@ -359,11 +369,12 @@ const ADVANCE_RESERVE_MS = 5_000;
 // completion is acknowledged. bindRoleAccess must be fed the role access the
 // model observed in its MCP stream before any continuation is possible —
 // submissions without a bound handle fail closed.
-export function createCheckpointCompletionHandler({ advanceBudgetMs = ADVANCE_BUDGET_MS, checkpointState, getCheckpointClient, onAdvance, recordSteps, now = Date.now } = {}) {
+export function createCheckpointCompletionHandler({ advanceBudgetMs = ADVANCE_BUDGET_MS, checkpointState, getCheckpointClient, onAdvance, onTerminal, recordSteps, now = Date.now } = {}) {
   if (checkpointState === null || typeof checkpointState !== "object" || Array.isArray(checkpointState)) fail();
   if (typeof getCheckpointClient !== "function") fail();
   if (recordSteps !== undefined && typeof recordSteps !== "function") fail();
   if (onAdvance !== undefined && typeof onAdvance !== "function") fail();
+  if (onTerminal !== undefined && typeof onTerminal !== "function") fail();
   if (!Number.isSafeInteger(advanceBudgetMs) || advanceBudgetMs < 1_000 || advanceBudgetMs > ADVANCE_BUDGET_MS) fail();
   let roleAccess = null;
 
@@ -478,28 +489,140 @@ export function createCheckpointCompletionHandler({ advanceBudgetMs = ADVANCE_BU
   // malformed, mismatched, or unexpected result — including budget or bound
   // exhaustion — rejects the completion.
   async function advanceNext(client, access, completion) {
-    const deadline = now() + advanceBudgetMs;
-    for (let calls = 0; calls < ADVANCE_MAX_CALLS; calls += 1) {
+    const startedAt = now();
+    const deadline = startedAt + advanceBudgetMs;
+    let calls = 0;
+    // Diagnostics stay metadata-only: the stage label is a bounded
+    // coordinator string, error is a fixed category, never a result body.
+    const stageLabel = (result) =>
+      typeof result?.stage === "string" && result.stage.length <= 64 ? result.stage : null;
+    const report = (stage, error) =>
+      onAdvance?.(Object.freeze({
+        calls,
+        elapsedMs: Math.max(0, now() - startedAt),
+        error,
+        stage,
+      }));
+    for (; calls < ADVANCE_MAX_CALLS;) {
       const remaining = deadline - now();
-      if (remaining <= ADVANCE_RESERVE_MS) fail();
+      if (remaining <= ADVANCE_RESERVE_MS) { report(null, "budget"); fail(); }
       let result;
       try {
         result = await client.callTool("agent_handshake_next", {
           access: access.access,
           waitMs: Math.min(remaining - ADVANCE_RESERVE_MS, ADVANCE_WAIT_CAP_MS),
         });
-      } catch { fail(); }
-      const kind = classifyNextResult(result, completion);
+      } catch { report(null, "call"); fail(); }
+      calls += 1;
+      let kind;
+      try { kind = classifyNextResult(result, completion); } catch { report(stageLabel(result), "classify"); fail(); }
       if (kind === "action") {
-        await requeueTrusted(result, { required: true });
-        onAdvance?.(Object.freeze({
-          calls: calls + 1,
-          stage: typeof result.stage === "string" ? result.stage : null,
-        }));
+        try { await requeueTrusted(result, { required: true }); }
+        catch { report(stageLabel(result), "requeue"); fail(); }
+        report(stageLabel(result), null);
         return;
       }
     }
+    report(null, "bound");
     fail();
+  }
+
+  // The verify-certificate completion is the only trusted proof source: the
+  // pinned helper already verified the certificate signature and binding, so
+  // the terminal proof is composed here from the validated helper result and
+  // the certificate carried in the step's signed payload — never from model
+  // text. Every field is bound to the completion's role/session and to the
+  // canonical result inside the step payload.
+  function verifyCertificate(completion) {
+    boundAccessFor(completion);
+    const result = completion.result;
+    if (
+      result.schema !== HELPER_RESULT_SCHEMA ||
+      result.helperVersion !== AGENT_HANDSHAKE_HELPER_VERSION ||
+      result.operation !== "verify-certificate" ||
+      result.role !== completion.role || result.sessionId !== completion.sessionId ||
+      result.certificateVerified !== true || result.outcome !== "VERIFIED" ||
+      result.externalBusinessActionPerformed !== false ||
+      !DIGEST.test(result.policyDigest ?? "") || !DIGEST.test(result.statementDigest ?? "")
+    ) fail();
+    const identity = result.identity;
+    if (
+      identity === null || typeof identity !== "object" || Array.isArray(identity) ||
+      !ADDRESS.test(identity.sessionKeyAddress ?? "") ||
+      identity.policyDigest !== result.policyDigest
+    ) fail();
+    const identityErc8004 = identity.erc8004;
+    if (
+      identityErc8004 === null || typeof identityErc8004 !== "object" || Array.isArray(identityErc8004) ||
+      !DECIMAL.test(identityErc8004.agentId ?? "") ||
+      !DECIMAL.test(identityErc8004.registrationBlock ?? "") ||
+      !TRANSACTION.test(identityErc8004.registrationTx ?? "") ||
+      typeof identityErc8004.chainId !== "string" || identityErc8004.chainId.length === 0 ||
+      typeof identityErc8004.registryAddress !== "string" || identityErc8004.registryAddress.length === 0 ||
+      identityErc8004.reference !== `${identityErc8004.chainId}:${identityErc8004.registryAddress}:${identityErc8004.agentId}`
+    ) fail();
+    const payload = argvPayload(completion.argv);
+    if (
+      payload === null || typeof payload !== "object" || Array.isArray(payload) ||
+      payload.schema !== VERIFY_CERTIFICATE_PAYLOAD_SCHEMA ||
+      payload.helperVersion !== AGENT_HANDSHAKE_HELPER_VERSION ||
+      payload.role !== completion.role || payload.sessionId !== completion.sessionId ||
+      payload.externalBusinessActionPerformed !== false
+    ) fail();
+    const certResult = payload.certificate?.result;
+    if (
+      certResult === null || typeof certResult !== "object" || Array.isArray(certResult) ||
+      certResult.schema !== RESULT_SCHEMA ||
+      certResult.outcome !== "VERIFIED" ||
+      certResult.sessionId !== completion.sessionId ||
+      certResult.statementDigest !== result.statementDigest ||
+      certResult.externalBusinessActionPerformed !== false ||
+      certResult.policyDigests?.[completion.role] !== result.policyDigest
+    ) fail();
+    const party = certResult.parties?.[completion.role];
+    if (
+      party === null || typeof party !== "object" || Array.isArray(party) ||
+      party.sessionKeyAddress !== identity.sessionKeyAddress ||
+      party.policyDigest !== result.policyDigest
+    ) fail();
+    const partyErc8004 = party.erc8004;
+    if (
+      partyErc8004 === null || typeof partyErc8004 !== "object" || Array.isArray(partyErc8004) ||
+      partyErc8004.agentId !== identityErc8004.agentId ||
+      partyErc8004.chainId !== identityErc8004.chainId ||
+      partyErc8004.registryAddress !== identityErc8004.registryAddress ||
+      partyErc8004.reference !== identityErc8004.reference ||
+      partyErc8004.registrationTx !== identityErc8004.registrationTx ||
+      partyErc8004.registrationBlock !== identityErc8004.registrationBlock
+    ) fail();
+    const anchors = certResult.anchors;
+    if (!Array.isArray(anchors) || anchors.length !== 3) fail();
+    const receiptIds = anchors.map((entry, index) => {
+      if (
+        entry === null || typeof entry !== "object" || Array.isArray(entry) ||
+        entry.kind !== ANCHOR_KINDS[index] || !DIGEST.test(entry.digest ?? "")
+      ) fail();
+      return entry.digest;
+    });
+    if (new Set(receiptIds).size !== 3) fail();
+    onTerminal?.(Object.freeze({
+      schema: TERMINAL_PROOF_SCHEMA,
+      role: completion.role,
+      sessionId: completion.sessionId,
+      policyDigest: result.policyDigest,
+      address: identity.sessionKeyAddress,
+      erc8004: Object.freeze({
+        agentId: identityErc8004.agentId,
+        reference: identityErc8004.reference,
+        registrationTx: identityErc8004.registrationTx,
+        registrationBlock: identityErc8004.registrationBlock,
+      }),
+      receiptIds: Object.freeze(receiptIds),
+      certificateDigest: digestHex(certResult),
+      certificateVerified: true,
+      externalBusinessActionPerformed: false,
+    }));
+    return Object.freeze({ accepted: true });
   }
 
   // Deterministic continuation for non-signing operations: the final setup
@@ -509,6 +632,7 @@ export function createCheckpointCompletionHandler({ advanceBudgetMs = ADVANCE_BU
   async function continueNonSigning(completion) {
     const tool = CONTINUATION_TOOL_BY_OPERATION[completion.operation];
     if (tool === undefined) {
+      if (completion.operation === "verify-certificate") return verifyCertificate(completion);
       if (CONTINUATION_FREE.includes(completion.operation)) return Object.freeze({ accepted: true });
       fail();
     }

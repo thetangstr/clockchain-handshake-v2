@@ -224,7 +224,11 @@ function requestBinding(expected) {
     record === null || typeof record !== "object" || Array.isArray(record) ||
     (expected.operation === "sign"
       ? !SIGNING_OPERATIONS.includes(record.operation)
-      : record.operation !== expected.operation) ||
+      : expected.operation === "verify-certificate"
+        // The coordinator's certificate-verification payload is schema-tagged
+        // and carries no operation field; the schema literal binds it.
+        ? record.schema !== "clockchain.agent-handshake-certificate-verification/v1"
+        : record.operation !== expected.operation) ||
     record.role !== expected.role ||
     record.sessionId !== expected.sessionId ||
     (expected.policyDigest !== null && record.policyDigest !== expected.policyDigest)

@@ -5,6 +5,7 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 
+import { digestHex } from "../core/canonical.mjs";
 import { assertSecretFree } from "../core/redact.mjs";
 import { validateAgentHandshakeReleasePin } from "../../scripts/verify-agent-handshake-release.mjs";
 import {
@@ -1002,7 +1003,7 @@ function childDiagnostic({
   adapterCompletion, client, code, eventTypes, lastAdapterOperation,
   lastMcpLocalActionOperation, lastMcpNeeded, lastMcpStage,
   lastMcpToolResultFailed, nonJsonLines, observed, permissionDeniedTools,
-  signal, stderrBytes, stdoutLines, toolNames,
+  signal, stderrBytes, stdoutLines, terminalObserved, toolNames,
 }) {
   return Object.freeze({
     adapterCompletion,
@@ -1016,11 +1017,12 @@ function childDiagnostic({
     lastMcpStage,
     lastMcpToolResultFailed,
     mcpToolNames: Object.freeze([...toolNames].sort()),
+    modelTerminalObserved: observed.terminal !== undefined,
     nonJsonStdoutLines: nonJsonLines,
     permissionDeniedTools: Object.freeze([...permissionDeniedTools].sort()),
     stderrBytes,
     stdoutLines,
-    terminalObserved: observed.terminal !== undefined,
+    terminalObserved: terminalObserved === true,
     topLevelEventTypes: Object.freeze([...eventTypes].sort()),
   });
 }
@@ -1053,7 +1055,7 @@ function scanMcpResultFields(value, found, depth = 0) {
   }
 }
 
-const ADAPTER_COMPLETION_STATES = Object.freeze(["none", "accepted", "failed"]);
+const ADAPTER_COMPLETION_STATES = Object.freeze(["none", "running", "accepted", "failed"]);
 
 // Wraps a per-role checkpoint completion handler so the close diagnostic can
 // report the adapter completion outcome: none until invoked, accepted when the
@@ -1064,9 +1066,17 @@ export function trackAdapterCompletion(handler, state) {
   if (state === null || typeof state !== "object" || Array.isArray(state)) fail();
   return async (completion) => {
     const operation = completion?.operation;
+    // A new completion supersedes the last outcome — reset every derived
+    // field so a mid-flight snapshot never reports a stale accepted state.
     state.operation =
       typeof operation === "string" && operation.length <= 64 && SAFE_SEGMENT.test(operation)
         ? operation : null;
+    state.state = "running";
+    state.continuation = null;
+    state.advanceCalls = null;
+    state.advanceElapsedMs = null;
+    state.advanceError = null;
+    state.advanceStage = null;
     try {
       const result = await handler(completion);
       state.state = "accepted";
@@ -1077,6 +1087,18 @@ export function trackAdapterCompletion(handler, state) {
       throw error;
     }
   };
+}
+
+// Resolves a closing child's terminal proof. Only the trusted
+// verify-certificate completion (adapterCompletion.trustedTerminal)
+// establishes proof — model text never does. A model-emitted terminal object
+// is tolerated only when it is canonically identical to the already
+// established trusted proof; anything else fails closed.
+export function resolveTerminalProof({ adapterCompletion, invitationObserved = true, modelTerminal, requireInvitation = false } = {}) {
+  const trusted = adapterCompletion?.trustedTerminal ?? null;
+  if (trusted === null || (requireInvitation && invitationObserved !== true)) fail();
+  if (modelTerminal !== undefined && digestHex(modelTerminal) !== digestHex(trusted)) fail();
+  return trusted;
 }
 
 function observeChild(child, role, all, canaries, { adapter, adapterCompletion, client, onDiagnostic, requireInvitation = false } = {}) {
@@ -1118,13 +1140,16 @@ function observeChild(child, role, all, canaries, { adapter, adapterCompletion, 
       onDiagnostic(role, childDiagnostic({
         adapterCompletion: Object.freeze({
           advanceCalls: Number.isSafeInteger(adapterCompletion?.advanceCalls) ? adapterCompletion.advanceCalls : null,
-          advanceStage: typeof adapterCompletion?.advanceStage === "string" ? adapterCompletion.advanceStage : null,
+          advanceElapsedMs: Number.isSafeInteger(adapterCompletion?.advanceElapsedMs) ? adapterCompletion.advanceElapsedMs : null,
+          advanceError: typeof adapterCompletion?.advanceError === "string" && adapterCompletion.advanceError.length <= 32 ? adapterCompletion.advanceError : null,
+          advanceStage: typeof adapterCompletion?.advanceStage === "string" && adapterCompletion.advanceStage.length <= 64 ? adapterCompletion.advanceStage : null,
           continuation: typeof adapterCompletion?.continuation === "string" ? adapterCompletion.continuation : null,
           operation: typeof adapterCompletion?.operation === "string" ? adapterCompletion.operation : null,
           state: ADAPTER_COMPLETION_STATES.includes(adapterCompletion?.state) ? adapterCompletion.state : "none",
         }),
         client, code, eventTypes, lastAdapterOperation, lastMcpLocalActionOperation,
         lastMcpNeeded, lastMcpStage, lastMcpToolResultFailed, nonJsonLines, observed,
+        terminalObserved: adapterCompletion?.trustedTerminal !== null && adapterCompletion?.trustedTerminal !== undefined,
         permissionDeniedTools, signal, stderrBytes, stdoutLines, toolNames,
       }));
     }
@@ -1221,8 +1246,12 @@ function observeChild(child, role, all, canaries, { adapter, adapterCompletion, 
         if (lineBuffer.trim().length > 0) processLine(lineBuffer);
         assertSecretFree(stdout, canaries);
         assertSecretFree(stderr, canaries);
-        if (observed.terminal === undefined || (requireInvitation && observed.invitation === undefined)) fail();
-        resolvePromise(observed.terminal);
+        resolvePromise(resolveTerminalProof({
+          adapterCompletion,
+          invitationObserved: observed.invitation !== undefined,
+          modelTerminal: observed.terminal,
+          requireInvitation,
+        }));
       } catch {
         const error = new Error("Fresh agent compatibility check failed safely.");
         rejectInvitation?.(error);
@@ -1377,13 +1406,23 @@ export async function runFreshAgentHandshake({
       // The completion handler must be installed before any retained action is
       // recorded so the first helper completion is never dropped. It builds,
       // signs, and submits the private proposal/acceptance checkpoints.
-      const adapterCompletion = { advanceCalls: null, advanceStage: null, operation: null, state: "none" };
+      const adapterCompletion = {
+        advanceCalls: null, advanceElapsedMs: null, advanceError: null, advanceStage: null,
+        operation: null, state: "none", trustedTerminal: null,
+      };
       const completionBinding = createCheckpointCompletionHandler({
         checkpointState,
         getCheckpointClient,
-        onAdvance: ({ calls, stage }) => {
+        onAdvance: ({ calls, elapsedMs, error, stage }) => {
           adapterCompletion.advanceCalls = calls;
+          adapterCompletion.advanceElapsedMs = elapsedMs;
+          adapterCompletion.advanceError = error;
           adapterCompletion.advanceStage = stage;
+        },
+        // The trusted verify-certificate completion is the sole terminal
+        // proof source; the model's output is never consulted for it.
+        onTerminal: (proof) => {
+          adapterCompletion.trustedTerminal = validateTerminal(proof, role);
         },
         // Trusted-channel continuation results (join/next/submit) are not
         // model-visible; newly issued helper steps must still stage through

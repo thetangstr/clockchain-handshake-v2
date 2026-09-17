@@ -24,6 +24,7 @@ import {
   evaluateClaudeBashPermission,
   recordClaudeMcpToolCalls,
   recordTrustedHelperSteps,
+  resolveTerminalProof,
   responderPrompt,
   roleAccessFromValue,
   runClaudePermissionPreflight,
@@ -382,7 +383,9 @@ test("preloads the digest-verified manifest and helper into both workspaces befo
     }
     return child;
   };
-  const result = await runFreshAgentHandshake({
+  // Model-emitted terminal text can no longer satisfy the run: without a
+  // trusted verify-certificate completion the run fails safely.
+  await assert.rejects(() => runFreshAgentHandshake({
     clients: { initiator: "codex", responder: "claude" },
     configureClient: async ({ client }) => events.push(`configure:${client}`),
     modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
@@ -395,8 +398,7 @@ test("preloads the digest-verified manifest and helper into both workspaces befo
     spawnProcess,
     fetchReleaseAsset: recordingFetch,
     timeoutMs: 2_000,
-  });
-  assert.equal(result.cleanup.completed, true);
+  }), /Fresh agent compatibility check failed safely\./);
   assert.deepEqual(fetchCalls, [
     `${AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX}manifest.json`,
     `${AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX}clockchain-agent-handshake.cjs`,
@@ -505,7 +507,7 @@ test("retains model-visible helper steps in the per-role digest-bound adapter", 
     }
     return child;
   };
-  const result = await runFreshAgentHandshake({
+  await assert.rejects(() => runFreshAgentHandshake({
     clients: { initiator: "codex", responder: "claude" },
     configureClient: async () => {},
     modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
@@ -518,8 +520,7 @@ test("retains model-visible helper steps in the per-role digest-bound adapter", 
     spawnProcess,
     fetchReleaseAsset,
     timeoutMs: 2_000,
-  });
-  assert.equal(result.cleanup.completed, true);
+  }), /Fresh agent compatibility check failed safely\./);
   assert.deepEqual(recorded.initiator, [`${initiatorStep.commandSha256}.json`]);
   assert.deepEqual(recorded.responder, [`${responderStep.commandSha256}.json`]);
   for (const [cwd, path] of Object.entries(paths)) {
@@ -683,7 +684,7 @@ test("default release fetch follows the signed GitHub CDN hop to load pinned byt
     }
     return child;
   };
-  const result = await runFreshAgentHandshake({
+  await assert.rejects(() => runFreshAgentHandshake({
     clients: { initiator: "codex", responder: "claude" },
     configureClient: async () => {},
     modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
@@ -695,8 +696,7 @@ test("default release fetch follows the signed GitHub CDN hop to load pinned byt
     releasePin: fixture.releasePin,
     spawnProcess,
     timeoutMs: 2_000,
-  });
-  assert.equal(result.cleanup.completed, true);
+  }), /Fresh agent compatibility check failed safely\./);
   assert.equal(requested[0], `${AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX}manifest.json`);
 });
 
@@ -791,7 +791,7 @@ test("starts the Responder only after the Initiator emits its actual one-time in
     }
     return child;
   };
-  const result = await runFreshAgentHandshake({
+  await assert.rejects(() => runFreshAgentHandshake({
     clients: { initiator: "codex", responder: "claude" },
     configureClient: async (entry) => calls.push({ configure: entry.client }),
     modelEnvironment: {
@@ -807,7 +807,7 @@ test("starts the Responder only after the Initiator emits its actual one-time in
     spawnProcess,
     fetchReleaseAsset,
     timeoutMs: 2_000
-  });
+  }), /Fresh agent compatibility check failed safely\./);
   assert.equal(calls.filter((entry) => entry.file).length, 2);
   assert.deepEqual(calls.slice(0, 3), [{ configure: "codex" }, { configure: "codex" }, { configure: "claude" }]);
   assert.equal(calls[3].file, "codex");
@@ -816,11 +816,6 @@ test("starts the Responder only after the Initiator emits its actual one-time in
   const responderInput = calls.find((entry) => entry.role === "responder" && entry.input !== undefined).input;
   assert.equal(responderInput.includes(INVITATION), true);
   assert.equal(responderInput.includes("<PASTE THE INITIATOR INVITATION>"), false);
-  assert.equal(result.cleanup.completed, true);
-  assert.equal(result.roles.initiator.erc8004.agentId, "9452");
-  assert.equal(result.roles.responder.erc8004.agentId, "9453");
-  assert.equal(result.roles.initiator.certificateDigest, result.roles.responder.certificateDigest);
-  assert.equal(JSON.stringify(result).includes(secret), false);
   assert.equal((await readdir(parent)).length, 0);
 });
 
@@ -1100,7 +1095,7 @@ test("ignores helper steps in model-authored text and non-Clockchain tool result
     }
     return child;
   };
-  const result = await runFreshAgentHandshake({
+  await assert.rejects(() => runFreshAgentHandshake({
     clients: { initiator: "codex", responder: "claude" },
     configureClient: async () => {},
     modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
@@ -1113,8 +1108,7 @@ test("ignores helper steps in model-authored text and non-Clockchain tool result
     spawnProcess,
     fetchReleaseAsset,
     timeoutMs: 2_000,
-  });
-  assert.equal(result.cleanup.completed, true);
+  }), /Fresh agent compatibility check failed safely\./);
   assert.deepEqual(recorded.initiator, [`${initiatorStep.commandSha256}.json`]);
   assert.deepEqual(recorded.responder, [`${responderStep.commandSha256}.json`]);
 });
@@ -1537,7 +1531,7 @@ test("runFreshAgentHandshake records secret-safe per-role diagnostics without ra
   assert.equal(initiator.lastMcpLocalActionOperation, "sign");
   assert.equal(initiator.lastAdapterOperation, "sign");
   assert.equal(initiator.lastMcpToolResultFailed, false);
-  assert.deepEqual(initiator.adapterCompletion, { advanceCalls: null, advanceStage: null, continuation: null, operation: null, state: "none" });
+  assert.deepEqual(initiator.adapterCompletion, { advanceCalls: null, advanceElapsedMs: null, advanceError: null, advanceStage: null, continuation: null, operation: null, state: "none" });
   assert.deepEqual(initiator.mcpToolNames, ["agent_handshake_invite", "agent_handshake_next", "agent_handshake_status"]);
   assert.deepEqual(initiator.permissionDeniedTools, ["Bash"]);
   assert.equal(initiator.stdoutLines, 4);
@@ -1559,20 +1553,62 @@ test("trackAdapterCompletion records accepted, failed, and never-invoked states"
   const accepted = { operation: null, state: "none" };
   const acceptedHandler = trackAdapterCompletion(async () => Object.freeze({ accepted: true }), accepted);
   await acceptedHandler({ operation: "sign", argv: ["secret"], result: { raw: true } });
-  assert.deepEqual(accepted, { continuation: "agent_handshake_submit", operation: "sign", state: "accepted" });
+  assert.deepEqual(accepted, { advanceCalls: null, advanceElapsedMs: null, advanceError: null, advanceStage: null, continuation: "agent_handshake_submit", operation: "sign", state: "accepted" });
   const free = { operation: null, state: "none" };
   const freeHandler = trackAdapterCompletion(async () => Object.freeze({ accepted: true }), free);
   await freeHandler({ operation: "init", result: {} });
-  assert.deepEqual(free, { continuation: null, operation: "init", state: "accepted" });
+  assert.deepEqual(free, { advanceCalls: null, advanceElapsedMs: null, advanceError: null, advanceStage: null, continuation: null, operation: "init", state: "accepted" });
 
   const failed = { operation: null, state: "none" };
   const failedHandler = trackAdapterCompletion(async () => { throw new Error("boom"); }, failed);
   await assert.rejects(() => failedHandler({ operation: "policy" }), /boom/);
-  assert.deepEqual(failed, { operation: "policy", state: "failed" });
+  assert.deepEqual(failed, { advanceCalls: null, advanceElapsedMs: null, advanceError: null, advanceStage: null, continuation: null, operation: "policy", state: "failed" });
   assert.deepEqual(idle, { operation: null, state: "none" });
+  // A new in-flight completion resets every derived field so a mid-flight
+  // snapshot can never report a stale accepted outcome.
+  const cycling = { operation: null, state: "none" };
+  let release;
+  const cyclingHandler = trackAdapterCompletion(() => new Promise((resolvePromise) => { release = resolvePromise; }), cycling);
+  const first = cyclingHandler({ operation: "inspect", result: {} });
+  release(Object.freeze({ accepted: true }));
+  await first;
+  assert.equal(cycling.state, "accepted");
+  assert.equal(cycling.continuation, "agent_handshake_join");
+  const second = cyclingHandler({ operation: "sign", result: {} });
+  assert.deepEqual(cycling, { advanceCalls: null, advanceElapsedMs: null, advanceError: null, advanceStage: null, continuation: null, operation: "sign", state: "running" });
+  release(Object.freeze({ accepted: true }));
+  await second;
+  assert.equal(cycling.state, "accepted");
   // Raw completion input never leaks into the tracked state.
   assert.equal(JSON.stringify(accepted).includes("secret"), false);
   assert.equal(JSON.stringify(failed).includes("raw"), false);
+});
+
+test("resolveTerminalProof resolves only from the trusted verify-certificate completion", () => {
+  const trusted = roleResult("initiator");
+  const completion = { operation: "verify-certificate", state: "accepted", trustedTerminal: trusted };
+  // Trusted proof alone resolves — the model never has to emit anything.
+  assert.deepEqual(resolveTerminalProof({ adapterCompletion: completion }), trusted);
+  // A model-emitted terminal identical to the trusted proof is tolerated.
+  assert.deepEqual(
+    resolveTerminalProof({ adapterCompletion: completion, modelTerminal: { ...trusted } }),
+    trusted,
+  );
+  // A plausible forged model terminal before or after the trusted completion
+  // never satisfies or survives: any difference fails closed.
+  const forged = { ...roleResult("initiator"), certificateDigest: "f".repeat(64) };
+  assert.throws(() => resolveTerminalProof({ adapterCompletion: completion, modelTerminal: forged }), /failed safely/);
+  assert.throws(() => resolveTerminalProof({ adapterCompletion: completion, modelTerminal: roleResult("responder") }), /failed safely/);
+  // Model terminal text alone can never satisfy the run.
+  assert.throws(() => resolveTerminalProof({ adapterCompletion: { state: "none", trustedTerminal: null }, modelTerminal: trusted }), /failed safely/);
+  assert.throws(() => resolveTerminalProof({ adapterCompletion: { state: "accepted", trustedTerminal: null } }), /failed safely/);
+  assert.throws(() => resolveTerminalProof({}), /failed safely/);
+  // Invitation gating is unchanged for the responder.
+  assert.throws(() => resolveTerminalProof({ adapterCompletion: completion, requireInvitation: true, invitationObserved: false }), /failed safely/);
+  assert.deepEqual(
+    resolveTerminalProof({ adapterCompletion: completion, requireInvitation: true, invitationObserved: true }),
+    trusted,
+  );
 });
 
 test("recordTrustedHelperSteps enqueues same-role steps and rejects cross-role", () => {
