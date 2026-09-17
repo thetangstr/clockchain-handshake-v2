@@ -50,9 +50,10 @@ function transition(kind, blockHeight) {
     acknowledgment: "bbbbbbbb-2222-4222-8222-222222222222",
     proposal: "cccccccc-3333-4333-8333-333333333333",
   };
+  const blockTimeMs = 1_700_000_000_000 + blockHeight - 100;
   return {
-    blockTimeMs: 1_700_000_000_000,
-    blockTimeRaw: "1700000000000",
+    blockTimeMs,
+    blockTimeRaw: String(blockTimeMs),
     digest: `${kind[0]}`.repeat(64),
     message: {
       amount: { currency: "USD", value: "100" },
@@ -515,6 +516,39 @@ test("anchor report mapping rejects numeric blockTime on the wire", async () => 
 
   assert.equal(ok, false);
   assert.deepEqual(monitorState.anchors, { acceptance: null, acknowledgment: null, proposal: null });
+});
+
+test("anchor report mapping narrates in-order only for increasing heights and times", async () => {
+  for (const anchors of [
+    {
+      acceptance: transition("acceptance", 100),
+      acknowledgment: transition("acknowledgment", 300),
+      proposal: transition("proposal", 200),
+    },
+    {
+      acceptance: {
+        ...transition("acceptance", 200),
+        blockTimeMs: 1_700_000_000_000,
+        blockTimeRaw: "1700000000000",
+      },
+      acknowledgment: transition("acknowledgment", 300),
+      proposal: transition("proposal", 100),
+    },
+  ]) {
+    const monitorState = {
+      anchors: { acceptance: null, acknowledgment: null, proposal: null },
+    };
+    const ok = await applyAnchorReport({
+      message: { role: "payer", kind: "anchor_report", body: { transitions: anchors } },
+      monitorState,
+      relayUrl: "http://relay.test",
+      say: async () => assert.fail("unordered anchor reports must not narrate"),
+      transitionToAnchor,
+    });
+
+    assert.equal(ok, false);
+    assert.deepEqual(monitorState.anchors, { acceptance: null, acknowledgment: null, proposal: null });
+  }
 });
 
 test("anchor report mapping rejects board-invalid wire anchors before mutation or narration", async () => {

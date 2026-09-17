@@ -113,9 +113,6 @@ for CODE in RENDEZVOUS_UNAVAILABLE EXPIRED MISSING DUPLICATE REORDERED MALFORMED
     printf '      %-30s emitted\n' "$CODE"
   else
     case "$CODE" in
-      REORDERED)
-        printf '      %-30s registered/display-only; PENDING (M1a: src/verifier/run.mjs order check)\n' "$CODE"
-        PENDING=$((PENDING + 1)) ;;
       RENDEZVOUS_UNAVAILABLE|ROLE_ALREADY_BOUND|RATE_BLOCKED)
         printf '      %-30s PENDING (M1a: relay client)\n' "$CODE"
         PENDING=$((PENDING + 1)) ;;

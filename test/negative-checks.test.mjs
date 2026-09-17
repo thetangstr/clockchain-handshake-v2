@@ -55,15 +55,13 @@ test("no negative case closes without a named code", () => {
   }
 });
 
-// The three public-vocabulary facts the script surfaces. They are asserted here
-// so that a later change which makes REORDERED or FUNDING_REPLAYED reachable, or
-// which gives replay-into-a-live-session its own code, breaks this test and
-// forces the script's recorded expectations to be updated with it.
+// The public-vocabulary facts the script surfaces. They are asserted here so
+// that a later change which makes FUNDING_REPLAYED reachable, or which gives
+// replay-into-a-live-session its own code, breaks this test and forces the
+// script's recorded expectations to be updated with it.
 test("the reason codes the four cases actually reach are recorded, not assumed", () => {
   const byId = new Map(gating.map((result) => [result.id, result]));
-  // (b) does NOT reach REORDERED: that code has no emission site in src/.
-  assert.equal(byId.get("REORDER").code, "MALFORMED");
-  assert.notEqual(byId.get("REORDER").code, "REORDERED");
+  assert.equal(byId.get("REORDER").code, "REORDERED");
   // (d) does NOT reach FUNDING_REPLAYED: the ported journal refuses in its own
   // internal namespace, and the journal is a pure port that must not be edited.
   assert.equal(
@@ -87,9 +85,9 @@ async function sourceFiles(directory) {
   return files;
 }
 
-test("REORDERED and FUNDING_REPLAYED have no throw site anywhere in src/", async () => {
+test("FUNDING_REPLAYED remains the only display-only pending code", async () => {
   const root = fileURLToPath(new URL("../src", import.meta.url));
-  const carriers = { FUNDING_REPLAYED: [], REORDERED: [] };
+  const carriers = { FUNDING_REPLAYED: [] };
   for (const path of await sourceFiles(root)) {
     const source = await readFile(path, "utf8");
     for (const code of Object.keys(carriers)) {
@@ -104,12 +102,8 @@ test("REORDERED and FUNDING_REPLAYED have no throw site anywhere in src/", async
       );
     }
   }
-  // The literals exist only as display labels. If that ever stops being true,
+  // The literal exists only as display labels. If that ever stops being true,
   // the reason vocabulary has grown and this test should be revisited.
-  assert.deepEqual(carriers.REORDERED, [
-    "monitor/control-plane/messages.mjs",
-    "monitor/snapshot.mjs",
-  ]);
   assert.deepEqual(carriers.FUNDING_REPLAYED, [
     "monitor/control-plane/messages.mjs",
     "monitor/snapshot.mjs",

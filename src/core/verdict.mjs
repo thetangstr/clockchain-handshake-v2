@@ -158,6 +158,14 @@ const VERDICT_PUBLICATION_FILES = Object.freeze({
   markdown: "BILATERAL-VERDICT.md",
   marker: ".bilateral-verdict.complete.json",
 });
+const PARTY_TRANSITION_ORDER = Object.freeze([
+  "proposal",
+  "acceptance",
+  "acknowledgment",
+]);
+const PARTY_TRANSITION_ORDER_INDEX = new Map(
+  PARTY_TRANSITION_ORDER.map((kind, index) => [kind, index]),
+);
 
 export class BilateralVerdictError extends Error {
   constructor(terminalCode = "FAILED") {
@@ -733,6 +741,71 @@ function parseMarker(bytes, canaries) {
   }
 }
 
+function reorderedPartyClone(party) {
+  if (
+    !isPlainObject(party) ||
+    !Array.isArray(party.transitions) ||
+    party.transitions.length < 2 ||
+    party.transitions.length > PARTY_TRANSITION_ORDER.length
+  ) {
+    return null;
+  }
+  const seen = new Set();
+  const transitions = [];
+  let alreadyOrdered = true;
+  for (let index = 0; index < party.transitions.length; index += 1) {
+    const transition = party.transitions[index];
+    if (
+      !isPlainObject(transition) ||
+      !isPlainObject(transition.message)
+    ) {
+      return null;
+    }
+    const kind = transition.message.kind;
+    const order = PARTY_TRANSITION_ORDER_INDEX.get(kind);
+    if (order !== index) {
+      alreadyOrdered = false;
+    }
+    if (
+      order === undefined ||
+      seen.has(kind) ||
+      order >= party.transitions.length
+    ) {
+      return null;
+    }
+    seen.add(kind);
+    transitions.push(transition);
+  }
+  if (alreadyOrdered || seen.size !== party.transitions.length) {
+    return null;
+  }
+  for (let index = 0; index < party.transitions.length; index += 1) {
+    if (!seen.has(PARTY_TRANSITION_ORDER[index])) {
+      return null;
+    }
+  }
+  const clone = JSON.parse(JSON.stringify(party));
+  clone.transitions = JSON.parse(JSON.stringify(transitions)).sort(
+    (left, right) =>
+      PARTY_TRANSITION_ORDER_INDEX.get(left.message.kind) -
+      PARTY_TRANSITION_ORDER_INDEX.get(right.message.kind),
+  );
+  return clone;
+}
+
+function failIfRecognizableReorder(party) {
+  const normalized = reorderedPartyClone(party);
+  if (normalized === null) {
+    return;
+  }
+  try {
+    validatePartyResult(normalized);
+  } catch {
+    return;
+  }
+  fail("REORDERED");
+}
+
 /**
  * Verify one party package from its raw bytes.
  *
@@ -771,7 +844,14 @@ function verifyPartyTriple(triple, canaries) {
     assertSecretFree(markdownText, canaries);
     const party = JSON.parse(jsonText);
     assertSecretFree(party, canaries);
-    validatePartyResult(party);
+    try {
+      validatePartyResult(party);
+    } catch (error) {
+      if (error instanceof BilateralPartyResultValidationError) {
+        failIfRecognizableReorder(party);
+      }
+      throw error;
+    }
     const canonical = JSON.parse(
       canonicalBytes(party).toString("utf8"),
     );
@@ -882,6 +962,23 @@ function triple(kind, verified) {
   });
 }
 
+function assertVerifiedLiveAppend(previous, next) {
+  if (
+    previous.some(
+      ({ verified }) => verified.ledgerId === next.ledgerId,
+    )
+  ) {
+    fail("DUPLICATE");
+  }
+  const prior = previous.at(-1)?.verified;
+  if (
+    prior !== undefined &&
+    BigInt(prior.blockHeight) >= BigInt(next.blockHeight)
+  ) {
+    fail("REORDERED");
+  }
+}
+
 function normalizeProtocolError(error) {
   if (error instanceof McpRateLimitedError) {
     fail("RATE_BLOCKED");
@@ -931,6 +1028,7 @@ async function verifyLiveTransitions(clockchain, descriptor) {
       message: proposal,
       referenceId: sessionKey(sessionDigest, "proposal"),
     });
+    const live = [{ message: proposal, verified: verifiedProposal }];
     const proposalTriple = triple(
       "proposal",
       verifiedProposal,
@@ -943,6 +1041,11 @@ async function verifyLiveTransitions(clockchain, descriptor) {
       client: clockchain,
       message: acceptance,
       referenceId: sessionKey(sessionDigest, "acceptance"),
+    });
+    assertVerifiedLiveAppend(live, verifiedAcceptance);
+    live.push({
+      message: acceptance,
+      verified: verifiedAcceptance,
     });
     acknowledgment = buildAcknowledgment({
       acceptance,
@@ -960,6 +1063,7 @@ async function verifyLiveTransitions(clockchain, descriptor) {
         "acknowledgment",
       ),
     });
+    assertVerifiedLiveAppend(live, verifiedAcknowledgment);
   } catch (error) {
     normalizeProtocolError(error);
   }
@@ -1375,11 +1479,11 @@ async function runVerification(input) {
     const heights = live.map(
       ({ verified }) => BigInt(verified.blockHeight),
     );
-    if (
-      new Set(ledgerIds).size !== 3 ||
-      !(heights[0] < heights[1] && heights[1] < heights[2])
-    ) {
-      fail();
+    if (new Set(ledgerIds).size !== 3) {
+      fail("DUPLICATE");
+    }
+    if (!(heights[0] < heights[1] && heights[1] < heights[2])) {
+      fail("REORDERED");
     }
 
     const deadline = deadlineMs(live[0].verified.blockTimeMs);

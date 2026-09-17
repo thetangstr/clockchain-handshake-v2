@@ -768,6 +768,22 @@ async function writeVariant(fixture, name, result) {
   return directory;
 }
 
+async function republishPartyJson(directory, result) {
+  const json = `${JSON.stringify(result, null, 2)}\n`;
+  const markdown = await readFile(join(directory, "PARTY-RESULT.md"));
+  await writeFile(join(directory, "party-result.json"), json, "utf8");
+  await writeFile(
+    join(directory, ".party-result.complete.json"),
+    `${JSON.stringify({
+      jsonSha256: createHash("sha256").update(json).digest("hex"),
+      markdownSha256: createHash("sha256").update(markdown).digest("hex"),
+      schema:
+        "clockchain.bilateral-party-result-completion/v1",
+    })}\n`,
+    "utf8",
+  );
+}
+
 async function assertVerdictFailure(input, terminalCode) {
   await assert.rejects(
     () => verifyBilateralAuthorization(input),
@@ -1262,6 +1278,40 @@ test("still requires a valid role-owned payee signature", async (t) => {
   );
 });
 
+test("classifies an exact party transition reorder before schema order hides it", async (t) => {
+  const fixture = await completeFixture(t);
+  const forged = cloned(fixture.payee);
+  [forged.transitions[0], forged.transitions[1]] = [
+    forged.transitions[1],
+    forged.transitions[0],
+  ];
+  await republishPartyJson(fixture.payeeDirectory, forged);
+
+  await assertVerdictFailure(fixture.input, "REORDERED");
+});
+
+test("keeps malformed-plus-reordered party evidence malformed", async (t) => {
+  const fixture = await completeFixture(t);
+  const duplicate = cloned(fixture.payee);
+  [duplicate.transitions[0], duplicate.transitions[1]] = [
+    duplicate.transitions[1],
+    duplicate.transitions[0],
+  ];
+  duplicate.transitions[1].onChain.ledgerId =
+    duplicate.transitions[0].onChain.ledgerId;
+  await republishPartyJson(fixture.payeeDirectory, duplicate);
+  await assertVerdictFailure(fixture.input, "MALFORMED");
+
+  const unknown = cloned(fixture.payee);
+  [unknown.transitions[0], unknown.transitions[1]] = [
+    unknown.transitions[1],
+    unknown.transitions[0],
+  ];
+  unknown.transitions[0].unknown = true;
+  await republishPartyJson(fixture.payeeDirectory, unknown);
+  await assertVerdictFailure(fixture.input, "MALFORMED");
+});
+
 test("requires descriptor provenance and descriptor/package pins", async (t) => {
   const fixture = await completeFixture(t);
   const { publicKey } = generateKeyPairSync("ed25519");
@@ -1417,6 +1467,113 @@ test("fails closed on duplicate discovery and every non-unit audit count", async
   }
 });
 
+test("classifies duplicate independently verified live ledger ids as duplicate", async (t) => {
+  const fixture = await completeFixture(t);
+  const duplicateLedgerId =
+    fixture.transitions[1].onChain.ledgerId;
+  await assertVerdictFailure(
+    {
+      ...fixture.input,
+      clockchain: clockchainWith(fixture.input.clockchain, {
+        async searchActions(args) {
+          const records =
+            await fixture.input.clockchain.searchActions(args);
+          if (
+            args.asset_reference_id ===
+            sessionKey(fixture.sessionDigest, "acknowledgment")
+          ) {
+            return [
+              {
+                ...records[0],
+                ledgerId: duplicateLedgerId,
+              },
+            ];
+          }
+          return records;
+        },
+        async verifyCrossParty(args) {
+          if (
+            args.ledgerId === duplicateLedgerId &&
+            args.blockHeight ===
+              fixture.transitions[2].onChain.blockHeight
+          ) {
+            return {
+              onChain: {
+                anchoredHash:
+                  fixture.transitions[2].onChain.anchoredHash,
+                assetReferenceId: sessionKey(
+                  fixture.sessionDigest,
+                  "acknowledgment",
+                ),
+                blockHeight:
+                  fixture.transitions[2].onChain.blockHeight,
+                keyless: true,
+                ledgerId: duplicateLedgerId,
+                verifiedAgainst: "on-chain block",
+              },
+            };
+          }
+          return fixture.input.clockchain.verifyCrossParty(args);
+        },
+      }),
+    },
+    "DUPLICATE",
+  );
+});
+
+test("classifies non-increasing independently verified live heights as reordered", async (t) => {
+  const fixture = await completeFixture(t);
+  await assertVerdictFailure(
+    {
+      ...fixture.input,
+      clockchain: clockchainWith(fixture.input.clockchain, {
+        async searchActions(args) {
+          const records =
+            await fixture.input.clockchain.searchActions(args);
+          if (
+            args.asset_reference_id ===
+            sessionKey(fixture.sessionDigest, "acceptance")
+          ) {
+            return [
+              {
+                ...records[0],
+                blockHeight:
+                  fixture.transitions[0].onChain.blockHeight,
+              },
+            ];
+          }
+          return records;
+        },
+        async verifyCrossParty(args) {
+          if (
+            args.ledgerId ===
+            fixture.transitions[1].onChain.ledgerId
+          ) {
+            return {
+              onChain: {
+                anchoredHash:
+                  fixture.transitions[1].onChain.anchoredHash,
+                assetReferenceId: sessionKey(
+                  fixture.sessionDigest,
+                  "acceptance",
+                ),
+                blockHeight:
+                  fixture.transitions[0].onChain.blockHeight,
+                keyless: true,
+                ledgerId:
+                  fixture.transitions[1].onChain.ledgerId,
+                verifiedAgainst: "on-chain block",
+              },
+            };
+          }
+          return fixture.input.clockchain.verifyCrossParty(args);
+        },
+      }),
+    },
+    "REORDERED",
+  );
+});
+
 test("maps rate-limited and absent proposal discovery to fixed terminal outcomes", async (t) => {
   const fixture = await completeFixture(t);
   await assertVerdictFailure(
@@ -1485,6 +1642,27 @@ test("rejects wrong-height correct-hash anchors and ambiguous next-block failure
             throw new Error("secret: should-not-leak");
           }
           return fixture.input.clockchain.getBlock(args);
+        },
+      }),
+    },
+    "ANCHOR_UNVERIFIED",
+  );
+});
+
+test("keeps malformed live block time classified as anchor-unverified", async (t) => {
+  const fixture = await completeFixture(t);
+  const acceptanceHeight =
+    fixture.transitions[1].onChain.blockHeight;
+  await assertVerdictFailure(
+    {
+      ...fixture.input,
+      clockchain: clockchainWith(fixture.input.clockchain, {
+        async getBlock(args) {
+          const block =
+            await fixture.input.clockchain.getBlock(args);
+          return args.height === acceptanceHeight
+            ? { ...block, blockTime: "not-a-block-time" }
+            : block;
         },
       }),
     },

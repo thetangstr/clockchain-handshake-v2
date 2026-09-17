@@ -75,3 +75,12 @@ set in both directions, so a future unregistered code fails the gate.
 **Actual:** 22. `src/constants.mjs` (11 lines: chain id, ERC-8004 registry address,
 RPC and Clockchain URLs) is imported by four ported modules and was not named in
 the plan. Discovered by computing the import closure rather than reading the list.
+
+## D9 — `REORDERED` lives in the production verifier, not stale planned CLI
+**Plan:** revive the order check in `src/verifier/run.mjs`.
+**Done instead:** `REORDERED` is emitted from the production aggregate verifier in
+`src/core/verdict.mjs`.
+**Why:** `src/verifier/run.mjs` is not on the production verification path, and no
+independently ordered anchor list exists there. The production path has both
+marker-bound party evidence and independently verified live anchors, so it can
+classify exact recognizable reorders without accepting a normalized document.

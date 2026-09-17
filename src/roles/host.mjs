@@ -258,6 +258,25 @@ export function requestEnvelopeFrom(message) {
   return requestEnvelope;
 }
 
+function anchorsAreStrictlyOrdered(anchors) {
+  const ordered = [
+    anchors.proposal,
+    anchors.acceptance,
+    anchors.acknowledgment,
+  ];
+  for (let index = 1; index < ordered.length; index += 1) {
+    const previous = ordered[index - 1];
+    const current = ordered[index];
+    if (
+      BigInt(previous.blockHeight) >= BigInt(current.blockHeight) ||
+      previous.blockTime >= current.blockTime
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export async function applyAnchorReport({
   message,
   monitorState,
@@ -288,6 +307,7 @@ export async function applyAnchorReport({
     validateAnchor("proposal", anchors.proposal);
     validateAnchor("acceptance", anchors.acceptance);
     validateAnchor("acknowledgment", anchors.acknowledgment);
+    if (!anchorsAreStrictlyOrdered(anchors)) return false;
     monitorState.anchors = { ...monitorState.anchors, ...anchors };
     await say("PROPOSED", "The payer's proposal is recorded on Clockchain.");
     await say("ACCEPTED", "The requestor accepted the exact terms, and that acceptance is recorded.");

@@ -18,24 +18,17 @@
  *
  * WHAT THIS SCRIPT DELIBERATELY DOES NOT DO: it does not reach for a prettier
  * reason code than the code path actually produces. Where a case lands on the
- * generic catch-all, the row says so, and the notes below record why. Two
- * observations that a reader should not have to dig for:
+ * generic catch-all, the row says so, and the notes below record why. One
+ * observation that a reader should not have to dig for:
  *
- *   - REORDERED, the frozen code whose name matches case (b), is never thrown.
- *     The only occurrences of the literal in src/ are the two monitor display
- *     maps; no code path raises it. Out-of-order evidence is caught one layer
- *     earlier, by the party-result schema, which pins transitions[i].message.kind
- *     to the i-th protocol kind, so case (b) reports MALFORMED. The order check
- *     that would own REORDERED belongs to src/verifier/, which is an empty
- *     directory today.
- *   - FUNDING_REPLAYED is likewise never thrown, and for the same reason: the
- *     literal appears only in the monitor display maps. The ported funding
+ *   - FUNDING_REPLAYED is never thrown: the literal appears only in the monitor
+ *     display maps. The ported funding
  *     journal refuses the replay under its own prefixed internal namespace, and
  *     the journal is a byte-faithful pure port that must not be edited, so this
  *     script reports the code the journal actually raises.
  *
- * scripts/check-invariants.sh reports both codes as registered/display-only
- * pending codes, not as emitted runtime reasons.
+ * scripts/check-invariants.sh reports FUNDING_REPLAYED as the remaining
+ * registered/display-only pending code, not as an emitted runtime reason.
  */
 
 import { createHash, generateKeyPairSync } from "node:crypto";
@@ -722,7 +715,7 @@ export const NEGATIVE_CASES = Object.freeze([
     run: caseReplay,
   }),
   Object.freeze({
-    expected: "MALFORMED",
+    expected: "REORDERED",
     id: "REORDER",
     label: "b. acceptance presented before proposal",
     run: caseReorder,
@@ -841,20 +834,19 @@ async function main() {
 
   stdout.write("\n  notes a reader should not have to dig for:\n");
   stdout.write(
-    "    REORDERED is never thrown. The literal appears in src/ only in the two\n" +
-      "      monitor display maps. Out-of-order evidence is refused one layer\n" +
-      "      earlier, by the party-result schema that pins each transition's kind\n" +
-      "      to its index, so case (b) reports MALFORMED. The order check that\n" +
-      "      would own REORDERED belongs to src/verifier/, empty today.\n",
+    "    REORDERED is emitted only for a recognizable otherwise-valid transition\n" +
+      "      order attack. Unknown, duplicate, ill-shaped, or mixed malformed\n" +
+      "      evidence still reports MALFORMED.\n",
   );
   stdout.write(
-    "    FUNDING_REPLAYED is never thrown either, and for the same reason. The\n" +
-      "      ported funding journal refuses the replay under its own internal\n" +
-      "      namespace, and the journal is a pure port that must not be edited.\n",
+    "    FUNDING_REPLAYED is still not thrown. The ported funding journal\n" +
+      "      refuses the replay under its own internal namespace, and the\n" +
+      "      journal is a pure port that must not be edited.\n",
   );
   stdout.write(
-    "    check-invariants.sh reports both codes as registered/display-only\n" +
-      "      pending codes, not as emitted runtime reasons.\n",
+    "    check-invariants.sh reports FUNDING_REPLAYED as the remaining\n" +
+      "      registered/display-only pending code, not as an emitted runtime\n" +
+      "      reason.\n",
   );
   stdout.write(
     "    REPLAY and REPLAY_ANCHORED do not share a code. The anchored sibling\n" +
