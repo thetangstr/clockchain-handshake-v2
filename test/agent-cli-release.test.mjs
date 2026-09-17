@@ -16,7 +16,7 @@ import {
 } from "../src/agent-handshake/v2/constants.mjs";
 import { canonicalBytes } from "../src/core/canonical.mjs";
 
-const prefix = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.4/";
+const prefix = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.5/";
 const sourceCommit = "a".repeat(40);
 const bytes = Buffer.from("asset");
 const sha256 = createHash("sha256").update(bytes).digest("hex");
@@ -45,7 +45,7 @@ function asset() {
 function manifest() {
   return {
     schema: "clockchain.agent-handshake-release-manifest/v1",
-    version: "2.1.4",
+    version: "2.1.5",
     sourceCommit,
     nodeRuntime: "24.6.0",
     assets: [asset()],
@@ -80,7 +80,7 @@ test("binds the post-release pin to exact manifest bytes, helper bytes, and host
   const value = manifest();
   const manifestBytes = canonicalBytes(value);
   const pin = {
-    version: "2.1.4",
+    version: "2.1.5",
     sourceCommit,
     manifestDigest: createHash("sha256").update(manifestBytes).digest("hex"),
     allowedAssetPrefix: prefix,
@@ -168,7 +168,7 @@ test("release workflow publishes only the portable helper without external signi
   for (const required of [
     "24.18.0", "ubuntu-24.04", "build-agent-handshake-release.mjs bundle",
     "dist/clockchain-agent-handshake.cjs", "actions/attest-build-provenance@v2",
-    "gh release create v2.1.4",
+    "gh release create v2.1.5",
   ]) assert.ok(workflow.includes(required), required);
   assert.equal(workflow.includes("self-hosted"), false);
   for (const forbidden of [
