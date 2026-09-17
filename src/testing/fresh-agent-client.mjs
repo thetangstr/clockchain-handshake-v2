@@ -271,6 +271,180 @@ export function assertClaudeAdapterPermissionContract(tools = claudeAdapterTools
 // credentials are exercised, no handshake is performed, and nothing secret is
 // retained: the report records per-probe expected/observed outcomes and denied
 // tool categories only.
+// Stub local MCP server used by both real-client preflights. The marker path
+// is embedded literally because Codex filters child-server environment, so an
+// env-var-only marker could be stripped; the env var remains as an override.
+function stubAdapterMcpServer(markerPath) {
+  return `"use strict";
+const { writeFileSync } = require("node:fs");
+const { createInterface } = require("node:readline");
+const TOOL = "authorize_local_action";
+const MARKER = process.env.CLOCKCHAIN_PREFLIGHT_MARKER || ${JSON.stringify(markerPath)};
+const send = (m) => process.stdout.write(JSON.stringify(m) + "\\n");
+createInterface({ input: process.stdin, terminal: false }).on("line", (line) => {
+  let m; try { m = JSON.parse(line); } catch { return; }
+  if (m === null || typeof m !== "object" || m.id === undefined || m.id === null) return;
+  if (m.method === "initialize") return send({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "clockchain-local-adapter", version: "preflight" } } });
+  if (m.method === "ping") return send({ jsonrpc: "2.0", id: m.id, result: {} });
+  if (m.method === "tools/list") return send({ jsonrpc: "2.0", id: m.id, result: { tools: [{ name: TOOL, inputSchema: { type: "object", properties: {}, additionalProperties: false } }] } });
+  if (m.method === "tools/call") {
+    const p = m.params || {};
+    const clean = p.name === TOOL && (p.arguments === undefined || (typeof p.arguments === "object" && !Array.isArray(p.arguments) && p.arguments !== null && Object.keys(p.arguments).length === 0));
+    if (clean && MARKER) { try { writeFileSync(MARKER, "executed"); } catch { /* marker optional */ } }
+    return send({ jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: clean ? "ok" : "rejected" }], isError: !clean } });
+  }
+  return send({ jsonrpc: "2.0", id: m.id, error: { code: -32601, message: "method not found" } });
+});
+`;
+}
+
+function runBoundedChild(spawnProcess, file, args, options, timeoutMs) {
+  return new Promise((resolvePromise) => {
+    let child;
+    try {
+      child = spawnProcess(file, args, { ...options, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    } catch {
+      resolvePromise({ code: null, timedOut: false });
+      return;
+    }
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolvePromise(result);
+    };
+    const timer = setTimeout(() => {
+      terminateProcessGroup(child);
+      for (const stream of [child.stdin, child.stdout, child.stderr]) {
+        try { stream?.destroy?.(); } catch { /* already closed */ }
+      }
+      finish({ code: null, timedOut: true });
+    }, timeoutMs);
+    child.stdout?.resume?.();
+    child.stderr?.resume?.();
+    child.once("error", () => finish({ code: null, timedOut: false }));
+    child.once("close", (code) => finish({ code: code ?? null, timedOut: false }));
+  });
+}
+
+// Real Codex proof that the zero-input adapter tool is auto-approved under the
+// exact production launch shape. The filesystem marker written by the stub MCP
+// server is authoritative; timeout and spawn errors fail, never pass.
+export async function runCodexAdapterPreflight({
+  cwd,
+  env = {},
+  executable = "codex",
+  manifestDigest,
+  spawnProcess = spawn,
+  timeoutMs = 120_000,
+} = {}) {
+  const workspace = absolute(cwd);
+  if (!SHA256.test(manifestDigest)) fail();
+  if (typeof env !== "object" || env === null || Array.isArray(env)) fail();
+  if (typeof executable !== "string" || executable.length === 0 || !SAFE_SEGMENT.test(basename(executable))) fail();
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 10 * 60 * 1000) fail();
+  const adapterRoot = join(workspace, ".clockchain-adapter");
+  const markerPath = join(workspace, ".clockchain-preflight-marker");
+  await mkdir(adapterRoot, { recursive: true });
+  await writeFile(join(adapterRoot, "mcp-server.cjs"), stubAdapterMcpServer(markerPath), { mode: 0o600 });
+  const prompt = `Call the MCP tool "${ADAPTER_MCP_TOOL}" provided by the MCP server "${ADAPTER_MCP_SERVER}" exactly once with no arguments, then reply DONE.`;
+  const commands = buildClientCommands({ client: "codex", manifestDigest, prompt, workspace });
+  const childEnv = {
+    ...env,
+    CLOCKCHAIN_PREFLIGHT_MARKER: markerPath,
+    PATH: env.PATH ?? process.env.PATH ?? "/usr/bin:/bin",
+  };
+  for (const command of commands.configure) {
+    const configureResult = await runBoundedChild(
+      spawnProcess, command.file, command.args,
+      { cwd: workspace, env: childEnv },
+      Math.min(timeoutMs, 30_000),
+    );
+    if (configureResult.code !== 0 || configureResult.timedOut) {
+      return Object.freeze({
+        pass: false,
+        probes: Object.freeze([Object.freeze({
+          command: `configure:${command.args.slice(0, 3).join(" ")}`,
+          expected: "allowed",
+          observed: configureResult.timedOut ? "timeout" : "configure_failed",
+          pass: false,
+        })]),
+      });
+    }
+  }
+  const child = spawnProcess(executable, commands.launch.args, {
+    cwd: workspace,
+    env: childEnv,
+    stdio: ["pipe", "pipe", "pipe"],
+    // Own process group so timeout cleanup can SIGKILL the CLI and any stdio
+    // MCP descendants that would otherwise hold pipes open.
+    detached: true,
+  });
+  const outcome = await new Promise((resolvePromise) => {
+    let settled = false;
+    let attempted = false;
+    let denied = false;
+    let lineBuffer = "";
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      terminateProcessGroup(child);
+      for (const stream of [child.stdin, child.stdout, child.stderr]) {
+        try { stream?.destroy?.(); } catch { /* already closed */ }
+      }
+      resolvePromise({ observed: "timeout" });
+    }, timeoutMs);
+    function settle(observed) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolvePromise({ observed });
+    }
+    child.stdout?.on("data", (chunk) => {
+      lineBuffer += Buffer.from(chunk).toString("utf8");
+      const lines = lineBuffer.split(/\r?\n/);
+      lineBuffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (line.trim().length === 0) continue;
+        let event;
+        try { event = JSON.parse(line); } catch { continue; }
+        const item = event?.item ?? event?.msg?.item;
+        if (item?.type === "mcp_tool_call" || item?.type === "mcpToolCall") {
+          const tool = [item?.tool, item?.name].find((value) => typeof value === "string");
+          if (tool === ADAPTER_MCP_TOOL || tool === `mcp__${ADAPTER_MCP_SERVER}__${ADAPTER_MCP_TOOL}`) {
+            attempted = true;
+            const status = typeof item?.status === "string" ? item.status : "";
+            if (item?.error !== undefined && item?.error !== null) denied = true;
+            if (/approv|denied|fail/i.test(status) && status !== "completed") denied = true;
+          }
+        }
+        const errorText = [event?.error?.message, event?.msg?.error?.message, event?.msg?.message]
+          .find((value) => typeof value === "string");
+        if (typeof errorText === "string" && /requires approval|approval policy/i.test(errorText)) denied = true;
+      }
+    });
+    child.once("error", () => settle("spawn_error"));
+    child.once("close", () => {
+      const executed = existsSync(markerPath);
+      if (executed && !denied) settle("allowed");
+      else if (!executed && denied) settle("denied");
+      else if (executed && denied) settle("conflicted");
+      else settle(attempted ? "attempted_failed" : "not_attempted");
+    });
+    child.stdin?.end?.(prompt);
+  });
+  return Object.freeze({
+    pass: outcome.observed === "allowed",
+    probes: Object.freeze([Object.freeze({
+      command: `mcp_tool:${ADAPTER_MCP_TOOL}`,
+      expected: "allowed",
+      observed: outcome.observed,
+      pass: outcome.observed === "allowed",
+    })]),
+  });
+}
+
 export async function runClaudePermissionPreflight({
   cwd,
   env = {},
@@ -302,26 +476,7 @@ export async function runClaudePermissionPreflight({
   // non-empty arguments without executing.
   await writeFile(
     join(adapterRoot, "mcp-server.cjs"),
-    `"use strict";
-const { writeFileSync } = require("node:fs");
-const { createInterface } = require("node:readline");
-const TOOL = "authorize_local_action";
-const send = (m) => process.stdout.write(JSON.stringify(m) + "\\n");
-createInterface({ input: process.stdin, terminal: false }).on("line", (line) => {
-  let m; try { m = JSON.parse(line); } catch { return; }
-  if (m === null || typeof m !== "object" || m.id === undefined || m.id === null) return;
-  if (m.method === "initialize") return send({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "clockchain-local-adapter", version: "preflight" } } });
-  if (m.method === "ping") return send({ jsonrpc: "2.0", id: m.id, result: {} });
-  if (m.method === "tools/list") return send({ jsonrpc: "2.0", id: m.id, result: { tools: [{ name: TOOL, inputSchema: { type: "object", properties: {}, additionalProperties: false } }] } });
-  if (m.method === "tools/call") {
-    const p = m.params || {};
-    const clean = p.name === TOOL && (p.arguments === undefined || (typeof p.arguments === "object" && !Array.isArray(p.arguments) && p.arguments !== null && Object.keys(p.arguments).length === 0));
-    if (clean && process.env.CLOCKCHAIN_PREFLIGHT_MARKER) { try { writeFileSync(process.env.CLOCKCHAIN_PREFLIGHT_MARKER, "executed"); } catch { /* marker optional */ } }
-    return send({ jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: clean ? "ok" : "rejected" }], isError: !clean } });
-  }
-  return send({ jsonrpc: "2.0", id: m.id, error: { code: -32601, message: "method not found" } });
-});
-`,
+    stubAdapterMcpServer(markerPath),
     { mode: 0o600 },
   );
   const probePrompt = (probe) => {
@@ -506,6 +661,7 @@ export function buildClientCommands({ client, manifestDigest, prompt, workspace 
         args: Object.freeze([
           "exec", "--skip-git-repo-check", "--strict-config", "--ignore-rules", "--ephemeral",
           "--sandbox", "workspace-write", "--config", 'approval_policy="never"',
+          "--config", `mcp_servers.${ADAPTER_MCP_SERVER}.tools.${ADAPTER_MCP_TOOL}.approval_mode="approve"`,
           "--config", "sandbox_workspace_write.network_access=true", "--json", "--cd", cwd, "-",
         ]),
         file: "codex",
