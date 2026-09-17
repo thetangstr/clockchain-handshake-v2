@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +12,7 @@ import {
   AGENT_HANDSHAKE_HELPER_VERSION,
   AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX,
 } from "../src/agent-handshake/v2/constants.mjs";
+import { canonicalBytes } from "../src/core/canonical.mjs";
 import {
   CLOCKCHAIN_HANDSHAKE_MCP_URL,
   VERIFIED_HELPER_BOOTSTRAP,
@@ -45,6 +47,57 @@ const DIGEST = "a".repeat(64);
 const ROOT = "b".repeat(64);
 const SESSION = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const INVITATION = `eyJ${"a".repeat(128)}.${"b".repeat(96)}`;
+const HELPER_BYTES = Buffer.from("module.exports = {};\n");
+
+function releaseFixture({ manifest: manifestOverrides = {}, asset: assetOverrides = {}, bytes, mutate } = {}) {
+  const asset = {
+    platform: "node",
+    arch: "any",
+    upstreamSupport: "node24_portable",
+    filename: "clockchain-agent-handshake.cjs",
+    url: `${AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX}clockchain-agent-handshake.cjs`,
+    byteLength: String(HELPER_BYTES.length),
+    sha256: createHash("sha256").update(HELPER_BYTES).digest("hex"),
+    nativeSignature: { type: "none", verified: true, signer: null, timestamp: null, notarized: null },
+    execution: { verified: true, platform: "linux", arch: "x64", exitCode: "0", publicOutputSha256: "b".repeat(64) },
+    ...assetOverrides,
+  };
+  const manifest = {
+    schema: "clockchain.agent-handshake-release-manifest/v1",
+    version: AGENT_HANDSHAKE_HELPER_VERSION,
+    sourceCommit: "a".repeat(40),
+    nodeRuntime: "24.9.0",
+    assets: [asset],
+    ...manifestOverrides,
+  };
+  mutate?.(manifest);
+  const manifestBytes = typeof bytes === "function" ? bytes(manifest) : bytes ?? canonicalBytes(manifest);
+  const manifestDigest = createHash("sha256").update(manifestBytes).digest("hex");
+  const releasePin = {
+    version: AGENT_HANDSHAKE_HELPER_VERSION,
+    sourceCommit: manifest.sourceCommit,
+    manifestDigest,
+    allowedAssetPrefix: AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX,
+    hostRoots: [{ kid: "root-2026-08", fingerprint: ROOT }],
+  };
+  return { helperBytes: HELPER_BYTES, manifest, manifestBytes, manifestDigest, releasePin };
+}
+
+function fakeFetchReleaseAsset(fixture, { manifestBytes, helperBytes, error } = {}) {
+  const calls = [];
+  const fetchReleaseAsset = async (url) => {
+    calls.push(url);
+    if (error !== undefined) throw error;
+    if (url === `${AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX}manifest.json`) return manifestBytes ?? fixture.manifestBytes;
+    if (url === `${AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX}clockchain-agent-handshake.cjs`) return helperBytes ?? HELPER_BYTES;
+    throw new Error(`unexpected url ${url}`);
+  };
+  return { calls, fetchReleaseAsset };
+}
+
+function releaseAgreement(manifestDigest) {
+  return { mcp: { manifestDigest, hostRoots: [ROOT] }, research: { manifestDigest, hostRoots: [ROOT] } };
+}
 
 function roleResult(role) {
   return {
@@ -184,12 +237,261 @@ test("rejects unsafe command fixtures before a signer or registration can run", 
   for (const candidate of bad) assert.throws(() => validateHelperCommand(candidate));
 });
 
+test("preloads the digest-verified manifest and helper into both workspaces before launch", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-preload-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const fixture = releaseFixture();
+  const events = [];
+  const { calls: fetchCalls, fetchReleaseAsset } = fakeFetchReleaseAsset(fixture);
+  const recordingFetch = async (url) => {
+    events.push(`fetch:${url}`);
+    return fetchReleaseAsset(url);
+  };
+  const children = {};
+  const spawnProcess = (file, args, options) => {
+    events.push(`spawn:${file}`);
+    assert.deepEqual(readFileSync(join(options.cwd, "manifest.json")), fixture.manifestBytes);
+    assert.deepEqual(readFileSync(join(options.cwd, "clockchain-agent-handshake.cjs")), HELPER_BYTES);
+    const role = children.initiator === undefined ? "initiator" : "responder";
+    const child = new EventEmitter();
+    child.pid = 2000 + events.length;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {} };
+    child.kill = () => {};
+    children[role] = child;
+    if (role === "initiator") {
+      queueMicrotask(() => {
+        child.stdout.emit("data", Buffer.from(streamEvent({
+          type: "item.completed",
+          item: {
+            type: "mcp_tool_call",
+            name: "agent_handshake_invite",
+            result: { structuredContent: { responderInvitation: INVITATION } },
+          },
+        })));
+      });
+    } else {
+      queueMicrotask(() => {
+        children.initiator.stdout.emit("data", Buffer.from(terminalEvent(roleResult("initiator"))));
+        children.responder.stdout.emit("data", Buffer.from(claudeTerminalEvent(roleResult("responder"))));
+        children.initiator.emit("close", 0, null);
+        children.responder.emit("close", 0, null);
+      });
+    }
+    return child;
+  };
+  const result = await runFreshAgentHandshake({
+    clients: { initiator: "codex", responder: "claude" },
+    configureClient: async ({ client }) => events.push(`configure:${client}`),
+    modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
+    monitor: async () => ({ chronology: ["INVITATION_CREATED", "INVITATION_CLAIMED", "IDENTITIES_REGISTERED", "CERTIFIED"], sessionId: SESSION }),
+    parent,
+    prompts: { initiator: "init", responder: "consume <PASTE THE INITIATOR INVITATION> now" },
+    release: releaseAgreement(fixture.manifestDigest),
+    releasePin: fixture.releasePin,
+    spawnProcess,
+    fetchReleaseAsset: recordingFetch,
+    timeoutMs: 2_000,
+  });
+  assert.equal(result.cleanup.completed, true);
+  assert.deepEqual(fetchCalls, [
+    `${AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX}manifest.json`,
+    `${AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX}clockchain-agent-handshake.cjs`,
+  ]);
+  assert.deepEqual(events.slice(0, 4), [
+    `fetch:${AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX}manifest.json`,
+    `fetch:${AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX}clockchain-agent-handshake.cjs`,
+    "configure:codex",
+    "configure:claude",
+  ]);
+});
+
+test("refuses to launch either client when pinned asset preload fails", async (t) => {
+  const good = releaseFixture();
+  const notJson = Buffer.from("not a manifest");
+  const malformed = [
+    { manifest: { schema: "other" } },
+    { manifest: { version: "0.0.0" } },
+    { manifest: { nodeRuntime: "20.11.0" } },
+    { manifest: { assets: [] } },
+    { manifest: { extra: true } },
+    { asset: { filename: "other.cjs" } },
+    { asset: { url: "https://example.test/helper.cjs" } },
+    { asset: { sha256: "not-a-digest" } },
+    { asset: { byteLength: "0" } },
+    { asset: { byteLength: String(HELPER_BYTES.length + 1) } },
+    { mutate: (manifest) => { delete manifest.assets[0].byteLength; } },
+    { mutate: (manifest) => { delete manifest.sourceCommit; } },
+    { bytes: (manifest) => Buffer.from(JSON.stringify(manifest, null, 2)) },
+  ];
+  const cases = [
+    { name: "fetch failure", fetch: { error: new Error("offline") } },
+    { name: "manifest digest mismatch", fetch: { manifestBytes: Buffer.from("{}") } },
+    { name: "agreement digest differs from pin", pin: DIGEST },
+    {
+      name: "manifest not json",
+      fixture: releaseFixture({ bytes: () => notJson }),
+    },
+    ...malformed.map((options, index) => ({
+      name: `malformed manifest ${index}`,
+      fixture: releaseFixture(options),
+    })),
+    { name: "helper digest mismatch", fetch: { helperBytes: Buffer.from("different helper") } },
+  ];
+  for (const entry of cases) {
+    const parent = await mkdtemp(join(tmpdir(), "fresh-agent-preload-fail-"));
+    t.after(() => rm(parent, { recursive: true, force: true }));
+    const fixture = entry.fixture ?? good;
+    const { fetchReleaseAsset } = fakeFetchReleaseAsset(fixture, entry.fetch ?? {});
+    let spawned = 0;
+    let configured = 0;
+    await assert.rejects(() => runFreshAgentHandshake({
+      clients: { initiator: "codex", responder: "claude" },
+      configureClient: async () => { configured += 1; },
+      modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
+      monitor: async () => { throw new Error("unreachable"); },
+      parent,
+      prompts: { initiator: "init", responder: "respond" },
+      release: releaseAgreement(entry.pin ?? fixture.manifestDigest),
+      releasePin: fixture.releasePin,
+      spawnProcess: () => { spawned += 1; throw new Error("must not launch"); },
+      fetchReleaseAsset,
+      timeoutMs: 2_000,
+    }), /failed safely/, entry.name);
+    assert.equal(spawned, 0, entry.name);
+    assert.equal(configured, 0, entry.name);
+    assert.deepEqual(await readdir(parent), [], entry.name);
+  }
+});
+
+test("default release fetch follows the signed GitHub CDN hop to load pinned bytes", async (t) => {
+  const realFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = realFetch; });
+  const fixture = releaseFixture();
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-redirect-ok-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const requested = [];
+  globalThis.fetch = async (url) => {
+    requested.push(url);
+    if (url === `${AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX}manifest.json`) {
+      return new Response(null, { status: 302, headers: { location: "https://release-assets.githubusercontent.com/signed/manifest.json" } });
+    }
+    if (url === "https://release-assets.githubusercontent.com/signed/manifest.json") {
+      return new Response(fixture.manifestBytes, { status: 200 });
+    }
+    if (url === `${AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX}clockchain-agent-handshake.cjs`) {
+      return new Response(fixture.helperBytes, { status: 200 });
+    }
+    throw new Error(`unexpected url ${url}`);
+  };
+  const children = {};
+  const spawnProcess = (file, args, options) => {
+    assert.deepEqual(readFileSync(join(options.cwd, "manifest.json")), fixture.manifestBytes);
+    assert.deepEqual(readFileSync(join(options.cwd, "clockchain-agent-handshake.cjs")), fixture.helperBytes);
+    const role = children.initiator === undefined ? "initiator" : "responder";
+    const child = new EventEmitter();
+    child.pid = 3000 + requested.length;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {} };
+    child.kill = () => {};
+    children[role] = child;
+    if (role === "initiator") {
+      queueMicrotask(() => {
+        child.stdout.emit("data", Buffer.from(streamEvent({
+          type: "item.completed",
+          item: {
+            type: "mcp_tool_call",
+            name: "agent_handshake_invite",
+            result: { structuredContent: { responderInvitation: INVITATION } },
+          },
+        })));
+      });
+    } else {
+      queueMicrotask(() => {
+        children.initiator.stdout.emit("data", Buffer.from(terminalEvent(roleResult("initiator"))));
+        children.responder.stdout.emit("data", Buffer.from(claudeTerminalEvent(roleResult("responder"))));
+        children.initiator.emit("close", 0, null);
+        children.responder.emit("close", 0, null);
+      });
+    }
+    return child;
+  };
+  const result = await runFreshAgentHandshake({
+    clients: { initiator: "codex", responder: "claude" },
+    configureClient: async () => {},
+    modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
+    monitor: async () => ({ chronology: ["INVITATION_CREATED", "CERTIFIED"], sessionId: SESSION }),
+    parent,
+    prompts: { initiator: "init", responder: "consume <PASTE THE INITIATOR INVITATION> now" },
+    release: releaseAgreement(fixture.manifestDigest),
+    releasePin: fixture.releasePin,
+    spawnProcess,
+    timeoutMs: 2_000,
+  });
+  assert.equal(result.cleanup.completed, true);
+  assert.equal(requested[0], `${AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX}manifest.json`);
+});
+
+test("default release fetch aborts before launch on unsafe redirects", async (t) => {
+  const realFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = realFetch; });
+  const fixture = releaseFixture();
+  const cases = [
+    {
+      name: "redirect downgrades to http",
+      impl: async () => new Response(null, { status: 302, headers: { location: "http://release-assets.githubusercontent.com/x" } }),
+    },
+    {
+      name: "redirect leaves GitHub asset hosts",
+      impl: async () => new Response(null, { status: 302, headers: { location: "https://evil.example/manifest.json" } }),
+    },
+    {
+      name: "redirect to lookalike suffix host",
+      impl: async () => new Response(null, { status: 302, headers: { location: "https://githubusercontent.com.evil.example/x" } }),
+    },
+    {
+      name: "redirect loop",
+      impl: async (url) => new Response(null, { status: 302, headers: { location: url } }),
+    },
+    {
+      name: "non-2xx final response",
+      impl: async () => new Response("missing", { status: 404 }),
+    },
+  ];
+  for (const entry of cases) {
+    const parent = await mkdtemp(join(tmpdir(), "fresh-agent-redirect-fail-"));
+    t.after(() => rm(parent, { recursive: true, force: true }));
+    globalThis.fetch = entry.impl;
+    let spawned = 0;
+    let configured = 0;
+    await assert.rejects(() => runFreshAgentHandshake({
+      clients: { initiator: "codex", responder: "claude" },
+      configureClient: async () => { configured += 1; },
+      modelEnvironment: { initiator: { A_KEY: "one-secret" }, responder: { B_KEY: "two-secret" } },
+      monitor: async () => { throw new Error("unreachable"); },
+      parent,
+      prompts: { initiator: "init", responder: "respond" },
+      release: releaseAgreement(fixture.manifestDigest),
+      releasePin: fixture.releasePin,
+      spawnProcess: () => { spawned += 1; throw new Error("must not launch"); },
+      timeoutMs: 2_000,
+    }), /failed safely/, entry.name);
+    assert.equal(spawned, 0, entry.name);
+    assert.equal(configured, 0, entry.name);
+    assert.deepEqual(await readdir(parent), [], entry.name);
+  }
+});
+
 test("starts the Responder only after the Initiator emits its actual one-time invitation", async (t) => {
   const parent = await mkdtemp(join(tmpdir(), "fresh-agent-run-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
   const calls = [];
   const children = {};
   const secret = "canary-provider-secret-value";
+  const fixture = releaseFixture();
+  const { fetchReleaseAsset } = fakeFetchReleaseAsset(fixture);
   const spawnProcess = (file, args, options) => {
     calls.push({ file, args, options });
     const role = children.initiator === undefined ? "initiator" : "responder";
@@ -232,8 +534,10 @@ test("starts the Responder only after the Initiator emits its actual one-time in
     monitor: async () => ({ chronology: ["INVITATION_CREATED", "INVITATION_CLAIMED", "IDENTITIES_REGISTERED", "CERTIFIED"], sessionId: SESSION }),
     parent,
     prompts: { initiator: "init prompt", responder: "consume <PASTE THE INITIATOR INVITATION> now" },
-    release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
+    release: releaseAgreement(fixture.manifestDigest),
+    releasePin: fixture.releasePin,
     spawnProcess,
+    fetchReleaseAsset,
     timeoutMs: 2_000
   });
   assert.equal(calls.filter((entry) => entry.file).length, 2);
@@ -256,6 +560,8 @@ test("times out both process groups and removes both clean rooms", async (t) => 
   const parent = await mkdtemp(join(tmpdir(), "fresh-agent-timeout-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
   const killed = [];
+  const fixture = releaseFixture();
+  const { fetchReleaseAsset } = fakeFetchReleaseAsset(fixture);
   const spawnProcess = () => {
     const child = new EventEmitter();
     child.pid = null;
@@ -272,8 +578,10 @@ test("times out both process groups and removes both clean rooms", async (t) => 
     monitor: async () => { throw new Error("unreachable"); },
     parent,
     prompts: { initiator: "init", responder: "respond" },
-    release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
+    release: releaseAgreement(fixture.manifestDigest),
+    releasePin: fixture.releasePin,
     spawnProcess,
+    fetchReleaseAsset,
     timeoutMs: 100,
   }), /failed safely/);
   assert.deepEqual(killed, ["SIGTERM"]);
@@ -284,6 +592,8 @@ test("rejects a three-segment invitation lookalike before starting the Responder
   const parent = await mkdtemp(join(tmpdir(), "fresh-agent-bad-invitation-"));
   t.after(() => rm(parent, { recursive: true, force: true }));
   let spawned = 0;
+  const fixture = releaseFixture();
+  const { fetchReleaseAsset } = fakeFetchReleaseAsset(fixture);
   const spawnProcess = () => {
     spawned += 1;
     const child = new EventEmitter();
@@ -305,8 +615,10 @@ test("rejects a three-segment invitation lookalike before starting the Responder
     monitor: async () => { throw new Error("unreachable"); },
     parent,
     prompts: { initiator: "init", responder: `respond ${"<PASTE THE INITIATOR INVITATION>"}` },
-    release: { mcp: { manifestDigest: DIGEST, hostRoots: [ROOT] }, research: { manifestDigest: DIGEST, hostRoots: [ROOT] } },
+    release: releaseAgreement(fixture.manifestDigest),
+    releasePin: fixture.releasePin,
     spawnProcess,
+    fetchReleaseAsset,
     timeoutMs: 2_000,
   }), /failed safely/);
   assert.equal(spawned, 1);
