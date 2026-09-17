@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
@@ -12,7 +13,13 @@ import {
   ROLE_ACCESS_HANDLE,
   roleAccessBinding,
 } from "../harness/checkpoint-completion.mjs";
-import { createVerifiedReleaseActionRecorder, VERIFIED_HELPER_BOOTSTRAP } from "../harness/verified-release-action-recorder.mjs";
+import {
+  ADAPTER_APPROVAL_TOOL,
+  ADAPTER_MCP_SERVER,
+  ADAPTER_MCP_TOOL,
+  createVerifiedReleaseActionRecorder,
+  VERIFIED_HELPER_BOOTSTRAP,
+} from "../harness/verified-release-action-recorder.mjs";
 import { AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX } from "../agent-handshake/v2/constants.mjs";
 
 const ROLES = Object.freeze(["initiator", "responder"]);
@@ -166,12 +173,276 @@ async function fetchVerifiedReleaseAssets(agreement, releasePin, fetchAsset) {
 // actions are executed through the digest-bound executable the harness places on
 // PATH, and the pinned release bytes are preloaded for inspection. Downloads and
 // direct helper invocations are intentionally not granted.
+// Claude receives NO Bash grant at all: real CLI preflight evidence proved
+// every Bash(command) form — exact or wildcard — also permits shell suffixes
+// (; && |), which would be arbitrary command execution. Local actions are
+// authorized through the per-role stdio MCP adapter tool instead; MCP tool
+// calls cannot carry shell suffixes and the tool accepts zero arguments.
 function claudeAdapterTools() {
   return Object.freeze([
-    "Bash(clockchain-agent-authorize *)",
+    ADAPTER_APPROVAL_TOOL,
     "Read(./manifest.json)",
     "Read(./clockchain-agent-handshake.cjs)",
   ]);
+}
+
+// Static allowlist contract check only — this mirrors the observed dontAsk
+// rule semantics (each shell-chain segment must independently match a granted
+// Bash prefix) but is NOT proof of the real Claude CLI permission engine. The
+// authoritative check is runClaudePermissionPreflight, which drives the actual
+// binary. This function stays as a cheap unit guard against allowlist edits.
+export function evaluateClaudeBashPermission(command, tools = claudeAdapterTools()) {
+  if (typeof command !== "string" || command.trim().length === 0) return false;
+  const grants = tools
+    .filter((tool) => tool.startsWith("Bash(") && tool.endsWith(")"))
+    .map((tool) => tool.slice(5, -1));
+  const segments = command.split(/\r?\n|&&|\|\||[;|&]/).map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+  if (segments.length === 0) return false;
+  return segments.every((segment) => {
+    if (/[$`<>]/.test(segment)) return false;
+    return grants.some((grant) => (
+      grant.endsWith("*") ? segment.startsWith(grant.slice(0, -1)) : segment === grant
+    ));
+  });
+}
+
+// The probes used by both the static contract check and the real Claude CLI
+// preflight. The marker env var names a throwaway file: the stub adapter
+// executable and stub MCP server write it only when actually executed, and
+// every Bash probe carries a marker-writing suffix so a wrongly-allowed shell
+// command is detected by side effect, never by model prose. Probes carry no
+// credentials, invitations, or payload material.
+const CLAUDE_PERMISSION_PROBE_DIGEST = "0".repeat(64);
+const CLAUDE_PREFLIGHT_MARKER_ENV = "CLOCKCHAIN_PREFLIGHT_MARKER";
+const CLAUDE_PREFLIGHT_BASH_MARKER_ENV = "CLOCKCHAIN_PREFLIGHT_BASH_MARKER";
+const CLAUDE_PERMISSION_PROBES = Object.freeze({
+  allowed: Object.freeze([
+    Object.freeze({ kind: "mcp_tool" }),
+  ]),
+  denied: Object.freeze([
+    // Every denied probe must be side-effect authoritative: the command itself
+    // (or the stub executable it invokes) writes the Bash-only marker iff a
+    // shell actually ran it. A probe without a marker write cannot distinguish
+    // "denied" from "model never attempted".
+    Object.freeze({ kind: "bash", command: `echo probe > "$${CLAUDE_PREFLIGHT_BASH_MARKER_ENV}"` }),
+    Object.freeze({ kind: "bash", command: "clockchain-agent-authorize" }),
+    Object.freeze({ kind: "bash", command: `printf executed > "$${CLAUDE_PREFLIGHT_BASH_MARKER_ENV}"` }),
+    Object.freeze({ kind: "bash", command: `echo probe; printf executed > "$${CLAUDE_PREFLIGHT_BASH_MARKER_ENV}"` }),
+    Object.freeze({ kind: "bash", command: `clockchain-agent-authorize; printf executed > "$${CLAUDE_PREFLIGHT_BASH_MARKER_ENV}"` }),
+    Object.freeze({ kind: "bash", command: `./.clockchain-adapter/bin/clockchain-agent-authorize; printf executed > "$${CLAUDE_PREFLIGHT_BASH_MARKER_ENV}"` }),
+    Object.freeze({ kind: "bash", command: `node .clockchain-adapter/mcp-server.cjs; printf executed > "$${CLAUDE_PREFLIGHT_BASH_MARKER_ENV}"` }),
+    // Simulated-only: a real model may ignore the argument instruction and
+    // call the tool cleanly, which is not evidence about the boundary. The
+    // generated server's malformed-input rejection is proven deterministically
+    // in the recorder test suite against the real server.
+    Object.freeze({ kind: "mcp_tool_args", simulatedOnly: true, arguments: Object.freeze({ digest: CLAUDE_PERMISSION_PROBE_DIGEST }) }),
+  ]),
+});
+
+// Cheap static guard over the allowlist contract: the grant list must be
+// exactly the adapter MCP tool plus the two pinned-asset Read grants (no Bash,
+// no Edit/Write, nothing else), and every modeled Bash probe must be denied.
+// Asserts our modeled semantics only — deterministic evidence about the real
+// binary comes from runClaudePermissionPreflight.
+export function assertClaudeAdapterPermissionContract(tools = claudeAdapterTools()) {
+  const expected = new Set(claudeAdapterTools());
+  const report = Object.freeze({
+    adapterToolGranted: tools.includes(ADAPTER_APPROVAL_TOOL),
+    denied: Object.freeze(CLAUDE_PERMISSION_PROBES.denied
+      .filter((probe) => probe.kind === "bash")
+      .map((probe) => Object.freeze({ command: probe.command, granted: evaluateClaudeBashPermission(probe.command, tools) }))),
+    grants: Object.freeze([...tools]),
+    unexpected: Object.freeze(tools.filter((tool) => !expected.has(tool))),
+  });
+  if (
+    !report.adapterToolGranted || report.unexpected.length !== 0 ||
+    report.denied.some((entry) => entry.granted) ||
+    tools.some((tool) => tool.startsWith("Bash(") || tool === "Bash")
+  ) fail();
+  return report;
+}
+
+// Real Claude CLI permission preflight: spawns the actual binary with the same
+// launch flags, cwd, PATH layout, permission mode, and allowedTools list used
+// by canary runs, and asks it to run each probe once. The stub adapter writes
+// a marker file at a nonsecret env-provided path when it actually executes, so
+// the outcome is authoritative regardless of stream format or model prose —
+// the stdout stream is parsed only to classify denial categories. No
+// credentials are exercised, no handshake is performed, and nothing secret is
+// retained: the report records per-probe expected/observed outcomes and denied
+// tool categories only.
+export async function runClaudePermissionPreflight({
+  cwd,
+  env = {},
+  executable = "claude",
+  manifestDigest,
+  spawnProcess = spawn,
+  timeoutMs = 120_000,
+} = {}) {
+  const workspace = absolute(cwd);
+  if (!SHA256.test(manifestDigest)) fail();
+  if (typeof env !== "object" || env === null || Array.isArray(env)) fail();
+  if (typeof executable !== "string" || executable.length === 0 || !SAFE_SEGMENT.test(basename(executable))) fail();
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 10 * 60 * 1000) fail();
+  const adapterRoot = join(workspace, ".clockchain-adapter");
+  const adapterBin = join(adapterRoot, "bin");
+  const markerPath = join(workspace, ".clockchain-preflight-marker");
+  await mkdir(adapterBin, { recursive: true });
+  // Stub executable: proves a Bash-launched adapter run by marker side effect.
+  // It writes the dedicated BASH marker so a model that substitutes the
+  // (legitimately granted) adapter MCP tool cannot make a denied shell probe
+  // look executed — the two side effects are distinct files.
+  await writeFile(
+    join(adapterBin, "clockchain-agent-authorize"),
+    "#!/bin/sh\n[ -n \"$CLOCKCHAIN_PREFLIGHT_BASH_MARKER\" ] && printf 'executed' > \"$CLOCKCHAIN_PREFLIGHT_BASH_MARKER\"\n",
+    { mode: 0o700 },
+  );
+  // Stub local MCP server at the exact path the launch args advertise: proves
+  // a real authorize_local_action call by marker side effect, and rejects any
+  // non-empty arguments without executing.
+  await writeFile(
+    join(adapterRoot, "mcp-server.cjs"),
+    `"use strict";
+const { writeFileSync } = require("node:fs");
+const { createInterface } = require("node:readline");
+const TOOL = "authorize_local_action";
+const send = (m) => process.stdout.write(JSON.stringify(m) + "\\n");
+createInterface({ input: process.stdin, terminal: false }).on("line", (line) => {
+  let m; try { m = JSON.parse(line); } catch { return; }
+  if (m === null || typeof m !== "object" || m.id === undefined || m.id === null) return;
+  if (m.method === "initialize") return send({ jsonrpc: "2.0", id: m.id, result: { protocolVersion: "2024-11-05", capabilities: { tools: {} }, serverInfo: { name: "clockchain-local-adapter", version: "preflight" } } });
+  if (m.method === "ping") return send({ jsonrpc: "2.0", id: m.id, result: {} });
+  if (m.method === "tools/list") return send({ jsonrpc: "2.0", id: m.id, result: { tools: [{ name: TOOL, inputSchema: { type: "object", properties: {}, additionalProperties: false } }] } });
+  if (m.method === "tools/call") {
+    const p = m.params || {};
+    const clean = p.name === TOOL && (p.arguments === undefined || (typeof p.arguments === "object" && !Array.isArray(p.arguments) && p.arguments !== null && Object.keys(p.arguments).length === 0));
+    if (clean && process.env.CLOCKCHAIN_PREFLIGHT_MARKER) { try { writeFileSync(process.env.CLOCKCHAIN_PREFLIGHT_MARKER, "executed"); } catch { /* marker optional */ } }
+    return send({ jsonrpc: "2.0", id: m.id, result: { content: [{ type: "text", text: clean ? "ok" : "rejected" }], isError: !clean } });
+  }
+  return send({ jsonrpc: "2.0", id: m.id, error: { code: -32601, message: "method not found" } });
+});
+`,
+    { mode: 0o600 },
+  );
+  const probePrompt = (probe) => {
+    if (probe.kind === "mcp_tool") {
+      return `Call the MCP tool "${ADAPTER_MCP_TOOL}" provided by the MCP server "${ADAPTER_MCP_SERVER}" exactly once with no arguments, then reply DONE.`;
+    }
+    if (probe.kind === "mcp_tool_args") {
+      return `Call the MCP tool "${ADAPTER_MCP_TOOL}" provided by the MCP server "${ADAPTER_MCP_SERVER}" exactly once with these arguments: ${JSON.stringify(probe.arguments)}. Then reply DONE.`;
+    }
+    return `Use the Bash tool to run exactly this command once, then reply DONE.\n\n${probe.command}`;
+  };
+  // simulatedOnly probes exercise stream classification with a fake spawner;
+  // they are skipped when driving the real binary because their outcome would
+  // depend on model compliance rather than the permission boundary.
+  const realRun = spawnProcess === spawn;
+  const probes = [
+    ...CLAUDE_PERMISSION_PROBES.allowed.map((probe) => ({ probe, expected: "allowed" })),
+    ...CLAUDE_PERMISSION_PROBES.denied.map((probe) => ({ probe, expected: "denied" })),
+  ].filter(({ probe }) => !probe.simulatedOnly || !realRun);
+  const bashMarkerPath = join(workspace, ".clockchain-preflight-bash-marker");
+  const results = [];
+  for (const { probe, expected } of probes) {
+    await rm(markerPath, { force: true });
+    await rm(bashMarkerPath, { force: true });
+    const probeMarker = probe.kind === "bash" ? bashMarkerPath : markerPath;
+    const prompt = probePrompt(probe);
+    const launch = buildClientCommands({ client: "claude", manifestDigest, prompt, workspace }).launch;
+    const child = spawnProcess(executable, launch.args, {
+      cwd: workspace,
+      env: {
+        ...env,
+        CLOCKCHAIN_PREFLIGHT_MARKER: markerPath,
+        CLOCKCHAIN_PREFLIGHT_BASH_MARKER: bashMarkerPath,
+        PATH: `${adapterBin}:${env.PATH ?? process.env.PATH ?? "/usr/bin:/bin"}`,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+      // Own process group so timeout cleanup can SIGKILL the CLI and any
+      // stdio MCP descendants that would otherwise hold pipes open.
+      detached: true,
+    });
+    const outcome = await new Promise((resolvePromise) => {
+      let settled = false;
+      let attempted = false;
+      const deniedTools = new Set();
+      const toolNames = new Map();
+      let lineBuffer = "";
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        terminateProcessGroup(child);
+        for (const stream of [child.stdin, child.stdout, child.stderr]) {
+          try { stream?.destroy?.(); } catch { /* already closed */ }
+        }
+        resolvePromise({ deniedTools: [...deniedTools].sort(), observed: "timeout" });
+      }, timeoutMs);
+      function settle(observed) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolvePromise({ deniedTools: [...deniedTools].sort(), observed });
+      }
+      child.stdout?.on("data", (chunk) => {
+        lineBuffer += Buffer.from(chunk).toString("utf8");
+        const lines = lineBuffer.split(/\r?\n/);
+        lineBuffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (line.trim().length === 0) continue;
+          let event;
+          try { event = JSON.parse(line); } catch { continue; }
+          for (const key of ["permission_denials", "permissionDenials"]) {
+            const denials = event?.[key];
+            if (!Array.isArray(denials)) continue;
+            for (const entry of denials) {
+              const tool = [entry?.tool, entry?.tool_name, entry?.name].find((value) => typeof value === "string" && SAFE_SEGMENT.test(value));
+              if (tool !== undefined) deniedTools.add(tool);
+            }
+          }
+          if (event?.type === "assistant" && Array.isArray(event?.message?.content)) {
+            for (const block of event.message.content) {
+              if (block?.type === "tool_use" && typeof block?.name === "string") {
+                if (typeof block.id === "string") toolNames.set(block.id, block.name);
+                if (block.name === "Bash" || block.name === ADAPTER_APPROVAL_TOOL) attempted = true;
+              }
+            }
+          }
+          if (event?.type === "user" && Array.isArray(event?.message?.content)) {
+            for (const block of event.message.content) {
+              if (block?.type !== "tool_result" || block.is_error !== true) continue;
+              const name = toolNames.get(block.tool_use_id);
+              const text = toolResultText(block);
+              if (name === "Bash" && /permission|denied|not allowed|disallowed|unavailable|not permitted|unknown tool/i.test(text)) deniedTools.add("Bash");
+              if (name === ADAPTER_APPROVAL_TOOL && block.is_error === true) deniedTools.add("adapter_tool");
+            }
+          }
+        }
+      });
+      child.once("error", () => settle("spawn_error"));
+      child.once("close", () => {
+        const executed = existsSync(probeMarker);
+        if (deniedTools.size > 0 && !executed) settle("denied");
+        else if (executed && deniedTools.size === 0) settle("allowed");
+        else if (executed && deniedTools.size > 0) settle("conflicted");
+        else settle(attempted ? "attempted_unknown" : "not_attempted");
+      });
+      child.stdin?.end?.(prompt);
+    });
+    results.push(Object.freeze({
+      command: probe.kind === "bash" ? probe.command : `${probe.kind}:${ADAPTER_MCP_TOOL}`,
+      deniedTools: Object.freeze(outcome.deniedTools),
+      expected,
+      observed: outcome.observed,
+      pass: expected === "allowed"
+        // Allowed probes pass only when the MCP-only marker exists.
+        ? outcome.observed === "allowed"
+        // Denied probes pass only when the Bash-only marker is absent AND the
+        // probe itself bounded cleanly — timeout and spawn_error are failures,
+        // not ambiguous evidence.
+        : ["denied", "attempted_unknown", "not_attempted"].includes(outcome.observed),
+    }));
+  }
+  return Object.freeze({ probes: Object.freeze(results), pass: results.every((entry) => entry.pass) });
 }
 
 function validateHelperArgv(argv, workspace, manifestDigest) {
@@ -218,12 +489,19 @@ export function buildClientCommands({ client, manifestDigest, prompt, workspace 
   const cwd = absolute(workspace);
   if (!SHA256.test(manifestDigest)) fail();
   if (typeof prompt !== "string" || prompt.length === 0) fail();
+  const adapterServerPath = join(cwd, ".clockchain-adapter", "mcp-server.cjs");
   if (clean === "codex") {
     return Object.freeze({
-      configure: Object.freeze({
-        args: Object.freeze(["mcp", "add", "clockchain-handshake", "--url", CLOCKCHAIN_HANDSHAKE_MCP_URL]),
-        file: "codex",
-      }),
+      configure: Object.freeze([
+        Object.freeze({
+          args: Object.freeze(["mcp", "add", "clockchain-handshake", "--url", CLOCKCHAIN_HANDSHAKE_MCP_URL]),
+          file: "codex",
+        }),
+        Object.freeze({
+          args: Object.freeze(["mcp", "add", ADAPTER_MCP_SERVER, "--", process.execPath, adapterServerPath]),
+          file: "codex",
+        }),
+      ]),
       launch: Object.freeze({
         args: Object.freeze([
           "exec", "--skip-git-repo-check", "--strict-config", "--ignore-rules", "--ephemeral",
@@ -237,17 +515,25 @@ export function buildClientCommands({ client, manifestDigest, prompt, workspace 
     });
   }
   return Object.freeze({
-    configure: Object.freeze({
-      args: Object.freeze(["mcp", "add", "--transport", "http", "--scope", "user", "clockchain-handshake", CLOCKCHAIN_HANDSHAKE_MCP_URL]),
-      file: "claude",
-    }),
+    configure: Object.freeze([
+      Object.freeze({
+        args: Object.freeze(["mcp", "add", "--transport", "http", "--scope", "user", "clockchain-handshake", CLOCKCHAIN_HANDSHAKE_MCP_URL]),
+        file: "claude",
+      }),
+    ]),
     launch: Object.freeze({
       args: Object.freeze([
         "--print", "--bare", "--disable-slash-commands", "--no-chrome",
         "--strict-mcp-config", "--mcp-config", JSON.stringify({
-          mcpServers: { "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL } },
+          mcpServers: {
+            "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL },
+            [ADAPTER_MCP_SERVER]: { type: "stdio", command: process.execPath, args: [adapterServerPath] },
+          },
         }),
         "--permission-mode", "dontAsk",
+        // Defense in depth: even if a Bash grant were ever added back to
+        // allowedTools, shell/editing tools stay denied at launch.
+        "--disallowedTools", "Bash,Edit,Write,NotebookEdit",
         "--no-session-persistence",
         "--setting-sources", "",
         "--output-format", "stream-json",
@@ -467,6 +753,14 @@ export function roleAccessFromValue(value, expectedRole) {
   return found;
 }
 
+// Extracts display text from a Claude tool_result block: content may be a
+// plain string or an array of text blocks depending on the CLI version.
+function toolResultText(block) {
+  if (typeof block?.content === "string") return block.content;
+  if (!Array.isArray(block?.content)) return "";
+  return block.content.map((part) => (typeof part?.text === "string" ? part.text : "")).join(" ");
+}
+
 // Values the model could not have authored: Codex completed mcp_tool_call
 // results on a Clockchain tool, and Claude tool_result blocks whose
 // tool_use_id was recorded from an assistant tool_use naming a Clockchain MCP
@@ -506,7 +800,106 @@ function killProcessGroup(child) {
   } catch { child.kill?.("SIGTERM"); }
 }
 
-function observeChild(child, role, all, canaries, { adapter, requireInvitation = false } = {}) {
+// Preflight cleanup: SIGKILL the whole detached process group so a hung CLI
+// or a lingering stdio MCP descendant cannot retain pipes past the deadline.
+function terminateProcessGroup(child) {
+  try {
+    if (Number.isSafeInteger(child?.pid) && child.pid > 0) {
+      process.kill(-child.pid, "SIGKILL");
+      return;
+    }
+    child?.kill?.("SIGKILL");
+  } catch {
+    try { child?.kill?.("SIGKILL"); } catch { /* already exited */ }
+  }
+}
+
+// Secret-safe per-child metadata: counts, event types, bare Clockchain tool
+// names, bounded protocol scalars (stage/needed/localAction operation), the
+// last adapter operation, tool-result failure state, and permission-denied
+// tool categories — never raw lines, arguments, payloads, or credential
+// material. Safe to retain in run artifacts.
+function childDiagnostic({
+  adapterCompletion, client, code, eventTypes, lastAdapterOperation,
+  lastMcpLocalActionOperation, lastMcpNeeded, lastMcpStage,
+  lastMcpToolResultFailed, nonJsonLines, observed, permissionDeniedTools,
+  signal, stderrBytes, stdoutLines, toolNames,
+}) {
+  return Object.freeze({
+    adapterCompletion,
+    client: typeof client === "string" ? client : null,
+    exitCode: Number.isSafeInteger(code) ? code : null,
+    exitSignal: typeof signal === "string" ? signal : null,
+    invitationObserved: observed.invitation !== undefined,
+    lastAdapterOperation,
+    lastMcpLocalActionOperation,
+    lastMcpNeeded,
+    lastMcpStage,
+    lastMcpToolResultFailed,
+    mcpToolNames: Object.freeze([...toolNames].sort()),
+    nonJsonStdoutLines: nonJsonLines,
+    permissionDeniedTools: Object.freeze([...permissionDeniedTools].sort()),
+    stderrBytes,
+    stdoutLines,
+    terminalObserved: observed.terminal !== undefined,
+    topLevelEventTypes: Object.freeze([...eventTypes].sort()),
+  });
+}
+
+// Extracts bounded protocol scalars from a completed Clockchain MCP tool
+// result value (object, JSON-bearing string, or content-block array). Only
+// stage/needed/localAction.operation strings are kept — never payloads.
+function scanMcpResultFields(value, found, depth = 0) {
+  if (depth > 4) return;
+  if (typeof value === "string") {
+    const parsed = parseJsonString(value);
+    if (parsed !== null) scanMcpResultFields(parsed, found, depth + 1);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) scanMcpResultFields(entry, found, depth + 1);
+    return;
+  }
+  if (value === null || typeof value !== "object") return;
+  for (const [key, entry] of Object.entries(value)) {
+    if ((key === "stage" || key === "needed") && typeof entry === "string" && entry.length <= 64 && SAFE_SEGMENT.test(entry)) {
+      found[key] = entry;
+      continue;
+    }
+    if (key === "localAction" && entry !== null && typeof entry === "object" && !Array.isArray(entry)) {
+      const operation = entry.operation;
+      if (typeof operation === "string" && operation.length <= 64 && SAFE_SEGMENT.test(operation)) found.localActionOperation = operation;
+    }
+    scanMcpResultFields(entry, found, depth + 1);
+  }
+}
+
+const ADAPTER_COMPLETION_STATES = Object.freeze(["none", "accepted", "failed"]);
+
+// Wraps a per-role checkpoint completion handler so the close diagnostic can
+// report the adapter completion outcome: none until invoked, accepted when the
+// handler resolves, failed when it throws. Only the bounded operation name is
+// retained — never the completion argv, stateDir, result, or payloads.
+export function trackAdapterCompletion(handler, state) {
+  if (typeof handler !== "function") fail();
+  if (state === null || typeof state !== "object" || Array.isArray(state)) fail();
+  return async (completion) => {
+    const operation = completion?.operation;
+    state.operation =
+      typeof operation === "string" && operation.length <= 64 && SAFE_SEGMENT.test(operation)
+        ? operation : null;
+    try {
+      const result = await handler(completion);
+      state.state = "accepted";
+      return result;
+    } catch (error) {
+      state.state = "failed";
+      throw error;
+    }
+  };
+}
+
+function observeChild(child, role, all, canaries, { adapter, adapterCompletion, client, onDiagnostic, requireInvitation = false } = {}) {
   if (
     adapter === null || typeof adapter !== "object" ||
     typeof adapter.record !== "function" || typeof adapter.bindRoleAccess !== "function"
@@ -520,22 +913,84 @@ function observeChild(child, role, all, canaries, { adapter, requireInvitation =
   const result = new Promise((resolvePromise, rejectPromise) => {
     let stdout = "";
     let stderr = "";
+    let stderrBytes = 0;
+    let stdoutLines = 0;
+    let nonJsonLines = 0;
     let lineBuffer = "";
     let observed = {};
     let settled = false;
+    let lastAdapterOperation = null;
+    let lastMcpLocalActionOperation = null;
+    let lastMcpNeeded = null;
+    let lastMcpStage = null;
+    let lastMcpToolResultFailed = null;
     const claudeMcpToolCalls = new Map();
+    const eventTypes = new Set();
+    const permissionDeniedTools = new Set();
+    const toolNames = new Set();
+    // Emits a sanitized snapshot of everything observed so far. Called
+    // synchronously inside reject() (before peers are killed) so the caller
+    // has metadata the moment runFreshAgentHandshake rejects — a killed child
+    // may never close. The close/error path calls this again so the retained
+    // entry is overwritten with the final exit code/signal.
+    function emitDiagnostic(code, signal) {
+      if (typeof onDiagnostic !== "function") return;
+      onDiagnostic(role, childDiagnostic({
+        adapterCompletion: Object.freeze({
+          operation: typeof adapterCompletion?.operation === "string" ? adapterCompletion.operation : null,
+          state: ADAPTER_COMPLETION_STATES.includes(adapterCompletion?.state) ? adapterCompletion.state : "none",
+        }),
+        client, code, eventTypes, lastAdapterOperation, lastMcpLocalActionOperation,
+        lastMcpNeeded, lastMcpStage, lastMcpToolResultFailed, nonJsonLines, observed,
+        permissionDeniedTools, signal, stderrBytes, stdoutLines, toolNames,
+      }));
+    }
     function processLine(line) {
       if (line.trim().length === 0) return;
+      stdoutLines += 1;
       let event;
-      try { event = JSON.parse(line); } catch { fail(); }
+      try { event = JSON.parse(line); } catch { nonJsonLines += 1; fail(); }
+      if (typeof event?.type === "string") eventTypes.add(event.type);
+      for (const key of ["permission_denials", "permissionDenials"]) {
+        const denials = event?.[key];
+        if (!Array.isArray(denials)) continue;
+        for (const entry of denials) {
+          const tool = [entry?.tool, entry?.tool_name, entry?.name].find((value) => typeof value === "string" && SAFE_SEGMENT.test(value));
+          if (tool !== undefined) permissionDeniedTools.add(tool);
+        }
+      }
       recordClaudeMcpToolCalls(event, claudeMcpToolCalls);
+      for (const toolName of claudeMcpToolCalls.values()) toolNames.add(toolName);
+      if (
+        event?.type === "item.completed" && event?.item?.type === "mcp_tool_call" &&
+        mcpToolName(event.item) !== null
+      ) {
+        toolNames.add(mcpToolName(event.item));
+        lastMcpToolResultFailed = event.item.status !== "completed";
+      }
+      if (event?.type === "user" && Array.isArray(event?.message?.content)) {
+        for (const block of event.message.content) {
+          if (
+            block?.type === "tool_result" && typeof block.tool_use_id === "string" &&
+            claudeMcpToolCalls.has(block.tool_use_id)
+          ) lastMcpToolResultFailed = block.is_error === true;
+        }
+      }
       bindCompletedRoleAccess(event, claudeMcpToolCalls, adapter, role);
       for (const value of completedMcpToolResults(event, claudeMcpToolCalls)) {
+        const fields = {};
+        scanMcpResultFields(value, fields);
+        if (fields.stage !== undefined) lastMcpStage = fields.stage;
+        if (fields.needed !== undefined) lastMcpNeeded = fields.needed;
+        if (fields.localActionOperation !== undefined) lastMcpLocalActionOperation = fields.localActionOperation;
         for (const step of collectHelperSteps(value)) {
           if (
             step !== null && typeof step === "object" && !Array.isArray(step) &&
             ROLES.includes(step.role) && step.role !== role
           ) continue;
+          if (typeof step?.operation === "string" && HELPER_OPERATIONS.includes(step.operation)) {
+            lastAdapterOperation = step.operation;
+          }
           adapter.record(step);
         }
       }
@@ -556,17 +1011,22 @@ function observeChild(child, role, all, canaries, { adapter, requireInvitation =
     function reject() {
       if (settled) return;
       settled = true;
+      all.forEach((peer) => peer.__freshAgentDiagnose?.());
       all.forEach(killProcessGroup);
       const error = new Error("Fresh agent compatibility check failed safely.");
       rejectInvitation?.(error);
       rejectPromise(error);
     }
+    child.__freshAgentDiagnose = () => emitDiagnostic(null, null);
     child.stdout?.on("data", (chunk) => { try { processChunk(chunk); } catch { reject(); } });
-    child.stderr?.on("data", (chunk) => { try { stderr = append(stderr, chunk); } catch { reject(); } });
-    child.once("error", reject);
+    child.stderr?.on("data", (chunk) => {
+      try { stderrBytes += Buffer.byteLength(chunk); stderr = append(stderr, chunk); } catch { reject(); }
+    });
+    child.once("error", () => { emitDiagnostic(null, null); reject(); });
     child.stdin?.once?.("error", reject);
-    child.once("close", (code) => {
+    child.once("close", (code, signal) => {
       child.__freshAgentClosed = true;
+      emitDiagnostic(code, signal);
       if (settled) return;
       settled = true;
       if (code !== 0) {
@@ -646,6 +1106,7 @@ function publicRole(value) {
 export async function runFreshAgentHandshake({
   clients,
   configureClient,
+  diagnostics,
   modelEnvironment = {},
   monitor,
   parent,
@@ -661,6 +1122,7 @@ export async function runFreshAgentHandshake({
   exactObject(clients, ROLES);
   exactObject(prompts, ROLES);
   exactObject(modelEnvironment, ROLES);
+  if (diagnostics !== undefined && (diagnostics === null || typeof diagnostics !== "object" || Array.isArray(diagnostics))) fail();
   if (typeof configureClient !== "function" || typeof monitor !== "function") fail();
   if (typeof fetchReleaseAsset !== "function") fail();
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60 * 60 * 1000) fail();
@@ -736,7 +1198,8 @@ export async function runFreshAgentHandshake({
         checkpointState,
         getCheckpointClient,
       });
-      recorder.setCompletionHandler(completionBinding.handler);
+      const adapterCompletion = { operation: null, state: "none" };
+      recorder.setCompletionHandler(trackAdapterCompletion(completionBinding.handler, adapterCompletion));
       const adapter = Object.freeze({
         ...recorder,
         bindRoleAccess: completionBinding.bindRoleAccess,
@@ -749,11 +1212,18 @@ export async function runFreshAgentHandshake({
       const client = cleanClient(clients[role]);
       const env = childEnvironment(adapterRoom, modelEnvironment[role], { adapterBin: recorder.bin });
       const configure = buildClientCommands({ client, manifestDigest: pin.manifestDigest, prompt: "configured later", workspace: room.workspace }).configure;
-      await configureClient(Object.freeze({ client, command: configure, env, role, room: adapterRoom }));
-      prepared[role] = { adapter, client, env };
+      for (const command of configure) {
+        await configureClient(Object.freeze({ client, command, env, role, room: adapterRoom }));
+      }
+      prepared[role] = { adapter, adapterCompletion, client, env };
     }
+    // Static allowlist contract guard before any Claude launch. This asserts
+    // only the modeled grant semantics; the authoritative permission check is
+    // runClaudePermissionPreflight against the real Claude binary.
+    if (ROLES.some((role) => prepared[role].client === "claude")) assertClaudeAdapterPermissionContract();
     const timedOut = new Promise((_, rejectPromise) => {
       timer = setTimeout(() => {
+        children.forEach((peer) => peer.__freshAgentDiagnose?.());
         children.forEach(killProcessGroup);
         rejectPromise(new Error("Fresh agent compatibility check failed safely."));
       }, timeoutMs);
@@ -771,7 +1241,8 @@ export async function runFreshAgentHandshake({
       stdio: ["pipe", "pipe", "pipe"],
     });
     children.push(initiatorChild);
-    const initiatorObserved = observeChild(initiatorChild, "initiator", children, canaries, { adapter: prepared.initiator.adapter, requireInvitation: true });
+    const recordDiagnostic = diagnostics === undefined ? undefined : (role, meta) => { diagnostics[role] = meta; };
+    const initiatorObserved = observeChild(initiatorChild, "initiator", children, canaries, { adapter: prepared.initiator.adapter, adapterCompletion: prepared.initiator.adapterCompletion, client: prepared.initiator.client, onDiagnostic: recordDiagnostic, requireInvitation: true });
     sendPrompt(initiatorChild, initiatorCommands.launch.input);
     const actualInvitation = await Promise.race([
       initiatorObserved.invitation,
@@ -791,7 +1262,7 @@ export async function runFreshAgentHandshake({
       stdio: ["pipe", "pipe", "pipe"],
     });
     children.push(responderChild);
-    const responderObserved = observeChild(responderChild, "responder", children, canaries, { adapter: prepared.responder.adapter });
+    const responderObserved = observeChild(responderChild, "responder", children, canaries, { adapter: prepared.responder.adapter, adapterCompletion: prepared.responder.adapterCompletion, client: prepared.responder.client, onDiagnostic: recordDiagnostic });
     sendPrompt(responderChild, responderCommands.launch.input);
     const results = await Promise.race([
       Promise.all([initiatorObserved.result, responderObserved.result]),

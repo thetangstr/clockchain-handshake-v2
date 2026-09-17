@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,13 +17,17 @@ import {
   CLOCKCHAIN_HANDSHAKE_MCP_URL,
   CLOCKCHAIN_HANDSHAKE_TOOLS,
   VERIFIED_HELPER_BOOTSTRAP,
+  assertClaudeAdapterPermissionContract,
   bindCompletedRoleAccess,
   buildClientCommands,
   createFreshAgentRun,
+  evaluateClaudeBashPermission,
   recordClaudeMcpToolCalls,
   responderPrompt,
   roleAccessFromValue,
+  runClaudePermissionPreflight,
   runFreshAgentHandshake,
+  trackAdapterCompletion,
   validateHelperCommand,
   validateReleaseAgreement,
 } from "../src/testing/fresh-agent-client.mjs";
@@ -147,8 +151,12 @@ test("builds exact endpoint configuration for Codex and Claude Code", () => {
   assert.equal(VERIFIED_HELPER_BOOTSTRAP.includes("'"), false);
   const codex = buildClientCommands({ client: "codex", manifestDigest: DIGEST, prompt: "hello", workspace: "/tmp/a" });
   const claude = buildClientCommands({ client: "claude", manifestDigest: DIGEST, prompt: "hello", workspace: "/tmp/b" });
-  assert.deepEqual(codex.configure.args, ["mcp", "add", "clockchain-handshake", "--url", CLOCKCHAIN_HANDSHAKE_MCP_URL]);
-  assert.deepEqual(claude.configure.args, ["mcp", "add", "--transport", "http", "--scope", "user", "clockchain-handshake", CLOCKCHAIN_HANDSHAKE_MCP_URL]);
+  assert.equal(codex.configure.length, 2);
+  assert.deepEqual(codex.configure[0].args, ["mcp", "add", "clockchain-handshake", "--url", CLOCKCHAIN_HANDSHAKE_MCP_URL]);
+  assert.deepEqual(codex.configure[1].args, ["mcp", "add", "clockchain-local-adapter", "--", process.execPath, "/tmp/a/.clockchain-adapter/mcp-server.cjs"]);
+  assert.deepEqual(claude.configure.map((command) => command.args), [
+    ["mcp", "add", "--transport", "http", "--scope", "user", "clockchain-handshake", CLOCKCHAIN_HANDSHAKE_MCP_URL],
+  ]);
   assert.deepEqual(codex.launch.args, [
     "exec", "--skip-git-repo-check", "--strict-config", "--ignore-rules", "--ephemeral",
     "--sandbox", "workspace-write", "--config", 'approval_policy="never"',
@@ -158,8 +166,13 @@ test("builds exact endpoint configuration for Codex and Claude Code", () => {
   assert.deepEqual(claude.launch.args, [
     "--print", "--bare", "--disable-slash-commands", "--no-chrome",
     "--strict-mcp-config", "--mcp-config",
-    JSON.stringify({ mcpServers: { "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL } } }),
-    "--permission-mode", "dontAsk", "--no-session-persistence", "--setting-sources", "",
+    JSON.stringify({ mcpServers: {
+      "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL },
+      "clockchain-local-adapter": { type: "stdio", command: process.execPath, args: ["/tmp/b/.clockchain-adapter/mcp-server.cjs"] },
+    } }),
+    "--permission-mode", "dontAsk",
+    "--disallowedTools", "Bash,Edit,Write,NotebookEdit",
+    "--no-session-persistence", "--setting-sources", "",
     "--output-format", "stream-json", "--verbose",
     "--allowedTools",
     [
@@ -167,7 +180,7 @@ test("builds exact endpoint configuration for Codex and Claude Code", () => {
       "agent_handshake_status", "agent_handshake_next", "agent_handshake_submit_checkpoint",
       "agent_handshake_submit", "agent_handshake_get_certificate",
     ].map((tool) => `mcp__clockchain-handshake__${tool}`).concat([
-      "Bash(clockchain-agent-authorize *)",
+      "mcp__clockchain-local-adapter__authorize_local_action",
       "Read(./manifest.json)",
       "Read(./clockchain-agent-handshake.cjs)",
     ]).join(","),
@@ -262,8 +275,8 @@ test("fresh-agent prompts lock accept-first ordering and the adapter-only contra
   const fixture = JSON.parse(await readFile(new URL("./fixtures/fresh-agent/prompts.json", import.meta.url), "utf8"));
   for (const [role, prompt] of [["initiator", fixture.initiator], ["responder", fixture.responder]]) {
     assert.match(prompt, /agent_handshake_\* MCP tools/, `${role} must require MCP-first driving`);
-    assert.match(prompt, /localAction\.helperStep\.approvalCommand/, `${role} must name the approvalCommand field`);
-    assert.match(prompt, /clockchain-agent-authorize/, `${role} must name the adapter executable`);
+    assert.match(prompt, /localAction\.helperStep\.approvalTool/, `${role} must name the approvalTool field`);
+    assert.match(prompt, /clockchain-local-adapter/, `${role} must name the adapter MCP server`);
     assert.match(prompt, /never hand-sign/, `${role} must forbid manual cryptography`);
     assert.match(prompt, /unavailable and forbidden/, `${role} must forbid generic shell and editing tools`);
   }
@@ -303,14 +316,19 @@ test("claude launch allowedTools matches the prompt contract exactly", () => {
   for (const tool of tools) {
     const allowed =
       CLOCKCHAIN_HANDSHAKE_TOOLS.some((name) => tool === `mcp__clockchain-handshake__${name}`) ||
-      tool === "Bash(clockchain-agent-authorize *)" ||
+      tool === "mcp__clockchain-local-adapter__authorize_local_action" ||
       tool === "Read(./manifest.json)" ||
       tool === "Read(./clockchain-agent-handshake.cjs)";
     assert.ok(allowed, `unexpected tool grant: ${tool}`);
   }
-  assert.ok(tools.includes("Bash(clockchain-agent-authorize *)"));
-  assert.ok(!tools.includes("Bash"), "bare Bash must never be granted");
+  assert.ok(tools.includes("mcp__clockchain-local-adapter__authorize_local_action"));
+  assert.ok(!tools.some((tool) => tool === "Bash" || tool.startsWith("Bash(")), "no Bash grant of any form is permitted");
   assert.ok(!tools.includes("Edit"), "Edit must never be granted");
+  // Defense in depth: shell/editing tools are denied at launch regardless of
+  // the allowedTools list.
+  const deniedIndex = commands.launch.args.indexOf("--disallowedTools");
+  assert.ok(deniedIndex > 0);
+  assert.equal(commands.launch.args[deniedIndex + 1], "Bash,Edit,Write,NotebookEdit");
 });
 
 test("preloads the digest-verified manifest and helper into both workspaces before launch", async (t) => {
@@ -376,9 +394,10 @@ test("preloads the digest-verified manifest and helper into both workspaces befo
     `${AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX}manifest.json`,
     `${AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX}clockchain-agent-handshake.cjs`,
   ]);
-  assert.deepEqual(events.slice(0, 4), [
+  assert.deepEqual(events.slice(0, 5), [
     `fetch:${AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX}manifest.json`,
     `fetch:${AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX}clockchain-agent-handshake.cjs`,
+    "configure:codex",
     "configure:codex",
     "configure:claude",
   ]);
@@ -388,7 +407,7 @@ function adapterHelperStep({ manifestDigest, role = "initiator", sessionId = SES
   const command = `node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ${manifestDigest} ./manifest.json ./clockchain-agent-handshake.cjs init --state-dir "$TMPDIR/.clockchain/handshakes/${sessionId}/${role}"`;
   const commandSha256 = createHash("sha256").update(command).digest("hex");
   return {
-    approvalCommand: `clockchain-agent-authorize ${commandSha256}`,
+    approvalTool: "mcp__clockchain-local-adapter__authorize_local_action",
     commandLength: Buffer.byteLength(command),
     commandSha256,
     operation: "init",
@@ -507,7 +526,7 @@ test("aborts the run when a model-visible helper step fails adapter validation",
   const fixture = releaseFixture();
   const { fetchReleaseAsset } = fakeFetchReleaseAsset(fixture);
   const step = adapterHelperStep({ manifestDigest: fixture.manifestDigest });
-  const malformed = { ...step, approvalCommand: `clockchain-agent-authorize ${"0".repeat(64)}` };
+  const malformed = { ...step, approvalTool: "mcp__clockchain-local-adapter__wrong_tool" };
   const spawnProcess = () => {
     const child = new EventEmitter();
     child.pid = 4100;
@@ -783,8 +802,8 @@ test("starts the Responder only after the Initiator emits its actual one-time in
     timeoutMs: 2_000
   });
   assert.equal(calls.filter((entry) => entry.file).length, 2);
-  assert.deepEqual(calls.slice(0, 2), [{ configure: "codex" }, { configure: "claude" }]);
-  assert.equal(calls[2].file, "codex");
+  assert.deepEqual(calls.slice(0, 3), [{ configure: "codex" }, { configure: "codex" }, { configure: "claude" }]);
+  assert.equal(calls[3].file, "codex");
   assert.equal(calls.find((entry) => entry.role === "initiator" && entry.input !== undefined).input, "init prompt");
   assert.equal(calls.find((entry) => entry.file === "claude").args.join(" ").includes(INVITATION), false);
   const responderInput = calls.find((entry) => entry.role === "responder" && entry.input !== undefined).input;
@@ -877,10 +896,12 @@ test("endpoint contract allowlist contains all eight tools including submit_chec
   for (const tool of ENDPOINT_TOOLS) {
     assert.ok(allowed.includes(`mcp__clockchain-handshake__${tool}`), tool);
   }
-  assert.ok(allowed.includes("Bash(clockchain-agent-authorize *)"));
+  assert.ok(allowed.includes("mcp__clockchain-local-adapter__authorize_local_action"));
   assert.ok(allowed.includes("Read(./manifest.json)"));
   assert.ok(allowed.includes("Read(./clockchain-agent-handshake.cjs)"));
   assert.equal(allowed.some((entry) => entry.includes("curl")), false);
+  assert.equal(allowed.some((entry) => entry.includes("node ")), false);
+  assert.equal(allowed.some((entry) => entry === "Bash" || entry.startsWith("Bash(")), false);
 });
 
 test("preflight aborts before launch when the endpoint contract lacks a required tool", async (t) => {
@@ -1089,4 +1110,317 @@ test("ignores helper steps in model-authored text and non-Clockchain tool result
   assert.equal(result.cleanup.completed, true);
   assert.deepEqual(recorded.initiator, [`${initiatorStep.commandSha256}.json`]);
   assert.deepEqual(recorded.responder, [`${responderStep.commandSha256}.json`]);
+});
+
+test("evaluateClaudeBashPermission denies every Bash probe under the zero-Bash grant list", () => {
+  const digest = "0".repeat(64);
+  for (const command of [
+    "clockchain-agent-authorize",
+    `clockchain-agent-authorize ${digest}`,
+    "clockchain-agent-authorize; echo probe",
+    "clockchain-agent-authorize && echo probe",
+    "clockchain-agent-authorize | cat",
+    `clockchain-agent-authorize $(echo ${digest})`,
+    "./.clockchain-adapter/bin/clockchain-agent-authorize",
+    ".clockchain-adapter/bin/clockchain-agent-authorize",
+    "node .clockchain-adapter/mcp-server.cjs",
+    "clockchain-agent-authorize.cjs",
+    `echo ${digest}`,
+    "sh -c 'clockchain-agent-authorize'",
+    "",
+  ]) {
+    assert.equal(evaluateClaudeBashPermission(command), false, command);
+  }
+});
+
+test("assertClaudeAdapterPermissionContract passes on the deployed allowlist and fails on regressions", () => {
+  const report = assertClaudeAdapterPermissionContract();
+  assert.equal(report.adapterToolGranted, true);
+  assert.equal(report.unexpected.length, 0);
+  assert.equal(report.denied.every((entry) => !entry.granted), true);
+  assert.throws(
+    () => assertClaudeAdapterPermissionContract(["Bash(clockchain-agent-authorize)"]),
+    /failed safely/,
+    "dropping the adapter MCP grant or adding any Bash grant must trip the contract guard",
+  );
+  assert.throws(
+    () => assertClaudeAdapterPermissionContract([
+      "mcp__clockchain-local-adapter__authorize_local_action",
+      "Read(./manifest.json)",
+      "Read(./clockchain-agent-handshake.cjs)",
+      "Bash(*)",
+    ]),
+    /failed safely/,
+    "a broad Bash grant must trip the contract guard",
+  );
+});
+
+test("runClaudePermissionPreflight drives the real launch shape and reports sanitized per-probe results", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-preflight-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const launched = [];
+  const spawnProcess = (file, args, options) => {
+    launched.push({ args, cwd: options.cwd, pathHasAdapterBin: options.env.PATH.includes(".clockchain-adapter/bin") });
+    const markerPath = options.env.CLOCKCHAIN_PREFLIGHT_MARKER;
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => {};
+    child.stdin = { end(value) {
+      const prompt = String(value);
+      queueMicrotask(() => {
+        if (prompt.includes("with no arguments")) {
+          // The allowed probe: simulate the stub MCP server actually executing
+          // the zero-arg call — marker side effect is the only authority.
+          child.stdout.emit("data", Buffer.from(streamEvent({
+            type: "assistant",
+            message: { content: [{ type: "tool_use", id: "t1", name: "mcp__clockchain-local-adapter__authorize_local_action", input: {} }] },
+          })));
+          writeFileSync(markerPath, "executed");
+        } else if (prompt.includes("with these arguments")) {
+          // Malformed-input probe: the server rejects with isError and never
+          // writes the marker.
+          child.stdout.emit("data", Buffer.from(streamEvent({
+            type: "assistant",
+            message: { content: [{ type: "tool_use", id: "t1", name: "mcp__clockchain-local-adapter__authorize_local_action", input: { digest: "0".repeat(64) } }] },
+          })));
+          child.stdout.emit("data", Buffer.from(streamEvent({
+            type: "user",
+            message: { content: [{ type: "tool_result", tool_use_id: "t1", is_error: true, content: [{ type: "text", text: "rejected" }] }] },
+          })));
+        } else {
+          // Bash probes: permission system denies them, nothing executes.
+          child.stdout.emit("data", Buffer.from(streamEvent({
+            type: "assistant",
+            message: { content: [{ type: "tool_use", id: "t1", name: "Bash", input: {} }] },
+          })));
+          child.stdout.emit("data", Buffer.from(streamEvent({
+            type: "result", permission_denials: [{ tool: "Bash" }],
+          })));
+        }
+        child.emit("close", 0, null);
+      });
+    } };
+    return child;
+  };
+  const report = await runClaudePermissionPreflight({
+    cwd: parent, manifestDigest: DIGEST, spawnProcess, timeoutMs: 5_000,
+  });
+  assert.equal(report.pass, true);
+  assert.equal(report.probes.length, 9);
+  for (const probe of report.probes) {
+    assert.equal(probe.observed, probe.expected, `${probe.expected}: ${probe.command}`);
+    assert.equal(probe.pass, true);
+    if (probe.expected === "denied") assert.ok(probe.deniedTools.length > 0, `denied probe must carry a category: ${probe.command}`);
+    else assert.deepEqual(probe.deniedTools, []);
+  }
+  assert.equal(launched.length, 9);
+  for (const call of launched) {
+    const permissionIndex = call.args.indexOf("--permission-mode");
+    assert.ok(permissionIndex > 0);
+    assert.equal(call.args[permissionIndex + 1], "dontAsk");
+    const toolsIndex = call.args.indexOf("--allowedTools");
+    assert.ok(toolsIndex > 0);
+    const tools = call.args[toolsIndex + 1].split(",");
+    assert.ok(tools.includes("mcp__clockchain-local-adapter__authorize_local_action"));
+    assert.ok(!tools.some((tool) => tool === "Bash" || tool.startsWith("Bash(")), "no Bash grant of any form is permitted");
+    const mcpIndex = call.args.indexOf("--mcp-config");
+    assert.ok(mcpIndex > 0);
+    const mcpConfig = JSON.parse(call.args[mcpIndex + 1]);
+    assert.equal(mcpConfig.mcpServers["clockchain-local-adapter"].type, "stdio");
+    assert.ok(call.pathHasAdapterBin, "preflight PATH must include the adapter bin like a real run");
+    assert.equal(call.cwd, parent);
+  }
+});
+
+test("runClaudePermissionPreflight reports pass:false when the model never attempts the command", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-preflight-idle-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const spawnProcess = () => {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => {};
+    child.stdin = { end() {
+      queueMicrotask(() => {
+        child.stdout.emit("data", Buffer.from(streamEvent({
+          type: "assistant",
+          message: { content: [{ type: "text", text: "DONE" }] },
+        })));
+        child.emit("close", 0, null);
+      });
+    } };
+    return child;
+  };
+  const report = await runClaudePermissionPreflight({
+    cwd: parent, manifestDigest: DIGEST, spawnProcess, timeoutMs: 5_000,
+  });
+  assert.equal(report.pass, false);
+  assert.ok(report.probes.every((probe) => probe.observed === "not_attempted"));
+});
+
+test("runClaudePermissionPreflight kills the detached process group and fails on a hung probe", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-preflight-hung-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const kills = [];
+  const spawnOptions = [];
+  const spawnProcess = (file, args, options) => {
+    spawnOptions.push(options);
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {}, destroy() {} };
+    child.stdout.destroy = () => {};
+    child.stderr.destroy = () => {};
+    // No pid: group-kill must fall back to child.kill. Never emits close —
+    // simulates a descendant holding pipes open past the deadline.
+    child.kill = (signal) => { kills.push(signal); };
+    return child;
+  };
+  const report = await runClaudePermissionPreflight({
+    cwd: parent, manifestDigest: DIGEST, spawnProcess, timeoutMs: 1_100,
+  });
+  // 9 probes × ~1.1 s bounded timeout; every probe must fail with "timeout".
+  assert.equal(report.pass, false);
+  assert.equal(report.probes.length, 9);
+  assert.ok(report.probes.every((probe) => probe.observed === "timeout" && probe.pass === false));
+  assert.equal(kills.length, 9);
+  assert.ok(kills.every((signal) => signal === "SIGKILL"), "timeout cleanup must SIGKILL the group");
+  assert.ok(spawnOptions.every((options) => options.detached === true), "each probe must run in its own process group");
+});
+
+test("runFreshAgentHandshake records secret-safe per-role diagnostics without raw content", async (t) => {
+  const parent = await mkdtemp(join(tmpdir(), "fresh-agent-diag-"));
+  t.after(() => rm(parent, { recursive: true, force: true }));
+  const fixture = releaseFixture();
+  const { fetchReleaseAsset } = fakeFetchReleaseAsset(fixture);
+  const diagnostics = {};
+  const children = {};
+  const spawnProcess = (file, args, options) => {
+    const role = children.initiator === undefined ? "initiator" : "responder";
+    const child = new EventEmitter();
+    // No pid: killProcessGroup must fall back to child.kill, not a real pgid signal.
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.stdin = { end() {} };
+    child.kill = () => queueMicrotask(() => child.emit("close", null, "SIGTERM"));
+    children[role] = child;
+    queueMicrotask(() => {
+      if (role === "initiator") {
+        child.stdout.emit("data", Buffer.from(streamEvent({
+          type: "item.completed",
+          item: {
+            type: "mcp_tool_call",
+            name: "agent_handshake_invite",
+            status: "completed",
+            result: {
+              structuredContent: {
+                responderInvitation: INVITATION,
+                stage: "invitation_created",
+                needed: "counterpart_join",
+                localAction: { operation: "policy" },
+              },
+            },
+          },
+        })));
+        child.stdout.emit("data", Buffer.from(streamEvent({
+          type: "item.completed",
+          item: { type: "mcp_tool_call", name: "agent_handshake_status", status: "failed" },
+        })));
+        child.stdout.emit("data", Buffer.from(streamEvent({
+          type: "result", permission_denials: [{ tool: "Bash" }],
+        })));
+        child.stderr.emit("data", Buffer.from("some stderr noise that is counted not stored"));
+      } else {
+        // After the responder launches, make the initiator ingest a malformed
+        // localAction.helperStep: adapter.record throws, the run fails safely,
+        // and both children are killed — proving diagnostics emit on the
+        // failure path and that lastAdapterOperation was captured pre-throw.
+        queueMicrotask(() => {
+          children.initiator.stdout.emit("data", Buffer.from(streamEvent({
+            type: "item.completed",
+            item: {
+              type: "mcp_tool_call",
+              name: "agent_handshake_next",
+              status: "completed",
+              result: {
+                structuredContent: {
+                  stage: "acceptance_pending",
+                  localAction: {
+                    operation: "sign",
+                    helperStep: { operation: "sign", role: "initiator" },
+                  },
+                },
+              },
+            },
+          })));
+          child.stdout.emit("data", Buffer.from("this line is not json\n"));
+        });
+      }
+    });
+    return child;
+  };
+  await assert.rejects(
+    () => runFreshAgentHandshake({
+      clients: { initiator: "codex", responder: "claude" },
+      configureClient: async () => {},
+      diagnostics,
+      modelEnvironment: { initiator: {}, responder: {} },
+      monitor: async () => ({ chronology: ["CERTIFIED"], sessionId: SESSION }),
+      parent,
+      prompts: { initiator: "init", responder: "consume <PASTE THE INITIATOR INVITATION> now <GENERATED ACCEPTANCE IDEMPOTENCY KEY>" },
+      release: releaseAgreement(fixture.manifestDigest),
+      contractClientFactory: stubContractClientFactory(),
+      releasePin: fixture.releasePin,
+      spawnProcess,
+      fetchReleaseAsset,
+      timeoutMs: 2_000,
+    }),
+    /Fresh agent compatibility check failed safely\./,
+  );
+  // Diagnostics were emitted synchronously inside reject(); a tick lets the
+  // close events overwrite them with the final exit code/signal.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const initiator = diagnostics.initiator;
+  assert.equal(initiator.client, "codex");
+  assert.equal(initiator.exitSignal, "SIGTERM");
+  assert.equal(initiator.invitationObserved, true);
+  assert.equal(initiator.terminalObserved, false);
+  assert.equal(initiator.lastMcpStage, "acceptance_pending");
+  assert.equal(initiator.lastMcpNeeded, "counterpart_join");
+  assert.equal(initiator.lastMcpLocalActionOperation, "sign");
+  assert.equal(initiator.lastAdapterOperation, "sign");
+  assert.equal(initiator.lastMcpToolResultFailed, false);
+  assert.deepEqual(initiator.adapterCompletion, { operation: null, state: "none" });
+  assert.deepEqual(initiator.mcpToolNames, ["agent_handshake_invite", "agent_handshake_next", "agent_handshake_status"]);
+  assert.deepEqual(initiator.permissionDeniedTools, ["Bash"]);
+  assert.equal(initiator.stdoutLines, 4);
+  assert.ok(initiator.stderrBytes > 0);
+  assert.deepEqual(initiator.topLevelEventTypes, ["item.completed", "result"]);
+  const responder = diagnostics.responder;
+  assert.equal(responder.client, "claude");
+  assert.equal(responder.exitSignal, "SIGTERM");
+  assert.equal(responder.nonJsonStdoutLines, 1);
+  assert.equal(responder.terminalObserved, false);
+  assert.equal(responder.lastMcpStage, null);
+  const serialized = JSON.stringify(diagnostics);
+  assert.equal(serialized.includes(INVITATION), false);
+  assert.equal(serialized.includes("stderr noise"), false);
+});
+
+test("trackAdapterCompletion records accepted, failed, and never-invoked states", async () => {
+  const idle = { operation: null, state: "none" };
+  const accepted = { operation: null, state: "none" };
+  const acceptedHandler = trackAdapterCompletion(async () => Object.freeze({ accepted: true }), accepted);
+  await acceptedHandler({ operation: "sign", argv: ["secret"], result: { raw: true } });
+  assert.deepEqual(accepted, { operation: "sign", state: "accepted" });
+
+  const failed = { operation: null, state: "none" };
+  const failedHandler = trackAdapterCompletion(async () => { throw new Error("boom"); }, failed);
+  await assert.rejects(() => failedHandler({ operation: "policy" }), /boom/);
+  assert.deepEqual(failed, { operation: "policy", state: "failed" });
+  assert.deepEqual(idle, { operation: null, state: "none" });
+  // Raw completion input never leaks into the tracked state.
+  assert.equal(JSON.stringify(accepted).includes("secret"), false);
+  assert.equal(JSON.stringify(failed).includes("raw"), false);
 });
