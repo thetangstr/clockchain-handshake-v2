@@ -351,13 +351,20 @@ main();
 function adapterMcpServer() {
   return String.raw`"use strict";
 const { spawnSync }=require("node:child_process");
+const { readdirSync }=require("node:fs");
 const { join }=require("node:path");
 const { createInterface }=require("node:readline");
 const EXEC=join(__dirname,"bin","clockchain-agent-authorize");
+const PENDING=join(__dirname,"pending");
+const PENDING_NAME=/^[0-9a-f]{64}\.json$/;
 const TOOL="authorize_local_action";
 const MAX=65536;
+// A single tool call drains every staged action in order. The bound exceeds
+// the largest legitimate per-role sequence (setup, registration, signatures,
+// certificate verification) so hitting it means corrupt queue state.
+const DRAIN_BOUND=16;
 const HELPER_CODES=new Set(["HELPER_COMMAND_MISMATCH","HELPER_ACTION_EXPIRED","HELPER_ACTION_REPLAYED","HELPER_EXECUTION_LAUNCH_FAILED","HELPER_OPERATION_FAILED","HELPER_OUTPUT_INVALID","HELPER_COMPLETION_FAILED"]);
-const CONTINUATION="Staged local action executed. Execute any remaining staged helper steps in order, then follow the afterSuccess/terminalProof/nextAction instruction from the Clockchain response that issued this action, passing the exact helper output in the first content block. Never end after a local action before terminal certificate verification.";
+const STATUS="Staged local actions executed; their trusted Clockchain follow-up calls were completed by the adapter. Call agent_handshake_next with your unchanged role access to continue the protocol, and emit the terminal proof once local certificate verification succeeds. Never replay agent_handshake_join, agent_handshake_submit, or agent_handshake_submit_checkpoint for an executed local action.";
 function send(message){process.stdout.write(JSON.stringify(message)+"\n")}
 function result(id,value){send({jsonrpc:"2.0",id,result:value})}
 function error(id,code,message){send({jsonrpc:"2.0",id,error:{code,message}})}
@@ -369,16 +376,33 @@ function failureText(stderr){
   }
   return"adapter rejected the action";
 }
+// Only the executable validates and consumes pending entries; this check just
+// decides whether another drained action was promoted during the last
+// completion. Malformed entries mean corrupt state and fail closed.
+function pendingCount(){
+  try{
+    const entries=readdirSync(PENDING);
+    for(const entry of entries)if(!PENDING_NAME.test(entry))return -1;
+    return entries.length;
+  }catch{return -1}
+}
 function call(id,params){
   if(!params||typeof params!=="object"||Array.isArray(params))return error(id,-32602,"invalid params");
   const keys=Object.keys(params);
   if(params.name!==TOOL||keys.some((key)=>!["name","arguments","_meta"].includes(key)))return error(id,-32602,"unknown tool");
   const args=params.arguments;
   if(args!==undefined&&(!args||typeof args!=="object"||Array.isArray(args)||Object.keys(args).length!==0))return error(id,-32602,"tool takes no arguments");
-  const child=spawnSync(EXEC,[],{cwd:join(__dirname,".."),env:process.env,encoding:"utf8",maxBuffer:MAX});
-  if(child.error||!Number.isSafeInteger(child.status))return result(id,{content:[{type:"text",text:"adapter launch failed"}],isError:true});
-  if(child.status!==0)return result(id,{content:[{type:"text",text:failureText(child.stderr)}],isError:true});
-  return result(id,{content:[{type:"text",text:child.stdout.trim()},{type:"text",text:CONTINUATION}]});
+  let last=null;
+  for(let step=0;step<DRAIN_BOUND;step+=1){
+    const child=spawnSync(EXEC,[],{cwd:join(__dirname,".."),env:process.env,encoding:"utf8",maxBuffer:MAX});
+    if(child.error||!Number.isSafeInteger(child.status))return result(id,{content:[{type:"text",text:"adapter launch failed"}],isError:true});
+    if(child.status!==0)return result(id,{content:[{type:"text",text:failureText(child.stderr)}],isError:true});
+    last=child.stdout.trim();
+    const remaining=pendingCount();
+    if(remaining===0)return result(id,{content:[{type:"text",text:last},{type:"text",text:STATUS}]});
+    if(remaining!==1)return result(id,{content:[{type:"text",text:"adapter rejected the action"}],isError:true});
+  }
+  return result(id,{content:[{type:"text",text:"adapter rejected the action"}],isError:true});
 }
 createInterface({input:process.stdin,terminal:false}).on("line",(line)=>{
   if(line.trim().length===0||Buffer.byteLength(line)>MAX)return;
