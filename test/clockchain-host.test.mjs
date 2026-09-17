@@ -245,6 +245,38 @@ test("host intake keeps the cursor across either-order role arrivals", async () 
   assert.equal(result.messages.requestor.body.agentId, "9");
 });
 
+test("host role waits cap each relay poll to the remaining deadline budget", async () => {
+  let nowMs = 900;
+  const polls = [];
+  const relayClient = {
+    async pollMessages(options) {
+      polls.push(options);
+      nowMs = 1_000;
+      return { messages: [] };
+    },
+  };
+
+  await assert.rejects(
+    () => awaitRoleMessages({
+      relayClient,
+      relayUrl: "http://relay.test",
+      sessionId: "s1",
+      kind: "party_ready",
+      roles: ["payer"],
+      budgetMs: 100,
+      waitMs: 25_000,
+      now: () => nowMs,
+      sleep: async (ms) => assert.equal(ms, 0),
+    }),
+    (error) => error instanceof SessionEnded && error.code === "EXPIRED",
+  );
+
+  assert.deepEqual(
+    polls.map(({ waitMs, retryBudgetMs, timeoutMs }) => ({ waitMs, retryBudgetMs, timeoutMs })),
+    [{ waitMs: 100, retryBudgetMs: 100, timeoutMs: 100 }],
+  );
+});
+
 test("host funds each identity as soon as that role appears without losing messages posted during funding", async () => {
   let nowMs = 0;
   const events = [];
@@ -302,6 +334,38 @@ test("host funds each identity as soon as that role appears without losing messa
   });
   assert.equal(ready.messages.payer.body.agentId, "11");
   assert.equal(ready.messages.requestor.body.agentId, "22");
+});
+
+test("host identity funding waits cap relay retry and timeout budgets to the deadline", async () => {
+  let nowMs = 1_200;
+  const polls = [];
+  const relayClient = {
+    async pollMessages(options) {
+      polls.push(options);
+      nowMs = 1_240;
+      return { messages: [] };
+    },
+  };
+
+  await assert.rejects(
+    () => fundIdentitySeats({
+      relayClient,
+      relayUrl: "http://relay.test",
+      sessionId: "s1",
+      roles: ["payer"],
+      budgetMs: 40,
+      waitMs: 25_000,
+      now: () => nowMs,
+      sleep: async (ms) => assert.equal(ms, 0),
+      fundSeat: async () => assert.fail("no identity should be funded without a message"),
+    }),
+    (error) => error instanceof SessionEnded && error.code === "EXPIRED",
+  );
+
+  assert.deepEqual(
+    polls.map(({ waitMs, retryBudgetMs, timeoutMs }) => ({ waitMs, retryBudgetMs, timeoutMs })),
+    [{ waitMs: 40, retryBudgetMs: 40, timeoutMs: 40 }],
+  );
 });
 
 test("host ignores a signed identity with a malformed address before funding the valid seat", async () => {

@@ -48,6 +48,16 @@ export function evidenceDeadlineAfterAnchorReport({
   return mapped ? nowMs + evidenceAfterReportMs : originalDeadlineMs;
 }
 
+function boundedPollOptions({ waitMs, remainingMs }) {
+  const budgetMs = Math.max(0, remainingMs);
+  const requestedWaitMs = Number.isFinite(waitMs) ? waitMs : budgetMs;
+  return {
+    waitMs: Math.min(requestedWaitMs, budgetMs),
+    retryBudgetMs: budgetMs,
+    timeoutMs: budgetMs,
+  };
+}
+
 export async function awaitRoleMessages({
   relayClient,
   relayUrl,
@@ -95,7 +105,12 @@ export async function awaitRoleMessages({
     return { after: cursor, buffer: deferred, messages };
   }
   while (now() < deadline) {
-    const got = await relayClient.pollMessages({ relayUrl, sessionId, after: cursor, waitMs });
+    const got = await relayClient.pollMessages({
+      relayUrl,
+      sessionId,
+      after: cursor,
+      ...boundedPollOptions({ waitMs, remainingMs: deadline - now() }),
+    });
     consider(got.messages);
     if (roles.every((role) => messages[role] !== undefined)) {
       return { after: cursor, buffer: deferred, messages };
@@ -218,7 +233,12 @@ export async function fundIdentitySeats({
   }
 
   while (now() < deadline) {
-    const got = await relayClient.pollMessages({ relayUrl, sessionId, after: cursor, waitMs });
+    const got = await relayClient.pollMessages({
+      relayUrl,
+      sessionId,
+      after: cursor,
+      ...boundedPollOptions({ waitMs, remainingMs: deadline - now() }),
+    });
     await consider(got.messages);
     if (roles.every((role) => messages[role] !== undefined)) {
       return { after: cursor, buffer: deferred, messages };
