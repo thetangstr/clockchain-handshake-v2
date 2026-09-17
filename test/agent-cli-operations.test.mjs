@@ -65,3 +65,24 @@ test("dispatcher exposes exactly init, policy, inspect, register, sign, and veri
   await assert.rejects(() => operations.dispatch({ operation: "shell", stateDir }));
   assert.equal(calls.length, 1);
 });
+
+test("inspect reports a null registration before register under a required_fresh policy", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "clockchain-agent-ops-inspect-"));
+  await rm(stateDir, { recursive: true });
+  t.after(() => rm(stateDir, { force: true, recursive: true }));
+  const fixture = await buildAgentCliFixture();
+  const address = fixture.parties.initiator.sessionKeyAddress;
+  const bridge = {
+    initializeWallet: async () => ({ address }),
+    inspectWallet: async () => ({ address, registration: null }),
+    registerWalletIdentity: async () => { throw new Error("unreachable"); },
+    signExactBytes: async () => { throw new Error("unreachable"); },
+  };
+  const operations = createAgentCliOperations({ bridge, now: () => fixture.nowMs, rootKeyRing: fixture.rootKeyRing });
+  await operations.dispatch({ operation: "init", stateDir });
+  const committed = await operations.dispatch({ operation: "policy", stateDir, payload: fixture.policy });
+  const inspected = await operations.dispatch({ operation: "inspect", stateDir });
+  assert.equal(inspected.address, address);
+  assert.equal(inspected.policyDigest, committed.policyDigest);
+  assert.equal(inspected.registration, null);
+});
