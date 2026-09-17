@@ -185,7 +185,9 @@ export async function runAgentHandshakeV2HostSession({
   if (
     session?.protocol !== "clockchain.agent-handshake/v2" ||
     !Number.isSafeInteger(session.sessionOpenedAtMs) ||
+    !Number.isSafeInteger(session.invitationExpiresAtMs) ||
     !Number.isSafeInteger(session.sessionDeadlineMs) ||
+    session.invitationExpiresAtMs !== session.sessionOpenedAtMs + 120_000 ||
     session.sessionDeadlineMs !== session.sessionOpenedAtMs + 10 * 60_000 ||
     now() >= session.sessionDeadlineMs
   ) invalid();

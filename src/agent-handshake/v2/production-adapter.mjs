@@ -157,10 +157,17 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
   let buffer = [];
 
   const defaultWaitForMessage = async (kind, role) => {
+    // The rendezvous window lapses at invitationExpiresAtMs: bound only the invitation-claim wait so an
+    // unclaimed session exits and the supervisor rotates a fresh "current" session, while every later
+    // wait keeps the full session deadline.
+    const boundMs = kind === "agent_v2_invitation_claimed" &&
+      Number.isSafeInteger(session.invitationExpiresAtMs)
+      ? Math.min(session.sessionDeadlineMs, session.invitationExpiresAtMs)
+      : session.sessionDeadlineMs;
     const result = await awaitRoleMessages({
       after,
       buffer,
-      budgetMs: Math.max(0, session.sessionDeadlineMs - Date.now()),
+      budgetMs: Math.max(0, boundMs - Date.now()),
       expectedBindings: null,
       kind,
       relayClient,

@@ -121,6 +121,92 @@ test("production ports map only role-tagged v2 messages and reserve before fundi
   assert.deepEqual(seen.slice(-2).map(([kind]) => kind), ["reserve", "fund"]);
 });
 
+function rotationPorts(session, pollMessages) {
+  return createAgentHandshakeV2HostPorts({
+    relayUrl: "https://relay.test",
+    repositorySha: REPOSITORY_SHA,
+    sessionId: SESSION_ID,
+    terms: TERMS,
+    ...session,
+  }, {
+    fundingBudget: { reserve: async () => {} },
+    monitor: {},
+    publicClient: {},
+    relayClient: {
+      generateEnvelopeKeyPair: () => ({}),
+      pollMessages,
+      verifyEnvelope: () => true,
+    },
+  });
+}
+
+test("an unclaimed invitation wait ends at the rendezvous expiry so the host rotates", async () => {
+  const opened = Date.now();
+  let polls = 0;
+  // The session deadline is bounded at 2s so a regression that drops the invitation bound fails fast
+  // instead of hanging for the real 10-minute deadline.
+  const ports = await rotationPorts(
+    {
+      sessionOpenedAtMs: opened,
+      invitationExpiresAtMs: opened + 300,
+      sessionDeadlineMs: opened + 2_000,
+    },
+    async () => { polls += 1; return { messages: [] }; },
+  );
+  const started = Date.now();
+  await assert.rejects(
+    () => ports.awaitInvitationClaimed(),
+    (error) => error?.name === "SessionEnded" && error?.code === "EXPIRED",
+  );
+  assert.ok(polls > 0);
+  assert.ok(
+    Date.now() - started < 1_500,
+    "the claim wait must end at the 300ms invitation window, not the 2s session deadline",
+  );
+});
+
+test("an already-expired invitation window rejects the claim wait without polling", async () => {
+  const opened = Date.now();
+  let polls = 0;
+  const ports = await rotationPorts(
+    {
+      sessionOpenedAtMs: opened - 120_000,
+      invitationExpiresAtMs: opened - 1,
+      sessionDeadlineMs: opened + 2_000,
+    },
+    async () => { polls += 1; return { messages: [] }; },
+  );
+  await assert.rejects(
+    () => ports.awaitInvitationClaimed(),
+    (error) => error?.name === "SessionEnded" && error?.code === "EXPIRED",
+  );
+  assert.equal(polls, 0);
+});
+
+test("waits after the invitation claim keep the full session deadline", async () => {
+  const opened = Date.now();
+  // The proposal only becomes visible once the rendezvous window has already lapsed, proving post-claim
+  // waits are bounded by the session deadline, not invitationExpiresAtMs.
+  const ports = await rotationPorts(
+    {
+      sessionOpenedAtMs: opened,
+      invitationExpiresAtMs: opened + 150,
+      sessionDeadlineMs: opened + 5_000,
+    },
+    async () => ({
+      messages: Date.now() - opened < 200 ? [] : [{
+        kind: "agent_v2_proposal",
+        role: "initiator",
+        seq: "1",
+        sessionId: SESSION_ID,
+        body: { proposalEnvelope: { ok: "proposal" } },
+      }],
+    }),
+  );
+  assert.deepEqual(await ports.awaitProposal(), { ok: "proposal" });
+  assert.ok(Date.now() - opened >= 150, "the proposal wait must continue past the invitation expiry");
+});
+
 test("production funding configuration enforces the deployed queue cap", async () => {
   const previous = process.env.AGENT_HANDSHAKE_V2_FUNDING_QUEUE_LIMIT;
   process.env.AGENT_HANDSHAKE_V2_FUNDING_QUEUE_LIMIT = "1";
