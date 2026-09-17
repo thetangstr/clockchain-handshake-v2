@@ -4,7 +4,6 @@ import {
   createPublicClient,
   createWalletClient,
   http,
-  parseAbiItem,
   parseEther,
 } from "viem";
 import { sepolia } from "viem/chains";
@@ -34,8 +33,9 @@ const DEFAULT_REPOSITORY = "https://github.com/thetangstr/clockchain-handshake-v
 const SESSION_MILLISECONDS = 10 * 60_000;
 const INVITATION_MILLISECONDS = 120_000;
 const FUND = parseEther("0.01");
-const TRANSFER_EVENT = parseAbiItem(
-  "event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)",
+const REGISTRY_ADDRESS = "0x8004a818bfb912233c491871b3d84c89a494bd9e";
+const REGISTERED_EVENT = ERC8004_ABI.find(
+  (entry) => entry.type === "event" && entry.name === "Registered",
 );
 const DEFAULT_TERMS = Object.freeze({
   reference: "NS-1847",
@@ -255,50 +255,88 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
     });
   };
 
-  async function transferLogs(args) {
-    return publicClient.getLogs({
-      address: "0x8004a818bfb912233c491871b3d84c89a494bd9e",
-      event: TRANSFER_EVENT,
-      fromBlock: 0n,
-      ...args,
-    });
-  }
+  const ownerOf = async (tokenId) => String(await publicClient.readContract({
+    abi: ERC8004_ABI,
+    address: REGISTRY_ADDRESS,
+    args: [tokenId],
+    functionName: "ownerOf",
+  })).toLowerCase();
 
+  // eth_getLogs providers cap the block range per call (the live RPC rejects
+  // anything over 50,000), so the existing-identity scan walks the official
+  // Registered event backwards from the head in inclusive chunks of at most
+  // 50,000 blocks — newest first — all the way to genesis. There is no
+  // recent-window cap: an identity minted long ago must still be found.
+  const LOG_SCAN_CHUNK_BLOCKS = 50_000n;
   const defaultFindExistingIdentity = async (address) => {
-    const logs = await transferLogs({ args: { to: address } });
-    for (const entry of [...logs].reverse()) {
-      const agentId = entry.args.tokenId;
-      const owner = await publicClient.readContract({
-        abi: ERC8004_ABI,
-        address: "0x8004a818bfb912233c491871b3d84c89a494bd9e",
-        args: [agentId],
-        functionName: "ownerOf",
+    const owner = String(address).toLowerCase();
+    let to = await publicClient.getBlockNumber();
+    for (;;) {
+      const from = to > LOG_SCAN_CHUNK_BLOCKS - 1n
+        ? to - (LOG_SCAN_CHUNK_BLOCKS - 1n)
+        : 0n;
+      const logs = await publicClient.getLogs({
+        address: REGISTRY_ADDRESS,
+        args: { owner },
+        event: REGISTERED_EVENT,
+        fromBlock: from,
+        toBlock: to,
       });
-      if (String(owner).toLowerCase() === address) {
-        return Object.freeze({
-          agentId: String(agentId),
-          owner: address,
-          registrationBlock: String(entry.blockNumber),
-        });
+      for (const entry of [...logs].reverse()) {
+        const agentId = entry.args?.agentId;
+        const block = String(entry.blockNumber);
+        if (agentId === undefined || !/^(?:0|[1-9][0-9]*)$/.test(block)) continue;
+        // ownerOf can revert for a burned or otherwise unreadable token;
+        // that candidate is simply not currently owned — keep scanning.
+        let current;
+        try {
+          current = await ownerOf(agentId);
+        } catch {
+          continue;
+        }
+        if (current === owner) {
+          return Object.freeze({
+            agentId: String(agentId),
+            owner,
+            registrationBlock: block,
+          });
+        }
       }
+      if (from === 0n) return null;
+      to = from - 1n;
     }
-    return null;
   };
-  const defaultResolveRegistration = async (agentId) => {
+  // The caller supplies the party's claimed owner and registration block; the
+  // claim is authoritative only if the exact block contains the official
+  // Registered(agentId, owner) event and ownerOf still matches. No history
+  // scan is needed — the claim pins the block — so the lookup stays inside
+  // every provider's range limit.
+  const defaultResolveRegistration = async (agentId, expected) => {
     const tokenId = BigInt(agentId);
-    const owner = String(await publicClient.readContract({
-      abi: ERC8004_ABI,
-      address: "0x8004a818bfb912233c491871b3d84c89a494bd9e",
-      args: [tokenId],
-      functionName: "ownerOf",
-    })).toLowerCase();
-    const logs = await transferLogs({ args: { to: owner, tokenId } });
-    const latest = logs.at(-1);
-    if (!latest) throw new Error("AGENT_HANDSHAKE_V2_REGISTRATION_MISSING");
-    return Object.freeze({
-      owner,
-      registrationBlock: String(latest.blockNumber),
+    const owner = String(expected?.expectedOwner ?? "").toLowerCase();
+    const block = String(expected?.registrationBlock ?? "");
+    if (
+      !/^0x[0-9a-f]{40}$/.test(owner) ||
+      !/^(?:0|[1-9][0-9]*)$/.test(block)
+    ) throw new Error("AGENT_HANDSHAKE_V2_REGISTRATION_MISSING");
+    const height = BigInt(block);
+    const logs = await publicClient.getLogs({
+      address: REGISTRY_ADDRESS,
+      args: { agentId: tokenId, owner },
+      event: REGISTERED_EVENT,
+      fromBlock: height,
+      toBlock: height,
     });
+    if (
+      !logs.some((entry) =>
+        entry.args?.agentId === tokenId &&
+        String(entry.args?.owner).toLowerCase() === owner
+      )
+    ) throw new Error("AGENT_HANDSHAKE_V2_REGISTRATION_MISSING");
+    if ((await ownerOf(tokenId)) !== owner) {
+      throw new Error("AGENT_HANDSHAKE_V2_REGISTRATION_MISSING");
+    }
+    return Object.freeze({ owner, registrationBlock: block });
   };
   const anchorReport = (message) => {
     const entries = message?.body?.transitions;

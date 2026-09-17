@@ -129,7 +129,10 @@ export async function prepareAgentHandshakeV2Identities({
       typeof ports.resolveRegistration !== "function"
     ) invalid();
     for (const role of AGENT_HANDSHAKE_V2_HOST_ROLES) {
-      const resolved = await ports.resolveRegistration(parties[role].erc8004.agentId);
+      const resolved = await ports.resolveRegistration(parties[role].erc8004.agentId, {
+        expectedOwner: parties[role].sessionKeyAddress,
+        registrationBlock: parties[role].erc8004.registrationBlock,
+      });
       if (
         resolved?.owner !== parties[role].sessionKeyAddress ||
         resolved.registrationBlock !== parties[role].erc8004.registrationBlock ||

@@ -19,8 +19,9 @@ function ports(fixture, { existing = {}, registrationBlock } = {}) {
     findExistingIdentity: async (address) => existing[address] ?? null,
     fundIdentity: async (input) => { calls.push(["fund", input]); },
     reserveFunding: async (input) => { calls.push(["reserve", input]); },
-    resolveRegistration: async (agentId) => {
+    resolveRegistration: async (agentId, expected) => {
       const role = agentId === "9452" ? "initiator" : "responder";
+      calls.push(["resolve", agentId, expected]);
       return {
         owner: fixture.parties[role].sessionKeyAddress,
         registrationBlock: registrationBlock ?? fixture.parties[role].erc8004.registrationBlock,
@@ -94,7 +95,20 @@ test("required-fresh reserves both exact claims, funds role-tagged seats, then p
     fixture.parties.initiator.sessionKeyAddress,
     fixture.parties.responder.sessionKeyAddress,
   ]);
-  assert.deepEqual(active.calls.slice(1).map(([, value]) => value.role), ["initiator", "responder"]);
+  assert.deepEqual(active.calls.slice(1, 3).map(([, value]) => value.role), ["initiator", "responder"]);
+  // The claimed owner and registration block are handed to the resolver so it
+  // can verify the exact Registered event instead of scanning history.
+  assert.deepEqual(
+    active.calls.filter(([kind]) => kind === "resolve"),
+    ["initiator", "responder"].map((role) => [
+      "resolve",
+      fixture.parties[role].erc8004.agentId,
+      {
+        expectedOwner: fixture.parties[role].sessionKeyAddress,
+        registrationBlock: fixture.parties[role].erc8004.registrationBlock,
+      },
+    ]),
+  );
 });
 
 test("required-existing-or-fresh funds only missing identities and not-required performs no chain work", async () => {

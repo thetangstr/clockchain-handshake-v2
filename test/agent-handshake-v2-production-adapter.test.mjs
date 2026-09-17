@@ -8,7 +8,7 @@ import {
 import { verifyHostSessionKeyCertificate, ed25519PublicKeyFingerprint } from "../src/agent-handshake/v2/host-key-certificate.mjs";
 import { canonicalBytes } from "../src/core/canonical.mjs";
 import { agentHandshakeV2StatementDigest } from "../src/agent-handshake/v2/terms.mjs";
-import { ed25519, INITIATOR, REPOSITORY_SHA, SESSION_ID, TERMS } from "./support/agent-handshake-v2-fixture.mjs";
+import { ed25519, INITIATOR, REPOSITORY_SHA, RESPONDER, SESSION_ID, TERMS } from "./support/agent-handshake-v2-fixture.mjs";
 
 test("production session fails closed without an immutable repository SHA", async () => {
   await assert.rejects(
@@ -205,6 +205,238 @@ test("waits after the invitation claim keep the full session deadline", async ()
   );
   assert.deepEqual(await ports.awaitProposal(), { ok: "proposal" });
   assert.ok(Date.now() - opened >= 150, "the proposal wait must continue past the invitation expiry");
+});
+
+function erc8004Provider({ head, registrations = [], owners = {}, reverts = new Set() }) {
+  // Mirrors the live RPC: any getLogs span wider than 50,000 blocks — or one
+  // with no explicit toBlock — fails the way the production provider did.
+  const calls = [];
+  const provider = {
+    calls,
+    getBlockNumber: async () => head,
+    getLogs: async ({ args, fromBlock, toBlock }) => {
+      calls.push({ args, fromBlock, toBlock });
+      if (
+        typeof fromBlock !== "bigint" ||
+        typeof toBlock !== "bigint" ||
+        toBlock - fromBlock + 1n > 50_000n
+      ) {
+        const error = new Error("exceed maximum block range: 50000");
+        error.name = "RpcRequestError";
+        throw error;
+      }
+      return registrations.filter((entry) =>
+        entry.blockNumber >= fromBlock &&
+        entry.blockNumber <= toBlock &&
+        entry.blockNumber !== undefined &&
+        (args?.agentId === undefined || entry.args.agentId === args.agentId) &&
+        (args?.owner === undefined ||
+          String(entry.args.owner).toLowerCase() === String(args.owner).toLowerCase())
+      ).sort((left, right) => Number(left.blockNumber - right.blockNumber));
+    },
+    readContract: async ({ args, functionName }) => {
+      assert.equal(functionName, "ownerOf");
+      if (reverts.has(String(args[0]))) throw new Error("ERC721: invalid token ID");
+      return owners[String(args[0])] ?? "0x" + "0".repeat(40);
+    },
+  };
+  return provider;
+}
+
+function registrationPorts(publicClient, terms = TERMS) {
+  return createAgentHandshakeV2HostPorts({
+    relayUrl: "https://relay.test",
+    repositorySha: REPOSITORY_SHA,
+    sessionOpenedAtMs: 1786337000000,
+    invitationExpiresAtMs: 1786337120000,
+    sessionDeadlineMs: Date.now() + 60_000,
+    sessionId: SESSION_ID,
+    sessionOpenedBlock: "11722800",
+    terms,
+  }, {
+    fundingBudget: { reserve: async () => {} },
+    monitor: {},
+    publicClient,
+    relayClient: { generateEnvelopeKeyPair: () => ({}) },
+  });
+}
+
+test("resolveRegistration verifies a fresh mint at the exact claimed block", async () => {
+  const owner = INITIATOR.address.toLowerCase();
+  const provider = erc8004Provider({
+    head: 11_722_870n,
+    owners: { "10324": owner },
+    registrations: [{
+      args: { agentId: 10324n, owner },
+      blockNumber: 11_722_863n,
+    }],
+  });
+  const ports = await registrationPorts(provider);
+  const resolved = await ports.resolveRegistration("10324", {
+    expectedOwner: owner,
+    registrationBlock: "11722863",
+  });
+  assert.deepEqual(resolved, { owner, registrationBlock: "11722863" });
+  // The claim pins the block: exactly one single-block query, no history scan.
+  assert.deepEqual(
+    provider.calls.map(({ fromBlock, toBlock }) => [fromBlock, toBlock]),
+    [[11_722_863n, 11_722_863n]],
+  );
+});
+
+test("resolveRegistration rejects wrong owner, agentId, block, and malformed claims", async () => {
+  const owner = INITIATOR.address.toLowerCase();
+  const other = RESPONDER.address.toLowerCase();
+  const provider = erc8004Provider({
+    head: 11_722_870n,
+    owners: { "10324": owner },
+    registrations: [{
+      args: { agentId: 10324n, owner },
+      blockNumber: 11_722_863n,
+    }],
+  });
+  const ports = await registrationPorts(provider);
+  const missing = /REGISTRATION_MISSING/;
+  await assert.rejects(
+    () => ports.resolveRegistration("10324", { expectedOwner: other, registrationBlock: "11722863" }),
+    missing,
+  );
+  await assert.rejects(
+    () => ports.resolveRegistration("10325", { expectedOwner: owner, registrationBlock: "11722863" }),
+    missing,
+  );
+  await assert.rejects(
+    () => ports.resolveRegistration("10324", { expectedOwner: owner, registrationBlock: "11722864" }),
+    missing,
+  );
+  await assert.rejects(
+    () => ports.resolveRegistration("10324", { expectedOwner: owner, registrationBlock: "11722863.0" }),
+    missing,
+  );
+  await assert.rejects(
+    () => ports.resolveRegistration("10324", { expectedOwner: owner, registrationBlock: "abc" }),
+    missing,
+  );
+  await assert.rejects(
+    () => ports.resolveRegistration("10324", { expectedOwner: owner, registrationBlock: "" }),
+    missing,
+  );
+  await assert.rejects(() => ports.resolveRegistration("10324"), missing);
+  // A minted-then-transferred agent fails the current-owner check.
+  const transferred = erc8004Provider({
+    head: 11_722_870n,
+    owners: { "10324": other },
+    registrations: [{ args: { agentId: 10324n, owner }, blockNumber: 11_722_863n }],
+  });
+  const transferredPorts = await registrationPorts(transferred);
+  await assert.rejects(
+    () => transferredPorts.resolveRegistration("10324", { expectedOwner: owner, registrationBlock: "11722863" }),
+    missing,
+  );
+});
+
+test("findExistingIdentity reverse-scans Registered in provider-safe chunks to genesis", async () => {
+  const owner = RESPONDER.address.toLowerCase();
+  const head = 11_722_870n;
+  const mintBlock = head - 200_000n;
+  const provider = erc8004Provider({
+    head,
+    owners: { "9001": owner },
+    registrations: [{ args: { agentId: 9001n, owner }, blockNumber: mintBlock }],
+  });
+  const ports = await registrationPorts(provider, {
+    ...TERMS,
+    identityPolicy: { ...TERMS.identityPolicy, erc8004: "required_existing_or_fresh" },
+  });
+  const found = await ports.findExistingIdentity(owner);
+  assert.deepEqual(found, {
+    agentId: "9001",
+    owner,
+    registrationBlock: String(mintBlock),
+  });
+  assert.ok(provider.calls.length >= 5, "the scan must chunk across the 50k provider limit");
+  assert.ok(provider.calls.every(
+    ({ fromBlock, toBlock }) => toBlock - fromBlock + 1n <= 50_000n,
+  ));
+  // Chunks walk backwards from the head: first call ends at head.
+  assert.equal(provider.calls[0].toBlock, head);
+});
+
+test("findExistingIdentity skips identities the address no longer owns", async () => {
+  const owner = RESPONDER.address.toLowerCase();
+  const other = INITIATOR.address.toLowerCase();
+  const head = 60_000n;
+  const provider = erc8004Provider({
+    head,
+    owners: { "9002": other, "9003": owner },
+    registrations: [
+      // Newest first in the same chunk: a transferred-away registration is
+      // ignored, and the older still-owned one is found.
+      { args: { agentId: 9002n, owner }, blockNumber: 55_000n },
+      { args: { agentId: 9003n, owner }, blockNumber: 10_000n },
+    ],
+  });
+  const ports = await registrationPorts(provider);
+  const found = await ports.findExistingIdentity(owner);
+  assert.deepEqual(found, {
+    agentId: "9003",
+    owner,
+    registrationBlock: "10000",
+  });
+});
+
+test("findExistingIdentity returns null after scanning every chunk to block 0", async () => {
+  const owner = RESPONDER.address.toLowerCase();
+  const head = 120_000n;
+  const provider = erc8004Provider({ head, owners: {}, registrations: [] });
+  const ports = await registrationPorts(provider);
+  assert.equal(await ports.findExistingIdentity(owner), null);
+  // head 120_000 with 50k-wide inclusive chunks: [120000..70001], [70000..20001], [20000..0].
+  assert.equal(provider.calls.length, 3);
+  assert.equal(provider.calls.at(-1).fromBlock, 0n);
+});
+
+test("findExistingIdentity skips candidates whose ownerOf reverts and keeps scanning", async () => {
+  const owner = RESPONDER.address.toLowerCase();
+  const head = 60_000n;
+  const provider = erc8004Provider({
+    head,
+    // The newer candidate's token is burned/unreadable — ownerOf reverts —
+    // and the older one is still owned by the address.
+    owners: { "9003": owner },
+    reverts: new Set(["9002"]),
+    registrations: [
+      { args: { agentId: 9002n, owner }, blockNumber: 55_000n },
+      { args: { agentId: 9003n, owner }, blockNumber: 10_000n },
+    ],
+  });
+  const ports = await registrationPorts(provider);
+  assert.deepEqual(await ports.findExistingIdentity(owner), {
+    agentId: "9003",
+    owner,
+    registrationBlock: "10000",
+  });
+});
+
+test("findExistingIdentity returns null when every candidate reverts or is owned elsewhere", async () => {
+  const owner = RESPONDER.address.toLowerCase();
+  const other = INITIATOR.address.toLowerCase();
+  const head = 120_000n;
+  const provider = erc8004Provider({
+    head,
+    owners: { "9004": other },
+    reverts: new Set(["9005"]),
+    registrations: [
+      { args: { agentId: 9004n, owner }, blockNumber: 80_000n },
+      { args: { agentId: 9005n, owner }, blockNumber: 30_000n },
+    ],
+  });
+  const ports = await registrationPorts(provider);
+  assert.equal(await ports.findExistingIdentity(owner), null);
+  assert.equal(provider.calls.at(-1).fromBlock, 0n);
+  assert.ok(provider.calls.every(
+    ({ fromBlock, toBlock }) => toBlock - fromBlock + 1n <= 50_000n,
+  ));
 });
 
 test("production funding configuration enforces the deployed queue cap", async () => {
