@@ -898,7 +898,8 @@ test("next advancement fails closed on budget exhaustion and the call bound", as
     assert.equal(advances.length, 1);
     assert.equal(advances[0].error, "budget");
     assert.equal(advances[0].calls, waits.length);
-    assert.equal(advances[0].stage, null);
+    assert.equal(advances[0].stage, "awaiting_counterpart");
+    assert.equal(advances[0].needed, "counterpart_identity");
   }
   // A perpetual immediate continue is bounded by the call cap, not the clock.
   {

@@ -172,7 +172,7 @@ test("builds exact endpoint configuration for Codex and Claude Code", () => {
   assert.equal(codex.launch.args.some((arg) => arg.includes("dangerously-bypass")), false);
   assert.equal(codex.launch.input, "hello");
   assert.deepEqual(claude.launch.args, [
-    "--print", "--bare", "--disable-slash-commands", "--no-chrome",
+    "--print", "--disable-slash-commands", "--no-chrome",
     "--strict-mcp-config", "--mcp-config",
     JSON.stringify({ mcpServers: {
       "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL },
@@ -1524,6 +1524,9 @@ test("runFreshAgentHandshake records secret-safe per-role diagnostics without ra
   const initiator = diagnostics.initiator;
   assert.equal(initiator.client, "codex");
   assert.equal(initiator.exitSignal, "SIGTERM");
+  assert.ok(Number.isSafeInteger(initiator.spawnedAtMs));
+  assert.ok(Number.isSafeInteger(initiator.diagnosedAtMs));
+  assert.ok(initiator.diagnosedAtMs >= initiator.spawnedAtMs);
   assert.equal(initiator.invitationObserved, true);
   assert.equal(initiator.terminalObserved, false);
   assert.equal(initiator.lastMcpStage, "acceptance_pending");
@@ -1531,7 +1534,7 @@ test("runFreshAgentHandshake records secret-safe per-role diagnostics without ra
   assert.equal(initiator.lastMcpLocalActionOperation, "sign");
   assert.equal(initiator.lastAdapterOperation, "sign");
   assert.equal(initiator.lastMcpToolResultFailed, false);
-  assert.deepEqual(initiator.adapterCompletion, { advanceCalls: null, advanceElapsedMs: null, advanceError: null, advanceStage: null, continuation: null, operation: null, state: "none" });
+  assert.deepEqual(initiator.adapterCompletion, { advanceCalls: null, advanceElapsedMs: null, advanceError: null, advanceNeeded: null, advanceStage: null, continuation: null, operation: null, state: "none" });
   assert.deepEqual(initiator.mcpToolNames, ["agent_handshake_invite", "agent_handshake_next", "agent_handshake_status"]);
   assert.deepEqual(initiator.permissionDeniedTools, ["Bash"]);
   assert.equal(initiator.stdoutLines, 4);
@@ -1540,6 +1543,8 @@ test("runFreshAgentHandshake records secret-safe per-role diagnostics without ra
   const responder = diagnostics.responder;
   assert.equal(responder.client, "claude");
   assert.equal(responder.exitSignal, "SIGTERM");
+  assert.ok(Number.isSafeInteger(responder.spawnedAtMs));
+  assert.ok(responder.spawnedAtMs >= initiator.spawnedAtMs);
   assert.equal(responder.nonJsonStdoutLines, 1);
   assert.equal(responder.terminalObserved, false);
   assert.equal(responder.lastMcpStage, null);

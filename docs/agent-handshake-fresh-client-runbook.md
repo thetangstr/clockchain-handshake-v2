@@ -53,3 +53,7 @@ The retained JSON contains only public evidence. Disposable homes, workspaces, c
 ## Known Codex boundary
 
 Codex `workspace-write` isolates the fresh workspace but does not promise literal per-command pattern enforcement. The helper itself therefore accepts only six fixed operations, exact base64url payloads, a descendant state directory, an immutable release URL, and digest verification. This limitation is recorded; it is not represented as a stronger sandbox guarantee.
+
+## Known Claude boundary
+
+The current Claude Code CLI disables keychain and OAuth credential reads under `--bare`, so that flag cannot be used: a seeded subscription login is ignored and the client exits before any MCP call. `--safe-mode` is not a substitute either — it disables every MCP server, including servers passed via `--mcp-config` or `claude mcp add`. The launch therefore relies on the disposable `HOME`/`CLAUDE_CONFIG_DIR`, `--strict-mcp-config`, `--setting-sources ""`, `--disable-slash-commands`, and `--no-session-persistence` for isolation; there are no user customizations inside an empty home to load.
