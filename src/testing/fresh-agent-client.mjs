@@ -686,7 +686,12 @@ export function buildClientCommands({ client, manifestDigest, prompt, workspace 
     ]),
     launch: Object.freeze({
       args: Object.freeze([
-        "--print", "--bare", "--disable-slash-commands", "--no-chrome",
+        // No --bare: current Claude CLI disables OAuth credential reads under
+        // --bare, which logs the seeded subscription credential out entirely.
+        // --safe-mode is not a substitute — it disables every MCP server,
+        // including --mcp-config. Isolation comes from the disposable
+        // HOME/CLAUDE_CONFIG_DIR plus --strict-mcp-config/--setting-sources.
+        "--print", "--disable-slash-commands", "--no-chrome",
         "--strict-mcp-config", "--mcp-config", JSON.stringify({
           mcpServers: {
             "clockchain-handshake": { type: "http", url: CLOCKCHAIN_HANDSHAKE_MCP_URL },
@@ -1001,14 +1006,15 @@ function terminateProcessGroup(child) {
 // tool categories — never raw lines, arguments, payloads, or credential
 // material. Safe to retain in run artifacts.
 function childDiagnostic({
-  adapterCompletion, client, code, eventTypes, lastAdapterOperation,
+  adapterCompletion, client, code, diagnosedAtMs, eventTypes, lastAdapterOperation,
   lastMcpLocalActionOperation, lastMcpNeeded, lastMcpStage,
   lastMcpToolResultFailed, nonJsonLines, observed, permissionDeniedTools,
-  signal, stderrBytes, stdoutLines, terminalObserved, toolNames,
+  signal, spawnedAtMs, stderrBytes, stdoutLines, terminalObserved, toolNames,
 }) {
   return Object.freeze({
     adapterCompletion,
     client: typeof client === "string" ? client : null,
+    diagnosedAtMs: Number.isSafeInteger(diagnosedAtMs) ? diagnosedAtMs : null,
     exitCode: Number.isSafeInteger(code) ? code : null,
     exitSignal: typeof signal === "string" ? signal : null,
     invitationObserved: observed.invitation !== undefined,
@@ -1021,6 +1027,7 @@ function childDiagnostic({
     modelTerminalObserved: observed.terminal !== undefined,
     nonJsonStdoutLines: nonJsonLines,
     permissionDeniedTools: Object.freeze([...permissionDeniedTools].sort()),
+    spawnedAtMs: Number.isSafeInteger(spawnedAtMs) ? spawnedAtMs : null,
     stderrBytes,
     stdoutLines,
     terminalObserved: terminalObserved === true,
@@ -1102,7 +1109,7 @@ export function resolveTerminalProof({ adapterCompletion, invitationObserved = t
   return trusted;
 }
 
-function observeChild(child, role, all, canaries, { adapter, adapterCompletion, client, onDiagnostic, requireInvitation = false } = {}) {
+function observeChild(child, role, all, canaries, { adapter, adapterCompletion, client, onDiagnostic, requireInvitation = false, spawnedAtMs = null } = {}) {
   if (
     adapter === null || typeof adapter !== "object" ||
     typeof adapter.record !== "function" || typeof adapter.bindRoleAccess !== "function"
@@ -1143,15 +1150,16 @@ function observeChild(child, role, all, canaries, { adapter, adapterCompletion, 
           advanceCalls: Number.isSafeInteger(adapterCompletion?.advanceCalls) ? adapterCompletion.advanceCalls : null,
           advanceElapsedMs: Number.isSafeInteger(adapterCompletion?.advanceElapsedMs) ? adapterCompletion.advanceElapsedMs : null,
           advanceError: typeof adapterCompletion?.advanceError === "string" && adapterCompletion.advanceError.length <= 32 ? adapterCompletion.advanceError : null,
+          advanceNeeded: typeof adapterCompletion?.advanceNeeded === "string" && adapterCompletion.advanceNeeded.length <= 64 ? adapterCompletion.advanceNeeded : null,
           advanceStage: typeof adapterCompletion?.advanceStage === "string" && adapterCompletion.advanceStage.length <= 64 ? adapterCompletion.advanceStage : null,
           continuation: typeof adapterCompletion?.continuation === "string" ? adapterCompletion.continuation : null,
           operation: typeof adapterCompletion?.operation === "string" ? adapterCompletion.operation : null,
           state: ADAPTER_COMPLETION_STATES.includes(adapterCompletion?.state) ? adapterCompletion.state : "none",
         }),
-        client, code, eventTypes, lastAdapterOperation, lastMcpLocalActionOperation,
+        client, code, diagnosedAtMs: Date.now(), eventTypes, lastAdapterOperation, lastMcpLocalActionOperation,
         lastMcpNeeded, lastMcpStage, lastMcpToolResultFailed, nonJsonLines, observed,
         terminalObserved: adapterCompletion?.trustedTerminal !== null && adapterCompletion?.trustedTerminal !== undefined,
-        permissionDeniedTools, signal, stderrBytes, stdoutLines, toolNames,
+        permissionDeniedTools, signal, spawnedAtMs, stderrBytes, stdoutLines, toolNames,
       }));
     }
     function processLine(line) {
@@ -1408,16 +1416,17 @@ export async function runFreshAgentHandshake({
       // recorded so the first helper completion is never dropped. It builds,
       // signs, and submits the private proposal/acceptance checkpoints.
       const adapterCompletion = {
-        advanceCalls: null, advanceElapsedMs: null, advanceError: null, advanceStage: null,
+        advanceCalls: null, advanceElapsedMs: null, advanceError: null, advanceNeeded: null, advanceStage: null,
         operation: null, state: "none", trustedTerminal: null,
       };
       const completionBinding = createCheckpointCompletionHandler({
         checkpointState,
         getCheckpointClient,
-        onAdvance: ({ calls, elapsedMs, error, stage }) => {
+        onAdvance: ({ calls, elapsedMs, error, needed, stage }) => {
           adapterCompletion.advanceCalls = calls;
           adapterCompletion.advanceElapsedMs = elapsedMs;
           adapterCompletion.advanceError = error;
+          adapterCompletion.advanceNeeded = needed;
           adapterCompletion.advanceStage = stage;
         },
         // The trusted verify-certificate completion is the sole terminal
@@ -1465,6 +1474,7 @@ export async function runFreshAgentHandshake({
       prompt: prompts.initiator,
       workspace: run.roles.initiator.workspace,
     });
+    const initiatorSpawnedAtMs = Date.now();
     const initiatorChild = spawnProcess(initiatorCommands.launch.file, initiatorCommands.launch.args, {
       cwd: run.roles.initiator.workspace,
       detached: true,
@@ -1473,7 +1483,7 @@ export async function runFreshAgentHandshake({
     });
     children.push(initiatorChild);
     const recordDiagnostic = diagnostics === undefined ? undefined : (role, meta) => { diagnostics[role] = meta; };
-    const initiatorObserved = observeChild(initiatorChild, "initiator", children, canaries, { adapter: prepared.initiator.adapter, adapterCompletion: prepared.initiator.adapterCompletion, client: prepared.initiator.client, onDiagnostic: recordDiagnostic, requireInvitation: true });
+    const initiatorObserved = observeChild(initiatorChild, "initiator", children, canaries, { adapter: prepared.initiator.adapter, adapterCompletion: prepared.initiator.adapterCompletion, client: prepared.initiator.client, onDiagnostic: recordDiagnostic, requireInvitation: true, spawnedAtMs: initiatorSpawnedAtMs });
     sendPrompt(initiatorChild, initiatorCommands.launch.input);
     const actualInvitation = await Promise.race([
       initiatorObserved.invitation,
@@ -1486,6 +1496,7 @@ export async function runFreshAgentHandshake({
       prompt: responderPrompt(prompts.responder, actualInvitation),
       workspace: run.roles.responder.workspace,
     });
+    const responderSpawnedAtMs = Date.now();
     const responderChild = spawnProcess(responderCommands.launch.file, responderCommands.launch.args, {
       cwd: run.roles.responder.workspace,
       detached: true,
@@ -1493,7 +1504,7 @@ export async function runFreshAgentHandshake({
       stdio: ["pipe", "pipe", "pipe"],
     });
     children.push(responderChild);
-    const responderObserved = observeChild(responderChild, "responder", children, canaries, { adapter: prepared.responder.adapter, adapterCompletion: prepared.responder.adapterCompletion, client: prepared.responder.client, onDiagnostic: recordDiagnostic });
+    const responderObserved = observeChild(responderChild, "responder", children, canaries, { adapter: prepared.responder.adapter, adapterCompletion: prepared.responder.adapterCompletion, client: prepared.responder.client, onDiagnostic: recordDiagnostic, spawnedAtMs: responderSpawnedAtMs });
     sendPrompt(responderChild, responderCommands.launch.input);
     const results = await Promise.race([
       Promise.all([initiatorObserved.result, responderObserved.result]),
@@ -1524,6 +1535,11 @@ export async function runFreshAgentHandshake({
     fail();
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+    // Emit every still-open child's diagnostic before killing: a killed child
+    // may never close, and without this the retained diagnostics could omit a
+    // spawned role entirely. Closed children already emitted their final
+    // exit-code snapshot; do not overwrite it with nulls.
+    children.forEach((peer) => { if (!peer.__freshAgentClosed) peer.__freshAgentDiagnose?.(); });
     children.forEach(killProcessGroup);
     for (const adapter of adapters) await adapter.close().catch(() => {});
     if (run !== undefined) await rm(run.root, { recursive: true, force: true }).catch(() => {});

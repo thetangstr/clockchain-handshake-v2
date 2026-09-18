@@ -496,34 +496,41 @@ export function createCheckpointCompletionHandler({ advanceBudgetMs = ADVANCE_BU
     // coordinator string, error is a fixed category, never a result body.
     const stageLabel = (result) =>
       typeof result?.stage === "string" && result.stage.length <= 64 ? result.stage : null;
-    const report = (stage, error) =>
+    const neededLabel = (result) =>
+      typeof result?.needed === "string" && result.needed.length <= 64 ? result.needed : null;
+    const report = (stage, error, needed = null) =>
       onAdvance?.(Object.freeze({
         calls,
         elapsedMs: Math.max(0, now() - startedAt),
         error,
+        needed,
         stage,
       }));
+    let lastStage = null;
+    let lastNeeded = null;
     for (; calls < ADVANCE_MAX_CALLS;) {
       const remaining = deadline - now();
-      if (remaining <= ADVANCE_RESERVE_MS) { report(null, "budget"); fail(); }
+      if (remaining <= ADVANCE_RESERVE_MS) { report(lastStage, "budget", lastNeeded); fail(); }
       let result;
       try {
         result = await client.callTool("agent_handshake_next", {
           access: access.access,
           waitMs: Math.min(remaining - ADVANCE_RESERVE_MS, ADVANCE_WAIT_CAP_MS),
         });
-      } catch { report(null, "call"); fail(); }
+      } catch { report(lastStage, "call", lastNeeded); fail(); }
       calls += 1;
       let kind;
-      try { kind = classifyNextResult(result, completion); } catch { report(stageLabel(result), "classify"); fail(); }
+      try { kind = classifyNextResult(result, completion); } catch { report(stageLabel(result), "classify", neededLabel(result)); fail(); }
       if (kind === "action") {
         try { await requeueTrusted(result, { required: true }); }
-        catch { report(stageLabel(result), "requeue"); fail(); }
-        report(stageLabel(result), null);
+        catch { report(stageLabel(result), "requeue", neededLabel(result)); fail(); }
+        report(stageLabel(result), null, neededLabel(result));
         return;
       }
+      lastStage = stageLabel(result);
+      lastNeeded = neededLabel(result);
     }
-    report(null, "bound");
+    report(lastStage, "bound", lastNeeded);
     fail();
   }
 
