@@ -33,7 +33,9 @@ test("one audited bundle executes init without a repository, package tree, Node 
   assert.equal(stderr, "");
   assert.equal(JSON.parse(stdout).operation, "init");
   const bundle = await readFile(outfile, "utf8");
-  assert.equal(bundle.includes("node_modules/viem"), false);
+  // Unminified on purpose: the published artifact is the reviewable artifact,
+  // so esbuild's node_modules/... section comments are expected to be present.
+  // Self-containment is enforced by the metafile audit above (zero externals).
   assert.equal(bundle.includes("import("), false);
 });
 
@@ -46,12 +48,12 @@ test("verified bootstrap hashes the manifest and exact helper bytes before every
   const helperBytes = await readFile(helperPath);
   const manifestBytes = Buffer.from(JSON.stringify({
     schema: "clockchain.agent-handshake-release-manifest/v1",
-    version: "2.1.6",
+    version: "2.1.7",
     sourceCommit: "a".repeat(40),
     nodeRuntime: "24.19.0",
     assets: [{
       filename: "clockchain-agent-handshake.cjs",
-      url: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.6/clockchain-agent-handshake.cjs",
+      url: "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.7/clockchain-agent-handshake.cjs",
       sha256: createHash("sha256").update(helperBytes).digest("hex"),
     }],
   }));
@@ -70,7 +72,7 @@ test("npm developer fallback executes the same public CLI entry point", async (t
   const packageDir = join(directory, "package");
   const buildScript = new URL("../scripts/build-agent-handshake-npm.mjs", import.meta.url).pathname;
   const built = await execFileAsync(process.execPath, [buildScript, packageDir], { cwd: directory });
-  assert.equal(JSON.parse(built.stdout).version, "2.1.6");
+  assert.equal(JSON.parse(built.stdout).version, "2.1.7");
   const packageJson = JSON.parse(await readFile(join(packageDir, "package.json"), "utf8"));
   assert.deepEqual(packageJson.bin, { "clockchain-agent-handshake": "index.cjs" });
   assert.deepEqual(packageJson.engines, { node: ">=24" });

@@ -52,8 +52,10 @@ function exact(value, keys) {
 function signature(value, platform) {
   const item = exact(value, SIGNATURE_KEYS);
   const requiredType = platform === "node" ? "none" : "invalid";
+  // verified is null, never true, when no platform signature exists — a true
+  // claim beside type "none" reads as a signature that was never made.
   if (
-    item.type !== requiredType || item.verified !== true ||
+    item.type !== requiredType || item.verified !== null ||
     item.notarized !== null || item.signer !== null || item.timestamp !== null
   ) invalid();
   return Object.freeze(item);

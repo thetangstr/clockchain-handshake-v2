@@ -31,7 +31,10 @@ export async function buildAgentHandshakeBundle({ outfile } = {}) {
     format: "cjs",
     target: "node24",
     metafile: true,
-    minify: true,
+    // The shipped artifact is the artifact reviewers read — minification would
+    // turn the pinned file into a black box, so the published bundle is
+    // unminified and byte-for-byte what executes.
+    minify: false,
     sourcemap: false,
     legalComments: "none",
     logLevel: "silent",
@@ -104,7 +107,9 @@ export async function recordAgentHandshakeAsset({
     sha256: createHash("sha256").update(bytes).digest("hex"),
     nativeSignature: {
       type: "none",
-      verified: true,
+      // null — no platform signature exists, so nothing was verified; a true
+      // here would falsely claim a signature check passed on signed bytes.
+      verified: null,
       signer: null,
       timestamp: null,
       notarized: null,
