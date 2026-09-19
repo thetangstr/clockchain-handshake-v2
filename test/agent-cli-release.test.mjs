@@ -16,7 +16,7 @@ import {
 } from "../src/agent-handshake/v2/constants.mjs";
 import { canonicalBytes } from "../src/core/canonical.mjs";
 
-const prefix = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.6/";
+const prefix = "https://github.com/thetangstr/clockchain-handshake-v2/releases/download/v2.1.7/";
 const sourceCommit = "a".repeat(40);
 const bytes = Buffer.from("asset");
 const sha256 = createHash("sha256").update(bytes).digest("hex");
@@ -31,7 +31,7 @@ function asset() {
     url: prefix + filename,
     byteLength: String(bytes.length),
     sha256,
-    nativeSignature: { type: "none", verified: true, signer: null, timestamp: null, notarized: null },
+    nativeSignature: { type: "none", verified: null, signer: null, timestamp: null, notarized: null },
     execution: {
       verified: true,
       platform: "linux",
@@ -45,7 +45,7 @@ function asset() {
 function manifest() {
   return {
     schema: "clockchain.agent-handshake-release-manifest/v1",
-    version: "2.1.6",
+    version: "2.1.7",
     sourceCommit,
     nodeRuntime: "24.6.0",
     assets: [asset()],
@@ -80,7 +80,7 @@ test("binds the post-release pin to exact manifest bytes, helper bytes, and host
   const value = manifest();
   const manifestBytes = canonicalBytes(value);
   const pin = {
-    version: "2.1.6",
+    version: "2.1.7",
     sourceCommit,
     manifestDigest: createHash("sha256").update(manifestBytes).digest("hex"),
     allowedAssetPrefix: prefix,
@@ -152,6 +152,9 @@ test("rejects unknown keys, duplicates, redirects, digest drift, and native exec
     { ...base, assets: base.assets.map((entry, index) => index === 0 ? { ...entry, url: "https://example.invalid/a" } : entry) },
     { ...base, assets: base.assets.map((entry) => ({ ...entry, platform: "darwin", arch: "arm64" })) },
     { ...base, assets: base.assets.map((entry) => ({ ...entry, nativeSignature: { ...entry.nativeSignature, type: "codesign", signer: "unknown" } })) },
+    // A "none" signature claiming verified:true is exactly the decorative
+    // claim a reviewer flagged — the schema now forbids it.
+    { ...base, assets: base.assets.map((entry) => ({ ...entry, nativeSignature: { ...entry.nativeSignature, verified: true } })) },
     { ...base, assets: base.assets.map((entry) => ({ ...entry, execution: { ...entry.execution, platform: "darwin" } })) },
     { ...base, assets: base.assets.map((entry) => ({ ...entry, upstreamSupport: "node_sea_supported" })) },
   ];
@@ -168,7 +171,7 @@ test("release workflow publishes only the portable helper without external signi
   for (const required of [
     "24.18.0", "ubuntu-24.04", "build-agent-handshake-release.mjs bundle",
     "dist/clockchain-agent-handshake.cjs", "actions/attest-build-provenance@v2",
-    "gh release create v2.1.6",
+    "gh release create v2.1.7",
   ]) assert.ok(workflow.includes(required), required);
   assert.equal(workflow.includes("self-hosted"), false);
   for (const forbidden of [

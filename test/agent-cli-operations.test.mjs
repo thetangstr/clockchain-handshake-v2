@@ -52,7 +52,7 @@ test("dispatcher exposes exactly init, policy, inspect, register, sign, and veri
     stateDir,
     payload: {
       schema: "clockchain.agent-handshake-certificate-verification/v1",
-      helperVersion: "2.1.6",
+      helperVersion: "2.1.7",
       role: "initiator",
       sessionId: fixture.request.sessionId,
       repositorySha: fixture.request.repositorySha,
