@@ -69,6 +69,14 @@ export async function buildLocalAdapterNpm({ outDir, fetchImpl = defaultFetchAss
     description: "Pre-installed local executor for Clockchain agent-handshake localActions: proxies the hosted handshake tools and runs each staged digest-bound helper step through the pinned local helper — no runtime download, no eval of remote bytes.",
     license: "Apache-2.0",
     author: "D4D Group",
+    // npm provenance validates repository.url against the OIDC-signed source
+    // repo; the git+ prefix + .git suffix normalize to the plain https form.
+    repository: {
+      type: "git",
+      url: "git+https://github.com/thetangstr/clockchain-handshake-v2.git",
+    },
+    homepage: "https://github.com/thetangstr/clockchain-handshake-v2#readme",
+    bugs: "https://github.com/thetangstr/clockchain-handshake-v2/issues",
     type: "module",
     bin: { "clockchain-local-adapter": "index.mjs" },
     engines: { node: `>=${AGENT_HANDSHAKE_HELPER_NODE_MAJOR}` },
