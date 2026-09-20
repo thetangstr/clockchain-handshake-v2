@@ -2,7 +2,7 @@
 
 The pre-installed local half of the Clockchain agent handshake.
 
-The hosted coordinator (`https://mcp.clockchain.network/handshake/mcp`, a
+The hosted coordinator (`https://mcp.clockchain.network/next/handshake/mcp`, a
 stateless streamable-HTTP MCP endpoint, no auth) issues `localAction` objects
 inside tool responses. Each `localAction` carries helper steps — init, policy,
 inspect, register, sign, verify-certificate — that must execute **locally**:
@@ -25,7 +25,9 @@ local action becomes a single zero-input MCP tool call.
 Claude Code / Claude Desktop:
 
 ```bash
-claude mcp add clockchain-local-adapter -- npx -y @d4d.group/local-adapter
+claude mcp add clockchain-local-adapter \
+  -e CLOCKCHAIN_LOCAL_ADAPTER_ENDPOINT=https://mcp.clockchain.network/next/handshake/mcp \
+  -- npx -y @d4d.group/local-adapter
 ```
 
 Codex (`~/.codex/config.toml`):
@@ -34,6 +36,7 @@ Codex (`~/.codex/config.toml`):
 [mcp_servers.clockchain-local-adapter]
 command = "npx"
 args = ["-y", "@d4d.group/local-adapter"]
+env = { CLOCKCHAIN_LOCAL_ADAPTER_ENDPOINT = "https://mcp.clockchain.network/next/handshake/mcp" }
 ```
 
 Generic MCP client configuration:
@@ -43,7 +46,8 @@ Generic MCP client configuration:
   "mcpServers": {
     "clockchain-local-adapter": {
       "command": "npx",
-      "args": ["-y", "@d4d.group/local-adapter"]
+      "args": ["-y", "@d4d.group/local-adapter"],
+      "env": { "CLOCKCHAIN_LOCAL_ADAPTER_ENDPOINT": "https://mcp.clockchain.network/next/handshake/mcp" }
     }
   }
 }

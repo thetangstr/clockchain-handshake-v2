@@ -41,7 +41,10 @@ const execFileAsync = promisify(execFile);
 export const ADAPTER_NAME = "clockchain-local-adapter";
 export const ADAPTER_TOOL = "authorize_local_action";
 export const ADAPTER_APPROVAL_TOOL = `mcp__${ADAPTER_NAME}__${ADAPTER_TOOL}`;
-export const ADAPTER_DEFAULT_ENDPOINT = "https://mcp.clockchain.network/handshake/mcp";
+// While the ACM4 demo pin is live, the hosted edge routes /handshake/mcp to a
+// frozen 2.1.6 instance and the current build's handshake surface is /next.
+// CLOCKCHAIN_LOCAL_ADAPTER_ENDPOINT overrides this (server.mjs:~470).
+export const ADAPTER_DEFAULT_ENDPOINT = "https://mcp.clockchain.network/next/handshake/mcp";
 export const ADAPTER_ASSET_ERROR = "ADAPTER_ASSET_VERIFICATION_FAILED";
 
 const CLI_RESULT_SCHEMA = "clockchain.agent-handshake-cli-result/v1";
