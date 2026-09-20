@@ -1,4 +1,4 @@
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { types } from "node:util";
 
 import * as walletBridge from "../core/wallet-bridge.mjs";
@@ -89,6 +89,11 @@ export function createAgentCliOperations({
   }
   async function dispatch({ operation, stateDir, payload } = {}) {
     if (!AGENT_CLI_OPERATIONS.includes(operation)) invalid();
+    // Normalize once so every downstream path guard sees a canonical path:
+    // callers that build stateDir from "$TMPDIR/..." can hand us redundant
+    // separators (macOS exports TMPDIR with a trailing slash), and the
+    // private-path self-check rejects non-resolved paths byte-for-byte.
+    if (typeof stateDir === "string" && isAbsolute(stateDir)) stateDir = resolve(stateDir);
     try {
       if (operation === "init") {
         return result(operation, await bridge.initializeWallet({ statePath: pathFor(stateDir), platform, runIcacls }));

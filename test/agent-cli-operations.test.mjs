@@ -66,6 +66,30 @@ test("dispatcher exposes exactly init, policy, inspect, register, sign, and veri
   assert.equal(calls.length, 1);
 });
 
+test("dispatch normalizes redundant separators in stateDir before the private-path guard", async (t) => {
+  // Real-world macOS shape: $TMPDIR is exported with a trailing slash, so a
+  // caller-built "$TMPDIR/.clockchain/..." arrives with a redundant "//" that
+  // the private-path self-check would otherwise reject byte-for-byte.
+  const name = `clockchain-agent-ops-${process.pid}-norm`;
+  const canonical = join(tmpdir(), name);
+  const stateDir = `${tmpdir()}/${name}`;
+  t.after(() => rm(canonical, { force: true, recursive: true }));
+  const fixture = await buildAgentCliFixture();
+  const address = fixture.parties.initiator.sessionKeyAddress;
+  const bridge = {
+    initializeWallet: async () => ({ address }),
+    inspectWallet: async () => ({ address, registration: null }),
+    registerWalletIdentity: async () => { throw new Error("unreachable"); },
+    signExactBytes: async () => { throw new Error("unreachable"); },
+  };
+  const operations = createAgentCliOperations({ bridge, now: () => fixture.nowMs, rootKeyRing: fixture.rootKeyRing });
+  await operations.dispatch({ operation: "init", stateDir });
+  const committed = await operations.dispatch({ operation: "policy", stateDir, payload: fixture.policy });
+  const inspected = await operations.dispatch({ operation: "inspect", stateDir });
+  assert.match(committed.policyDigest, /^[0-9a-f]{64}$/);
+  assert.equal(inspected.policyDigest, committed.policyDigest);
+});
+
 test("inspect reports a null registration before register under a required_fresh policy", async (t) => {
   const stateDir = await mkdtemp(join(tmpdir(), "clockchain-agent-ops-inspect-"));
   await rm(stateDir, { recursive: true });
