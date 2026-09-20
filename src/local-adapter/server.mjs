@@ -67,7 +67,7 @@ const HELPER_ERROR_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
 // other refusal this one names the recovery path.
 export const ADAPTER_RELEASE_MISMATCH_REFUSAL =
   "clockchain-local-adapter is behind the coordinator's required helper " +
-  "release — upgrade with: npx -y @clockchain/local-adapter@latest, then " +
+  "release — upgrade with: npx -y @d4d/local-adapter@latest, then " +
   "restart your MCP client. If the adapter is already current, the step is " +
   "pinned to a different release — a mismatch that must not be bypassed.";
 const GENERIC_REFUSAL = "Clockchain local adapter refused the action.";
