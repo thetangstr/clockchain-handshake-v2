@@ -6,10 +6,11 @@ name: local-adapter-npm-publish
 # in lockstep with the helper release it carries. Manual dispatch is available
 # for dry-run verification only; real publishes come from tags.
 #
-# Auth: npm Trusted Publishing (OIDC) — no long-lived NPM_TOKEN in CI. The
+# Auth: npm Trusted Publishing (OIDC) — no long-lived npm token in CI. The
 # package must have github.com/thetangstr/clockchain-handshake-v2 registered as
 # a trusted publisher for THIS workflow file. If trusted publishing is not yet
-# configured, set the NODE_AUTH_TOKEN secret as a fallback.
+# configured, set the NODE_AUTH_TOKEN repository secret as the fallback — the
+# publish step reads secrets.NODE_AUTH_TOKEN.
 
 on:
   push:
@@ -102,7 +103,7 @@ jobs:
       - name: Publish with provenance (dry-run when dispatched with dry_run=true)
         working-directory: ${{ env.PKG_DIR }}
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }} # fallback only; unused under trusted publishing
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }} # fallback only; unused under trusted publishing
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             npm publish --provenance --access public --dry-run
