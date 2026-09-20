@@ -509,6 +509,11 @@ export function createLocalAdapterServer(options = {}) {
     }
     for (const candidate of candidates) {
       const staged = validateHelperStep(candidate, { manifestDigest: pin.manifestDigest });
+      // The coordinator re-issues an unchanged localAction on each poll while a
+      // step stays pending — the same byte-identical command is the same
+      // digest-bound action, so an already-staged duplicate must not shift the
+      // queue head away from the step the caller just read.
+      if (queue.some((pending) => pending.commandSha256 === staged.commandSha256)) continue;
       if (queue.length >= MAX_STAGED_STEPS) invalid();
       queue.push(Object.freeze({ ...staged, stagedAtMs: now() }));
     }

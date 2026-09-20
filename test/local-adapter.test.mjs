@@ -297,6 +297,25 @@ test("stages helperSteps arrays FIFO and executes exactly one step per call", as
   assert.equal(empty.result.isError, true);
 });
 
+test("a byte-identical step re-issued on a later poll is not staged twice", async (t) => {
+  const { fixture, make } = await makeContext(t);
+  const step = helperStep({ manifestDigest: fixture.pin.manifestDigest });
+  const server = make({
+    fetchImpl: upstreamResult(rpcResult({ localAction: { helperStep: step } })),
+    runHelper: async () => ({ code: 0, stderr: "", stdout: cliResult("init") }),
+  });
+  // The coordinator re-issues an unchanged localAction on each poll while a
+  // step stays pending; re-staging it would shift the queue head away from the
+  // step the caller just read.
+  await call(server, 1, "agent_handshake_next", {});
+  await call(server, 2, "agent_handshake_next", {});
+  await call(server, 3, "agent_handshake_next", {});
+  assert.equal(server.pendingCount(), 1);
+  const executed = await call(server, 4, ADAPTER_TOOL);
+  assert.equal(JSON.parse(executed.result.content[0].text).operation, "init");
+  assert.equal(server.pendingCount(), 0);
+});
+
 test("rejects malformed steps: approval tool, digests, prefix, suffix, and field bindings", async (t) => {
   const { fixture, make } = await makeContext(t);
   const manifestDigest = fixture.pin.manifestDigest;
