@@ -40,6 +40,17 @@ const SIGNATURE = /^0x[0-9a-f]{130}$/;
 
 function invalid() { throw new Error("Agent handshake operation failed safely."); }
 
+// A signing request whose issuedAtMs/expiresAtMs window (or session deadline)
+// has already lapsed is unrecoverable locally — the remedy is to re-poll
+// agent_handshake_next for a fresh window. This is local wall-clock state the
+// caller already holds, so it gets a distinct code instead of the generic
+// failure the anti-oracle boundary emits for everything else.
+export const SIGNING_WINDOW_EXPIRED_MESSAGE = "Agent handshake signing window expired.";
+export function isSigningWindowExpired(error) {
+  return error instanceof Error && error.message === SIGNING_WINDOW_EXPIRED_MESSAGE;
+}
+function expired() { throw new Error(SIGNING_WINDOW_EXPIRED_MESSAGE); }
+
 function exact(value, keys) {
   if (value === null || typeof value !== "object" || Array.isArray(value) || types.isProxy(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) invalid();
   const actual = Reflect.ownKeys(value);
@@ -96,11 +107,10 @@ function assertPayloadBinding(payload, request, address, policy, statementDigest
   if (payload.issuedAtMs !== undefined) {
     const issuedAtMs = Number(payload.issuedAtMs);
     const expiresAtMs = Number(payload.expiresAtMs);
+    if (!Number.isSafeInteger(issuedAtMs) || !Number.isSafeInteger(expiresAtMs)) invalid();
+    if (request.nowMs >= expiresAtMs) expired();
     if (
-      !Number.isSafeInteger(issuedAtMs) ||
-      !Number.isSafeInteger(expiresAtMs) ||
       request.nowMs < issuedAtMs ||
-      request.nowMs >= expiresAtMs ||
       expiresAtMs > Number(request.sessionDeadlineMs) ||
       expiresAtMs - issuedAtMs < 1 ||
       expiresAtMs - issuedAtMs > Number(policy.maxValidForSeconds) * 1_000 ||
@@ -130,8 +140,9 @@ export function validateAgentSigningRequest({ address, localPolicy, nowMs, reque
     terms.reference !== policy.reference ||
     terms.validForSeconds !== policy.maxValidForSeconds ||
     !same(terms.identityPolicy, policy.identityPolicy) ||
-    !Number.isSafeInteger(nowMs) || nowMs >= Number(request.sessionDeadlineMs)
+    !Number.isSafeInteger(nowMs)
   ) invalid();
+  if (nowMs >= Number(request.sessionDeadlineMs)) expired();
   const statementDigest = agentHandshakeV2StatementDigest(terms);
   if (statementDigest !== policy.statementDigest) invalid();
   const hostSessionKey = verifyPinnedHostSessionKey(request.hostSessionKeyCertificate, {

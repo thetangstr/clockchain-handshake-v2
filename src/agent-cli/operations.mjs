@@ -9,6 +9,7 @@ import { commitAgentPolicy, readAgentPolicy } from "./policy.mjs";
 import {
   AGENT_HANDSHAKE_HELPER_VERSION,
   executeAgentSigningRequest,
+  isSigningWindowExpired,
 } from "./signing-request.mjs";
 import {
   EMBEDDED_HOST_ROOT_KEY_RING,
@@ -163,7 +164,7 @@ export function createAgentCliOperations({
         sessionDeadlineMs: Number(request.sessionDeadlineMs),
       }));
     } catch (error) {
-      if (error?.message === "Agent handshake operation failed safely.") throw error;
+      if (isSigningWindowExpired(error) || error?.message === "Agent handshake operation failed safely.") throw error;
       invalid();
     }
   }

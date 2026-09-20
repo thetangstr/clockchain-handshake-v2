@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import { gzipSync } from "node:zlib";
 
-import { executeAgentSigningRequest } from "../src/agent-cli/signing-request.mjs";
+import { executeAgentSigningRequest, isSigningWindowExpired, SIGNING_WINDOW_EXPIRED_MESSAGE } from "../src/agent-cli/signing-request.mjs";
 import { canonicalBytes } from "../src/core/canonical.mjs";
 import {
   agentHandshakeV2DescriptorDigest,
@@ -89,6 +89,37 @@ test("never reaches the signer for policy, trust, schema, operation, role, sessi
     rootKeyRing: [{ ...fixture.rootKeyRing[0], fingerprint: "f".repeat(64) }],
     sign,
   }));
+  assert.equal(calls, 0);
+});
+
+test("an expired payload window or session deadline fails with the distinct window-expired error", async () => {
+  const fixture = await buildAgentCliFixture();
+  let calls = 0;
+  const sign = async () => { calls += 1; return {}; };
+  for (const nowMs of [1786337190000, Number(SESSION_DEADLINE_MS)]) {
+    const failure = await executeAgentSigningRequest({
+      address: fixture.parties.initiator.sessionKeyAddress,
+      localPolicy: fixture.policy,
+      nowMs,
+      request: fixture.request,
+      rootKeyRing: fixture.rootKeyRing,
+      sign,
+    }).then(() => null, (error) => error);
+    assert.ok(isSigningWindowExpired(failure));
+    assert.equal(failure.message, SIGNING_WINDOW_EXPIRED_MESSAGE);
+  }
+  // A future-dated window is malformed, not lapsed — it stays generic.
+  await assert.rejects(
+    () => executeAgentSigningRequest({
+      address: fixture.parties.initiator.sessionKeyAddress,
+      localPolicy: fixture.policy,
+      nowMs: 1786337099999,
+      request: fixture.request,
+      rootKeyRing: fixture.rootKeyRing,
+      sign,
+    }),
+    (error) => !isSigningWindowExpired(error) && error.message === "Agent handshake operation failed safely.",
+  );
   assert.equal(calls, 0);
 });
 
