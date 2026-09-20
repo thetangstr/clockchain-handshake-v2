@@ -376,7 +376,7 @@ test("a structurally valid step pinned to a different release digest gets the up
     const response = await call(server, 1, "agent_handshake_next", {});
     assert.equal(response.result.isError, true);
     assert.equal(response.result.content[0].text, ADAPTER_RELEASE_MISMATCH_REFUSAL);
-    assert.match(response.result.content[0].text, /npx -y @d4d\/local-adapter@latest/);
+    assert.match(response.result.content[0].text, /npx -y @d4d\.group\/local-adapter@latest/);
     assert.match(response.result.content[0].text, /must not be bypassed/);
     assert.equal(server.pendingCount(), 0);
   }

@@ -1,6 +1,6 @@
 name: local-adapter-npm-publish
 
-# Publishes @d4d/local-adapter to npm with provenance.
+# Publishes @d4d.group/local-adapter to npm with provenance.
 # Trigger: tag `local-adapter-vX.Y.Z` where X.Y.Z MUST equal the vendored
 # helper version (release/agent-handshake/pin.json) — the adapter's semver is
 # in lockstep with the helper release it carries. Manual dispatch is available
@@ -77,7 +77,7 @@ jobs:
           printf '%s\n%s\n' \
             '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"ci-smoke","version":"0"}}}' \
             '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
-            | node node_modules/@d4d/local-adapter/index.mjs \
+            | node node_modules/@d4d.group/local-adapter/index.mjs \
             | node -e 'let b="";process.stdin.on("data",d=>b+=d).on("end",()=>{const msgs=b.split("\n").filter(Boolean).map(JSON.parse);const init=msgs.find(m=>m.id===1);const tools=msgs.find(m=>m.id===2);if(init?.result?.serverInfo?.name!=="clockchain-local-adapter")process.exit(1);if(!tools?.result?.tools?.some(t=>t.name==="authorize_local_action"))process.exit(1);console.log("smoke OK:",init.result.serverInfo.version)})'
 
       - uses: actions/upload-artifact@v4
