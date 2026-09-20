@@ -31,7 +31,25 @@ import { createAgentHandshakeV2Monitor } from "../../monitor/agent-snapshot-v2-p
 const DEFAULT_RELAY = "http://44.249.47.220:8080";
 const DEFAULT_REPOSITORY = "https://github.com/thetangstr/clockchain-handshake-v2.git";
 const SESSION_MILLISECONDS = 10 * 60_000;
+// invitationExpiresAtMs is the MINT cutoff: the session stops accepting new
+// invitations then and an unclaimed session rotates. The responder's claim
+// window is mint-relative (the coordinator publishes it as claimExpiresAtMs
+// on agent_v2_invitation_created), so the claim wait below extends its bound
+// to the minted expiry once that message is observed — a claim still can
+// never outlive the host's observation, but a late-window mint keeps its
+// full runway instead of inheriting only the remaining slice.
 const INVITATION_MILLISECONDS = 120_000;
+// Older coordinators minted the claim window without publishing it (either
+// mint-relative at +120s or pinned to the session invitation expiry); when an
+// invitation_created carries no claimExpiresAtMs the host derives an upper
+// bound from its createdAtMs so the observation window still covers whatever
+// window that mint actually produced.
+const LEGACY_INVITATION_CLAIM_WINDOW_MS = 120_000;
+// The host observes a few seconds past the minted claim expiry so a claim
+// accepted at the edge still lands while the relay log is being read; the
+// claimedAtMs check inside awaitInvitationClaimed stays the authority on
+// whether the claim was in-window.
+const INVITATION_CLAIM_OBSERVE_GRACE_MS = 5_000;
 const FUND = parseEther("0.01");
 const REGISTRY_ADDRESS = "0x8004a818bfb912233c491871b3d84c89a494bd9e";
 const REGISTERED_EVENT = ERC8004_ABI.find(
@@ -155,12 +173,45 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
     relayClient.generateEnvelopeKeyPair?.() ?? relay.generateEnvelopeKeyPair();
   let after = "0";
   let buffer = [];
+  // The minted responder claim window, learned from agent_v2_invitation_created
+  // on the session log (or derived from its createdAtMs for coordinators that
+  // predate claimExpiresAtMs). Drives both the extended observation bound below
+  // and the claimedAtMs validity check in awaitInvitationClaimed.
+  let mintedClaimExpMs = null;
+  const extendClaimDeadline = (message) => {
+    if (
+      message?.kind !== "agent_v2_invitation_created" ||
+      message?.role !== "initiator" ||
+      message.body === null ||
+      typeof message.body !== "object" ||
+      Array.isArray(message.body)
+    ) return null;
+    const explicit = Number(message.body.claimExpiresAtMs);
+    const minted = Number(message.body.createdAtMs);
+    const derived = Number.isSafeInteger(explicit)
+      ? explicit
+      : Number.isSafeInteger(minted)
+        ? minted + LEGACY_INVITATION_CLAIM_WINDOW_MS
+        : null;
+    const openedMs = Number.isSafeInteger(session.sessionOpenedAtMs)
+      ? session.sessionOpenedAtMs
+      : 0;
+    if (derived === null || derived <= openedMs) return null;
+    mintedClaimExpMs = Math.min(derived, session.sessionDeadlineMs);
+    return Math.min(
+      session.sessionDeadlineMs,
+      mintedClaimExpMs + INVITATION_CLAIM_OBSERVE_GRACE_MS,
+    );
+  };
 
   const defaultWaitForMessage = async (kind, role) => {
-    // The rendezvous window lapses at invitationExpiresAtMs: bound only the invitation-claim wait so an
-    // unclaimed session exits and the supervisor rotates a fresh "current" session, while every later
-    // wait keeps the full session deadline.
-    const boundMs = kind === "agent_v2_invitation_claimed" &&
+    // invitationExpiresAtMs is the mint cutoff, so it bounds only the START of
+    // the claim wait: an unminted session exits and the supervisor rotates a
+    // fresh "current" session. Once the invitation_created message is seen the
+    // wait extends to the minted claim expiry, so a late-window mint still gets
+    // its full responder runway; every later wait keeps the session deadline.
+    const isClaimWait = kind === "agent_v2_invitation_claimed";
+    const boundMs = isClaimWait &&
       Number.isSafeInteger(session.invitationExpiresAtMs)
       ? Math.min(session.sessionDeadlineMs, session.invitationExpiresAtMs)
       : session.sessionDeadlineMs;
@@ -169,6 +220,7 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
       buffer,
       budgetMs: Math.max(0, boundMs - Date.now()),
       expectedBindings: null,
+      extendDeadline: isClaimWait ? extendClaimDeadline : null,
       kind,
       relayClient,
       relayUrl: session.relayUrl,
@@ -374,10 +426,14 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
         body.externalBusinessActionPerformed !== false
       ) throw new Error("AGENT_HANDSHAKE_V2_INVITATION_CLAIM_INVALID");
       const claimedAtMs = Number(body.claimedAtMs);
+      // The minted claim window is authoritative: a claim is in-window when it
+      // lands before the expiry that mint published on invitation_created, not
+      // the session's invitationExpiresAtMs (that is only the mint cutoff).
+      const claimDeadlineMs = mintedClaimExpMs ?? session.invitationExpiresAtMs;
       if (
         !Number.isSafeInteger(claimedAtMs) ||
         claimedAtMs < session.sessionOpenedAtMs ||
-        claimedAtMs >= session.invitationExpiresAtMs
+        claimedAtMs >= claimDeadlineMs
       ) throw new Error("AGENT_HANDSHAKE_V2_INVITATION_CLAIM_INVALID");
       await monitor.invitationClaimed(claimedAtMs);
       return claimedAtMs;

@@ -130,7 +130,7 @@ function rotationPorts(session, pollMessages) {
     ...session,
   }, {
     fundingBudget: { reserve: async () => {} },
-    monitor: {},
+    monitor: { invitationClaimed: async () => {} },
     publicClient: {},
     relayClient: {
       generateEnvelopeKeyPair: () => ({}),
@@ -181,6 +181,126 @@ test("an already-expired invitation window rejects the claim wait without pollin
     (error) => error?.name === "SessionEnded" && error?.code === "EXPIRED",
   );
   assert.equal(polls, 0);
+});
+
+test("an observed mint extends the claim wait to the minted expiry", async () => {
+  const opened = Date.now();
+  // The mint cutoff lapses at +300ms, but the mint published a mint-relative
+  // claim expiry at +1500ms: the host must keep observing and accept a claim
+  // that lands at +1200ms — inside the minted window, past the mint cutoff.
+  const claimExpMs = opened + 1_500;
+  const ports = await rotationPorts(
+    {
+      sessionOpenedAtMs: opened,
+      invitationExpiresAtMs: opened + 300,
+      sessionDeadlineMs: opened + 5_000,
+    },
+    async () => ({
+      messages: [
+        {
+          kind: "agent_v2_invitation_created",
+          role: "initiator",
+          seq: "1",
+          sessionId: SESSION_ID,
+          body: {
+            claimExpiresAtMs: String(claimExpMs),
+            createdAtMs: String(opened + 50),
+            externalBusinessActionPerformed: false,
+          },
+        },
+        ...(Date.now() - opened >= 1_200 ? [{
+          kind: "agent_v2_invitation_claimed",
+          role: "responder",
+          seq: "2",
+          sessionId: SESSION_ID,
+          body: {
+            claimedAtMs: String(opened + 1_200),
+            externalBusinessActionPerformed: false,
+          },
+        }] : []),
+      ],
+    }),
+  );
+  assert.equal(await ports.awaitInvitationClaimed(), opened + 1_200);
+});
+
+test("a mint without claimExpiresAtMs extends the wait by the legacy window", async () => {
+  const opened = Date.now();
+  // Coordinators before claimExpiresAtMs minted mint-relative at +120s (or
+  // pinned to the session window): the host derives the bound from the
+  // message's createdAtMs so a claim past the mint cutoff is still observed.
+  const ports = await rotationPorts(
+    {
+      sessionOpenedAtMs: opened,
+      invitationExpiresAtMs: opened + 300,
+      sessionDeadlineMs: opened + 5_000,
+    },
+    async () => ({
+      messages: [
+        {
+          kind: "agent_v2_invitation_created",
+          role: "initiator",
+          seq: "1",
+          sessionId: SESSION_ID,
+          body: {
+            createdAtMs: String(opened + 50),
+            externalBusinessActionPerformed: false,
+          },
+        },
+        ...(Date.now() - opened >= 600 ? [{
+          kind: "agent_v2_invitation_claimed",
+          role: "responder",
+          seq: "2",
+          sessionId: SESSION_ID,
+          body: {
+            claimedAtMs: String(opened + 600),
+            externalBusinessActionPerformed: false,
+          },
+        }] : []),
+      ],
+    }),
+  );
+  assert.equal(await ports.awaitInvitationClaimed(), opened + 600);
+});
+
+test("a claim stamped past the minted expiry is rejected even when observed", async () => {
+  const opened = Date.now();
+  const ports = await rotationPorts(
+    {
+      sessionOpenedAtMs: opened,
+      invitationExpiresAtMs: opened + 300,
+      sessionDeadlineMs: opened + 5_000,
+    },
+    async () => ({
+      messages: [
+        {
+          kind: "agent_v2_invitation_created",
+          role: "initiator",
+          seq: "1",
+          sessionId: SESSION_ID,
+          body: {
+            claimExpiresAtMs: String(opened + 600),
+            createdAtMs: String(opened + 50),
+            externalBusinessActionPerformed: false,
+          },
+        },
+        ...(Date.now() - opened >= 400 ? [{
+          kind: "agent_v2_invitation_claimed",
+          role: "responder",
+          seq: "2",
+          sessionId: SESSION_ID,
+          body: {
+            claimedAtMs: String(opened + 700),
+            externalBusinessActionPerformed: false,
+          },
+        }] : []),
+      ],
+    }),
+  );
+  await assert.rejects(
+    () => ports.awaitInvitationClaimed(),
+    /AGENT_HANDSHAKE_V2_INVITATION_CLAIM_INVALID/,
+  );
 });
 
 test("waits after the invitation claim keep the full session deadline", async () => {
