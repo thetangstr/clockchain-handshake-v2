@@ -382,6 +382,40 @@ function collectHelperSteps(value, depth, out) {
   }
 }
 
+// Coordinator responses embed runnable shell (shellCommand, the digest-bound
+// shellCommandFetch download-and-exec chain, stateDirectoryCommand) for
+// adapter-less clients. Under the adapter those bytes are staged privately and
+// executed through authorize_local_action, so the agent-visible copy must not
+// carry them: a ready-to-run shell chain inside a tool result is a
+// social-engineering-shaped surface that could induce a less careful agent to
+// bypass the adapter's verification boundary. commandSha256/commandLength stay
+// — they attest to the staged step without being executable.
+const WITHHELD_COMMAND =
+  "[withheld by clockchain-local-adapter: this digest-bound step is staged " +
+  "privately; execute it by calling authorize_local_action]";
+const EXECUTABLE_KEYS = Object.freeze(new Set([
+  "shellCommand", "shellCommandFetch", "stateDirectoryCommand",
+]));
+
+function scrubExecutableFields(value, depth = 0) {
+  if (depth > MAX_WALK_DEPTH || value === null || typeof value !== "object") return false;
+  if (Array.isArray(value)) {
+    let changed = false;
+    for (const entry of value) changed = scrubExecutableFields(entry, depth + 1) || changed;
+    return changed;
+  }
+  let changed = false;
+  for (const key of Object.keys(value)) {
+    if (EXECUTABLE_KEYS.has(key) && typeof value[key] === "string") {
+      value[key] = WITHHELD_COMMAND;
+      changed = true;
+    } else {
+      changed = scrubExecutableFields(value[key], depth + 1) || changed;
+    }
+  }
+  return changed;
+}
+
 // --- upstream proxy -----------------------------------------------------------
 
 function parseUpstreamBody(text, contentType) {
@@ -531,22 +565,30 @@ export function createLocalAdapterServer(options = {}) {
 
   function stageToolResult(result) {
     if (!isPlain(result) || !Array.isArray(result.content)) return;
+    const parsedItems = [];
     const candidates = [];
     for (const item of result.content) {
       if (!isPlain(item) || item.type !== "text" || typeof item.text !== "string") continue;
       let parsed;
       try { parsed = JSON.parse(item.text); } catch { continue; }
+      parsedItems.push({ item, parsed });
       collectHelperSteps(parsed, 0, candidates);
     }
-    for (const candidate of candidates) {
-      const staged = validateHelperStep(candidate, { manifestDigest: pin.manifestDigest });
+    // Validate every candidate before any scrub or enqueue: an invalid step
+    // refuses the whole response, so the withheld copy is never reached.
+    const staged = candidates.map((candidate) =>
+      validateHelperStep(candidate, { manifestDigest: pin.manifestDigest }));
+    for (const step of staged) {
       // The coordinator re-issues an unchanged localAction on each poll while a
       // step stays pending — the same byte-identical command is the same
       // digest-bound action, so an already-staged duplicate must not shift the
       // queue head away from the step the caller just read.
-      if (queue.some((pending) => pending.commandSha256 === staged.commandSha256)) continue;
+      if (queue.some((pending) => pending.commandSha256 === step.commandSha256)) continue;
       if (queue.length >= MAX_STAGED_STEPS) invalid();
-      queue.push(Object.freeze({ ...staged, stagedAtMs: now() }));
+      queue.push(Object.freeze({ ...step, stagedAtMs: now() }));
+    }
+    for (const { item, parsed } of parsedItems) {
+      if (scrubExecutableFields(parsed)) item.text = JSON.stringify(parsed);
     }
   }
 
