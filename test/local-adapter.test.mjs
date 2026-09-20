@@ -6,13 +6,19 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  AGENT_HANDSHAKE_HELPER_NODE_MAJOR,
   AGENT_HANDSHAKE_HELPER_VERSION,
   AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX,
 } from "../src/agent-handshake/v2/constants.mjs";
 import { canonicalBytes } from "../src/core/canonical.mjs";
 import { VERIFIED_HELPER_BOOTSTRAP } from "../src/harness/verified-release-action-recorder.mjs";
 import {
+  isSupportedNodeVersion,
+  unsupportedNodeVersionMessage,
+} from "../src/local-adapter/node-support.mjs";
+import {
   ADAPTER_APPROVAL_TOOL,
+  ADAPTER_RELEASE_MISMATCH_REFUSAL,
   ADAPTER_TOOL,
   createLocalAdapterServer,
   loadPinnedAssets,
@@ -345,6 +351,89 @@ test("rejects malformed steps: approval tool, digests, prefix, suffix, and field
     assert.equal(response.result.content[0].text, REFUSAL);
     assert.equal(server.pendingCount(), 0);
   }
+});
+
+test("a structurally valid step pinned to a different release digest gets the upgrade refusal", async (t) => {
+  const { fixture, make } = await makeContext(t);
+  const wrongDigest = "0".repeat(64);
+  assert.notEqual(wrongDigest, fixture.pin.manifestDigest);
+  // helperStep() recomputes commandLength/commandSha256 over the command it
+  // builds, so every field is self-consistent — only the embedded release
+  // pin differs from what this adapter vendors. That is exactly what a step
+  // minted against a newer release (different manifestDigest, helper version,
+  // or allowedAssetPrefix) looks like on the wire.
+  for (const step of [
+    helperStep({ manifestDigest: wrongDigest }),
+    helperStep({
+      manifestDigest: wrongDigest,
+      operation: "sign",
+      payload: b64u(signingRequestRecord()),
+    }),
+  ]) {
+    const server = make({
+      fetchImpl: upstreamResult(rpcResult({ localAction: { helperStep: step } })),
+    });
+    const response = await call(server, 1, "agent_handshake_next", {});
+    assert.equal(response.result.isError, true);
+    assert.equal(response.result.content[0].text, ADAPTER_RELEASE_MISMATCH_REFUSAL);
+    assert.match(response.result.content[0].text, /npx -y @clockchain\/local-adapter@latest/);
+    assert.match(response.result.content[0].text, /must not be bypassed/);
+    assert.equal(server.pendingCount(), 0);
+  }
+});
+
+test("a malformed step still gets the generic refusal even with a wrong digest", async (t) => {
+  const { make } = await makeContext(t);
+  const wrongDigest = "0".repeat(64);
+  const wrongDigestStep = helperStep({ manifestDigest: wrongDigest });
+  const mutations = [
+    // field/suffix disagreement stays generic even though the digest differs
+    { ...wrongDigestStep, sessionId: "99999999-2222-4333-8444-555555555555" },
+    { ...wrongDigestStep, role: "responder" },
+    { ...wrongDigestStep, operation: "inspect" },
+    // a digest slot that is not a sha256 at all
+    helperStep({ manifestDigest: "not-a-digest" }),
+    // wrong digest plus a suffix that fails the grammar
+    (() => {
+      const step = helperStep({ manifestDigest: wrongDigest });
+      const shellCommand = `${step.shellCommand} --extra flag`;
+      return {
+        ...step,
+        shellCommand,
+        commandLength: Buffer.byteLength(shellCommand),
+        commandSha256: sha256(shellCommand),
+      };
+    })(),
+  ];
+  for (const mutation of mutations) {
+    const server = make({
+      fetchImpl: upstreamResult(rpcResult({ localAction: { helperStep: mutation } })),
+    });
+    const response = await call(server, 1, "agent_handshake_status", {});
+    assert.equal(response.result.isError, true, JSON.stringify(mutation));
+    assert.equal(response.result.content[0].text, REFUSAL);
+    assert.doesNotMatch(response.result.content[0].text, /upgrade|npx|local-adapter@latest/);
+    assert.equal(server.pendingCount(), 0);
+  }
+});
+
+test("Node version preflight: only >= the required major is supported", () => {
+  const required = Number.parseInt(AGENT_HANDSHAKE_HELPER_NODE_MAJOR, 10);
+  assert.equal(isSupportedNodeVersion(required), true);
+  assert.equal(isSupportedNodeVersion(String(required)), true);
+  assert.equal(isSupportedNodeVersion(`${required}.0.0`), true);
+  assert.equal(isSupportedNodeVersion(required + 1), true);
+  assert.equal(isSupportedNodeVersion(required - 1), false);
+  assert.equal(isSupportedNodeVersion(`${required - 1}.9.9`), false);
+  assert.equal(isSupportedNodeVersion("22.23.1"), false);
+  // Unparseable input fails closed.
+  for (const bad of ["garbage", "", undefined, null, NaN]) {
+    assert.equal(isSupportedNodeVersion(bad), false, String(bad));
+  }
+  const message = unsupportedNodeVersionMessage("22.23.1");
+  assert.match(message, /requires Node\.js >= 24 \(found v22\.23\.1\)/);
+  assert.match(message, /https:\/\/nodejs\.org/);
+  assert.match(message, /nvm\/fnm\/volta/);
 });
 
 test("payload rules: required for policy/sign/verify-certificate, forbidden otherwise", async (t) => {

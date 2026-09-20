@@ -13,7 +13,11 @@
 // runtime download, no eval of remote bytes, no model transcription.
 //
 // Every failure is fail-closed with the same generic refusal: the adapter
-// never distinguishes WHICH check a candidate step failed.
+// never distinguishes WHICH check a candidate step failed — with a single
+// exception. A step that passes every structural check but is pinned to a
+// different release digest is refused with the upgrade-directed
+// ADAPTER_RELEASE_MISMATCH_REFUSAL instead, because "your adapter is behind"
+// is actionable where a bare refusal is not.
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -56,6 +60,17 @@ const BASE64URL = /^[A-Za-z0-9_-]+$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const NODE_RUNTIME = new RegExp(`^${AGENT_HANDSHAKE_HELPER_NODE_MAJOR}\\.[0-9]+\\.[0-9]+$`);
 const HELPER_ERROR_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
+
+// A structurally valid step pinned to a different release digest means the
+// coordinator has moved to a helper release this adapter does not vendor —
+// or the step is corrupt/forged. Fail closed either way, but unlike every
+// other refusal this one names the recovery path.
+export const ADAPTER_RELEASE_MISMATCH_REFUSAL =
+  "clockchain-local-adapter is behind the coordinator's required helper " +
+  "release — upgrade with: npx -y @clockchain/local-adapter@latest, then " +
+  "restart your MCP client. If the adapter is already current, the step is " +
+  "pinned to a different release — a mismatch that must not be bypassed.";
+const GENERIC_REFUSAL = "Clockchain local adapter refused the action.";
 
 const OPERATIONS = Object.freeze(["init", "policy", "inspect", "register", "sign", "verify-certificate"]);
 const PAYLOAD_OPERATIONS = Object.freeze(["policy", "sign", "verify-certificate"]);
@@ -120,7 +135,11 @@ const ADAPTER_TOOL_DEFINITION = Object.freeze({
 });
 
 function invalid() {
-  throw new Error("Clockchain local adapter refused the action.");
+  throw new Error(GENERIC_REFUSAL);
+}
+
+function releaseMismatch() {
+  throw new Error(ADAPTER_RELEASE_MISMATCH_REFUSAL);
 }
 
 function isPlain(value) {
@@ -306,11 +325,13 @@ export function validateHelperStep(step, { manifestDigest } = {}) {
     (item.shellCommandFetch !== undefined && typeof item.shellCommandFetch !== "string") ||
     (item.policyDigest !== undefined && !SHA256.test(item.policyDigest))
   ) invalid();
-  const prefix =
-    `node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' ` +
-    `${manifestDigest} ./${MANIFEST_FILENAME} ./${HELPER_FILENAME} `;
-  if (!shellCommand.startsWith(prefix)) invalid();
-  const suffix = shellCommand.slice(prefix.length);
+  const lead = `node --input-type=commonjs --eval '${VERIFIED_HELPER_BOOTSTRAP}' `;
+  const assetArgs = ` ./${MANIFEST_FILENAME} ./${HELPER_FILENAME} `;
+  if (!shellCommand.startsWith(lead)) invalid();
+  const pinned = shellCommand.slice(lead.length);
+  const stepDigest = pinned.slice(0, 64);
+  if (!SHA256.test(stepDigest) || !pinned.slice(64).startsWith(assetArgs)) invalid();
+  const suffix = pinned.slice(64 + assetArgs.length);
   const match = SUFFIX_PATTERN.exec(suffix);
   if (
     match === null || match[1] !== item.operation ||
@@ -331,6 +352,13 @@ export function validateHelperStep(step, { manifestDigest } = {}) {
   // policyDigest may bind only where the payload can carry it; an unverifiable
   // claim on a payload-less or digest-less step fails closed.
   if (staged.policyDigest !== null && !["policy", "sign"].includes(staged.operation)) invalid();
+  // Every structural check has passed, so a differing embedded digest means
+  // the step was minted against a different release pin — a different
+  // manifestDigest, helper version, or allowedAssetPrefix all surface here.
+  // Refuse as always, but with the distinct upgrade-directed text: it may be
+  // an adapter that is behind, or a corrupt/forged step, and the message
+  // covers both.
+  if (stepDigest !== manifestDigest) releaseMismatch();
   if (encoded !== undefined) validatePayloadBinding(staged, encoded);
   return staged;
 }
@@ -569,7 +597,10 @@ export function createLocalAdapterServer(options = {}) {
     if (step.payloadBase64url !== null) args.push("--payload-base64url", step.payloadBase64url);
     const outcome = await runHelper({
       args: Object.freeze(args),
-      file: process.execPath,
+      // The helper must run under real Node >=24. process.execPath is that
+      // Node under the stdio entry; under a compiled binary (e.g. bun) it is
+      // the adapter itself, so an explicit override exists.
+      file: process.env.CLOCKCHAIN_LOCAL_ADAPTER_NODE ?? process.execPath,
       maxBufferBytes: HELPER_MAX_OUTPUT_BYTES,
       timeoutMs: HELPER_RUN_BUDGET_MS,
     });
@@ -601,7 +632,7 @@ export function createLocalAdapterServer(options = {}) {
     try {
       return { result: await run };
     } catch {
-      return { result: textResult("Clockchain local adapter refused the action.", true) };
+      return { result: textResult(GENERIC_REFUSAL, true) };
     }
   }
 
@@ -647,11 +678,18 @@ export function createLocalAdapterServer(options = {}) {
     if (envelope.error !== undefined) return { jsonrpc: "2.0", id, error: envelope.error };
     try {
       stageToolResult(envelope.result);
-    } catch {
+    } catch (error) {
+      // The only refusal text allowed past this boundary besides the generic
+      // one is the release-mismatch upgrade hint — arbitrary error messages
+      // never leak upstream internals.
+      const text =
+        typeof error?.message === "string" && error.message === ADAPTER_RELEASE_MISMATCH_REFUSAL
+          ? ADAPTER_RELEASE_MISMATCH_REFUSAL
+          : GENERIC_REFUSAL;
       return {
         jsonrpc: "2.0",
         id,
-        result: textResult("Clockchain local adapter refused the action.", true),
+        result: textResult(text, true),
       };
     }
     return { jsonrpc: "2.0", id, result: envelope.result };

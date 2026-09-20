@@ -16,6 +16,12 @@ local action becomes a single zero-input MCP tool call.
 
 ## Install
 
+> **Prerequisite: Node.js >= 24.** The adapter enforces this at startup —
+> on an older runtime it prints an actionable error to stderr and exits
+> before serving a single message. Install Node 24+ from
+> <https://nodejs.org> or via your version manager (nvm/fnm/volta), then
+> restart your MCP client.
+
 Claude Code / Claude Desktop:
 
 ```bash
@@ -50,10 +56,48 @@ node <path>/index.mjs          # bundled package layout: assets/ beside index.mj
 node bin/clockchain-local-adapter.mjs   # repo layout
 ```
 
-Requires Node 24.x. The asset directory can be overridden with
+Requires Node 24.x (the pinned helper refuses under any other major — see
+the prerequisite above). The asset directory can be overridden with
 `CLOCKCHAIN_LOCAL_ADAPTER_ASSETS` (a directory containing `pin.json`,
-`manifest.json`, and `clockchain-agent-handshake.cjs`), and the upstream
-endpoint with `CLOCKCHAIN_LOCAL_ADAPTER_ENDPOINT` (used by tests).
+`manifest.json`, and `clockchain-agent-handshake.cjs`), the upstream
+endpoint with `CLOCKCHAIN_LOCAL_ADAPTER_ENDPOINT` (used by tests), and the
+Node executable that runs the pinned helper with
+`CLOCKCHAIN_LOCAL_ADAPTER_NODE` (defaults to `process.execPath`; needed
+only for single-file compiled builds, where `process.execPath` is the
+adapter binary itself).
+
+## Upgrading
+
+The adapter vendors one pinned helper release. When the coordinator moves
+to a newer release, a staged step minted against it fails validation and the
+adapter refuses with an upgrade-directed message instead of the generic
+refusal:
+
+> `clockchain-local-adapter is behind the coordinator's required helper
+> release — upgrade with: npx -y @clockchain/local-adapter@latest, then
+> restart your MCP client. …`
+
+Upgrade with:
+
+```bash
+npx -y @clockchain/local-adapter@latest
+```
+
+then restart your MCP client. If the adapter is already current and you
+still see that message, the step is pinned to a different release — a
+mismatch that must not be bypassed.
+
+## Single-file binaries (experimental)
+
+`npm run local-adapter:bin:build` (or
+`node scripts/build-local-adapter-binaries.mjs [target …]`) compiles the
+verified npm bundle into a standalone executable via `bun build --compile`
+into `dist/bin-local-adapter/`, alongside a shared `assets/` directory that
+must ship beside the binary — the adapter resolves `assets/` relative to
+its own executable path (and `CLOCKCHAIN_LOCAL_ADAPTER_ASSETS` still wins).
+Proxying and staging work fully; `authorize_local_action` still requires a
+real Node >=24 for the pinned helper spawn, pointed at via
+`CLOCKCHAIN_LOCAL_ADAPTER_NODE`.
 
 ## What it does
 
@@ -95,7 +139,9 @@ endpoint with `CLOCKCHAIN_LOCAL_ADAPTER_ENDPOINT` (used by tests).
   no command, path, digest, or payload ever crosses the model boundary.
 - Every refusal is the same generic
   `Clockchain local adapter refused the action.`; the adapter never reports
-  which check failed.
+  which check failed. The single exception is a structurally valid step
+  pinned to a different release digest, which gets the upgrade-directed
+  refusal described in Upgrading — still fail-closed, but actionable.
 
 ## Why not the shellCommand fallback
 

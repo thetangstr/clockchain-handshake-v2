@@ -19,6 +19,8 @@
     "agent-cli:sea": "node scripts/build-agent-handshake-release.mjs sea dist/clockchain-agent-handshake",
     "agent-cli:npm:build": "node scripts/build-agent-handshake-npm.mjs",
     "local-adapter:npm:build": "node scripts/build-local-adapter-npm.mjs",
+    "local-adapter:mcpb:build": "node scripts/build-local-adapter-mcpb.mjs",
+    "local-adapter:bin:build": "node scripts/build-local-adapter-binaries.mjs",
     "agent-cli:release:verify": "node --test test/agent-cli-release.test.mjs test/agent-cli-clean-platform.test.mjs",
     "test": "node --test --test-concurrency=4 test/*.test.mjs",
     "verify": "npm run test && bash scripts/check-invariants.sh",

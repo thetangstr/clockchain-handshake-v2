@@ -5,7 +5,7 @@
 // validateAgentHandshakeReleasePin before anything is written. This download
 // is the packager's install-time acquisition — the published package ships
 // the verified bytes so the runtime never fetches executable code.
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -20,7 +20,9 @@ import { validateAgentHandshakeReleasePin } from "./verify-agent-handshake-relea
 const ROOT = new URL("..", import.meta.url).pathname;
 const ENTRY = new URL("../bin/clockchain-local-adapter.mjs", import.meta.url).pathname;
 const PIN_PATH = new URL("../release/agent-handshake/pin.json", import.meta.url);
+const PACKAGING_DIR = new URL("../packaging/local-adapter/", import.meta.url).pathname;
 const HELPER_FILENAME = "clockchain-agent-handshake.cjs";
+const LEGAL_FILES = ["LICENSE", "NOTICE", "THIRD-PARTY-NOTICES"];
 
 function invalid() { throw new Error("Local adapter npm build failed."); }
 
@@ -65,12 +67,20 @@ export async function buildLocalAdapterNpm({ outDir, fetchImpl = defaultFetchAss
     name: "@clockchain/local-adapter",
     version: AGENT_HANDSHAKE_HELPER_VERSION,
     description: "Pre-installed local executor for Clockchain agent-handshake localActions: proxies the hosted handshake tools and runs each staged digest-bound helper step through the pinned local helper — no runtime download, no eval of remote bytes.",
-    license: "UNLICENSED",
+    license: "Apache-2.0",
+    author: "D4D Group",
     type: "module",
     bin: { "clockchain-local-adapter": "index.mjs" },
     engines: { node: `>=${AGENT_HANDSHAKE_HELPER_NODE_MAJOR}` },
-    files: ["index.mjs", "assets"],
+    files: ["index.mjs", "assets", "LICENSE", "NOTICE", "THIRD-PARTY-NOTICES"],
   }, null, 2)}\n`, { mode: 0o644 });
+  for (const legalFile of LEGAL_FILES) {
+    try {
+      await copyFile(join(PACKAGING_DIR, legalFile), join(directory, legalFile));
+    } catch {
+      invalid();
+    }
+  }
   return Object.freeze({ outDir: directory, version: AGENT_HANDSHAKE_HELPER_VERSION });
 }
 
