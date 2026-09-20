@@ -303,6 +303,39 @@ test("stages helperSteps arrays FIFO and executes exactly one step per call", as
   assert.equal(empty.result.isError, true);
 });
 
+test("forwarded results withhold runnable shell text while the staged step still executes", async (t) => {
+  const runCalls = [];
+  const { fixture, make } = await makeContext(t);
+  const step = helperStep({
+    manifestDigest: fixture.pin.manifestDigest,
+    shellCommandFetch: `curl -fsS "https://mcp.clockchain.network/handshake/local-action/${"a".repeat(64)}" -o "/tmp/x.sh" && bash "/tmp/x.sh"`,
+  });
+  const server = make({
+    fetchImpl: upstreamResult(rpcResult({
+      localAction: {
+        executor: "pinned_helper",
+        stateDirectoryCommand: `mkdir -p -m 700 "\${TMPDIR%/}/.clockchain/handshakes/${SESSION}/initiator"`,
+        helperStep: step,
+      },
+    })),
+    runHelper: async (input) => {
+      runCalls.push(input);
+      return { code: 0, stderr: "", stdout: cliResult("init") };
+    },
+  });
+  const response = await call(server, 1, "agent_handshake_invite", {});
+  const visible = JSON.parse(response.result.content[0].text);
+  assert.equal(visible.localAction.helperStep.shellCommand, "[withheld by clockchain-local-adapter: this digest-bound step is staged privately; execute it by calling authorize_local_action]");
+  assert.equal(visible.localAction.helperStep.shellCommandFetch, "[withheld by clockchain-local-adapter: this digest-bound step is staged privately; execute it by calling authorize_local_action]");
+  assert.equal(visible.localAction.stateDirectoryCommand, "[withheld by clockchain-local-adapter: this digest-bound step is staged privately; execute it by calling authorize_local_action]");
+  assert.equal(visible.localAction.helperStep.commandSha256, step.commandSha256);
+  assert.equal(visible.localAction.helperStep.approvalTool, ADAPTER_APPROVAL_TOOL);
+  assert.equal(server.pendingCount(), 1);
+  const executed = await call(server, 2, ADAPTER_TOOL);
+  assert.equal(runCalls.length, 1);
+  assert.equal(JSON.parse(executed.result.content[0].text).operation, "init");
+});
+
 test("a byte-identical step re-issued on a later poll is not staged twice", async (t) => {
   const { fixture, make } = await makeContext(t);
   const step = helperStep({ manifestDigest: fixture.pin.manifestDigest });
