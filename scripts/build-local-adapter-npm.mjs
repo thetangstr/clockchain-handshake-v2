@@ -64,7 +64,7 @@ export async function buildLocalAdapterNpm({ outDir, fetchImpl = defaultFetchAss
   await writeFile(join(assetsDir, HELPER_FILENAME), helperBytes, { mode: 0o644 });
   await writeFile(join(assetsDir, "pin.json"), `${JSON.stringify(pin, null, 2)}\n`, { mode: 0o644 });
   await writeFile(join(directory, "package.json"), `${JSON.stringify({
-    name: "@d4d/local-adapter",
+    name: "@d4d.group/local-adapter",
     version: AGENT_HANDSHAKE_HELPER_VERSION,
     description: "Pre-installed local executor for Clockchain agent-handshake localActions: proxies the hosted handshake tools and runs each staged digest-bound helper step through the pinned local helper — no runtime download, no eval of remote bytes.",
     license: "Apache-2.0",

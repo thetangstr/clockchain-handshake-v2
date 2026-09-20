@@ -25,7 +25,7 @@ local action becomes a single zero-input MCP tool call.
 Claude Code / Claude Desktop:
 
 ```bash
-claude mcp add clockchain-local-adapter -- npx -y @d4d/local-adapter
+claude mcp add clockchain-local-adapter -- npx -y @d4d.group/local-adapter
 ```
 
 Codex (`~/.codex/config.toml`):
@@ -33,7 +33,7 @@ Codex (`~/.codex/config.toml`):
 ```toml
 [mcp_servers.clockchain-local-adapter]
 command = "npx"
-args = ["-y", "@d4d/local-adapter"]
+args = ["-y", "@d4d.group/local-adapter"]
 ```
 
 Generic MCP client configuration:
@@ -43,7 +43,7 @@ Generic MCP client configuration:
   "mcpServers": {
     "clockchain-local-adapter": {
       "command": "npx",
-      "args": ["-y", "@d4d/local-adapter"]
+      "args": ["-y", "@d4d.group/local-adapter"]
     }
   }
 }
@@ -74,13 +74,13 @@ adapter refuses with an upgrade-directed message instead of the generic
 refusal:
 
 > `clockchain-local-adapter is behind the coordinator's required helper
-> release — upgrade with: npx -y @d4d/local-adapter@latest, then
+> release — upgrade with: npx -y @d4d.group/local-adapter@latest, then
 > restart your MCP client. …`
 
 Upgrade with:
 
 ```bash
-npx -y @d4d/local-adapter@latest
+npx -y @d4d.group/local-adapter@latest
 ```
 
 then restart your MCP client. If the adapter is already current and you
