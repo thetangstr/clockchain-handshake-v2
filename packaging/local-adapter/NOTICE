@@ -1,0 +1,12 @@
+Clockchain Local Adapter
+Copyright 2026 D4D Group
+
+This product includes software developed by D4D Group.
+
+This distribution bundles the Clockchain agent-handshake helper
+(clockchain-agent-handshake.cjs) under assets/. The helper is acquired
+and digest-pinned at install time: its bytes are verified against the
+release pin (assets/pin.json) and manifest (assets/manifest.json) before
+it is ever executed, and the published package ships those verified bytes
+so no executable code is fetched at runtime. Third-party components
+embedded in the bundled helper are listed in THIRD-PARTY-NOTICES.

@@ -17,3 +17,6 @@ keys/
 config/secrets.json
 .context/
 *.secret.json
+
+# Build output (npm pack staging)
+dist/
