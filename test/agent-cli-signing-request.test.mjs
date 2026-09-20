@@ -4,7 +4,7 @@ import test from "node:test";
 import { gzipSync } from "node:zlib";
 
 import { executeAgentSigningRequest, isSigningWindowExpired, SIGNING_WINDOW_EXPIRED_MESSAGE } from "../src/agent-cli/signing-request.mjs";
-import { canonicalBytes } from "../src/core/canonical.mjs";
+import { canonicalBytes, digestHex } from "../src/core/canonical.mjs";
 import {
   agentHandshakeV2DescriptorDigest,
   createAgentHandshakeV2DescriptorEnvelope,
@@ -30,7 +30,7 @@ function evidenceRequest(fixture, overrides = {}) {
 
 test("signs exact decompressed canonical bytes only after every local binding passes", async () => {
   const fixture = await buildAgentCliFixture();
-  let calls = 0;
+  const checkpointSigns = [];
   const result = await executeAgentSigningRequest({
     address: fixture.parties.initiator.sessionKeyAddress,
     localPolicy: fixture.policy,
@@ -38,7 +38,14 @@ test("signs exact decompressed canonical bytes only after every local binding pa
     request: fixture.request,
     rootKeyRing: fixture.rootKeyRing,
     sign: async (input) => {
-      calls += 1;
+      if (input.bytesHex) {
+        checkpointSigns.push(input.bytesHex);
+        return {
+          address: fixture.parties.initiator.sessionKeyAddress,
+          bytesSha256: createHash("sha256").update(Buffer.from(input.bytesHex.slice(2), "hex")).digest("hex"),
+          signatureHex: "0x" + "2".repeat(130),
+        };
+      }
       assert.equal(input.bytesGzipBase64Url, fixture.request.bytesGzipBase64Url);
       return {
         address: fixture.parties.initiator.sessionKeyAddress,
@@ -47,8 +54,73 @@ test("signs exact decompressed canonical bytes only after every local binding pa
       };
     },
   });
-  assert.equal(calls, 1);
+  assert.equal(checkpointSigns.length, 1);
   assert.equal(result.bytesSha256, fixture.request.bytesSha256);
+  // The same sign step emits the commitment checkpoint the server requires
+  // before submit: sequence 1 for a proposal, no predecessor, bound to the
+  // artifact envelope digest.
+  const checkpoint = result.checkpoint;
+  assert.equal(checkpoint.artifactType, "proposal");
+  assert.equal(checkpoint.sequence, "1");
+  assert.equal(checkpoint.previousCheckpointDigest, null);
+  assert.equal(checkpoint.signerAddress, fixture.parties.initiator.sessionKeyAddress);
+  assert.equal(checkpoint.signature.value, "0x" + "2".repeat(130));
+  assert.equal(
+    checkpoint.artifactDigest,
+    digestHex({
+      payload: fixture.proposalEnvelope.payload,
+      schema: "clockchain.agent-handshake-proposal-envelope/v2",
+      signature: { address: fixture.parties.initiator.sessionKeyAddress, algorithm: "eip191", value: result.signatureHex },
+    }),
+  );
+  assert.equal(
+    Buffer.from(checkpointSigns[0].slice(2), "hex").toString("utf8"),
+    JSON.stringify(Object.fromEntries(Object.entries({ ...checkpoint, signature: undefined }).filter(([, v]) => v !== undefined).sort(([a], [b]) => a < b ? -1 : 1))),
+  );
+});
+
+test("acceptance sign emits a sequence-2 checkpoint chained to the proposal digest", async () => {
+  const fixture = await buildAgentCliFixture("responder");
+  const result = await executeAgentSigningRequest({
+    address: fixture.parties.responder.sessionKeyAddress,
+    localPolicy: fixture.policy,
+    nowMs: fixture.nowMs,
+    request: fixture.request,
+    rootKeyRing: fixture.rootKeyRing,
+    sign: async (input) => ({
+      address: fixture.parties.responder.sessionKeyAddress,
+      bytesSha256: input.bytesHex
+        ? createHash("sha256").update(Buffer.from(input.bytesHex.slice(2), "hex")).digest("hex")
+        : fixture.request.bytesSha256,
+      signatureHex: "0x" + "3".repeat(130),
+    }),
+  });
+  assert.equal(result.checkpoint.artifactType, "acceptance");
+  assert.equal(result.checkpoint.sequence, "2");
+  assert.equal(result.checkpoint.previousCheckpointDigest, fixture.request.previousCheckpointDigest);
+  assert.equal(result.checkpoint.role, "responder");
+});
+
+test("previousCheckpointDigest is bound to the operation: null unless acceptance, digest when acceptance", async () => {
+  const initiator = await buildAgentCliFixture("initiator");
+  const responder = await buildAgentCliFixture("responder");
+  const neverSign = async () => { throw new Error("unreachable"); };
+  const run = (fixture, request) => executeAgentSigningRequest({
+    address: fixture.parties[fixture.request.role].sessionKeyAddress,
+    localPolicy: fixture.policy,
+    nowMs: fixture.nowMs,
+    request,
+    rootKeyRing: fixture.rootKeyRing,
+    sign: neverSign,
+  });
+  // Proposal with a digest, or the key missing entirely, fails before signing.
+  await assert.rejects(() => run(initiator, { ...initiator.request, previousCheckpointDigest: "c".repeat(64) }));
+  const missing = { ...initiator.request };
+  delete missing.previousCheckpointDigest;
+  await assert.rejects(() => run(initiator, missing));
+  // Acceptance without the proposal checkpoint link fails before signing.
+  await assert.rejects(() => run(responder, { ...responder.request, previousCheckpointDigest: null }));
+  await assert.rejects(() => run(responder, { ...responder.request, previousCheckpointDigest: "not-a-digest" }));
 });
 
 test("never reaches the signer for policy, trust, schema, operation, role, session, bytes, or action drift", async () => {

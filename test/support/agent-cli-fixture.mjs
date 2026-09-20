@@ -25,7 +25,7 @@ export async function buildAgentCliFixture(role = "initiator") {
     policy,
     request: {
       schema: "clockchain.agent-handshake-signing-request/v1",
-      helperVersion: "2.1.7",
+      helperVersion: "2.1.8",
       operation: role === "initiator" ? "proposal" : "acceptance",
       role,
       sessionId: SESSION_ID,
@@ -34,6 +34,7 @@ export async function buildAgentCliFixture(role = "initiator") {
       hostSessionKeyCertificate: fixture.hostSessionKeyCertificate,
       terms: TERMS,
       policyDigest: fixture.parties[role].policyDigest,
+      previousCheckpointDigest: role === "initiator" ? null : "c".repeat(64),
       descriptorEnvelope: null,
       bytesGzipBase64Url: gzipSync(bytes).toString("base64url"),
       bytesSha256: createHash("sha256").update(bytes).digest("hex"),

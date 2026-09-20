@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,7 +38,10 @@ test("dispatcher exposes exactly init, policy, inspect, register, sign, and veri
     }),
     signExactBytes: async (input) => {
       calls.push(input);
-      return { address, bytesSha256: fixture.request.bytesSha256, signatureHex: "0x" + "1".repeat(130) };
+      const bytesSha256 = input.bytesHex
+        ? createHash("sha256").update(Buffer.from(input.bytesHex.slice(2), "hex")).digest("hex")
+        : fixture.request.bytesSha256;
+      return { address, bytesSha256, signatureHex: "0x" + "1".repeat(130) };
     },
   };
   const operations = createAgentCliOperations({ bridge, now: () => fixture.nowMs, rootKeyRing: fixture.rootKeyRing });
@@ -52,7 +56,7 @@ test("dispatcher exposes exactly init, policy, inspect, register, sign, and veri
     stateDir,
     payload: {
       schema: "clockchain.agent-handshake-certificate-verification/v1",
-      helperVersion: "2.1.7",
+      helperVersion: "2.1.8",
       role: "initiator",
       sessionId: fixture.request.sessionId,
       repositorySha: fixture.request.repositorySha,
@@ -63,7 +67,10 @@ test("dispatcher exposes exactly init, policy, inspect, register, sign, and veri
   });
   assert.equal(verified.certificateVerified, true);
   await assert.rejects(() => operations.dispatch({ operation: "shell", stateDir }));
-  assert.equal(calls.length, 1);
+  // One sign call for the artifact envelope, one for the commitment checkpoint.
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].bytesGzipBase64Url, fixture.request.bytesGzipBase64Url);
+  assert.match(calls[1].bytesHex, /^0x[0-9a-f]+$/);
 });
 
 test("dispatch normalizes redundant separators in stateDir before the private-path guard", async (t) => {

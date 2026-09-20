@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import { types } from "node:util";
 
-import { canonicalBytes } from "../core/canonical.mjs";
+import { canonicalBytes, digestHex } from "../core/canonical.mjs";
+import {
+  commitmentCheckpointSigningBytes,
+  normalizeV2CommitmentCheckpoint,
+} from "../agent-handshake/v2/commitment-checkpoint.mjs";
 import { decodeSigningBytes } from "../core/wallet-bridge.mjs";
 import { validateLocalPolicy, localPolicyDigest } from "../agent-handshake/v2/policy.mjs";
 import {
@@ -27,8 +31,8 @@ export const AGENT_SIGNING_REQUEST_SCHEMA = "clockchain.agent-handshake-signing-
 const REQUEST_KEYS = Object.freeze([
   "schema", "helperVersion", "operation", "role", "sessionId", "repositorySha",
   "sessionDeadlineMs", "hostSessionKeyCertificate", "terms", "policyDigest",
-  "descriptorEnvelope", "bytesGzipBase64Url", "bytesSha256",
-  "externalBusinessActionPerformed",
+  "previousCheckpointDigest", "descriptorEnvelope", "bytesGzipBase64Url",
+  "bytesSha256", "externalBusinessActionPerformed",
 ]);
 const OPERATIONS = Object.freeze(["identity_claim", "proposal", "acceptance", "evidence"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -140,6 +144,9 @@ export function validateAgentSigningRequest({ address, localPolicy, nowMs, reque
     terms.reference !== policy.reference ||
     terms.validForSeconds !== policy.maxValidForSeconds ||
     !same(terms.identityPolicy, policy.identityPolicy) ||
+    !(request.previousCheckpointDigest === null || DIGEST.test(request.previousCheckpointDigest)) ||
+    request.operation === "acceptance" && request.previousCheckpointDigest === null ||
+    request.operation !== "acceptance" && request.previousCheckpointDigest !== null ||
     !Number.isSafeInteger(nowMs)
   ) invalid();
   if (nowMs >= Number(request.sessionDeadlineMs)) expired();
@@ -204,9 +211,55 @@ export async function executeAgentSigningRequest(options) {
     result?.bytesSha256 !== verified.bytesSha256 ||
     !SIGNATURE.test(result?.signatureHex)
   ) invalid();
+  // Proposal and acceptance submissions require a commitment checkpoint — its
+  // own EIP-191 signature over the checkpoint bytes — released before the
+  // artifact signature is submitted. Portable clients have no adapter to
+  // produce it, so the same sign step emits it: the artifact signature just
+  // created is exactly what the checkpoint binds via artifactDigest.
+  let checkpoint = null;
+  if (verified.payload && (options.request.operation === "proposal" || options.request.operation === "acceptance")) {
+    const request = options.request;
+    const envelope = {
+      payload: verified.payload,
+      schema: `clockchain.agent-handshake-${request.operation}-envelope/v2`,
+      signature: { address: options.address, algorithm: "eip191", value: result.signatureHex },
+    };
+    const issuedAtMs = options.nowMs;
+    const expiresAtMs = Math.min(
+      issuedAtMs + Number(options.localPolicy.maxValidForSeconds) * 1000,
+      Number(request.sessionDeadlineMs),
+    );
+    const unsigned = {
+      schema: "clockchain.agent-handshake-commitment-checkpoint/v1",
+      version: "1",
+      protocol: "clockchain.agent-handshake/v2",
+      sessionId: request.sessionId,
+      role: request.role,
+      artifactType: request.operation,
+      artifactDigest: digestHex(envelope),
+      sequence: request.operation === "proposal" ? "1" : "2",
+      previousCheckpointDigest: request.previousCheckpointDigest,
+      issuedAtMs: String(issuedAtMs),
+      expiresAtMs: String(expiresAtMs),
+      signerAddress: options.address,
+    };
+    let signingBytes;
+    try { signingBytes = commitmentCheckpointSigningBytes({ ...unsigned, signature: { address: options.address, algorithm: "eip191", value: result.signatureHex } }); } catch { invalid(); }
+    let checkpointSign;
+    try { checkpointSign = await options.sign({ bytesHex: `0x${signingBytes.toString("hex")}` }); } catch { invalid(); }
+    if (
+      checkpointSign?.address?.toLowerCase() !== options.address ||
+      checkpointSign?.bytesSha256 !== createHash("sha256").update(signingBytes).digest("hex") ||
+      !SIGNATURE.test(checkpointSign?.signatureHex)
+    ) invalid();
+    try {
+      checkpoint = normalizeV2CommitmentCheckpoint({ ...unsigned, signature: { address: options.address, algorithm: "eip191", value: checkpointSign.signatureHex } });
+    } catch { invalid(); }
+  }
   return Object.freeze({
     address: options.address,
     bytesSha256: verified.bytesSha256,
     signatureHex: result.signatureHex,
+    checkpoint,
   });
 }
