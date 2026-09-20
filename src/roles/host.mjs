@@ -73,10 +73,11 @@ export async function awaitRoleMessages({
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   onHeartbeat = async () => {},
   heartbeatMs = 20_000,
+  extendDeadline = null,
 }) {
   const wanted = new Set(roles);
   const messages = {};
-  const deadline = now() + budgetMs;
+  let deadline = now() + budgetMs;
   let cursor = after;
   const deferred = [];
   let lastBeat = 0;
@@ -91,6 +92,12 @@ export async function awaitRoleMessages({
     for (const message of batch ?? []) {
       if (message?.seq !== undefined && Number(message.seq) > Number(cursor)) {
         cursor = message.seq;
+      }
+      if (extendDeadline !== null) {
+        const extended = extendDeadline(message, deadline);
+        if (Number.isSafeInteger(extended) && extended > deadline) {
+          deadline = extended;
+        }
       }
       const accepted = accept(message);
       if (accepted !== null) {

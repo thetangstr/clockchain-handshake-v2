@@ -73,6 +73,35 @@ test("the live producer publishes only the artifact just observed", async () => 
   for (const snapshot of published) assert.equal(validateAgentHandshakeV2Snapshot(snapshot), true);
 });
 
+test("a claim past the mint cutoff but inside the session deadline is recorded", async () => {
+  const fixture = await buildV2Fixture();
+  const published = [];
+  const monitor = createAgentHandshakeV2Monitor({
+    now: () => 1786337000001,
+    publish: async (snapshot) => published.push(snapshot),
+    session: {
+      hostSessionKeyCertificate: fixture.hostSessionKeyCertificate,
+      invitationExpiresAtMs: Number(SESSION_OPENED_AT_MS) + 120_000,
+      protocol: "clockchain.agent-handshake/v2",
+      repositorySha: REPOSITORY_SHA,
+      sessionDeadlineMs: Number(SESSION_DEADLINE_MS),
+      sessionId: SESSION_ID,
+      sessionOpenedAtMs: Number(SESSION_OPENED_AT_MS),
+      sessionOpenedBlock: SESSION_OPENED_BLOCK,
+      terms: TERMS,
+    },
+  });
+  // Minted claim windows are mint-relative and legitimately run past
+  // invitationExpiresAtMs; only the session deadline remains a hard bound.
+  const lateClaim = Number(SESSION_OPENED_AT_MS) + 200_000;
+  await monitor.invitationClaimed(lateClaim);
+  assert.equal(published.at(-1).invitation.responderClaimedAtMs, lateClaim);
+  await assert.rejects(
+    () => monitor.invitationClaimed(Number(SESSION_DEADLINE_MS)),
+    /AGENT_HANDSHAKE_V2_MONITOR_INVALID/,
+  );
+});
+
 test("a checker failure is visible without fabricating a certificate", async () => {
   const fixture = await buildV2Fixture();
   const published = [];

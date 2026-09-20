@@ -70,10 +70,13 @@ export function createAgentHandshakeV2Monitor({ now = Date.now, publish, session
   return Object.freeze({
     start: flush,
     async invitationClaimed(claimedAtMs) {
+      // Claims are bounded by the minted claim expiry, which can run past
+      // timing.invitationExpiresAtMs (the mint cutoff) — the session deadline
+      // is the widest window a valid claim can occupy.
       if (
         !Number.isSafeInteger(claimedAtMs) ||
         claimedAtMs < state.invitation.createdAtMs ||
-        claimedAtMs >= state.timing.invitationExpiresAtMs
+        claimedAtMs >= state.timing.sessionDeadlineMs
       ) throw new Error("AGENT_HANDSHAKE_V2_MONITOR_INVALID");
       state.invitation.responderClaimedAtMs = claimedAtMs;
       await flush();

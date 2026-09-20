@@ -128,9 +128,12 @@ function invitation(value, timingFacts) {
     item.createdAtMs >= timingFacts.invitationExpiresAtMs) invalid();
   if (item.responderClaimedAtMs !== null) {
     safeMs(item.responderClaimedAtMs);
+    // The claim window is mint-relative and can run past the session's
+    // invitationExpiresAtMs (the mint cutoff); the session deadline is the
+    // widest bound a valid claim can occupy.
     if (
       item.responderClaimedAtMs < item.createdAtMs ||
-      item.responderClaimedAtMs >= timingFacts.invitationExpiresAtMs
+      item.responderClaimedAtMs >= timingFacts.sessionDeadlineMs
     ) invalid();
   }
   return Object.freeze(item);
