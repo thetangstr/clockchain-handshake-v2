@@ -10,6 +10,14 @@ call (`authorize_local_action`) instead of a download-and-execute fallback.
 > snippet below launches the adapter via `npx`/`node`). Check with
 > `node --version` — the pinned helper refuses to run under older majors.
 
+> **Coordinator endpoint:** while the ACM4 demo pin is live, the hosted edge
+> serves the current build's handshake surface at
+> `https://mcp.clockchain.network/next/handshake/mcp` (`/handshake/mcp` itself
+> is pinned to a frozen 2.1.6 demo instance). Set
+> `CLOCKCHAIN_LOCAL_ADAPTER_ENDPOINT` to the `/next` URL as shown in each
+> snippet below — published packages prior to this note default to the pinned
+> URL.
+
 ## Why this is safe
 
 The adapter holds digest-pinned release assets — `pin.json`, `manifest.json`,
@@ -28,7 +36,9 @@ Registers the server in your Claude Code MCP configuration so every session
 can reach the handshake tools plus `authorize_local_action`.
 
 ```bash
-claude mcp add clockchain-local-adapter -- npx -y @d4d.group/local-adapter
+claude mcp add clockchain-local-adapter \
+  -e CLOCKCHAIN_LOCAL_ADAPTER_ENDPOINT=https://mcp.clockchain.network/next/handshake/mcp \
+  -- npx -y @d4d.group/local-adapter
 ```
 
 Verify: `claude mcp list` shows `clockchain-local-adapter`. Inside a session,
@@ -48,7 +58,10 @@ Merge this block into the `mcpServers` object in
   "mcpServers": {
     "clockchain-local-adapter": {
       "command": "npx",
-      "args": ["-y", "@d4d.group/local-adapter"]
+      "args": ["-y", "@d4d.group/local-adapter"],
+      "env": {
+        "CLOCKCHAIN_LOCAL_ADAPTER_ENDPOINT": "https://mcp.clockchain.network/next/handshake/mcp"
+      }
     }
   }
 }
@@ -73,7 +86,10 @@ Add the server to `~/.cursor/mcp.json` (global) or a project's
   "mcpServers": {
     "clockchain-local-adapter": {
       "command": "npx",
-      "args": ["-y", "@d4d.group/local-adapter"]
+      "args": ["-y", "@d4d.group/local-adapter"],
+      "env": {
+        "CLOCKCHAIN_LOCAL_ADAPTER_ENDPOINT": "https://mcp.clockchain.network/next/handshake/mcp"
+      }
     }
   }
 }
@@ -92,6 +108,7 @@ registry):
 [mcp_servers.clockchain-local-adapter]
 command = "npx"
 args = ["-y", "@d4d.group/local-adapter"]
+env = { CLOCKCHAIN_LOCAL_ADAPTER_ENDPOINT = "https://mcp.clockchain.network/next/handshake/mcp" }
 ```
 
 Verify: `codex mcp list` shows `clockchain-local-adapter`; a `tools/list`
@@ -104,7 +121,10 @@ Any host that speaks stdio MCP can launch the adapter with:
 ```json
 {
   "command": "npx",
-  "args": ["-y", "@d4d.group/local-adapter"]
+  "args": ["-y", "@d4d.group/local-adapter"],
+  "env": {
+    "CLOCKCHAIN_LOCAL_ADAPTER_ENDPOINT": "https://mcp.clockchain.network/next/handshake/mcp"
+  }
 }
 ```
 

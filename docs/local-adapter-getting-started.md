@@ -20,7 +20,7 @@ live in `packaging/local-adapter/INSTALL.md`):
 
 | Host | Install |
 |---|---|
-| Claude Code | `claude mcp add clockchain-local-adapter -- npx -y @d4d.group/local-adapter` |
+| Claude Code | `claude mcp add clockchain-local-adapter -e CLOCKCHAIN_LOCAL_ADAPTER_ENDPOINT=https://mcp.clockchain.network/next/handshake/mcp -- npx -y @d4d.group/local-adapter` |
 | Claude Desktop | One-click `.mcpb` bundle, or the `mcpServers` JSON block |
 | Cursor | `~/.cursor/mcp.json` `mcpServers` block |
 | Codex | `~/.codex/config.toml` `[mcp_servers.clockchain-local-adapter]` entry |
@@ -35,7 +35,8 @@ The adapter exposes one fixed, zero-input tool:
 
 The adapter proxies all eight hosted handshake tools
 (`agent_handshake_invite` … `agent_handshake_get_certificate`) to
-`https://mcp.clockchain.network/handshake/mcp`. When an upstream response
+`https://mcp.clockchain.network/next/handshake/mcp` (the `/handshake/mcp` edge route is
+pinned to a frozen demo instance while ACM4 runs). When an upstream response
 contains a `localAction`, the adapter stages its digest-bound helper steps
 privately. Each `authorize_local_action` call executes exactly one staged step,
 in order:
