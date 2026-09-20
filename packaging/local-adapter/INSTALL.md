@@ -1,6 +1,6 @@
 # Installing clockchain-local-adapter
 
-`@clockchain/local-adapter` is a stdio MCP server. Your MCP host launches it as
+`@d4d/local-adapter` is a stdio MCP server. Your MCP host launches it as
 a local child process; it proxies the hosted Clockchain handshake tools and
 executes each staged, digest-bound local action through the pinned local
 helper. Install it once and every local action becomes a single zero-input tool
@@ -28,7 +28,7 @@ Registers the server in your Claude Code MCP configuration so every session
 can reach the handshake tools plus `authorize_local_action`.
 
 ```bash
-claude mcp add clockchain-local-adapter -- npx -y @clockchain/local-adapter
+claude mcp add clockchain-local-adapter -- npx -y @d4d/local-adapter
 ```
 
 Verify: `claude mcp list` shows `clockchain-local-adapter`. Inside a session,
@@ -48,7 +48,7 @@ Merge this block into the `mcpServers` object in
   "mcpServers": {
     "clockchain-local-adapter": {
       "command": "npx",
-      "args": ["-y", "@clockchain/local-adapter"]
+      "args": ["-y", "@d4d/local-adapter"]
     }
   }
 }
@@ -73,7 +73,7 @@ Add the server to `~/.cursor/mcp.json` (global) or a project's
   "mcpServers": {
     "clockchain-local-adapter": {
       "command": "npx",
-      "args": ["-y", "@clockchain/local-adapter"]
+      "args": ["-y", "@d4d/local-adapter"]
     }
   }
 }
@@ -91,7 +91,7 @@ registry):
 ```toml
 [mcp_servers.clockchain-local-adapter]
 command = "npx"
-args = ["-y", "@clockchain/local-adapter"]
+args = ["-y", "@d4d/local-adapter"]
 ```
 
 Verify: `codex mcp list` shows `clockchain-local-adapter`; a `tools/list`
@@ -104,7 +104,7 @@ Any host that speaks stdio MCP can launch the adapter with:
 ```json
 {
   "command": "npx",
-  "args": ["-y", "@clockchain/local-adapter"]
+  "args": ["-y", "@d4d/local-adapter"]
 }
 ```
 

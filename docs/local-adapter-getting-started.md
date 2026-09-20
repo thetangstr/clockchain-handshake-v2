@@ -20,12 +20,12 @@ live in `packaging/local-adapter/INSTALL.md`):
 
 | Host | Install |
 |---|---|
-| Claude Code | `claude mcp add clockchain-local-adapter -- npx -y @clockchain/local-adapter` |
+| Claude Code | `claude mcp add clockchain-local-adapter -- npx -y @d4d/local-adapter` |
 | Claude Desktop | One-click `.mcpb` bundle, or the `mcpServers` JSON block |
 | Cursor | `~/.cursor/mcp.json` `mcpServers` block |
 | Codex | `~/.codex/config.toml` `[mcp_servers.clockchain-local-adapter]` entry |
 
-Every form resolves to the same thing: `npx -y @clockchain/local-adapter`.
+Every form resolves to the same thing: `npx -y @d4d/local-adapter`.
 
 ## What `authorize_local_action` does
 
@@ -52,7 +52,7 @@ in order:
 
 If anything mismatches, the adapter refuses closed. If the coordinator ever
 requires a newer helper than the adapter vendors, the refusal names the fix:
-`npx -y @clockchain/local-adapter@latest`, then restart your MCP client.
+`npx -y @d4d/local-adapter@latest`, then restart your MCP client.
 
 ## Your first handshake
 
