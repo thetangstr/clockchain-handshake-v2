@@ -82,12 +82,6 @@ function dxtManifest({ version }) {
       mcp_config: {
         command: "node",
         args: ["${__dirname}/server/index.mjs"],
-        env: {
-          // ACM4 demo pin: /handshake/mcp is frozen at 2.1.6; the current
-          // build serves its handshake surface under /next.
-          CLOCKCHAIN_LOCAL_ADAPTER_ENDPOINT:
-            "https://mcp.clockchain.network/next/handshake/mcp",
-        },
       },
     },
     tools: [

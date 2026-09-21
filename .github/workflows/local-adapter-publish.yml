@@ -1,10 +1,12 @@
 name: local-adapter-npm-publish
 
 # Publishes @d4d.group/local-adapter to npm with provenance.
-# Trigger: tag `local-adapter-vX.Y.Z` where X.Y.Z MUST equal the vendored
-# helper version (release/agent-handshake/pin.json) — the adapter's semver is
-# in lockstep with the helper release it carries. Manual dispatch is available
-# for dry-run verification only; real publishes come from tags.
+# Trigger: tag `local-adapter-vX.Y.Z` where X.Y.Z MUST equal the adapter's own
+# package version (LOCAL_ADAPTER_VERSION in src/agent-handshake/v2/constants.mjs).
+# The adapter's semver floats independently of the vendored helper release
+# (release/agent-handshake/pin.json), which stays pinned at
+# AGENT_HANDSHAKE_HELPER_VERSION. Manual dispatch is available for dry-run
+# verification only; real publishes come from tags.
 #
 # Auth: npm Trusted Publishing (OIDC) — no long-lived npm token in CI. The
 # package must have github.com/thetangstr/clockchain-handshake-v2 registered as
@@ -47,13 +49,18 @@ jobs:
       - name: Build the adapter package (downloads + verifies pinned release assets)
         run: node scripts/build-local-adapter-npm.mjs
 
-      - name: Assert version lockstep (tag == package == vendored pin)
+      - name: Assert versions (tag == adapter package; vendored pin == helper release)
         shell: bash
         run: |
           PKG_VERSION=$(node -p "require('./$PKG_DIR/package.json').version")
           PIN_VERSION=$(node -p "require('./$PKG_DIR/assets/pin.json').version")
-          if [ "$PKG_VERSION" != "$PIN_VERSION" ]; then
-            echo "package version $PKG_VERSION != vendored pin $PIN_VERSION"; exit 1
+          HELPER_VERSION=$(node --input-type=module -e 'import { AGENT_HANDSHAKE_HELPER_VERSION } from "./src/agent-handshake/v2/constants.mjs"; console.log(AGENT_HANDSHAKE_HELPER_VERSION)')
+          ADAPTER_VERSION=$(node --input-type=module -e 'import { LOCAL_ADAPTER_VERSION } from "./src/agent-handshake/v2/constants.mjs"; console.log(LOCAL_ADAPTER_VERSION)')
+          if [ "$PKG_VERSION" != "$ADAPTER_VERSION" ]; then
+            echo "package version $PKG_VERSION != LOCAL_ADAPTER_VERSION $ADAPTER_VERSION"; exit 1
+          fi
+          if [ "$PIN_VERSION" != "$HELPER_VERSION" ]; then
+            echo "vendored pin $PIN_VERSION != helper release $HELPER_VERSION"; exit 1
           fi
           if [ "${{ github.event_name }}" = "push" ]; then
             TAG_VERSION="${GITHUB_REF_NAME#local-adapter-v}"
@@ -61,7 +68,7 @@ jobs:
               echo "tag $GITHUB_REF_NAME does not match package version $PKG_VERSION"; exit 1
             fi
           fi
-          echo "version lockstep OK: $PKG_VERSION"
+          echo "versions OK: adapter $PKG_VERSION carrying helper $PIN_VERSION"
 
       - name: npm pack
         working-directory: ${{ env.PKG_DIR }}
