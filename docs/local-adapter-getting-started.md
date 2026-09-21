@@ -20,7 +20,7 @@ live in `packaging/local-adapter/INSTALL.md`):
 
 | Host | Install |
 |---|---|
-| Claude Code | `claude mcp add clockchain-local-adapter -e CLOCKCHAIN_LOCAL_ADAPTER_ENDPOINT=https://mcp.clockchain.network/next/handshake/mcp -- npx -y @d4d.group/local-adapter` |
+| Claude Code | `claude mcp add clockchain-local-adapter -- npx -y @d4d.group/local-adapter` |
 | Claude Desktop | One-click `.mcpb` bundle, or the `mcpServers` JSON block |
 | Cursor | `~/.cursor/mcp.json` `mcpServers` block |
 | Codex | `~/.codex/config.toml` `[mcp_servers.clockchain-local-adapter]` entry |

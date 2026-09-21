@@ -25,9 +25,7 @@ local action becomes a single zero-input MCP tool call.
 Claude Code / Claude Desktop:
 
 ```bash
-claude mcp add clockchain-local-adapter \
-  -e CLOCKCHAIN_LOCAL_ADAPTER_ENDPOINT=https://mcp.clockchain.network/next/handshake/mcp \
-  -- npx -y @d4d.group/local-adapter
+claude mcp add clockchain-local-adapter -- npx -y @d4d.group/local-adapter
 ```
 
 Codex (`~/.codex/config.toml`):
@@ -36,7 +34,6 @@ Codex (`~/.codex/config.toml`):
 [mcp_servers.clockchain-local-adapter]
 command = "npx"
 args = ["-y", "@d4d.group/local-adapter"]
-env = { CLOCKCHAIN_LOCAL_ADAPTER_ENDPOINT = "https://mcp.clockchain.network/next/handshake/mcp" }
 ```
 
 Generic MCP client configuration:
@@ -46,8 +43,7 @@ Generic MCP client configuration:
   "mcpServers": {
     "clockchain-local-adapter": {
       "command": "npx",
-      "args": ["-y", "@d4d.group/local-adapter"],
-      "env": { "CLOCKCHAIN_LOCAL_ADAPTER_ENDPOINT": "https://mcp.clockchain.network/next/handshake/mcp" }
+      "args": ["-y", "@d4d.group/local-adapter"]
     }
   }
 }

@@ -13,7 +13,7 @@ import { build } from "esbuild";
 
 import {
   AGENT_HANDSHAKE_HELPER_NODE_MAJOR,
-  AGENT_HANDSHAKE_HELPER_VERSION,
+  LOCAL_ADAPTER_VERSION,
 } from "../src/agent-handshake/v2/constants.mjs";
 import { validateAgentHandshakeReleasePin } from "./verify-agent-handshake-release.mjs";
 
@@ -65,7 +65,9 @@ export async function buildLocalAdapterNpm({ outDir, fetchImpl = defaultFetchAss
   await writeFile(join(assetsDir, "pin.json"), `${JSON.stringify(pin, null, 2)}\n`, { mode: 0o644 });
   await writeFile(join(directory, "package.json"), `${JSON.stringify({
     name: "@d4d.group/local-adapter",
-    version: AGENT_HANDSHAKE_HELPER_VERSION,
+    // The adapter's own semver floats independently of the vendored helper
+    // pin — see LOCAL_ADAPTER_VERSION in constants.mjs.
+    version: LOCAL_ADAPTER_VERSION,
     description: "Pre-installed local executor for Clockchain agent-handshake localActions: proxies the hosted handshake tools and runs each staged digest-bound helper step through the pinned local helper — no runtime download, no eval of remote bytes.",
     license: "Apache-2.0",
     author: "D4D Group",
@@ -89,7 +91,7 @@ export async function buildLocalAdapterNpm({ outDir, fetchImpl = defaultFetchAss
       invalid();
     }
   }
-  return Object.freeze({ outDir: directory, version: AGENT_HANDSHAKE_HELPER_VERSION });
+  return Object.freeze({ outDir: directory, version: LOCAL_ADAPTER_VERSION });
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
