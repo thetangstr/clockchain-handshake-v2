@@ -1,0 +1,41 @@
+{
+  "schema": "clockchain.local-adapter.agent-contract-bind-vectors/v1",
+  "source": "clockchain-developer-tools packages/mcp-server src/agent-contract @ c6e684666d827b5486e4d783ee2b562e6b032f32 (canonical.ts canonicalJson/canonicalDigest, eip191.ts eip191RecoverPublicKey/isCanonicalEip191Signature/publicKeyToAddress)",
+  "keyDerivation": "privateKey = 0x || sha256(\"clockchain-local-adapter/contract-bind-test-key/\" || keyLabel) — public test keys",
+  "vectors": [
+    {
+      "keyLabel": "vector-0",
+      "statement": {
+        "domain": "agent-contract.bind/v1",
+        "runId": "11111111-2222-4333-8444-555555555555",
+        "side": "initiator",
+        "tokenKeyId": "klb1",
+        "serverKeyId": "contract-server",
+        "challenge": "c0ffee0000000000000000000000000000000000000000000000000000000000",
+        "issuedAt": "2026-10-01T17:00:00.000Z"
+      },
+      "canonicalJson": "{\"challenge\":\"c0ffee0000000000000000000000000000000000000000000000000000000000\",\"domain\":\"agent-contract.bind/v1\",\"issuedAt\":\"2026-10-01T17:00:00.000Z\",\"runId\":\"11111111-2222-4333-8444-555555555555\",\"serverKeyId\":\"contract-server\",\"side\":\"initiator\",\"tokenKeyId\":\"klb1\"}",
+      "digest": "0x7d9f4f22b26359c2cab00ac91644c2b50b7e9d8869468ec5a93db4d42a267737",
+      "signature": "0x4da5dfd327611cb9bbf1779b315e9031a32e59ba50d86316022d66a9a705d7280161b579f28171b60f62e366a9690a0056a10df25d0ab3b33a11e059ee019de71b",
+      "serverCanonicalSignature": true,
+      "serverRecoveredAddress": "0x0c0384f3d9c1980a1144db3773fb770b2a03a5f9"
+    },
+    {
+      "keyLabel": "vector-1",
+      "statement": {
+        "domain": "agent-contract.bind/v1",
+        "runId": "deadbeef-0010-4444-8888-000000000010",
+        "side": "responder",
+        "tokenKeyId": "travel-provider.late_2",
+        "serverKeyId": "ephemeral-dev-0123456789abcdef",
+        "challenge": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "issuedAt": "2026-10-01T17:00:59Z"
+      },
+      "canonicalJson": "{\"challenge\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"domain\":\"agent-contract.bind/v1\",\"issuedAt\":\"2026-10-01T17:00:59Z\",\"runId\":\"deadbeef-0010-4444-8888-000000000010\",\"serverKeyId\":\"ephemeral-dev-0123456789abcdef\",\"side\":\"responder\",\"tokenKeyId\":\"travel-provider.late_2\"}",
+      "digest": "0x66798645c9940f55b44bedbec4c9eed53a7c8f3cfdfe967b6485e5a4b88676db",
+      "signature": "0xb30a880cb99197a13d24bc6aaefd8c5f1cc60e9dbd1ecdfc861d4a795222328236e65e311539bc2abb0d1fde85e3432c70ff32b8c52111974d73c7da9bb4205b1b",
+      "serverCanonicalSignature": true,
+      "serverRecoveredAddress": "0xa6ca356ca72d457d414574bc0e4996767c1af607"
+    }
+  ]
+}
