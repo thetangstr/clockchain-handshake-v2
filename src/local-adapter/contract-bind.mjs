@@ -19,6 +19,7 @@ import { types } from "node:util";
 import { recoverMessageAddress } from "viem";
 
 import { readAgentPolicy } from "../agent-cli/policy.mjs";
+import { readPrivateText, writePrivateFile } from "../core/private-path.mjs";
 import { signExactBytes } from "../core/wallet-bridge.mjs";
 
 // --- canonical JSON: byte-for-byte port of the contract server -------------
@@ -91,6 +92,8 @@ export const CONTRACT_BIND_REFUSALS = Object.freeze({
   keyIdNotAllowed: "BIND_KEY_ID_NOT_ALLOWED",
   issuedAt: "BIND_ISSUED_AT_OUT_OF_WINDOW",
   session: "BIND_SESSION_NOT_HELD",
+  notVerified: "BIND_SESSION_NOT_VERIFIED",
+  expired: "BIND_SESSION_EXPIRED",
   signing: "BIND_SIGNING_FAILED",
 });
 
@@ -281,6 +284,115 @@ export function contractBindPinsOption(value) {
   return { tokenKeyIds: value.tokenKeyIds, serverKeyIds: value.serverKeyIds };
 }
 
+// --- the verified-session record (L3) -------------------------------------------
+//
+// The pinned helper persists no session deadline. The adapter, which executes
+// each role's terminal verify-certificate step, records — write-once, as a
+// private file beside wallet.json — the facts that step established once the
+// helper reported certificateVerified/VERIFIED: the session, the role, the
+// party sessionKeyAddress the certificate names, and the session's own expiry
+// = min(payload sessionDeadlineMs, host session-key certificate validUntilMs)
+// (the helper refuses a certificate whose validUntilMs exceeds the deadline;
+// the coordinator sets deadline = session open + 10 min). The bind tool signs
+// only for a session with this record, before its expiry, with the wallet
+// that the verified certificate names.
+
+export const VERIFIED_SESSION_FILE = "contract-bind-session.json";
+const VERIFIED_SESSION_SCHEMA = "clockchain.local-adapter.verified-session/v1";
+const VERIFIED_SESSION_KEYS = Object.freeze([
+  "schema", "sessionId", "role", "sessionKeyAddress", "expiresAtMs",
+]);
+const ADDRESS = /^0x[0-9a-f]{40}$/;
+const DECIMAL = /^(?:0|[1-9][0-9]*)$/;
+
+function verifiedSessionRecord({ sessionId, role, sessionKeyAddress, expiresAtMs }) {
+  if (
+    typeof sessionId !== "string" || !UUID.test(sessionId) ||
+    !SIDES.includes(role) ||
+    typeof sessionKeyAddress !== "string" || !ADDRESS.test(sessionKeyAddress) ||
+    !Number.isSafeInteger(expiresAtMs) || expiresAtMs < 0
+  ) return null;
+  return {
+    schema: VERIFIED_SESSION_SCHEMA,
+    sessionId,
+    role,
+    sessionKeyAddress,
+    expiresAtMs: String(expiresAtMs),
+  };
+}
+
+/**
+ * Write the verified-session record (create-only, private file). Returns
+ * false — never throws — on invalid input or when a record already exists:
+ * the first verification of a session wins.
+ */
+export async function recordVerifiedSession({
+  stateDir, sessionId, role, sessionKeyAddress, expiresAtMs, platform = process.platform,
+} = {}) {
+  const record = verifiedSessionRecord({ sessionId, role, sessionKeyAddress, expiresAtMs });
+  if (record === null || typeof stateDir !== "string" || !isAbsolute(stateDir)) return false;
+  try {
+    await writePrivateFile({
+      bytes: Buffer.from(`${JSON.stringify(record)}\n`, "utf8"),
+      path: join(resolve(stateDir), VERIFIED_SESSION_FILE),
+      platform,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The verified-session facts from one executed verify-certificate step: the
+ * validated staged step (its payload was already bound to role/sessionId at
+ * staging) and the helper's validated CLI result. null unless the helper
+ * reported a verified VERIFIED certificate for exactly this role/session.
+ */
+export function verifiedSessionFromStep({ step, helperResult } = {}) {
+  try {
+    if (step?.operation !== "verify-certificate" || typeof step.payloadBase64url !== "string") return null;
+    const payload = JSON.parse(Buffer.from(step.payloadBase64url, "base64url").toString("utf8"));
+    const validUntil = payload?.certificate?.hostSessionKeyCertificate?.certificate?.validUntilMs;
+    if (
+      helperResult?.certificateVerified !== true || helperResult.outcome !== "VERIFIED" ||
+      helperResult.role !== step.role || helperResult.sessionId !== step.sessionId ||
+      payload?.role !== step.role || payload?.sessionId !== step.sessionId ||
+      typeof payload.sessionDeadlineMs !== "string" || !DECIMAL.test(payload.sessionDeadlineMs) ||
+      typeof validUntil !== "string" || !DECIMAL.test(validUntil)
+    ) return null;
+    const expiresAtMs = Math.min(Number(payload.sessionDeadlineMs), Number(validUntil));
+    const sessionKeyAddress = helperResult.identity?.sessionKeyAddress;
+    if (typeof sessionKeyAddress !== "string") return null;
+    return verifiedSessionRecord({
+      sessionId: step.sessionId,
+      role: step.role,
+      sessionKeyAddress: sessionKeyAddress.toLowerCase(),
+      expiresAtMs,
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function readVerifiedSession({ stateDir, platform }) {
+  let record;
+  try {
+    record = JSON.parse(await readPrivateText({ path: join(stateDir, VERIFIED_SESSION_FILE), platform }));
+  } catch {
+    refuse(CONTRACT_BIND_REFUSALS.notVerified);
+  }
+  if (
+    !isPlainRecord(record) ||
+    Object.keys(record).length !== VERIFIED_SESSION_KEYS.length ||
+    VERIFIED_SESSION_KEYS.some((key) => !Object.hasOwn(record, key)) ||
+    record.schema !== VERIFIED_SESSION_SCHEMA ||
+    typeof record.expiresAtMs !== "string" || !DECIMAL.test(record.expiresAtMs) ||
+    verifiedSessionRecord({ ...record, expiresAtMs: Number(record.expiresAtMs) }) === null
+  ) refuse(CONTRACT_BIND_REFUSALS.notVerified);
+  return Object.freeze({ ...record, expiresAtMs: Number(record.expiresAtMs) });
+}
+
 // --- the held session ----------------------------------------------------------
 
 function privateDirectory(stats, platform) {
@@ -354,6 +466,12 @@ export async function signContractBindStatement(args, {
     refuse(CONTRACT_BIND_REFUSALS.session);
   }
   if (committed?.policy?.role !== statement.side) refuse(CONTRACT_BIND_REFUSALS.session);
+  // L3: only a session this adapter saw verified, and only before its expiry.
+  const verified = await readVerifiedSession({ stateDir, platform });
+  if (verified.sessionId !== statement.runId || verified.role !== statement.side) {
+    refuse(CONTRACT_BIND_REFUSALS.notVerified);
+  }
+  if (nowMs >= verified.expiresAtMs) refuse(CONTRACT_BIND_REFUSALS.expired);
 
   const digest = contractCanonicalDigest(statement);
   let signed;
@@ -380,5 +498,8 @@ export async function signContractBindStatement(args, {
     refuse(CONTRACT_BIND_REFUSALS.signing);
   }
   if (recovered.toLowerCase() !== address) refuse(CONTRACT_BIND_REFUSALS.signing);
+  // The wallet must be the party key the verified certificate names; a
+  // mismatch withholds the signature (it would only fail at the server).
+  if (address !== verified.sessionKeyAddress) refuse(CONTRACT_BIND_REFUSALS.notVerified);
   return Object.freeze({ statement, signature, sessionKeyAddress: address });
 }

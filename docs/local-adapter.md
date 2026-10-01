@@ -181,7 +181,25 @@ low-s, recovers to the wallet) and returns the canonical statement echo, the
 signature and the lowercase session address. Refusals carry one fixed code
 and never echo input: `BIND_ARGUMENTS_INVALID`, `BIND_NOT_CONFIGURED`, `BIND_KEY_ID_NOT_ALLOWED`,
 `BIND_ISSUED_AT_OUT_OF_WINDOW` (older than 120 s or more than 30 s ahead of
-the adapter clock), `BIND_SESSION_NOT_HELD`, `BIND_SIGNING_FAILED`.
+the adapter clock), `BIND_SESSION_NOT_HELD`, `BIND_SESSION_NOT_VERIFIED`,
+`BIND_SESSION_EXPIRED`, `BIND_SIGNING_FAILED`.
+
+### Verified sessions and the session deadline
+
+The tool signs only for a session whose certificate this adapter saw
+verified. When a role's terminal `verify-certificate` step succeeds through
+`authorize_local_action` with `certificateVerified: true` / `VERIFIED`, the
+adapter writes `contract-bind-session.json` (create-only, 0600) beside
+`wallet.json`: the sessionId, role, the party `sessionKeyAddress` the
+certificate names, and the session's own expiry,
+`min(sessionDeadlineMs, hostSessionKeyCertificate.validUntilMs)` (the
+coordinator's deadline is session open + 10 minutes). The pinned helper
+stores no deadline itself, so this record is the adapter's. A bind is
+refused with `BIND_SESSION_NOT_VERIFIED` when the record is missing, names a
+different session/role, or names a different address than the wallet, and
+with `BIND_SESSION_EXPIRED` at or after the expiry. Agents must therefore
+run the `verify-certificate` local action before binding, and bind within
+the 10-minute session.
 
 ### Configuration: per-company key-id pins (required)
 

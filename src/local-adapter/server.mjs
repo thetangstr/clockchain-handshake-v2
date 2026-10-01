@@ -44,6 +44,8 @@ import {
   CONTRACT_BIND_TOOL,
   CONTRACT_BIND_TOOL_DEFINITION,
   ContractBindRefusal,
+  recordVerifiedSession,
+  verifiedSessionFromStep,
   contractBindPinsFromEnv,
   contractBindPinsOption,
   contractBindRefusalText,
@@ -688,6 +690,18 @@ export function createLocalAdapterServer(options = {}) {
       !isPlain(record) || record.schema !== CLI_RESULT_SCHEMA ||
       record.helperVersion !== pin.version || record.operation !== step.operation
     ) invalid();
+    // L3: remember a verified session (write-once) for sign_agent_contract_bind.
+    // Best-effort: it never changes this step's result.
+    const verifiedSession = verifiedSessionFromStep({ step, helperResult: record });
+    if (verifiedSession !== null) {
+      await recordVerifiedSession({
+        stateDir,
+        sessionId: verifiedSession.sessionId,
+        role: verifiedSession.role,
+        sessionKeyAddress: verifiedSession.sessionKeyAddress,
+        expiresAtMs: Number(verifiedSession.expiresAtMs),
+      });
+    }
     return textResult(text);
   }
 

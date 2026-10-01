@@ -50,6 +50,7 @@ import {
   AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX,
 } from "../src/agent-handshake/v2/constants.mjs";
 import { initializeWallet } from "../src/core/wallet-bridge.mjs";
+import { recordVerifiedSession } from "../src/local-adapter/contract-bind.mjs";
 import {
   CONTRACT_BIND_DOMAIN,
   CONTRACT_BIND_ISSUED_AT_MAX_AGE_MS,
@@ -140,6 +141,8 @@ async function makeBindContext(t, { now = () => NOW_MS, contractBind = BIND_CONF
 // a 0700 state dir, wallet.json (0600) and the committed policy.json.
 async function holdSession(tmpRoot, {
   sessionId = SESSION, role = "initiator", policyRole = role, wallet = true, policy = true,
+  verified = wallet, expiresAtMs = NOW_MS + 5 * 60_000, sessionKeyAddress = TEST_ADDRESS,
+  recordSessionId = sessionId, recordRole = role,
 } = {}) {
   const stateDir = join(tmpRoot, ".clockchain", "handshakes", sessionId, role);
   await mkdir(stateDir, { recursive: true, mode: 0o700 });
@@ -147,6 +150,11 @@ async function holdSession(tmpRoot, {
     await initializeWallet({ statePath: join(stateDir, "wallet.json"), generatePrivateKey: () => TEST_KEY });
   }
   if (policy) await commitAgentPolicy({ stateDir, policy: { ...POLICY, role: policyRole } });
+  if (verified) {
+    assert.equal(await recordVerifiedSession({
+      stateDir, sessionId: recordSessionId, role: recordRole, sessionKeyAddress, expiresAtMs,
+    }), true);
+  }
   return stateDir;
 }
 
@@ -488,4 +496,67 @@ test("L1: malformed pin options fail closed", async (t) => {
     await holdSession(tmpRoot);
     assertRefused(await callBind(server, statement()), "BIND_NOT_CONFIGURED");
   }
+});
+
+// --- L3: the session's own deadline ------------------------------------------
+
+test("L3: refuses once the verified session's deadline has passed", async (t) => {
+  let nowMs = NOW_MS;
+  const { server, tmpRoot } = await makeBindContext(t, { now: () => nowMs });
+  const expiresAtMs = NOW_MS + 60_000;
+  await holdSession(tmpRoot, { expiresAtMs });
+  nowMs = expiresAtMs - 1;
+  assert.equal(
+    (await callBind(server, statement({ issuedAt: new Date(nowMs).toISOString() }))).result.isError,
+    undefined,
+  );
+  nowMs = expiresAtMs;
+  assertRefused(
+    await callBind(server, statement({ issuedAt: new Date(nowMs).toISOString() })),
+    "BIND_SESSION_EXPIRED",
+  );
+  nowMs = expiresAtMs + 3_600_000;
+  assertRefused(
+    await callBind(server, statement({ issuedAt: new Date(nowMs).toISOString() })),
+    "BIND_SESSION_EXPIRED",
+  );
+});
+
+test("L3: refuses a session whose certificate the adapter never verified", async (t) => {
+  const { server, tmpRoot } = await makeBindContext(t);
+  await holdSession(tmpRoot, { verified: false });
+  assertRefused(await callBind(server, statement()), "BIND_SESSION_NOT_VERIFIED");
+});
+
+test("L3: refuses a verified-session record that does not match the session", async (t) => {
+  const { server, tmpRoot } = await makeBindContext(t);
+  const cases = [
+    ["cccccccc-0000-4000-8000-000000000001", { recordSessionId: OTHER_SESSION }],
+    ["cccccccc-0000-4000-8000-000000000002", { recordRole: "responder" }],
+    ["cccccccc-0000-4000-8000-000000000003", { sessionKeyAddress: `0x${"ab".repeat(20)}` }],
+  ];
+  for (const [sessionId, options] of cases) {
+    await holdSession(tmpRoot, { sessionId, ...options });
+    const response = await callBind(server, statement({ runId: sessionId }));
+    assert.equal(response.result.isError, true, sessionId);
+    assert.match(response.result.content[0].text, /\((BIND_SESSION_NOT_VERIFIED|BIND_SIGNING_FAILED)\)\.$/);
+    assertNoKey(response);
+  }
+});
+
+test("L3: the verified-session record is write-once and shape-checked", async (t) => {
+  const tmpRoot = await mkdtemp(join(tmpdir(), "local-adapter-record-"));
+  t.after(() => rm(tmpRoot, { recursive: true, force: true }));
+  const stateDir = join(tmpRoot, "s");
+  await mkdir(stateDir, { mode: 0o700 });
+  const good = { stateDir, sessionId: SESSION, role: "initiator", sessionKeyAddress: TEST_ADDRESS, expiresAtMs: NOW_MS };
+  for (const bad of [
+    { ...good, sessionId: "x" },
+    { ...good, role: "buyer" },
+    { ...good, sessionKeyAddress: TEST_ADDRESS.toUpperCase() },
+    { ...good, expiresAtMs: -1 },
+    { ...good, expiresAtMs: 1.5 },
+  ]) assert.equal(await recordVerifiedSession(bad), false);
+  assert.equal(await recordVerifiedSession(good), true);
+  assert.equal(await recordVerifiedSession({ ...good, expiresAtMs: NOW_MS + 1 }), false);
 });
