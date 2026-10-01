@@ -237,6 +237,14 @@ cannot change them. List two server key ids only while rotating.
   cannot obtain a statement for a token or contract server outside the
   launchd-pinned lists, so a statement can never be handed to another
   principal's token.
+- **Private TMPDIR (L2).** Every directory from `${TMPDIR}/.clockchain`
+  down to the role directory must be a real directory (never a symlink)
+  owned by the adapter's uid; the session and role directories must also be
+  0700. Deployment requirement: each `<U>-svc` adapter must run with a
+  TMPDIR that only that uid can write (the macOS per-user
+  `/var/folders/.../T/` TMPDIR satisfies this; the travel-lane plists set
+  `TMPDIR=/var/ac/<U>-svc/tmp/`, which must be owned by `<U>-svc` and not
+  group/world-writable). A shared or world-writable TMPDIR is unsupported.
 - **Bound to one bind.** The contract server additionally requires
   `runId === certificate sessionId`, `tokenKeyId` = the calling token,
   `serverKeyId` = its own signer, a live single-use challenge issued to that

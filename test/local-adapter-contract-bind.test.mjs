@@ -560,3 +560,34 @@ test("L3: the verified-session record is write-once and shape-checked", async (t
   assert.equal(await recordVerifiedSession(good), true);
   assert.equal(await recordVerifiedSession({ ...good, expiresAtMs: NOW_MS + 1 }), false);
 });
+
+// --- L2: the TMPDIR ancestry of the session -----------------------------------
+
+import { rename } from "node:fs/promises";
+import { signContractBindStatement } from "../src/local-adapter/contract-bind.mjs";
+
+test("L2: refuses when .clockchain or handshakes is a symlink", async (t) => {
+  for (const linked of [".clockchain", join(".clockchain", "handshakes")]) {
+    const { server, tmpRoot } = await makeBindContext(t);
+    await holdSession(tmpRoot);
+    assert.equal((await callBind(server, statement())).result.isError, undefined);
+    // Move the real tree aside and leave a symlink in its place.
+    const real = join(tmpRoot, `${linked.replaceAll("/", "_")}-real`);
+    await rename(join(tmpRoot, linked), real);
+    await symlink(real, join(tmpRoot, linked));
+    assertRefused(await callBind(server, statement()), "BIND_SESSION_NOT_HELD", linked);
+  }
+});
+
+test("L2: refuses a session tree owned by another uid", async (t) => {
+  const tmpRoot = await mkdtemp(join(tmpdir(), "local-adapter-bind-uid-"));
+  t.after(() => rm(tmpRoot, { recursive: true, force: true }));
+  await holdSession(tmpRoot);
+  const options = { nowMs: NOW_MS, tmpRoot, tokenKeyIds: ["klb1"], serverKeyIds: ["contract-server"] };
+  const ok = await signContractBindStatement(statement(), options);
+  assert.equal(ok.sessionKeyAddress, TEST_ADDRESS);
+  await assert.rejects(
+    signContractBindStatement(statement(), { ...options, uid: process.getuid() + 1 }),
+    { code: "BIND_SESSION_NOT_HELD" },
+  );
+});

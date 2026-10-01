@@ -395,11 +395,15 @@ async function readVerifiedSession({ stateDir, platform }) {
 
 // --- the held session ----------------------------------------------------------
 
-function privateDirectory(stats, platform) {
+function ownedDirectory(stats, platform, uid) {
   if (!stats.isDirectory() || stats.isSymbolicLink()) return false;
   if (platform === "win32") return true;
-  if (typeof process.getuid === "function" && stats.uid !== process.getuid()) return false;
-  return (stats.mode & 0o077) === 0;
+  return uid === undefined || stats.uid === uid;
+}
+
+function privateDirectory(stats, platform, uid) {
+  if (!ownedDirectory(stats, platform, uid)) return false;
+  return platform === "win32" || (stats.mode & 0o077) === 0;
 }
 
 /**
@@ -409,8 +413,9 @@ function privateDirectory(stats, platform) {
  * <tmpRoot>/.clockchain/handshakes, and wallet.json must exist in it. The
  * wallet-bridge re-checks the wallet's own privacy when it reads the key.
  */
-async function heldStateDir({ tmpRoot, runId, side, platform }) {
-  const handshakes = join(tmpRoot, ".clockchain", "handshakes");
+async function heldStateDir({ tmpRoot, runId, side, platform, uid }) {
+  const clockchain = join(tmpRoot, ".clockchain");
+  const handshakes = join(clockchain, "handshakes");
   const sessionDir = join(handshakes, runId);
   const stateDir = join(sessionDir, side);
   const offset = relative(tmpRoot, stateDir);
@@ -420,8 +425,15 @@ async function heldStateDir({ tmpRoot, runId, side, platform }) {
     !stateDir.endsWith(`/.clockchain/handshakes/${runId}/${side}`)
   ) refuse(CONTRACT_BIND_REFUSALS.session);
   try {
+    // L2: the ancestry inside TMPDIR must be real directories owned by this
+    // uid (no symlink can redirect the tree), and the session and role dirs
+    // must also be private. TMPDIR itself must be private to the <U>-svc uid
+    // (macOS per-user TMPDIR is) — see docs/local-adapter.md.
+    for (const dir of [clockchain, handshakes]) {
+      if (!ownedDirectory(await lstat(dir), platform, uid)) refuse(CONTRACT_BIND_REFUSALS.session);
+    }
     for (const dir of [sessionDir, stateDir]) {
-      if (!privateDirectory(await lstat(dir), platform)) refuse(CONTRACT_BIND_REFUSALS.session);
+      if (!privateDirectory(await lstat(dir), platform, uid)) refuse(CONTRACT_BIND_REFUSALS.session);
     }
     const wallet = await lstat(join(stateDir, "wallet.json"));
     if (!wallet.isFile() || wallet.isSymbolicLink()) refuse(CONTRACT_BIND_REFUSALS.session);
@@ -447,6 +459,7 @@ export async function signContractBindStatement(args, {
   signBytes = signExactBytes,
   tmpRoot,
   tokenKeyIds,
+  uid = typeof process.getuid === "function" ? process.getuid() : undefined,
 } = {}) {
   const statement = validateContractBindStatement(args, { nowMs });
   const pins = resolvePins({ tokenKeyIds, serverKeyIds });
@@ -455,7 +468,7 @@ export async function signContractBindStatement(args, {
   }
   if (typeof tmpRoot !== "string" || !isAbsolute(tmpRoot)) refuse(CONTRACT_BIND_REFUSALS.session);
   const stateDir = await heldStateDir({
-    tmpRoot: resolve(tmpRoot), runId: statement.runId, side: statement.side, platform,
+    tmpRoot: resolve(tmpRoot), runId: statement.runId, side: statement.side, platform, uid,
   });
   // Local policy gate: the pinned helper's committed policy for this session
   // must exist, verify against its own digest, and name this side's role.
