@@ -87,6 +87,8 @@ export const CONTRACT_BIND_ISSUED_AT_MAX_SKEW_MS = 30_000;
 // challenge TTL.
 export const CONTRACT_BIND_REFUSALS = Object.freeze({
   arguments: "BIND_ARGUMENTS_INVALID",
+  notConfigured: "BIND_NOT_CONFIGURED",
+  keyIdNotAllowed: "BIND_KEY_ID_NOT_ALLOWED",
   issuedAt: "BIND_ISSUED_AT_OUT_OF_WINDOW",
   session: "BIND_SESSION_NOT_HELD",
   signing: "BIND_SIGNING_FAILED",
@@ -138,8 +140,9 @@ export const CONTRACT_BIND_TOOL_DEFINITION = Object.freeze({
     "challenge from contract_bind_challenge, set issuedAt to the current UTC " +
     "time, call this tool, then pass statement and signature to contract_bind " +
     "as bindStatement and bindStatementSignature before the challenge expires. " +
-    "Returns {statement, signature, sessionKeyAddress}; the key never leaves " +
-    "this machine.",
+    "Only the tokenKeyId/serverKeyId values pinned for this company are " +
+    "accepted. Returns {statement, signature, sessionKeyAddress}; the key " +
+    "never leaves this machine.",
   inputSchema: Object.freeze({
     type: "object",
     properties: Object.freeze({
@@ -227,6 +230,57 @@ export function validateContractBindStatement(args, { nowMs } = {}) {
   return Object.freeze(statement);
 }
 
+// --- per-company key-id pins (L1) --------------------------------------------
+//
+// The adapter signs only for the contract token(s) and contract server(s)
+// this company was provisioned with. Pins come from the environment of the
+// adapter process — in the travel lane, the root-owned launchd plist of the
+// <U>-svc adapter — as comma-separated key-id lists. Unset, empty or
+// malformed pins disable the tool entirely (fail closed, never partially):
+// a stock install of the public package never signs a bind statement.
+
+export const CONTRACT_BIND_TOKEN_KEY_IDS_ENV = "CLOCKCHAIN_LOCAL_ADAPTER_BIND_TOKEN_KEY_IDS";
+export const CONTRACT_BIND_SERVER_KEY_IDS_ENV = "CLOCKCHAIN_LOCAL_ADAPTER_BIND_SERVER_KEY_IDS";
+const MAX_PINNED_KEY_IDS = 16;
+
+function parsePinList(text) {
+  if (typeof text !== "string" || text.trim().length === 0) return undefined;
+  return text.split(",").map((entry) => entry.trim());
+}
+
+/** The raw pin config from an environment object (validated at call time). */
+export function contractBindPinsFromEnv(env = process.env) {
+  return {
+    tokenKeyIds: parsePinList(env?.[CONTRACT_BIND_TOKEN_KEY_IDS_ENV]),
+    serverKeyIds: parsePinList(env?.[CONTRACT_BIND_SERVER_KEY_IDS_ENV]),
+  };
+}
+
+function pinSet(value) {
+  if (
+    !Array.isArray(value) || value.length < 1 || value.length > MAX_PINNED_KEY_IDS ||
+    value.some((entry) => typeof entry !== "string" || !KEY_ID.test(entry))
+  ) return null;
+  return new Set(value);
+}
+
+function resolvePins({ tokenKeyIds, serverKeyIds }) {
+  const tokens = pinSet(tokenKeyIds);
+  const servers = pinSet(serverKeyIds);
+  if (tokens === null || servers === null) refuse(CONTRACT_BIND_REFUSALS.notConfigured);
+  return { tokens, servers };
+}
+
+/** Validates a createLocalAdapterServer `contractBind` option's shape. */
+export function contractBindPinsOption(value) {
+  if (!isPlainRecord(value)) return { tokenKeyIds: null, serverKeyIds: null };
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== 2 || !keys.includes("tokenKeyIds") || !keys.includes("serverKeyIds")) {
+    return { tokenKeyIds: null, serverKeyIds: null };
+  }
+  return { tokenKeyIds: value.tokenKeyIds, serverKeyIds: value.serverKeyIds };
+}
+
 // --- the held session ----------------------------------------------------------
 
 function privateDirectory(stats, platform) {
@@ -277,10 +331,16 @@ export async function signContractBindStatement(args, {
   nowMs,
   platform = process.platform,
   readPolicy = readAgentPolicy,
+  serverKeyIds,
   signBytes = signExactBytes,
   tmpRoot,
+  tokenKeyIds,
 } = {}) {
   const statement = validateContractBindStatement(args, { nowMs });
+  const pins = resolvePins({ tokenKeyIds, serverKeyIds });
+  if (!pins.tokens.has(statement.tokenKeyId) || !pins.servers.has(statement.serverKeyId)) {
+    refuse(CONTRACT_BIND_REFUSALS.keyIdNotAllowed);
+  }
   if (typeof tmpRoot !== "string" || !isAbsolute(tmpRoot)) refuse(CONTRACT_BIND_REFUSALS.session);
   const stateDir = await heldStateDir({
     tmpRoot: resolve(tmpRoot), runId: statement.runId, side: statement.side, platform,

@@ -50,7 +50,10 @@ async function main() {
     try {
       const key = testSessionKey(keyLabel);
       await layDownSession(tmpRoot, { sessionId: statement.runId, role: statement.side, privateKey: key.privateKey });
-      const signed = await signContractBindStatement(statement, { nowMs: Date.parse(statement.issuedAt), tmpRoot });
+      const signed = await signContractBindStatement(statement, {
+        nowMs: Date.parse(statement.issuedAt), tmpRoot,
+        tokenKeyIds: [statement.tokenKeyId], serverKeyIds: [statement.serverKeyId],
+      });
       const digest = server.canonicalDigest(statement);
       const digestBytes = Buffer.from(digest.slice(2), "hex");
       const recovered = server.eip191RecoverPublicKey(digestBytes, signed.signature);

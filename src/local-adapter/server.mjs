@@ -44,6 +44,8 @@ import {
   CONTRACT_BIND_TOOL,
   CONTRACT_BIND_TOOL_DEFINITION,
   ContractBindRefusal,
+  contractBindPinsFromEnv,
+  contractBindPinsOption,
   contractBindRefusalText,
   signContractBindStatement,
 } from "./contract-bind.mjs";
@@ -501,7 +503,7 @@ async function defaultRunHelper({ args, file, maxBufferBytes, timeoutMs }) {
 
 export function createLocalAdapterServer(options = {}) {
   const input = exact(options, [
-    "assetDir", "assets", "endpoint", "fetchImpl", "helperPath", "input",
+    "assetDir", "assets", "contractBind", "endpoint", "fetchImpl", "helperPath", "input",
     "manifestPath", "now", "output", "pin", "pinPath", "runHelper", "tmpdir",
   ], []);
   const assets = input.assets !== undefined
@@ -535,6 +537,11 @@ export function createLocalAdapterServer(options = {}) {
   if (input.now !== undefined && typeof input.now !== "function") invalid();
   if (input.tmpdir !== undefined && typeof input.tmpdir !== "string") invalid();
   const now = input.now ?? Date.now;
+  // L1: the company's pinned tokenKeyId/serverKeyId lists, from the option
+  // (tests, embedders) or the adapter's environment (launchd plist).
+  const contractBindPins = input.contractBind !== undefined
+    ? contractBindPinsOption(input.contractBind)
+    : contractBindPinsFromEnv(process.env);
   const tmpRoot = resolve(input.tmpdir ?? process.env.TMPDIR ?? osTmpdir());
   const queue = [];
   let upstreamId = 0;
@@ -709,7 +716,9 @@ export function createLocalAdapterServer(options = {}) {
     try {
       const output = await signContractBindStatement(params.arguments, {
         nowMs: now(),
+        serverKeyIds: contractBindPins.serverKeyIds,
         tmpRoot,
+        tokenKeyIds: contractBindPins.tokenKeyIds,
       });
       return { result: textResult(JSON.stringify(output)) };
     } catch (error) {

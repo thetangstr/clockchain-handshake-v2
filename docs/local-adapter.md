@@ -179,9 +179,26 @@ the server's `canonical.ts`, held to the server's own vectors) as an EIP-191
 `personal_sign` over the raw 32-byte digest, self-checks the result (v 27/28,
 low-s, recovers to the wallet) and returns the canonical statement echo, the
 signature and the lowercase session address. Refusals carry one fixed code
-and never echo input: `BIND_ARGUMENTS_INVALID`,
+and never echo input: `BIND_ARGUMENTS_INVALID`, `BIND_NOT_CONFIGURED`, `BIND_KEY_ID_NOT_ALLOWED`,
 `BIND_ISSUED_AT_OUT_OF_WINDOW` (older than 120 s or more than 30 s ahead of
 the adapter clock), `BIND_SESSION_NOT_HELD`, `BIND_SIGNING_FAILED`.
+
+### Configuration: per-company key-id pins (required)
+
+The tool is disabled until the adapter's environment pins which contract
+token(s) and contract server(s) this company may bind:
+
+```text
+CLOCKCHAIN_LOCAL_ADAPTER_BIND_TOKEN_KEY_IDS=<keyId>[,<keyId>...]   # this company's CONTRACT_AUTH_TOKENS keyId(s)
+CLOCKCHAIN_LOCAL_ADAPTER_BIND_SERVER_KEY_IDS=<keyId>[,<keyId>...]  # the contract server's CONTRACT_SERVER_KEY_ID
+```
+
+Each list holds 1–16 visible-ASCII key ids (≤ 64 chars), comma-separated,
+surrounding spaces ignored. Unset, empty or malformed pins refuse every call
+with `BIND_NOT_CONFIGURED`; a statement naming any other `tokenKeyId` or
+`serverKeyId` is refused with `BIND_KEY_ID_NOT_ALLOWED`. Under launchd set
+both in the root-owned plist's `EnvironmentVariables`, so the agent uid
+cannot change them. List two server key ids only while rotating.
 
 ### Security: why this is not a signing oracle
 
@@ -198,6 +215,10 @@ the adapter clock), `BIND_SESSION_NOT_HELD`, `BIND_SIGNING_FAILED`.
   for that session must verify and name the same role. Nothing is created on
   refusal; a session the adapter does not hold, or the other side of one it
   does, is refused before any key is read.
+- **Pinned to this company's token and server (L1).** Even the local agent
+  cannot obtain a statement for a token or contract server outside the
+  launchd-pinned lists, so a statement can never be handed to another
+  principal's token.
 - **Bound to one bind.** The contract server additionally requires
   `runId === certificate sessionId`, `tokenKeyId` = the calling token,
   `serverKeyId` = its own signer, a live single-use challenge issued to that

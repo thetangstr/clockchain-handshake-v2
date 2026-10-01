@@ -115,7 +115,9 @@ function fixtureAssets() {
   };
 }
 
-async function makeBindContext(t, { now = () => NOW_MS } = {}) {
+const BIND_CONFIG = Object.freeze({ tokenKeyIds: ["klb1"], serverKeyIds: ["contract-server"] });
+
+async function makeBindContext(t, { now = () => NOW_MS, contractBind = BIND_CONFIG } = {}) {
   const tmpRoot = await mkdtemp(join(tmpdir(), "local-adapter-bind-"));
   t.after(() => rm(tmpRoot, { recursive: true, force: true }));
   const upstreamCalls = [];
@@ -129,6 +131,7 @@ async function makeBindContext(t, { now = () => NOW_MS } = {}) {
     runHelper: async () => { throw new Error("the bind tool must never run the helper"); },
     now,
     tmpdir: tmpRoot,
+    ...(contractBind === null ? {} : { contractBind }),
   });
   return { server, tmpRoot, upstreamCalls };
 }
@@ -410,4 +413,79 @@ test("no key leak across every response the tool can produce", async (t) => {
     join(tmpRoot, ".clockchain", "handshakes", SESSION, "initiator", "wallet.json"), "utf8",
   );
   assert.ok(walletText.toLowerCase().includes(TEST_KEY_HEX));
+});
+
+// --- L1: per-company tokenKeyId / serverKeyId pins ------------------------------
+
+test("L1: refuses every statement when no key-id pins are configured", async (t) => {
+  const saved = [process.env.CLOCKCHAIN_LOCAL_ADAPTER_BIND_TOKEN_KEY_IDS, process.env.CLOCKCHAIN_LOCAL_ADAPTER_BIND_SERVER_KEY_IDS];
+  delete process.env.CLOCKCHAIN_LOCAL_ADAPTER_BIND_TOKEN_KEY_IDS;
+  delete process.env.CLOCKCHAIN_LOCAL_ADAPTER_BIND_SERVER_KEY_IDS;
+  t.after(() => {
+    for (const [name, value] of [["CLOCKCHAIN_LOCAL_ADAPTER_BIND_TOKEN_KEY_IDS", saved[0]], ["CLOCKCHAIN_LOCAL_ADAPTER_BIND_SERVER_KEY_IDS", saved[1]]]) {
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
+  });
+  const { server, tmpRoot } = await makeBindContext(t, { contractBind: null });
+  await holdSession(tmpRoot);
+  assertRefused(await callBind(server, statement()), "BIND_NOT_CONFIGURED");
+  // Only one of the two pins set is still unconfigured.
+  process.env.CLOCKCHAIN_LOCAL_ADAPTER_BIND_TOKEN_KEY_IDS = "klb1";
+  const half = (await makeBindContext(t, { contractBind: null }));
+  await holdSession(half.tmpRoot);
+  assertRefused(await callBind(half.server, statement()), "BIND_NOT_CONFIGURED");
+});
+
+test("L1: pins come from the launchd environment when no option is passed", async (t) => {
+  const saved = [process.env.CLOCKCHAIN_LOCAL_ADAPTER_BIND_TOKEN_KEY_IDS, process.env.CLOCKCHAIN_LOCAL_ADAPTER_BIND_SERVER_KEY_IDS];
+  t.after(() => {
+    for (const [name, value] of [["CLOCKCHAIN_LOCAL_ADAPTER_BIND_TOKEN_KEY_IDS", saved[0]], ["CLOCKCHAIN_LOCAL_ADAPTER_BIND_SERVER_KEY_IDS", saved[1]]]) {
+      if (value === undefined) delete process.env[name]; else process.env[name] = value;
+    }
+  });
+  process.env.CLOCKCHAIN_LOCAL_ADAPTER_BIND_TOKEN_KEY_IDS = "kb-old, klb1";
+  process.env.CLOCKCHAIN_LOCAL_ADAPTER_BIND_SERVER_KEY_IDS = "contract-server";
+  const { server, tmpRoot } = await makeBindContext(t, { contractBind: null });
+  await holdSession(tmpRoot);
+  assert.equal((await callBind(server, statement())).result.isError, undefined);
+  assertRefused(await callBind(server, statement({ tokenKeyId: "klb2" })), "BIND_KEY_ID_NOT_ALLOWED");
+  // A malformed pin list fails closed for every call, never partially.
+  process.env.CLOCKCHAIN_LOCAL_ADAPTER_BIND_TOKEN_KEY_IDS = "klb1,has space";
+  const bad = await makeBindContext(t, { contractBind: null });
+  await holdSession(bad.tmpRoot);
+  assertRefused(await callBind(bad.server, statement()), "BIND_NOT_CONFIGURED");
+});
+
+test("L1: refuses tokenKeyId / serverKeyId values outside the company pins", async (t) => {
+  const { server, tmpRoot } = await makeBindContext(t, {
+    contractBind: { tokenKeyIds: ["klb1", "klb9"], serverKeyIds: ["contract-server", "contract-server-next"] },
+  });
+  await holdSession(tmpRoot);
+  for (const args of [
+    statement({ tokenKeyId: "klb2" }),
+    statement({ tokenKeyId: "KLB1" }),
+    statement({ serverKeyId: "contract-server-test" }),
+    statement({ serverKeyId: "evil-server" }),
+  ]) {
+    assertRefused(await callBind(server, args), "BIND_KEY_ID_NOT_ALLOWED");
+  }
+  for (const args of [
+    statement({ tokenKeyId: "klb9" }),
+    statement({ serverKeyId: "contract-server-next" }),
+  ]) {
+    assert.equal((await callBind(server, args)).result.isError, undefined);
+  }
+});
+
+test("L1: malformed pin options fail closed", async (t) => {
+  for (const contractBind of [
+    { tokenKeyIds: [], serverKeyIds: ["contract-server"] },
+    { tokenKeyIds: ["klb1"], serverKeyIds: [""] },
+    { tokenKeyIds: "klb1", serverKeyIds: ["contract-server"] },
+    { tokenKeyIds: ["klb1"], serverKeyIds: ["contract-server"], extra: true },
+  ]) {
+    const { server, tmpRoot } = await makeBindContext(t, { contractBind });
+    await holdSession(tmpRoot);
+    assertRefused(await callBind(server, statement()), "BIND_NOT_CONFIGURED");
+  }
 });

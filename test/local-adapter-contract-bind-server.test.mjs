@@ -53,6 +53,7 @@ test("adapter reproduces the server-computed bind vectors byte-for-byte", async 
     });
     const signed = await signContractBindStatement(vector.statement, {
       nowMs: Date.parse(vector.statement.issuedAt), tmpRoot,
+      tokenKeyIds: [vector.statement.tokenKeyId], serverKeyIds: [vector.statement.serverKeyId],
     });
     assert.equal(contractCanonicalJson(signed.statement), vector.canonicalJson);
     assert.equal(JSON.stringify(signed.statement), vector.canonicalJson);
@@ -175,6 +176,7 @@ function adapterFor(tmpRoot) {
     endpoint: "https://upstream.test/handshake/mcp",
     fetchImpl: async () => { throw new Error("no upstream in tests"); },
     tmpdir: tmpRoot,
+    contractBind: { tokenKeyIds: ["klb1", "klp1"], serverKeyIds: ["contract-server-test"] },
   });
 }
 
