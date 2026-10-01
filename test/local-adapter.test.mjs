@@ -579,9 +579,9 @@ test("upstream proxy parses SSE and plain JSON, and tools/list appends the adapt
   });
   const listed = await sse.handleMessage({ jsonrpc: "2.0", id: 7, method: "tools/list", params: {} });
   assert.deepEqual(listed.result.tools.map((tool) => tool.name), [
-    "agent_handshake_join", ADAPTER_TOOL,
+    "agent_handshake_join", ADAPTER_TOOL, "sign_agent_contract_bind",
   ]);
-  assert.deepEqual(listed.result.tools.at(-1).inputSchema, {
+  assert.deepEqual(listed.result.tools.find((tool) => tool.name === ADAPTER_TOOL).inputSchema, {
     type: "object", properties: {}, additionalProperties: false,
   });
 
@@ -594,7 +594,9 @@ test("upstream proxy parses SSE and plain JSON, and tools/list appends the adapt
     },
   });
   const listedPlain = await plain.handleMessage({ jsonrpc: "2.0", id: 8, method: "tools/list" });
-  assert.equal(listedPlain.result.tools.length, 1);
+  assert.deepEqual(listedPlain.result.tools.map((tool) => tool.name), [
+    ADAPTER_TOOL, "sign_agent_contract_bind",
+  ]);
 });
 
 test("tools/call forwards params verbatim and returns upstream errors verbatim", async (t) => {

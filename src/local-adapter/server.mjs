@@ -12,6 +12,11 @@
 // staged digest-bound step per call through the pinned local helper. No
 // runtime download, no eval of remote bytes, no model transcription.
 //
+// One other local tool exists: sign_agent_contract_bind (contract-bind.mjs),
+// which signs exactly one agent-contract.bind/v1 statement with the session
+// key of a handshake session this adapter already holds — never anything
+// else. It has its own fixed refusal codes and is never proxied upstream.
+//
 // Every failure is fail-closed with the same generic refusal: the adapter
 // never distinguishes WHICH check a candidate step failed — with a single
 // exception. A step that passes every structural check but is pinned to a
@@ -34,6 +39,14 @@ import {
 } from "../agent-handshake/v2/constants.mjs";
 import { localPolicyDigest, validateLocalPolicy } from "../agent-handshake/v2/policy.mjs";
 import { canonicalBytes } from "../core/canonical.mjs";
+import {
+  CONTRACT_BIND_REFUSALS,
+  CONTRACT_BIND_TOOL,
+  CONTRACT_BIND_TOOL_DEFINITION,
+  ContractBindRefusal,
+  contractBindRefusalText,
+  signContractBindStatement,
+} from "./contract-bind.mjs";
 import { VERIFIED_HELPER_BOOTSTRAP } from "../harness/verified-release-action-recorder.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -138,6 +151,12 @@ const ADAPTER_TOOL_DEFINITION = Object.freeze({
     additionalProperties: false,
   }),
 });
+
+// The adapter's local tools, in tools/list order. Anything else is proxied.
+const LOCAL_TOOL_DEFINITIONS = Object.freeze([
+  ADAPTER_TOOL_DEFINITION,
+  CONTRACT_BIND_TOOL_DEFINITION,
+]);
 
 function invalid() {
   throw new Error(GENERIC_REFUSAL);
@@ -683,6 +702,24 @@ export function createLocalAdapterServer(options = {}) {
     }
   }
 
+  // sign_agent_contract_bind: a purely local tool (never proxied upstream).
+  // Every refusal is one of the fixed contract-bind codes; arbitrary error
+  // text never crosses this boundary.
+  async function callContractBindTool(params) {
+    try {
+      const output = await signContractBindStatement(params.arguments, {
+        nowMs: now(),
+        tmpRoot,
+      });
+      return { result: textResult(JSON.stringify(output)) };
+    } catch (error) {
+      const code = error instanceof ContractBindRefusal
+        ? error.code
+        : CONTRACT_BIND_REFUSALS.signing;
+      return { result: textResult(contractBindRefusalText(code), true) };
+    }
+  }
+
   async function handleToolsList(id, params) {
     try {
       const envelope = await upstreamRequest("tools/list", params);
@@ -692,14 +729,14 @@ export function createLocalAdapterServer(options = {}) {
       return {
         jsonrpc: "2.0",
         id,
-        result: { ...result, tools: [...tools, ADAPTER_TOOL_DEFINITION] },
+        result: { ...result, tools: [...tools, ...LOCAL_TOOL_DEFINITIONS] },
       };
     } catch {
       // An unreachable coordinator must not hide the one tool that is local.
       return {
         jsonrpc: "2.0",
         id,
-        result: { tools: [ADAPTER_TOOL_DEFINITION] },
+        result: { tools: [...LOCAL_TOOL_DEFINITIONS] },
       };
     }
   }
@@ -710,6 +747,10 @@ export function createLocalAdapterServer(options = {}) {
     }
     if (params.name === ADAPTER_TOOL) {
       const outcome = await callAdapterTool(params);
+      return { jsonrpc: "2.0", id, ...outcome };
+    }
+    if (params.name === CONTRACT_BIND_TOOL) {
+      const outcome = await callContractBindTool(params);
       return { jsonrpc: "2.0", id, ...outcome };
     }
     let envelope;
