@@ -1103,7 +1103,9 @@ test("2.1.13 refs mode: the initiator's staged steps are refused until the issue
   const text = refused.result.content[0].text;
   assert.match(text, /^DELIVER_INVITATION_FIRST: /);
   assert.ok(text.includes(issued.responderInvitationRef), "the refusal carries the ref");
-  assert.match(text, /seal this invitation reference to the provider and deliver it before continuing/);
+  assert.match(text, /deliver this invitation reference to the provider through your company signer before continuing/);
+  // The refusal names no tool: the company signer decides how it delivers.
+  assert.doesNotMatch(text, /seal_to|deliver_invitation|rendezvous_|sealed box/);
   assert.equal(runs.length, 0, "nothing executed");
   assert.equal(server.pendingCount(), 2, "the staged steps stay queued");
   assert.equal(await exists(refPath(issued.responderInvitationRef)), true, "the refusal never consumes the ref");

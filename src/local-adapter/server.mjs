@@ -243,7 +243,7 @@ function withInvitationRef(tool, refsOnly) {
 // never sealed or delivered the invitation; the provider waited ten minutes for
 // nothing. In refs mode, while the ref this adapter issued for an Initiator
 // session is unconsumed (<TMPDIR>/.clockchain/invitation-refs/<ref>.json still
-// exists — the signer's seal_to consumes it), the adapter refuses that
+// exists — the company signer consumes it when it seals or delivers), the adapter refuses that
 // session's staged Initiator steps and its join/next/submit progression. An
 // expired ref gets a distinct refusal and the session's staged steps are
 // dropped, so the queue never deadlocks behind a session that cannot proceed.
@@ -258,8 +258,7 @@ const DELIVERY_GUARDED_TOOLS = Object.freeze(new Set([
 function deliverFirstText(entry, { staged }) {
   return `${DELIVER_INVITATION_FIRST}: the responder invitation for session ${entry.sessionId ?? "(this session)"} ` +
     `has not been delivered — invitation reference ${entry.ref} is still unconsumed. ` +
-    "seal this invitation reference to the provider and deliver it before continuing: " +
-    `call your signer's seal_to with { plaintextRef: "${entry.ref}" } and send the sealed box to the provider. ` +
+    "deliver this invitation reference to the provider through your company signer before continuing. " +
     (staged
       ? "Nothing was executed; the staged step stays queued."
       : "Nothing was sent to the coordinator.");

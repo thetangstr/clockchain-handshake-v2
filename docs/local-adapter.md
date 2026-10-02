@@ -335,10 +335,11 @@ the adapter refuses, for that session:
   are read-only and are not guarded.
 
 The refusal is `DELIVER_INVITATION_FIRST: … invitation reference <ref> is still
-unconsumed. seal this invitation reference to the provider and deliver it
-before continuing: call your signer's seal_to with { plaintextRef: "<ref>" } …`.
-The signer's `seal_to` claims and consumes the record; its absence is the
-delivery signal (a claim that is released again puts the guard back).
+unconsumed. deliver this invitation reference to the provider through your
+company signer before continuing. …` — the text names no tool. The company
+signer (`deliver_invitation { listingId, plaintextRef, … }`, or `seal_to
+{ plaintextRef }`) claims and consumes the record; its absence is the delivery
+signal (a claim that is released again puts the guard back).
 
 Once the ref has expired (15 minutes) undelivered, the guard returns the
 distinct `DELIVER_INVITATION_EXPIRED: … Create a fresh invitation with
