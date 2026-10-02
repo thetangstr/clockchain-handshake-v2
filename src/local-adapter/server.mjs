@@ -52,6 +52,14 @@ import {
   signContractBindStatement,
 } from "./contract-bind.mjs";
 import { VERIFIED_HELPER_BOOTSTRAP } from "../harness/verified-release-action-recorder.mjs";
+import {
+  INVITATION_REF_REFUSALS,
+  INVITATION_REF_RE,
+  InvitationRefError,
+  claimInvitationRef,
+  invitationShape,
+  putInvitationRef,
+} from "./invitation-refs.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -181,33 +189,101 @@ const ROLE_ACCESS_KEYS = Object.freeze([
 ]);
 const B64URL = /^[A-Za-z0-9_-]+$/;
 
-export function checkInvitationShape(invitation) {
-  const got = typeof invitation === "string"
-    ? invitation.split(".").map((part) => part.length).join(".")
-    : typeof invitation;
+// 2.1.12 pass-by-reference (see invitation-refs.mjs).
+const INVITE_TOOL = "agent_handshake_invite";
+export const INVITATION_REFS_ENV = "CLOCKCHAIN_LOCAL_ADAPTER_INVITATION_REFS";
+const INVITATION_REF_TEXT = Object.freeze({
+  INVITATION_REF_UNKNOWN:
+    "this invitationRef is unknown, already used, or belongs to another tool. Open the sealed rendezvous box again (open_sealed returns a fresh invitationRef) and pass that ref.",
+  INVITATION_REF_EXPIRED:
+    "this invitationRef expired. Open the sealed rendezvous box again for a fresh invitationRef, or wait for a fresh invitation.",
+  INVITATION_REF_STORE_UNAVAILABLE:
+    "the company's private invitation store is unavailable on this host. Report this to your operator; do not retype the invitation.",
+  INVITATION_REF_INVALID:
+    "pass exactly { invitationRef } (optionally with acceptanceIdempotencyKey) — never the invitation text itself.",
+});
+function invitationRefRefusalText(code) {
+  return `${code}: ${INVITATION_REF_TEXT[code] ?? INVITATION_REF_TEXT.INVITATION_REF_STORE_UNAVAILABLE}`;
+}
+const INVITATION_BY_REFERENCE_REQUIRED =
+  "INVITATION_BY_REFERENCE_REQUIRED: this adapter accepts the responder invitation only by reference. " +
+  "Pass { invitationRef } — the ref your signer's open_sealed returned — and never the invitation text; nothing was consumed.";
+const INVITATION_REF_PROPERTY = Object.freeze({
+  type: "string",
+  pattern: INVITATION_REF_RE.source,
+  description:
+    "The single-use ref your company signer's open_sealed returned for the opened invitation. The adapter reads the exact invitation bytes locally; never pass the invitation text.",
+});
+
+// Rewrites the upstream agent_handshake_accept_invitation definition so the
+// model sees the invitationRef argument (always), and — in refs mode — no
+// longer sees the raw invitation argument at all.
+function withInvitationRef(tool, refsOnly) {
+  if (!isPlain(tool) || tool.name !== INVITATION_TOOL || !isPlain(tool.inputSchema)) return tool;
+  const schema = tool.inputSchema;
+  const properties = isPlain(schema.properties) ? { ...schema.properties } : {};
+  if (refsOnly) delete properties.invitation;
+  properties.invitationRef = INVITATION_REF_PROPERTY;
+  const required = Array.isArray(schema.required) ? schema.required.filter((key) => key !== "invitation") : [];
+  return {
+    ...tool,
+    description: `${typeof tool.description === "string" ? `${tool.description} ` : ""}` +
+      (refsOnly
+        ? "Pass invitationRef (from your signer's open_sealed); the adapter supplies the exact invitation bytes locally."
+        : "Prefer invitationRef (from your signer's open_sealed) over the invitation text: the adapter supplies the exact bytes locally."),
+    inputSchema: { ...schema, properties, required: refsOnly ? ["invitationRef"] : required },
+  };
+}
+
+export function checkInvitationShape(invitation, { origin = "copy" } = {}) {
+  const got = invitationShape(invitation);
   let expected = "<payload>";
   let ok = false;
+  let detail = "";
   if (typeof invitation === "string" && invitation.length >= 80 && invitation.length <= 4096) {
     const parts = invitation.split(".");
     if (parts.length === 2 && B64URL.test(parts[0]) && B64URL.test(parts[1])) {
       try {
         const payload = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8"));
         if (isPlain(payload)) {
-          expected = String(Buffer.from(JSON.stringify(payload)).toString("base64url").length);
+          const reencoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
+          expected = String(reencoded.length);
           const keys = Object.keys(payload).sort();
-          ok = keys.length === ROLE_ACCESS_KEYS.length &&
-            keys.every((key, index) => key === ROLE_ACCESS_KEYS[index]) &&
-            Buffer.from(JSON.stringify(payload)).toString("base64url") === parts[0] &&
+          const keysOk = keys.length === ROLE_ACCESS_KEYS.length &&
+            keys.every((key, index) => key === ROLE_ACCESS_KEYS[index]);
+          ok = keysOk &&
+            reencoded === parts[0] &&
             payload.typ === "clockchain-agent-handshake-role-access" &&
             payload.role === "responder" &&
             Array.isArray(payload.allowedTools) && payload.allowedTools.length === 1 &&
             payload.allowedTools[0] === INVITATION_TOOL &&
             parts[1].length === 43;
+          if (!ok) {
+            // 2.1.12 (live p6-l-2026-10-02-1): at identical length the bare
+            // "expected 628.43; got 628.43" read as a simulated fault to the
+            // model. Name what changed — field NAMES only (public schema), no
+            // values, never the token.
+            const unexpected = keys.filter((key) => !ROLE_ACCESS_KEYS.includes(key));
+            const missing = ROLE_ACCESS_KEYS.filter((key) => !keys.includes(key));
+            const parts2 = [];
+            if (unexpected.length > 0) parts2.push(`unexpected field ${unexpected.map((k) => JSON.stringify(k.slice(0, 32))).join(", ")}`);
+            if (missing.length > 0) parts2.push(`missing field ${missing.map((k) => JSON.stringify(k)).join(", ")}`);
+            if (parts2.length === 0) parts2.push("a field value or the signature differs from a coordinator-issued invitation");
+            detail = ` — same length, but ${parts2.join("; ")}: a character was changed`;
+          }
         }
       } catch { ok = false; }
     }
   }
   if (ok) return null;
+  if (origin === "ref") {
+    return `INVITATION_CORRUPTED: the invitation the counterparty sealed is not a valid responder invitation (expected ${expected}.43 base64url; got ${got})${detail}. ` +
+      "It cannot be accepted; the ref is spent. Wait for the counterparty to seal and send a fresh invitation, then open that one.";
+  }
+  if (detail !== "") {
+    return `INVITATION_CORRUPTED: the invitation was altered while copying (expected ${expected}.43 base64url; got ${got}${detail}). ` +
+      "Do not retype the invitation: open the sealed rendezvous box again and pass the invitationRef it returns; the invitation was not consumed.";
+  }
   return `INVITATION_CORRUPTED: the invitation was altered while copying (expected ${expected}.43 base64url; got ${got}). ` +
     "Re-open the sealed rendezvous box and pass its invitation value byte-for-byte (do not retype, decode, or reconstruct it); the invitation was not consumed.";
 }
@@ -552,7 +628,7 @@ async function defaultRunHelper({ args, file, maxBufferBytes, timeoutMs }) {
 export function createLocalAdapterServer(options = {}) {
   const input = exact(options, [
     "assetDir", "assets", "contractBind", "endpoint", "fetchImpl", "helperPath", "input",
-    "manifestPath", "now", "output", "pin", "pinPath", "runHelper", "tmpdir",
+    "invitationRefs", "manifestPath", "now", "output", "pin", "pinPath", "runHelper", "tmpdir",
   ], []);
   const assets = input.assets !== undefined
     ? (() => {
@@ -591,6 +667,11 @@ export function createLocalAdapterServer(options = {}) {
     ? contractBindPinsOption(input.contractBind)
     : contractBindPinsFromEnv(process.env);
   const tmpRoot = resolve(input.tmpdir ?? process.env.TMPDIR ?? osTmpdir());
+  // 2.1.12 refs mode: the invitation never reaches the model. Off by default
+  // for the published adapter (a human-relayed invite still needs the raw
+  // value); the fleet's launchd plist sets INVITATION_REFS_ENV=1.
+  if (input.invitationRefs !== undefined && typeof input.invitationRefs !== "boolean") invalid();
+  const invitationRefs = input.invitationRefs ?? process.env[INVITATION_REFS_ENV] === "1";
   const queue = [];
   let upstreamId = 0;
   let upstreamInit = null;
@@ -798,7 +879,10 @@ export function createLocalAdapterServer(options = {}) {
       return {
         jsonrpc: "2.0",
         id,
-        result: { ...result, tools: [...tools, ...LOCAL_TOOL_DEFINITIONS] },
+        result: {
+          ...result,
+          tools: [...tools.map((tool) => withInvitationRef(tool, invitationRefs)), ...LOCAL_TOOL_DEFINITIONS],
+        },
       };
     } catch {
       // An unreachable coordinator must not hide the one tool that is local.
@@ -823,9 +907,85 @@ export function createLocalAdapterServer(options = {}) {
       return { jsonrpc: "2.0", id, ...outcome };
     }
     if (params.name === INVITATION_TOOL) {
-      const refusal = checkInvitationShape(isPlain(params.arguments) ? params.arguments.invitation : undefined);
+      const args = isPlain(params.arguments) ? params.arguments : {};
+      if (Object.hasOwn(args, "invitationRef")) return acceptByRef(id, params, args);
+      if (invitationRefs) {
+        return { jsonrpc: "2.0", id, result: textResult(INVITATION_BY_REFERENCE_REQUIRED, true) };
+      }
+      const refusal = checkInvitationShape(args.invitation);
       if (refusal !== null) return { jsonrpc: "2.0", id, result: textResult(refusal, true) };
     }
+    return proxyToolCall(id, params);
+  }
+
+  // 2.1.12: agent_handshake_accept_invitation with { invitationRef } — the
+  // signer's open_sealed stored the counterparty's invitation in this
+  // company's private ref store; read the exact bytes locally, run the 2.1.11
+  // guard on them, forward them as `invitation`, and spend the ref only when
+  // the coordinator accepted. A failure that leaves the invitation unspent
+  // (transport, coordinator refusal) releases the ref for a retry.
+  async function acceptByRef(id, params, args) {
+    const keys = Object.keys(args);
+    if (keys.some((key) => key !== "invitationRef" && key !== "acceptanceIdempotencyKey")) {
+      return { jsonrpc: "2.0", id, result: textResult(invitationRefRefusalText(INVITATION_REF_REFUSALS.invalid), true) };
+    }
+    let claim;
+    try {
+      claim = await claimInvitationRef({ tmpRoot, ref: args.invitationRef, kind: "received", nowMs: now() });
+    } catch (error) {
+      const code = error instanceof InvitationRefError ? error.code : INVITATION_REF_REFUSALS.store;
+      return { jsonrpc: "2.0", id, result: textResult(invitationRefRefusalText(code), true) };
+    }
+    const refusal = checkInvitationShape(claim.invitation, { origin: "ref" });
+    if (refusal !== null) {
+      // The bytes are exactly what the counterparty sealed — a retry cannot
+      // fix them, so the ref is spent.
+      await claim.consume();
+      return { jsonrpc: "2.0", id, result: textResult(refusal, true) };
+    }
+    const forwarded = {
+      ...params,
+      arguments: {
+        invitation: claim.invitation,
+        ...(Object.hasOwn(args, "acceptanceIdempotencyKey") ? { acceptanceIdempotencyKey: args.acceptanceIdempotencyKey } : {}),
+      },
+    };
+    const response = await proxyToolCall(id, forwarded);
+    if (response.error === undefined && response.result?.isError !== true) await claim.consume();
+    else await claim.release();
+    return response;
+  }
+
+  // 2.1.12 refs mode: agent_handshake_invite's responderInvitation is moved
+  // into the ref store (kind "issued") and replaced by responderInvitationRef
+  // in every place the model could read it. The signer's seal_to takes that
+  // ref, so the Initiator model never carries the invitation either.
+  async function withIssuedInvitationRef(result) {
+    if (!isPlain(result) || !Array.isArray(result.content)) return result;
+    let ref = null;
+    let invitation = null;
+    const content = [];
+    for (const item of result.content) {
+      if (!isPlain(item) || item.type !== "text" || typeof item.text !== "string") { content.push(item); continue; }
+      let parsed;
+      try { parsed = JSON.parse(item.text); } catch { content.push(item); continue; }
+      if (!isPlain(parsed) || typeof parsed.responderInvitation !== "string") { content.push(item); continue; }
+      if (invitation !== null && parsed.responderInvitation !== invitation) invalid();
+      invitation = parsed.responderInvitation;
+      ref ??= await putInvitationRef({ tmpRoot, kind: "issued", invitation, nowMs: now() });
+      const { responderInvitation: _withheld, ...rest } = parsed;
+      content.push({ ...item, text: JSON.stringify({ ...rest, responderInvitationRef: ref }) });
+    }
+    if (ref === null) return result;
+    const next = { ...result, content };
+    if (isPlain(result.structuredContent)) {
+      const { responderInvitation: _withheld, ...rest } = result.structuredContent;
+      next.structuredContent = { ...rest, responderInvitationRef: ref };
+    }
+    return next;
+  }
+
+  async function proxyToolCall(id, params) {
     let envelope;
     try {
       envelope = await upstreamRequest("tools/call", params);
@@ -852,6 +1012,14 @@ export function createLocalAdapterServer(options = {}) {
         id,
         result: textResult(text, true),
       };
+    }
+    if (invitationRefs && params.name === INVITE_TOOL) {
+      try {
+        return { jsonrpc: "2.0", id, result: await withIssuedInvitationRef(envelope.result) };
+      } catch (error) {
+        const code = error instanceof InvitationRefError ? error.code : INVITATION_REF_REFUSALS.store;
+        return { jsonrpc: "2.0", id, result: textResult(invitationRefRefusalText(code), true) };
+      }
     }
     return { jsonrpc: "2.0", id, result: envelope.result };
   }

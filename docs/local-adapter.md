@@ -277,3 +277,41 @@ mismatch returns `INVITATION_CORRUPTED: ... (expected <n>.43 base64url; got
 a non-retryable `role_access_invalid`. Live origin: p6-l-2026-10-01-7, where
 the model re-typed `expMs` as `expms` at identical length. The token is never
 echoed in the refusal.
+
+## Invitation by reference (2.1.12)
+
+The 2.1.11 guard caught the alteration but could not prevent it: in live
+p6-l-2026-10-02-1 the provider model re-typed the opened invitation with the
+same one-character change as p6-l-2026-10-01-7 (`expMs` → `expms`, base64url
+position 143, identical 628.43 length) four times and the run timed out. The
+durable fix is that the model never carries the invitation.
+
+- **Store.** `<TMPDIR>/.clockchain/invitation-refs/` (0700, this uid; the
+  `.clockchain` ancestor must be owned by this uid and not group/world
+  writable). One `invref_<32 hex>.json` record per invitation (0600, created
+  `O_EXCL|O_NOFOLLOW`): `{"v":1,"kind":"received"|"issued","invitation":…,
+  "createdMs":…,"expMs":…}`, 15-minute TTL. The company signer (travel_mvp
+  `src/lib/agent-signer/invitation-refs.ts`) implements the same format; both
+  services run as the company's `<U>-svc` uid with the same private TMPDIR, so
+  another company's ref never resolves.
+- **Accept.** `agent_handshake_accept_invitation` takes `{ invitationRef,
+  acceptanceIdempotencyKey? }`. The adapter claims the `received` record by an
+  atomic rename (one caller wins), runs the 2.1.11 guard on the exact bytes,
+  forwards them upstream as `invitation`, deletes the record when the
+  coordinator accepted, and puts it back when the call failed without spending
+  it. A malformed invitation behind a ref is the counterparty's — it is refused
+  locally and the ref is spent. tools/list advertises `invitationRef`.
+- **Refs mode** (`CLOCKCHAIN_LOCAL_ADAPTER_INVITATION_REFS=1`, set by the fleet
+  plist): a raw `invitation` argument is refused with
+  `INVITATION_BY_REFERENCE_REQUIRED`, the raw argument disappears from the
+  advertised schema, and `agent_handshake_invite` moves `responderInvitation`
+  into the store (kind `issued`), returning `responderInvitationRef` in its
+  place (text and structuredContent). The signer's `seal_to { plaintextRef }`
+  seals it. Off by default so a human-relayed invite keeps working.
+- **Refusals.** `INVITATION_REF_UNKNOWN` (unknown, used, in flight, foreign, or
+  wrong kind — a wrong-kind ref is left in place), `INVITATION_REF_EXPIRED`,
+  `INVITATION_REF_INVALID` (extra arguments, or both forms),
+  `INVITATION_REF_STORE_UNAVAILABLE`. No refusal ever echoes the invitation.
+- **Guard text.** When the length is unchanged, `INVITATION_CORRUPTED` now names
+  the unexpected/missing payload field names (public schema only) instead of
+  printing two identical lengths.

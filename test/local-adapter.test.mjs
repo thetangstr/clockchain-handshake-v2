@@ -824,3 +824,204 @@ test("2.1.11: a corrupted accept_invitation is refused locally, a good one is fo
   assert.equal(forwarded.length, 1);
   assert.deepEqual(forwarded[0].params.arguments, { invitation: good, acceptanceIdempotencyKey: "k1" });
 });
+
+// ---- 2.1.12: invitation pass-by-reference (live p6-l-2026-10-02-1) ---------
+
+const { putInvitationRef, claimInvitationRef } = await import("../src/local-adapter/invitation-refs.mjs");
+
+function genuineInvitation(overrides = {}) {
+  const payload = Buffer.from(JSON.stringify({
+    alg: "HS256", allowedTools: ["agent_handshake_accept_invitation"], aud: "clockchain-agent-handshake",
+    expMs: "2", iss: "https://mcp.clockchain.network", jti: "b532fc9a-385f-448f-a90f-a16f26056f37",
+    kid: "role-2026-08-active", nbfMs: "1", role: "responder", sessionId: SESSION,
+    statementDigest: "e".repeat(64), typ: "clockchain-agent-handshake-role-access", v: 1, ...overrides,
+  })).toString("base64url");
+  return `${payload}.${"A".repeat(43)}`;
+}
+
+function recordingUpstream(calls, respond) {
+  return async (url, init) => {
+    const request = JSON.parse(init.body);
+    calls.push(request);
+    return fakeResponse({ jsonrpc: "2.0", id: request.id, result: respond(request) });
+  };
+}
+
+const toolCalls = (calls) => calls.filter((c) => c.method === "tools/call");
+
+test("2.1.12: tools/list advertises invitationRef on accept_invitation", async (t) => {
+  const { make } = await makeContext(t);
+  const upstreamTool = {
+    name: "agent_handshake_accept_invitation",
+    description: "Accept a Responder invitation.",
+    inputSchema: {
+      type: "object",
+      properties: { invitation: { type: "string", minLength: 80, maxLength: 4096 }, acceptanceIdempotencyKey: { type: "string" } },
+      required: ["invitation"],
+      additionalProperties: false,
+    },
+  };
+  const server = make({ fetchImpl: upstreamResult({ tools: [upstreamTool, { name: "agent_handshake_join", inputSchema: { type: "object" } }] }) });
+  const listed = await server.handleMessage({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+  const accept = listed.result.tools.find((tool) => tool.name === "agent_handshake_accept_invitation");
+  assert.equal(accept.inputSchema.properties.invitationRef.type, "string");
+  assert.equal(accept.inputSchema.properties.invitationRef.pattern, "^invref_[0-9a-f]{32}$");
+  assert.equal((accept.inputSchema.required ?? []).includes("invitation"), false);
+  assert.match(accept.description, /invitationRef/);
+  // Refs mode: the raw invitation is no longer offered at all.
+  const strict = make({ invitationRefs: true, fetchImpl: upstreamResult({ tools: [upstreamTool] }) });
+  const strictListed = await strict.handleMessage({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
+  const strictAccept = strictListed.result.tools.find((tool) => tool.name === "agent_handshake_accept_invitation");
+  assert.equal(strictAccept.inputSchema.properties.invitation, undefined);
+  assert.deepEqual(strictAccept.inputSchema.required, ["invitationRef"]);
+});
+
+test("2.1.12: accept_invitation by invitationRef forwards the exact stored bytes and consumes the ref", async (t) => {
+  const calls = [];
+  const { make, tmpRoot } = await makeContext(t);
+  const server = make({ fetchImpl: recordingUpstream(calls, () => rpcResult({ roleAccess: "ccra_x" })) });
+  const invitation = genuineInvitation();
+  const ref = await putInvitationRef({ tmpRoot, kind: "received", invitation });
+  const ok = await call(server, 1, "agent_handshake_accept_invitation", { invitationRef: ref, acceptanceIdempotencyKey: "k1" });
+  assert.equal(ok.result.isError, undefined);
+  assert.equal(toolCalls(calls).length, 1);
+  assert.deepEqual(toolCalls(calls)[0].params, {
+    name: "agent_handshake_accept_invitation",
+    arguments: { invitation, acceptanceIdempotencyKey: "k1" },
+  });
+  // Single use: the same ref again is unknown and never reaches upstream.
+  const again = await call(server, 2, "agent_handshake_accept_invitation", { invitationRef: ref });
+  assert.equal(again.result.isError, true);
+  assert.match(again.result.content[0].text, /^INVITATION_REF_UNKNOWN: /);
+  assert.equal(toolCalls(calls).length, 1);
+});
+
+test("2.1.12: a refused or failed upstream accept releases the ref for a retry", async (t) => {
+  const calls = [];
+  let mode = "refuse";
+  const { make, tmpRoot } = await makeContext(t);
+  const server = make({
+    fetchImpl: async (url, init) => {
+      const request = JSON.parse(init.body);
+      calls.push(request);
+      if (mode === "down") return fakeResponse("", { ok: false });
+      const result = mode === "refuse"
+        ? { content: [{ type: "text", text: "{\"error\":\"V2CoordinatorError\",\"retryable\":true}" }], isError: true }
+        : rpcResult({ roleAccess: "ccra_x" });
+      return fakeResponse({ jsonrpc: "2.0", id: request.id, result });
+    },
+  });
+  const invitation = genuineInvitation();
+  const ref = await putInvitationRef({ tmpRoot, kind: "received", invitation });
+  const refused = await call(server, 1, "agent_handshake_accept_invitation", { invitationRef: ref });
+  assert.equal(refused.result.isError, true);
+  mode = "down";
+  const failed = await call(server, 2, "agent_handshake_accept_invitation", { invitationRef: ref });
+  assert.ok(failed.error !== undefined);
+  mode = "ok";
+  const ok = await call(server, 3, "agent_handshake_accept_invitation", { invitationRef: ref });
+  assert.equal(ok.result.isError, undefined);
+  assert.deepEqual(toolCalls(calls).map((c) => c.params.arguments.invitation), [invitation, invitation, invitation]);
+});
+
+test("2.1.12: ref argument discipline — unknown ref, both forms, extra keys, wrong kind", async (t) => {
+  const calls = [];
+  const { make, tmpRoot } = await makeContext(t);
+  const server = make({ fetchImpl: recordingUpstream(calls, () => rpcResult({ roleAccess: "ccra_x" })) });
+  const invitation = genuineInvitation();
+  const issued = await putInvitationRef({ tmpRoot, kind: "issued", invitation });
+  const received = await putInvitationRef({ tmpRoot, kind: "received", invitation });
+  const cases = [
+    [{ invitationRef: `invref_${"0".repeat(32)}` }, /^INVITATION_REF_UNKNOWN: /],
+    [{ invitationRef: issued }, /^INVITATION_REF_UNKNOWN: /],
+    [{ invitationRef: received, invitation }, /^INVITATION_REF_INVALID: /],
+    [{ invitationRef: received, extra: 1 }, /^INVITATION_REF_INVALID: /],
+    [{ invitationRef: 42 }, /^INVITATION_REF_UNKNOWN: /],
+  ];
+  let id = 10;
+  for (const [args, expected] of cases) {
+    const response = await call(server, id++, "agent_handshake_accept_invitation", args);
+    assert.equal(response.result.isError, true, JSON.stringify(Object.keys(args)));
+    assert.match(response.result.content[0].text, expected);
+    assert.equal(response.result.content[0].text.includes(invitation), false);
+  }
+  assert.equal(toolCalls(calls).length, 0);
+  // The wrong-kind and both-forms attempts did not burn the refs.
+  assert.equal((await claimInvitationRef({ tmpRoot, ref: issued, kind: "issued" })).invitation, invitation);
+  assert.equal((await claimInvitationRef({ tmpRoot, ref: received, kind: "received" })).invitation, invitation);
+});
+
+test("2.1.12: a malformed invitation behind a ref is refused locally as the counterparty's and consumed", async (t) => {
+  const calls = [];
+  const { make, tmpRoot } = await makeContext(t);
+  const server = make({ fetchImpl: recordingUpstream(calls, () => rpcResult({ roleAccess: "ccra_x" })) });
+  const good = genuineInvitation();
+  const [segment, sig] = good.split(".");
+  const altered = `${Buffer.from(Buffer.from(segment, "base64url").toString().replace('"expMs"', '"expms"')).toString("base64url")}.${sig}`;
+  const ref = await putInvitationRef({ tmpRoot, kind: "received", invitation: altered });
+  const refused = await call(server, 1, "agent_handshake_accept_invitation", { invitationRef: ref });
+  assert.equal(refused.result.isError, true);
+  assert.match(refused.result.content[0].text, /^INVITATION_CORRUPTED: /);
+  assert.match(refused.result.content[0].text, /sealed/);
+  assert.equal(toolCalls(calls).length, 0);
+  const again = await call(server, 2, "agent_handshake_accept_invitation", { invitationRef: ref });
+  assert.match(again.result.content[0].text, /^INVITATION_REF_UNKNOWN: /);
+});
+
+test("2.1.12 refs mode: a raw invitation is refused without reaching the coordinator", async (t) => {
+  const calls = [];
+  const { make } = await makeContext(t);
+  const server = make({ invitationRefs: true, fetchImpl: recordingUpstream(calls, () => rpcResult({ roleAccess: "ccra_x" })) });
+  const response = await call(server, 1, "agent_handshake_accept_invitation", { invitation: genuineInvitation() });
+  assert.equal(response.result.isError, true);
+  assert.match(response.result.content[0].text, /^INVITATION_BY_REFERENCE_REQUIRED: /);
+  assert.equal(toolCalls(calls).length, 0);
+});
+
+test("2.1.12 refs mode: agent_handshake_invite returns responderInvitationRef, never the invitation", async (t) => {
+  const calls = [];
+  const { make, tmpRoot } = await makeContext(t);
+  const invitation = genuineInvitation();
+  const body = { sessionId: SESSION, roleAccess: "csha_init", responderInvitation: invitation, statementDigest: "e".repeat(64) };
+  const server = make({
+    invitationRefs: true,
+    fetchImpl: recordingUpstream(calls, () => ({ ...rpcResult(body), structuredContent: body })),
+  });
+  const response = await call(server, 1, "agent_handshake_invite", { reference: "r", statement: "s", validForSeconds: "90" });
+  assert.equal(response.result.isError, undefined);
+  const text = response.result.content[0].text;
+  assert.equal(text.includes(invitation), false);
+  assert.equal(JSON.stringify(response.result).includes(invitation), false);
+  const parsed = JSON.parse(text);
+  assert.equal(parsed.responderInvitation, undefined);
+  assert.match(parsed.responderInvitationRef, /^invref_[0-9a-f]{32}$/);
+  assert.equal(parsed.roleAccess, "csha_init");
+  assert.equal(parsed.sessionId, SESSION);
+  assert.equal(response.result.structuredContent.responderInvitation, undefined);
+  assert.equal(response.result.structuredContent.responderInvitationRef, parsed.responderInvitationRef);
+  const claim = await claimInvitationRef({ tmpRoot, ref: parsed.responderInvitationRef, kind: "issued" });
+  assert.equal(claim.invitation, invitation);
+});
+
+test("2.1.12: without refs mode agent_handshake_invite is passed through unchanged", async (t) => {
+  const { make } = await makeContext(t);
+  const invitation = genuineInvitation();
+  const body = { sessionId: SESSION, roleAccess: "csha_init", responderInvitation: invitation };
+  const server = make({ fetchImpl: upstreamResult(rpcResult(body)) });
+  const response = await call(server, 1, "agent_handshake_invite", { reference: "r", statement: "s", validForSeconds: "90" });
+  assert.equal(JSON.parse(response.result.content[0].text).responderInvitation, invitation);
+});
+
+test("2.1.12: refs mode is switched on by CLOCKCHAIN_LOCAL_ADAPTER_INVITATION_REFS=1", async (t) => {
+  const { make } = await makeContext(t);
+  const previous = process.env.CLOCKCHAIN_LOCAL_ADAPTER_INVITATION_REFS;
+  process.env.CLOCKCHAIN_LOCAL_ADAPTER_INVITATION_REFS = "1";
+  t.after(() => {
+    if (previous === undefined) delete process.env.CLOCKCHAIN_LOCAL_ADAPTER_INVITATION_REFS;
+    else process.env.CLOCKCHAIN_LOCAL_ADAPTER_INVITATION_REFS = previous;
+  });
+  const calls = [];
+  const server = make({ fetchImpl: recordingUpstream(calls, () => rpcResult({})) });
+  const response = await call(server, 1, "agent_handshake_accept_invitation", { invitation: genuineInvitation() });
+  assert.match(response.result.content[0].text, /^INVITATION_BY_REFERENCE_REQUIRED: /);
+});
