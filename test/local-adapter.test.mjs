@@ -792,3 +792,35 @@ test("a verified verify-certificate step records the session for sign_agent_cont
   nowMs = validUntilMs;
   assert.equal((await bind()).result.content[0].text, refusedText("BIND_SESSION_EXPIRED"));
 });
+
+test("2.1.11: a corrupted accept_invitation is refused locally, a good one is forwarded", async (t) => {
+  const calls = [];
+  const { make } = await makeContext(t);
+  const server = make({
+    fetchImpl: async (url, init) => {
+      const request = JSON.parse(init.body);
+      calls.push(request);
+      return fakeResponse({ jsonrpc: "2.0", id: request.id, result: rpcResult({ roleAccess: "ccra_x" }) });
+    },
+  });
+  const payload = Buffer.from(JSON.stringify({
+    alg: "HS256", allowedTools: ["agent_handshake_accept_invitation"], aud: "clockchain-agent-handshake",
+    expMs: "2", iss: "https://mcp.clockchain.network", jti: "b532fc9a-385f-448f-a90f-a16f26056f37",
+    kid: "role-2026-08-active", nbfMs: "1", role: "responder", sessionId: SESSION,
+    statementDigest: "e".repeat(64), typ: "clockchain-agent-handshake-role-access", v: 1,
+  })).toString("base64url");
+  const good = `${payload}.${"A".repeat(43)}`;
+  const corrupted = Buffer.from(Buffer.from(payload, "base64url").toString().replace('"expMs"', '"expms"')).toString("base64url");
+  const bad = `${corrupted}.${"A".repeat(43)}`;
+  assert.notEqual(bad, good);
+  assert.equal(bad.length, good.length);
+  const refused = await call(server, 1, "agent_handshake_accept_invitation", { invitation: bad });
+  assert.equal(refused.result.isError, true);
+  assert.match(refused.result.content[0].text, /^INVITATION_CORRUPTED: /);
+  assert.equal(calls.filter((c) => c.method === "tools/call").length, 0);
+  const ok = await call(server, 2, "agent_handshake_accept_invitation", { invitation: good, acceptanceIdempotencyKey: "k1" });
+  assert.equal(ok.result.isError, undefined);
+  const forwarded = calls.filter((c) => c.method === "tools/call");
+  assert.equal(forwarded.length, 1);
+  assert.deepEqual(forwarded[0].params.arguments, { invitation: good, acceptanceIdempotencyKey: "k1" });
+});

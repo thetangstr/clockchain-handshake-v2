@@ -265,3 +265,15 @@ The `shellCommand` text remains in responses for compatibility clients, but
 with the adapter installed the model should never transcribe it: the staged
 step it executes is the same digest-bound command, validated locally, with the
 payload bytes taken from the validated envelope — not from model output.
+
+## Invitation guard (2.1.11)
+
+`agent_handshake_accept_invitation` is still proxied, but the adapter first
+checks the invitation's structure locally: two base64url segments, a payload
+that decodes to exactly the role-access key set (responder role, accept-only
+tools) and re-encodes byte-identically, and a 43-character HMAC signature. A
+mismatch returns `INVITATION_CORRUPTED: ... (expected <n>.43 base64url; got
+<lengths>)` without calling the coordinator, so a mis-copied token never burns
+a non-retryable `role_access_invalid`. Live origin: p6-l-2026-10-01-7, where
+the model re-typed `expMs` as `expms` at identical length. The token is never
+echoed in the refusal.

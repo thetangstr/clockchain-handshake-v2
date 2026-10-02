@@ -166,6 +166,52 @@ function invalid() {
   throw new Error(GENERIC_REFUSAL);
 }
 
+// 2.1.11 invitation guard. The responder invitation is a coordinator-minted
+// role-access token: <base64url(JSON payload)>.<base64url(HMAC-SHA256)>. A
+// model copying it from the opened rendezvous box can silently alter it (live
+// p6-l-2026-10-01-7: "expMs" came back as "expms", identical length), and the
+// coordinator then answers a non-retryable role_access_invalid. Check the
+// structure locally — exact key set, responder role, accept-only tools, a
+// 43-char signature — and refuse with an actionable code before forwarding.
+// The token itself is never echoed.
+const INVITATION_TOOL = "agent_handshake_accept_invitation";
+const ROLE_ACCESS_KEYS = Object.freeze([
+  "alg", "allowedTools", "aud", "expMs", "iss", "jti", "kid", "nbfMs", "role",
+  "sessionId", "statementDigest", "typ", "v",
+]);
+const B64URL = /^[A-Za-z0-9_-]+$/;
+
+export function checkInvitationShape(invitation) {
+  const got = typeof invitation === "string"
+    ? invitation.split(".").map((part) => part.length).join(".")
+    : typeof invitation;
+  let expected = "<payload>";
+  let ok = false;
+  if (typeof invitation === "string" && invitation.length >= 80 && invitation.length <= 4096) {
+    const parts = invitation.split(".");
+    if (parts.length === 2 && B64URL.test(parts[0]) && B64URL.test(parts[1])) {
+      try {
+        const payload = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8"));
+        if (isPlain(payload)) {
+          expected = String(Buffer.from(JSON.stringify(payload)).toString("base64url").length);
+          const keys = Object.keys(payload).sort();
+          ok = keys.length === ROLE_ACCESS_KEYS.length &&
+            keys.every((key, index) => key === ROLE_ACCESS_KEYS[index]) &&
+            Buffer.from(JSON.stringify(payload)).toString("base64url") === parts[0] &&
+            payload.typ === "clockchain-agent-handshake-role-access" &&
+            payload.role === "responder" &&
+            Array.isArray(payload.allowedTools) && payload.allowedTools.length === 1 &&
+            payload.allowedTools[0] === INVITATION_TOOL &&
+            parts[1].length === 43;
+        }
+      } catch { ok = false; }
+    }
+  }
+  if (ok) return null;
+  return `INVITATION_CORRUPTED: the invitation was altered while copying (expected ${expected}.43 base64url; got ${got}). ` +
+    "Re-open the sealed rendezvous box and pass its invitation value byte-for-byte (do not retype, decode, or reconstruct it); the invitation was not consumed.";
+}
+
 function releaseMismatch() {
   throw new Error(ADAPTER_RELEASE_MISMATCH_REFUSAL);
 }
@@ -775,6 +821,10 @@ export function createLocalAdapterServer(options = {}) {
     if (params.name === CONTRACT_BIND_TOOL) {
       const outcome = await callContractBindTool(params);
       return { jsonrpc: "2.0", id, ...outcome };
+    }
+    if (params.name === INVITATION_TOOL) {
+      const refusal = checkInvitationShape(isPlain(params.arguments) ? params.arguments.invitation : undefined);
+      if (refusal !== null) return { jsonrpc: "2.0", id, result: textResult(refusal, true) };
     }
     let envelope;
     try {
