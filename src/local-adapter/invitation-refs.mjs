@@ -252,3 +252,36 @@ export function invitationShape(invitation) {
     ? invitation.split(".").map((part) => part.length).join(".")
     : typeof invitation;
 }
+
+// 2.1.13 deliver-first guard (live p6-l-2026-10-02-2). The adapter issued
+// `ref` (kind "issued") from agent_handshake_invite; the company signer's
+// seal_to claims and consumes it once the invitation is sealed to the
+// provider. The record's absence is therefore the delivery signal:
+//
+//   "consumed" — <ref>.json is gone (sealed, or a seal_to is in flight);
+//   "pending"  — the record is still there and has not expired, or the store
+//                cannot be read (fail closed: nothing proves delivery);
+//   "expired"  — the record is still there but past its TTL (or `expMs`, the
+//                adapter's own record of it, has passed) or unreadable, so it
+//                can never be sealed: the caller must start a fresh invitation.
+export async function issuedInvitationRefState({ tmpRoot, ref, expMs, nowMs = Date.now(), uid = currentUid() } = {}) {
+  if (typeof ref !== "string" || !INVITATION_REF_RE.test(ref) || typeof tmpRoot !== "string" || tmpRoot.length === 0) {
+    return "pending";
+  }
+  const path = join(tmpRoot, INVITATION_REF_DIR, `${ref}.json`);
+  try {
+    await lstat(path);
+  } catch (error) {
+    return error?.code === "ENOENT" ? "consumed" : "pending";
+  }
+  if (Number.isSafeInteger(expMs) && expMs <= nowMs) return "expired";
+  const record = await readRecord(path, uid);
+  if (record === null || record.kind !== "issued") return "expired";
+  return BigInt(record.expMs) <= BigInt(nowMs) ? "expired" : "pending";
+}
+
+/** Remove an issued record that can no longer be delivered. Best effort. */
+export async function discardIssuedInvitationRef({ tmpRoot, ref } = {}) {
+  if (typeof ref !== "string" || !INVITATION_REF_RE.test(ref) || typeof tmpRoot !== "string") return;
+  await unlink(join(tmpRoot, INVITATION_REF_DIR, `${ref}.json`)).catch(() => {});
+}

@@ -1025,3 +1025,178 @@ test("2.1.12: refs mode is switched on by CLOCKCHAIN_LOCAL_ADAPTER_INVITATION_RE
   const response = await call(server, 1, "agent_handshake_accept_invitation", { invitation: genuineInvitation() });
   assert.match(response.result.content[0].text, /^INVITATION_BY_REFERENCE_REQUIRED: /);
 });
+
+// ---- 2.1.13: deliver-first guard (live p6-l-2026-10-02-2) ------------------
+// The buyer created the invite in refs mode, then ran its staged local
+// init/policy/inspect steps and never sealed or delivered the invitation; the
+// provider waited ten minutes for nothing. In refs mode the adapter now refuses
+// the initiator's staged steps and join/next/submit progression for a session
+// while the invitation ref it issued for that session is unconsumed.
+
+const SESSION_2 = "22222222-3333-4444-8555-666666666666";
+const { INVITATION_REF_TTL_MS: REF_TTL_MS } = await import("../src/local-adapter/invitation-refs.mjs");
+const { access: fsAccess } = await import("node:fs/promises");
+
+async function deliverFirstContext(t, { invitationRefs = true } = {}) {
+  const ctx = await makeContext(t);
+  const calls = [];
+  const runs = [];
+  const clock = { nowMs: 1_800_000_000_000 };
+  const inviteBodies = new Map();
+  const stepsBySession = new Map();
+  const steps = (sessionId) => {
+    if (!stepsBySession.has(sessionId)) {
+      stepsBySession.set(sessionId, ["init", "inspect"].map((operation) =>
+        helperStep({ manifestDigest: ctx.fixture.pin.manifestDigest, operation, sessionId })));
+    }
+    return stepsBySession.get(sessionId);
+  };
+  let nextInvite = SESSION;
+  const server = ctx.make({
+    invitationRefs,
+    now: () => clock.nowMs,
+    fetchImpl: recordingUpstream(calls, (request) => {
+      if (request.params?.name === "agent_handshake_invite") {
+        const sessionId = nextInvite;
+        const body = {
+          sessionId,
+          roleAccess: `csha_${sessionId.slice(0, 8)}`,
+          responderInvitation: genuineInvitation({ sessionId }),
+          localAction: { helperSteps: steps(sessionId) },
+        };
+        inviteBodies.set(sessionId, body);
+        return { ...rpcResult(body), structuredContent: body };
+      }
+      return rpcResult({ ok: true });
+    }),
+    runHelper: async (input) => {
+      runs.push(input);
+      return { code: 0, stderr: "", stdout: cliResult(input.args[6]) };
+    },
+  });
+  const invite = async (id, sessionId = SESSION) => {
+    nextInvite = sessionId;
+    const response = await call(server, id, "agent_handshake_invite", { reference: "r", statement: "s", validForSeconds: "90" });
+    return JSON.parse(response.result.content[0].text);
+  };
+  const refPath = (ref) => join(ctx.tmpRoot, ".clockchain", "invitation-refs", `${ref}.json`);
+  const exists = (path) => fsAccess(path).then(() => true, () => false);
+  // What the company signer's seal_to does with { plaintextRef }: claim the
+  // issued record and consume it once the box is sealed.
+  const sealTo = async (ref) => (await claimInvitationRef({ tmpRoot: ctx.tmpRoot, ref, kind: "issued", nowMs: clock.nowMs })).consume();
+  return { ...ctx, calls, runs, clock, server, invite, refPath, exists, sealTo };
+}
+
+test("2.1.13: version is 2.1.13", async () => {
+  const { LOCAL_ADAPTER_VERSION: version } = await import("../src/agent-handshake/v2/constants.mjs");
+  assert.equal(version, "2.1.13");
+});
+
+test("2.1.13 refs mode: the initiator's staged steps are refused until the issued ref is sealed", async (t) => {
+  const { server, invite, runs, sealTo, refPath, exists } = await deliverFirstContext(t);
+  const issued = await invite(1);
+  assert.match(issued.responderInvitationRef, /^invref_[0-9a-f]{32}$/);
+  assert.equal(server.pendingCount(), 2);
+
+  const refused = await call(server, 2, ADAPTER_TOOL);
+  assert.equal(refused.result.isError, true);
+  const text = refused.result.content[0].text;
+  assert.match(text, /^DELIVER_INVITATION_FIRST: /);
+  assert.ok(text.includes(issued.responderInvitationRef), "the refusal carries the ref");
+  assert.match(text, /seal this invitation reference to the provider and deliver it before continuing/);
+  assert.equal(runs.length, 0, "nothing executed");
+  assert.equal(server.pendingCount(), 2, "the staged steps stay queued");
+  assert.equal(await exists(refPath(issued.responderInvitationRef)), true, "the refusal never consumes the ref");
+
+  await sealTo(issued.responderInvitationRef);
+  const executed = await call(server, 3, ADAPTER_TOOL);
+  assert.equal(executed.result.isError, undefined, executed.result.content[0].text);
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0].args[6], "init");
+  assert.equal((await call(server, 4, ADAPTER_TOOL)).result.isError, undefined);
+  assert.equal(runs.length, 2);
+});
+
+test("2.1.13 refs mode: join/next/submit for the initiator session are refused locally until delivery", async (t) => {
+  const { server, invite, calls, sealTo } = await deliverFirstContext(t);
+  const issued = await invite(1);
+  const before = toolCalls(calls).length;
+  let id = 10;
+  for (const name of ["agent_handshake_join", "agent_handshake_next", "agent_handshake_submit", "agent_handshake_submit_checkpoint"]) {
+    const refused = await call(server, id++, name, { access: issued.roleAccess });
+    assert.equal(refused.result?.isError, true, name);
+    assert.match(refused.result.content[0].text, /^DELIVER_INVITATION_FIRST: /, name);
+    assert.ok(refused.result.content[0].text.includes(issued.responderInvitationRef));
+  }
+  assert.equal(toolCalls(calls).length, before, "nothing reached the coordinator");
+  // Read-only status is not progression and another session's access is not this one.
+  assert.equal((await call(server, id++, "agent_handshake_status", { access: issued.roleAccess })).result.isError, undefined);
+  assert.equal((await call(server, id++, "agent_handshake_join", { access: "csha_other" })).result.isError, undefined);
+
+  await sealTo(issued.responderInvitationRef);
+  const joined = await call(server, id++, "agent_handshake_join", { access: issued.roleAccess });
+  assert.equal(joined.result.isError, undefined);
+  assert.equal(toolCalls(calls).at(-1).params.name, "agent_handshake_join");
+});
+
+test("2.1.13 refs mode: a seal_to that claimed then released the ref has not delivered it", async (t) => {
+  const { server, invite, runs, clock, tmpRoot } = await deliverFirstContext(t);
+  const issued = await invite(1);
+  const claim = await claimInvitationRef({ tmpRoot, ref: issued.responderInvitationRef, kind: "issued", nowMs: clock.nowMs });
+  await claim.release();
+  const refused = await call(server, 2, ADAPTER_TOOL);
+  assert.match(refused.result.content[0].text, /^DELIVER_INVITATION_FIRST: /);
+  assert.equal(runs.length, 0);
+});
+
+test("2.1.13 refs mode: an expired undelivered ref returns a distinct refusal and never deadlocks", async (t) => {
+  const { server, invite, runs, clock, refPath, exists, sealTo } = await deliverFirstContext(t);
+  const stale = await invite(1);
+  clock.nowMs += REF_TTL_MS;
+  const expired = await call(server, 2, ADAPTER_TOOL);
+  assert.equal(expired.result.isError, true);
+  const text = expired.result.content[0].text;
+  assert.match(text, /^DELIVER_INVITATION_EXPIRED: /);
+  assert.doesNotMatch(text, /^DELIVER_INVITATION_FIRST/);
+  assert.ok(text.includes(stale.responderInvitationRef));
+  assert.match(text, /create a fresh invitation/i);
+  assert.equal(runs.length, 0);
+  assert.equal(server.pendingCount(), 0, "the stale session's steps were discarded");
+  assert.equal(await exists(refPath(stale.responderInvitationRef)), false, "the expired bearer record is removed");
+  // The stale session's progression keeps the same distinct refusal.
+  const join = await call(server, 3, "agent_handshake_join", { access: stale.roleAccess });
+  assert.match(join.result.content[0].text, /^DELIVER_INVITATION_EXPIRED: /);
+
+  // A fresh invitation proceeds normally once delivered.
+  const fresh = await invite(4, SESSION_2);
+  assert.notEqual(fresh.responderInvitationRef, stale.responderInvitationRef);
+  assert.match((await call(server, 5, ADAPTER_TOOL)).result.content[0].text, /^DELIVER_INVITATION_FIRST: /);
+  await sealTo(fresh.responderInvitationRef);
+  const executed = await call(server, 6, ADAPTER_TOOL);
+  assert.equal(executed.result.isError, undefined, executed.result.content[0].text);
+  assert.equal(runs.length, 1);
+  assert.ok(runs[0].args[8].endsWith(`/${SESSION_2}/initiator`));
+});
+
+test("2.1.13 refs mode: a fresh invite after an unnoticed expiry abandons the stale session instead of treating the swept record as delivered", async (t) => {
+  const { server, invite, runs, clock, refPath, exists, sealTo } = await deliverFirstContext(t);
+  const stale = await invite(1);
+  clock.nowMs += REF_TTL_MS + 1;
+  // No authorize call in between: the next put sweeps the expired record.
+  const fresh = await invite(2, SESSION_2);
+  assert.equal(await exists(refPath(stale.responderInvitationRef)), false);
+  await sealTo(fresh.responderInvitationRef);
+  const executed = await call(server, 3, ADAPTER_TOOL);
+  assert.equal(executed.result.isError, undefined, executed.result.content[0].text);
+  assert.ok(runs[0].args[8].endsWith(`/${SESSION_2}/initiator`), "the stale session's step never runs");
+  const join = await call(server, 4, "agent_handshake_join", { access: stale.roleAccess });
+  assert.match(join.result.content[0].text, /^DELIVER_INVITATION_EXPIRED: /);
+});
+
+test("2.1.13: without refs mode there is no deliver-first guard", async (t) => {
+  const { server, invite, runs } = await deliverFirstContext(t, { invitationRefs: false });
+  const issued = await invite(1);
+  assert.equal(typeof issued.responderInvitation, "string");
+  assert.equal((await call(server, 2, ADAPTER_TOOL)).result.isError, undefined);
+  assert.equal(runs.length, 1);
+});

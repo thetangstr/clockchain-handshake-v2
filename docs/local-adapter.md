@@ -315,3 +315,38 @@ durable fix is that the model never carries the invitation.
 - **Guard text.** When the length is unchanged, `INVITATION_CORRUPTED` now names
   the unexpected/missing payload field names (public schema only) instead of
   printing two identical lengths.
+
+## Deliver-first guard (2.1.13)
+
+Live p6-l-2026-10-02-2: the buyer created the invite in refs mode, then ran its
+staged local init/policy/inspect steps and never sealed or delivered the
+invitation; the provider waited out the ten-minute window for nothing.
+
+In refs mode the adapter tracks every `responderInvitationRef` it issued, with
+the Initiator session's `sessionId` and `roleAccess`. While that ref is
+unconsumed (`<TMPDIR>/.clockchain/invitation-refs/<ref>.json` still exists),
+the adapter refuses, for that session:
+
+- `authorize_local_action` when the next staged step is that session's
+  Initiator step (the step stays queued), and
+- `agent_handshake_join`, `agent_handshake_next`, `agent_handshake_submit` and
+  `agent_handshake_submit_checkpoint` called with that session's access (never
+  forwarded). `agent_handshake_status` and `agent_handshake_get_certificate`
+  are read-only and are not guarded.
+
+The refusal is `DELIVER_INVITATION_FIRST: … invitation reference <ref> is still
+unconsumed. seal this invitation reference to the provider and deliver it
+before continuing: call your signer's seal_to with { plaintextRef: "<ref>" } …`.
+The signer's `seal_to` claims and consumes the record; its absence is the
+delivery signal (a claim that is released again puts the guard back).
+
+Once the ref has expired (15 minutes) undelivered, the guard returns the
+distinct `DELIVER_INVITATION_EXPIRED: … Create a fresh invitation with
+agent_handshake_invite …`, deletes the expired record and drops that session's
+staged Initiator steps, so a fresh invitation's steps are never stuck behind
+them. Issuing a new invite settles every tracked ref first, so the store's
+sweep of expired records is never mistaken for a delivery.
+
+Limit: if another process deletes an unexpired issued record without sealing
+it, the adapter reads that as delivered. Only the company signer (same uid,
+private TMPDIR) can touch the store.

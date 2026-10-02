@@ -35,8 +35,8 @@ async function refusal(promise) {
   return "no refusal";
 }
 
-test("version is 2.1.12", () => {
-  assert.equal(LOCAL_ADAPTER_VERSION, "2.1.12");
+test("version is 2.1.13", () => {
+  assert.equal(LOCAL_ADAPTER_VERSION, "2.1.13");
 });
 
 test("put returns a short ref, writes a private record, and claim returns the exact bytes once", async (t) => {
@@ -154,4 +154,27 @@ test("the guard names the altered field when the length is unchanged (live p6-l-
   assert.match(text, /"expms"/);
   assert.match(text, /"expMs"/);
   assert.equal(text.includes(altered), false);
+});
+
+// 2.1.13 deliver-first guard: the issued record's absence is the delivery signal.
+const { issuedInvitationRefState, discardIssuedInvitationRef } = await import("../src/local-adapter/invitation-refs.mjs");
+
+test("2.1.13 issuedInvitationRefState: pending, consumed by seal_to, expired, and discarded", async (t) => {
+  const tmpRoot = await root(t);
+  const ref = await putInvitationRef({ tmpRoot, kind: "issued", invitation: INVITATION, nowMs: 1_000 });
+  assert.equal(await issuedInvitationRefState({ tmpRoot, ref, nowMs: 2_000 }), "pending");
+  assert.equal(await issuedInvitationRefState({ tmpRoot, ref, nowMs: 1_000 + INVITATION_REF_TTL_MS }), "expired");
+  assert.equal(await issuedInvitationRefState({ tmpRoot, ref, expMs: 1_500, nowMs: 2_000 }), "expired");
+  const claim = await claimInvitationRef({ tmpRoot, ref, kind: "issued", nowMs: 2_000 });
+  assert.equal(await issuedInvitationRefState({ tmpRoot, ref, nowMs: 2_000 }), "consumed", "a seal_to in flight counts");
+  await claim.release();
+  assert.equal(await issuedInvitationRefState({ tmpRoot, ref, nowMs: 2_000 }), "pending", "a released claim is undelivered");
+  await (await claimInvitationRef({ tmpRoot, ref, kind: "issued", nowMs: 2_000 })).consume();
+  assert.equal(await issuedInvitationRefState({ tmpRoot, ref, nowMs: 2_000 }), "consumed");
+
+  const other = await putInvitationRef({ tmpRoot, kind: "issued", invitation: INVITATION, nowMs: 1_000 });
+  await discardIssuedInvitationRef({ tmpRoot, ref: other });
+  assert.equal(await issuedInvitationRefState({ tmpRoot, ref: other, nowMs: 2_000 }), "consumed");
+  const received = await putInvitationRef({ tmpRoot, kind: "received", invitation: INVITATION, nowMs: 1_000 });
+  assert.equal(await issuedInvitationRefState({ tmpRoot, ref: received, nowMs: 2_000 }), "expired", "not an issued record: can never be sealed");
 });

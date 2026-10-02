@@ -55,9 +55,12 @@ import { VERIFIED_HELPER_BOOTSTRAP } from "../harness/verified-release-action-re
 import {
   INVITATION_REF_REFUSALS,
   INVITATION_REF_RE,
+  INVITATION_REF_TTL_MS,
   InvitationRefError,
   claimInvitationRef,
+  discardIssuedInvitationRef,
   invitationShape,
+  issuedInvitationRefState,
   putInvitationRef,
 } from "./invitation-refs.mjs";
 
@@ -233,6 +236,39 @@ function withInvitationRef(tool, refsOnly) {
         : "Prefer invitationRef (from your signer's open_sealed) over the invitation text: the adapter supplies the exact bytes locally."),
     inputSchema: { ...schema, properties, required: refsOnly ? ["invitationRef"] : required },
   };
+}
+
+// 2.1.13 deliver-first guard (live p6-l-2026-10-02-2): the buyer created the
+// invite in refs mode, then ran the staged local init/policy/inspect steps and
+// never sealed or delivered the invitation; the provider waited ten minutes for
+// nothing. In refs mode, while the ref this adapter issued for an Initiator
+// session is unconsumed (<TMPDIR>/.clockchain/invitation-refs/<ref>.json still
+// exists — the signer's seal_to consumes it), the adapter refuses that
+// session's staged Initiator steps and its join/next/submit progression. An
+// expired ref gets a distinct refusal and the session's staged steps are
+// dropped, so the queue never deadlocks behind a session that cannot proceed.
+export const DELIVER_INVITATION_FIRST = "DELIVER_INVITATION_FIRST";
+export const DELIVER_INVITATION_EXPIRED = "DELIVER_INVITATION_EXPIRED";
+const DELIVERY_GUARDED_TOOLS = Object.freeze(new Set([
+  "agent_handshake_join",
+  "agent_handshake_next",
+  "agent_handshake_submit",
+  "agent_handshake_submit_checkpoint",
+]));
+function deliverFirstText(entry, { staged }) {
+  return `${DELIVER_INVITATION_FIRST}: the responder invitation for session ${entry.sessionId ?? "(this session)"} ` +
+    `has not been delivered — invitation reference ${entry.ref} is still unconsumed. ` +
+    "seal this invitation reference to the provider and deliver it before continuing: " +
+    `call your signer's seal_to with { plaintextRef: "${entry.ref}" } and send the sealed box to the provider. ` +
+    (staged
+      ? "Nothing was executed; the staged step stays queued."
+      : "Nothing was sent to the coordinator.");
+}
+function deliverExpiredText(entry) {
+  return `${DELIVER_INVITATION_EXPIRED}: invitation reference ${entry.ref} for session ${entry.sessionId ?? "(this session)"} ` +
+    "expired before it was delivered, so this session can never be joined. " +
+    "Create a fresh invitation with agent_handshake_invite, seal its new responderInvitationRef to the provider, " +
+    "and deliver it; this session's staged steps were discarded.";
 }
 
 export function checkInvitationShape(invitation, { origin = "copy" } = {}) {
@@ -673,6 +709,11 @@ export function createLocalAdapterServer(options = {}) {
   if (input.invitationRefs !== undefined && typeof input.invitationRefs !== "boolean") invalid();
   const invitationRefs = input.invitationRefs ?? process.env[INVITATION_REFS_ENV] === "1";
   const queue = [];
+  // 2.1.13: issued refs not yet consumed by the signer's seal_to, and the
+  // sessions abandoned because their ref expired undelivered. Entries are
+  // { ref, sessionId, roleAccess, expMs }.
+  const undelivered = new Map();
+  const abandoned = new Map();
   let upstreamId = 0;
   let upstreamInit = null;
   let pendingExecution = Promise.resolve();
@@ -783,8 +824,63 @@ export function createLocalAdapterServer(options = {}) {
     ) invalid();
   }
 
+  function dropStagedSteps(sessionId) {
+    if (sessionId === null) return;
+    for (let index = queue.length - 1; index >= 0; index -= 1) {
+      if (queue[index].sessionId === sessionId && queue[index].role === "initiator") queue.splice(index, 1);
+    }
+  }
+
+  async function abandonSession(entry) {
+    undelivered.delete(entry.ref);
+    abandoned.set(entry.ref, entry);
+    // Bounded: only the most recent abandoned sessions keep their refusal.
+    while (abandoned.size > MAX_STAGED_STEPS) abandoned.delete(abandoned.keys().next().value);
+    dropStagedSteps(entry.sessionId);
+    await discardIssuedInvitationRef({ tmpRoot, ref: entry.ref });
+  }
+
+  // Resolve the delivery state of the issued ref for a session (by sessionId
+  // or by its Initiator roleAccess). null = nothing to guard.
+  async function deliveryGuard({ sessionId = null, access = null }) {
+    if (!invitationRefs) return null;
+    const matches = (entry) =>
+      (sessionId !== null && entry.sessionId === sessionId) ||
+      (access !== null && entry.roleAccess === access);
+    for (const entry of abandoned.values()) if (matches(entry)) return { kind: "expired", entry };
+    for (const entry of [...undelivered.values()]) {
+      if (!matches(entry)) continue;
+      const state = await issuedInvitationRefState({ tmpRoot, ref: entry.ref, expMs: entry.expMs, nowMs: now() });
+      if (state === "consumed") { undelivered.delete(entry.ref); continue; }
+      if (state === "pending") return { kind: "pending", entry };
+      await abandonSession(entry);
+      return { kind: "expired", entry };
+    }
+    return null;
+  }
+
+  // Before issuing a new ref: settle every tracked one, so the store sweep in
+  // putInvitationRef (which deletes expired records) is never mistaken for a
+  // delivery of a session that expired unnoticed.
+  async function settleIssuedRefs() {
+    for (const entry of [...undelivered.values()]) {
+      const state = await issuedInvitationRefState({ tmpRoot, ref: entry.ref, expMs: entry.expMs, nowMs: now() });
+      if (state === "consumed") undelivered.delete(entry.ref);
+      else if (state === "expired") await abandonSession(entry);
+    }
+  }
+
   async function executeStagedAction() {
     while (queue.length > 0 && now() - queue[0].stagedAtMs > STAGED_STEP_TTL_MS) queue.shift();
+    const head = queue[0];
+    if (head !== undefined && head.role === "initiator") {
+      const guard = await deliveryGuard({ sessionId: head.sessionId });
+      if (guard?.kind === "pending") return textResult(deliverFirstText(guard.entry, { staged: true }), true);
+      if (guard?.kind === "expired") {
+        dropStagedSteps(head.sessionId);
+        return textResult(deliverExpiredText(guard.entry), true);
+      }
+    }
     const step = queue.shift();
     if (step === undefined) {
       return textResult("Clockchain local adapter has no staged action to execute.", true);
@@ -915,6 +1011,21 @@ export function createLocalAdapterServer(options = {}) {
       const refusal = checkInvitationShape(args.invitation);
       if (refusal !== null) return { jsonrpc: "2.0", id, result: textResult(refusal, true) };
     }
+    if (invitationRefs && DELIVERY_GUARDED_TOOLS.has(params.name)) {
+      const args = isPlain(params.arguments) ? params.arguments : {};
+      const access = typeof args.access === "string" ? args.access
+        : typeof args.roleAccess === "string" ? args.roleAccess : null;
+      const sessionId = typeof args.sessionId === "string" ? args.sessionId : null;
+      if (access !== null || sessionId !== null) {
+        const guard = await deliveryGuard({ sessionId, access });
+        if (guard?.kind === "pending") {
+          return { jsonrpc: "2.0", id, result: textResult(deliverFirstText(guard.entry, { staged: false }), true) };
+        }
+        if (guard?.kind === "expired") {
+          return { jsonrpc: "2.0", id, result: textResult(deliverExpiredText(guard.entry), true) };
+        }
+      }
+    }
     return proxyToolCall(id, params);
   }
 
@@ -964,6 +1075,9 @@ export function createLocalAdapterServer(options = {}) {
     if (!isPlain(result) || !Array.isArray(result.content)) return result;
     let ref = null;
     let invitation = null;
+    let sessionId = null;
+    let roleAccess = null;
+    let issuedAtMs = null;
     const content = [];
     for (const item of result.content) {
       if (!isPlain(item) || item.type !== "text" || typeof item.text !== "string") { content.push(item); continue; }
@@ -972,11 +1086,19 @@ export function createLocalAdapterServer(options = {}) {
       if (!isPlain(parsed) || typeof parsed.responderInvitation !== "string") { content.push(item); continue; }
       if (invitation !== null && parsed.responderInvitation !== invitation) invalid();
       invitation = parsed.responderInvitation;
-      ref ??= await putInvitationRef({ tmpRoot, kind: "issued", invitation, nowMs: now() });
+      if (typeof parsed.sessionId === "string" && UUID.test(parsed.sessionId)) sessionId ??= parsed.sessionId;
+      if (typeof parsed.roleAccess === "string" && parsed.roleAccess.length > 0) roleAccess ??= parsed.roleAccess;
+      if (ref === null) {
+        await settleIssuedRefs();
+        issuedAtMs = now();
+        ref = await putInvitationRef({ tmpRoot, kind: "issued", invitation, nowMs: issuedAtMs });
+      }
       const { responderInvitation: _withheld, ...rest } = parsed;
       content.push({ ...item, text: JSON.stringify({ ...rest, responderInvitationRef: ref }) });
     }
     if (ref === null) return result;
+    // 2.1.13: track the ref until the signer's seal_to consumes it.
+    undelivered.set(ref, Object.freeze({ ref, sessionId, roleAccess, expMs: issuedAtMs + INVITATION_REF_TTL_MS }));
     const next = { ...result, content };
     if (isPlain(result.structuredContent)) {
       const { responderInvitation: _withheld, ...rest } = result.structuredContent;

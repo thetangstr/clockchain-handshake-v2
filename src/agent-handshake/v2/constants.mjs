@@ -31,4 +31,4 @@ export const AGENT_HANDSHAKE_RELEASE_ASSET_PREFIX =
 // wrapper that floats independently (bugfix/doc/scrub releases) while the
 // vendored helper pin inside stays at the helper release above. The publish
 // workflow asserts tag == this version and vendored pin == helper version.
-export const LOCAL_ADAPTER_VERSION = "2.1.12";
+export const LOCAL_ADAPTER_VERSION = "2.1.13";
