@@ -1087,9 +1087,9 @@ async function deliverFirstContext(t, { invitationRefs = true } = {}) {
   return { ...ctx, calls, runs, clock, server, invite, refPath, exists, sealTo };
 }
 
-test("2.1.13: version is 2.1.13", async () => {
+test("2.2.0: version is 2.2.0 (the 2.1.13 guard ships unchanged in behaviour)", async () => {
   const { LOCAL_ADAPTER_VERSION: version } = await import("../src/agent-handshake/v2/constants.mjs");
-  assert.equal(version, "2.1.13");
+  assert.equal(version, "2.2.0");
 });
 
 test("2.1.13 refs mode: the initiator's staged steps are refused until the issued ref is sealed", async (t) => {

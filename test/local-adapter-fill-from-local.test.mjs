@@ -271,7 +271,8 @@ test("2.2.0 tools/list: without pinned terms the invite schema is left as publis
 test("2.2.0 join: access, helperVersion, sessionKeyAddress and policyDigest come from the adapter's own results", async (t) => {
   const { server, calls } = await context(t);
   const invited = JSON.parse((await call(server, 1, "agent_handshake_invite", { reference: "r", statement: "s", validForSeconds: "90" })).result.content[0].text);
-  assert.equal((await call(server, 2, ADAPTER_TOOL)).result.isError, undefined);
+  const initd = await call(server, 2, ADAPTER_TOOL);
+  assert.equal(initd.result.isError, undefined, JSON.stringify(initd));
   const inspected = await call(server, 3, ADAPTER_TOOL);
   const visible = inspected.result.content[0].text;
   assert.equal(visible.includes(ADDRESS), false, "the full address is not shown");
@@ -338,9 +339,9 @@ test("2.2.0 sign: the signature and checkpoint are held locally and submitted in
   });
   assert.equal((await call(server, 10, "agent_handshake_submit", {})).result.isError, undefined);
   assert.deepEqual(lastForwarded(calls).arguments, { access: invited.roleAccess, policyDigest: POLICY_DIGEST, signatureHex: SIG_2 });
-  // Both signatures are spent: a further submit has nothing to fill and is forwarded as given.
+  // Both signatures are spent: a further submit gets no signature (the coordinator answers as before).
   await call(server, 11, "agent_handshake_submit", {});
-  assert.deepEqual(lastForwarded(calls).arguments, { access: invited.roleAccess });
+  assert.deepEqual(lastForwarded(calls).arguments, { access: invited.roleAccess, policyDigest: POLICY_DIGEST });
 });
 
 test("2.2.0 sign: a refused submit keeps the signature for the retry; a wrong signature never leaves the machine", async (t) => {
@@ -361,11 +362,10 @@ test("2.2.0 sign: a refused submit keeps the signature for the retry; a wrong si
   assert.equal(lastForwarded(calls).arguments.signatureHex, SIG_1);
 });
 
-test("2.2.0 access: optional with one live session, SESSION_AMBIGUOUS with two, refused locally with none", async (t) => {
+test("2.2.0 access: optional with one live session, SESSION_AMBIGUOUS with two, forwarded as given with none", async (t) => {
   const { server, calls, setSession } = await context(t);
-  const before = toolCalls(calls).length;
-  assert.match(errorText(await call(server, 1, "agent_handshake_status", {})), /^HANDSHAKE_SESSION_UNKNOWN: /);
-  assert.equal(toolCalls(calls).length, before);
+  await call(server, 1, "agent_handshake_status", {});
+  assert.deepEqual(lastForwarded(calls).arguments, {}, "no session held: nothing to fill");
   const first = JSON.parse((await call(server, 2, "agent_handshake_invite", { reference: "r", statement: "s", validForSeconds: "90" })).result.content[0].text);
   await call(server, 3, "agent_handshake_status", {});
   assert.deepEqual(lastForwarded(calls).arguments, { access: first.roleAccess });

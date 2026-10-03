@@ -12,6 +12,12 @@
 // staged digest-bound step per call through the pinned local helper. No
 // runtime download, no eval of remote bytes, no model transcription.
 //
+// 2.2.0 (fill-from-local.mjs): the adapter fills every long handshake argument
+// — role access, session key address, policy digest, signatures, checkpoint,
+// invite terms — from its own staged results and withholds the signatures from
+// authorize_local_action results, so the model never carries them. The number
+// of model calls, and so of coordinator receipts, is unchanged.
+//
 // One other local tool exists: sign_agent_contract_bind (contract-bind.mjs),
 // which signs exactly one agent-contract.bind/v1 statement with the session
 // key of a handshake session this adapter already holds — never anything
@@ -52,6 +58,20 @@ import {
   signContractBindStatement,
 } from "./contract-bind.mjs";
 import { VERIFIED_HELPER_BOOTSTRAP } from "../harness/verified-release-action-recorder.mjs";
+import {
+  ACCESS_TOOLS,
+  LOCAL_FILL_REFUSALS,
+  createForwardJournal,
+  createLocalValues,
+  localFillRefusalText,
+  planAccessFill,
+  planInviteFill,
+  redactHelperResult,
+  resolveInviteTerms,
+  roleAccessFromResult,
+  serverNonceFromResult,
+  withLocalFills,
+} from "./fill-from-local.mjs";
 import {
   INVITATION_REF_REFUSALS,
   INVITATION_REF_RE,
@@ -663,7 +683,7 @@ async function defaultRunHelper({ args, file, maxBufferBytes, timeoutMs }) {
 export function createLocalAdapterServer(options = {}) {
   const input = exact(options, [
     "assetDir", "assets", "contractBind", "endpoint", "fetchImpl", "helperPath", "input",
-    "invitationRefs", "manifestPath", "now", "output", "pin", "pinPath", "runHelper", "tmpdir",
+    "invitationRefs", "inviteTerms", "manifestPath", "now", "output", "pin", "pinPath", "runHelper", "tmpdir",
   ], []);
   const assets = input.assets !== undefined
     ? (() => {
@@ -713,6 +733,16 @@ export function createLocalAdapterServer(options = {}) {
   // { ref, sessionId, roleAccess, expMs }.
   const undelivered = new Map();
   const abandoned = new Map();
+  // 2.2.0: role accesses and helper results this adapter holds, the invite
+  // terms pin, and the forwarding journal (fill-from-local.mjs).
+  const localValues = createLocalValues({ now });
+  const inviteTermsPin = resolveInviteTerms({
+    option: input.inviteTerms,
+    env: process.env,
+    endpoint,
+    defaultEndpoint: ADAPTER_DEFAULT_ENDPOINT,
+  });
+  const forwardJournal = createForwardJournal({ tmpRoot, now });
   let upstreamId = 0;
   let upstreamInit = null;
   let pendingExecution = Promise.resolve();
@@ -924,7 +954,16 @@ export function createLocalAdapterServer(options = {}) {
         expiresAtMs: Number(verifiedSession.expiresAtMs),
       });
     }
-    return textResult(text);
+    // 2.2.0: keep the values the handshake tools need, and show the model a
+    // copy without the signatures, the checkpoint or any long hex.
+    let signRequest = null;
+    if (step.operation === "sign" && step.payloadBase64url !== null) {
+      try { signRequest = JSON.parse(Buffer.from(step.payloadBase64url, "base64url").toString("utf8")); } catch { signRequest = null; }
+    }
+    localValues.recordHelperResult({ step, record, signRequest });
+    return textResult(JSON.stringify(redactHelperResult(record, {
+      signingOperation: typeof signRequest?.operation === "string" ? signRequest.operation : null,
+    })));
   }
 
   async function callAdapterTool(params) {
@@ -976,7 +1015,12 @@ export function createLocalAdapterServer(options = {}) {
         id,
         result: {
           ...result,
-          tools: [...tools.map((tool) => withInvitationRef(tool, invitationRefs)), ...LOCAL_TOOL_DEFINITIONS],
+          tools: [
+            ...tools.map((tool) => withLocalFills(withInvitationRef(tool, invitationRefs), {
+              inviteTerms: inviteTermsPin.terms ?? null,
+            })),
+            ...LOCAL_TOOL_DEFINITIONS,
+          ],
         },
       };
     } catch {
@@ -1010,22 +1054,106 @@ export function createLocalAdapterServer(options = {}) {
       const refusal = checkInvitationShape(args.invitation);
       if (refusal !== null) return { jsonrpc: "2.0", id, result: textResult(refusal, true) };
     }
-    if (invitationRefs && DELIVERY_GUARDED_TOOLS.has(params.name)) {
-      const args = isPlain(params.arguments) ? params.arguments : {};
-      const access = typeof args.access === "string" ? args.access
-        : typeof args.roleAccess === "string" ? args.roleAccess : null;
-      const sessionId = typeof args.sessionId === "string" ? args.sessionId : null;
-      if (access !== null || sessionId !== null) {
-        const guard = await deliveryGuard({ sessionId, access });
-        if (guard?.kind === "pending") {
-          return { jsonrpc: "2.0", id, result: textResult(deliverFirstText(guard.entry, { staged: false }), true) };
+    if (params.name === INVITE_TOOL) {
+      if (inviteTermsPin.invalid === true) {
+        return { jsonrpc: "2.0", id, result: textResult(localFillRefusalText(LOCAL_FILL_REFUSALS.termsPin), true) };
+      }
+      if (inviteTermsPin.terms !== null) {
+        const args = isPlain(params.arguments) ? params.arguments : {};
+        const plan = planInviteFill({ args, terms: inviteTermsPin.terms });
+        if (plan.refusal !== undefined) {
+          return { jsonrpc: "2.0", id, result: textResult(localFillRefusalText(plan.refusal.code, plan.refusal.detail), true) };
         }
-        if (guard?.kind === "expired") {
-          return { jsonrpc: "2.0", id, result: textResult(deliverExpiredText(guard.entry), true) };
-        }
+        return forwardFilled(id, params, args, plan);
       }
     }
-    return proxyToolCall(id, params);
+    if (!ACCESS_TOOLS.has(params.name)) return proxyToolCall(id, params);
+    // 2.2.0: resolve the session — the access the model passed, or the one
+    // live access this adapter holds — before the deliver-first guard, so an
+    // omitted access is guarded exactly like an explicit one.
+    const args = isPlain(params.arguments) ? params.arguments : {};
+    let entry;
+    let accessFilled = false;
+    if (typeof args.access === "string") {
+      entry = localValues.sessionFor(args.access);
+    } else if (!Object.hasOwn(args, "access")) {
+      const live = localValues.liveSessions(isAbandonedSession);
+      if (live.length > 1) {
+        return {
+          jsonrpc: "2.0",
+          id,
+          result: textResult(localFillRefusalText(LOCAL_FILL_REFUSALS.ambiguous, { tool: params.name, count: live.length }), true),
+        };
+      }
+      // No live session held: nothing to fill, forwarded as given (below).
+      if (live.length === 1) {
+        entry = live[0];
+        accessFilled = true;
+      }
+    }
+    const guarded = await deliveryGuardRefusal(id, params.name, accessFilled ? { ...args, access: entry.access } : args);
+    if (guarded !== null) return guarded;
+    // An access this adapter never saw is forwarded untouched: the coordinator
+    // is its authority, and the adapter holds no values for it.
+    if (entry === undefined) return proxyToolCall(id, params);
+    const plan = planAccessFill({
+      tool: params.name,
+      args,
+      entry,
+      accessFilled,
+      localValues,
+      helperVersion: pin.version,
+    });
+    if (plan.refusal !== undefined) {
+      return { jsonrpc: "2.0", id, result: textResult(localFillRefusalText(plan.refusal.code, plan.refusal.detail), true) };
+    }
+    return forwardFilled(id, params, args, plan);
+  }
+
+  function isAbandonedSession(entry) {
+    for (const gone of abandoned.values()) {
+      if (gone.roleAccess === entry.access || (entry.sessionId !== null && gone.sessionId === entry.sessionId)) return true;
+    }
+    return false;
+  }
+
+  // 2.1.13 deliver-first guard for join/next/submit/submit_checkpoint.
+  async function deliveryGuardRefusal(id, name, args) {
+    if (!invitationRefs || !DELIVERY_GUARDED_TOOLS.has(name)) return null;
+    const access = typeof args.access === "string" ? args.access
+      : typeof args.roleAccess === "string" ? args.roleAccess : null;
+    const sessionId = typeof args.sessionId === "string" ? args.sessionId : null;
+    if (access === null && sessionId === null) return null;
+    const guard = await deliveryGuard({ sessionId, access });
+    if (guard?.kind === "pending") {
+      return { jsonrpc: "2.0", id, result: textResult(deliverFirstText(guard.entry, { staged: false }), true) };
+    }
+    if (guard?.kind === "expired") {
+      return { jsonrpc: "2.0", id, result: textResult(deliverExpiredText(guard.entry), true) };
+    }
+    return null;
+  }
+
+  // 2.2.0: forward the filled args; on an accepted call spend the local value
+  // it used; journal every call whose forwarded args differ from the model's.
+  async function forwardFilled(id, params, modelArgs, { forwarded, filled, onSuccess = () => {} }) {
+    if (filled.length === 0) return proxyToolCall(id, params);
+    const response = await proxyToolCall(id, { ...params, arguments: forwarded });
+    if (response.error === undefined && response.result?.isError !== true) onSuccess();
+    await journalForward({ tool: params.name, modelArgs, forwardedArgs: forwarded, filled, response });
+    return response;
+  }
+
+  function journalForward({ tool, modelArgs, forwardedArgs, filled, dropped = [], response }) {
+    return forwardJournal.append({
+      tool,
+      modelArgs,
+      forwardedArgs,
+      filled,
+      ...(dropped.length > 0 ? { dropped } : {}),
+      serverNonce: response.error === undefined ? serverNonceFromResult(response.result) : null,
+      outcome: response.error !== undefined ? "error" : response.result?.isError === true ? "refused" : "ok",
+    });
   }
 
   // 2.1.12: agent_handshake_accept_invitation with { invitationRef } — the
@@ -1063,6 +1191,15 @@ export function createLocalAdapterServer(options = {}) {
     const response = await proxyToolCall(id, forwarded);
     if (response.error === undefined && response.result?.isError !== true) await claim.consume();
     else await claim.release();
+    // 2.2.0: the forwarded args carry the invitation, the model's the ref.
+    await journalForward({
+      tool: INVITATION_TOOL,
+      modelArgs: args,
+      forwardedArgs: forwarded.arguments,
+      filled: ["invitation"],
+      dropped: ["invitationRef"],
+      response,
+    });
     return response;
   }
 
@@ -1133,6 +1270,13 @@ export function createLocalAdapterServer(options = {}) {
         id,
         result: textResult(text, true),
       };
+    }
+    // 2.2.0: remember the role access each invite/accept result hands out.
+    if ((params.name === INVITE_TOOL || params.name === INVITATION_TOOL) && envelope.result?.isError !== true) {
+      const seen = roleAccessFromResult(envelope.result, {
+        role: params.name === INVITE_TOOL ? "initiator" : "responder",
+      });
+      if (seen !== null) localValues.recordRoleAccess(seen);
     }
     if (invitationRefs && params.name === INVITE_TOOL) {
       try {

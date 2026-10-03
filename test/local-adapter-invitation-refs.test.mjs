@@ -35,8 +35,8 @@ async function refusal(promise) {
   return "no refusal";
 }
 
-test("version is 2.1.13", () => {
-  assert.equal(LOCAL_ADAPTER_VERSION, "2.1.13");
+test("version is 2.2.0", () => {
+  assert.equal(LOCAL_ADAPTER_VERSION, "2.2.0");
 });
 
 test("put returns a short ref, writes a private record, and claim returns the exact bytes once", async (t) => {
