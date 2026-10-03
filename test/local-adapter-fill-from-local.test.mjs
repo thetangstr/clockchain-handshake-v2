@@ -25,6 +25,8 @@ import {
 } from "../src/local-adapter/server.mjs";
 import {
   ADAPTER_FORWARDS_FILE,
+  DEFAULT_INVITE_BUDGET,
+  INVITE_BUDGET_ENV,
   INVITE_TERMS_ENV,
   PUBLISHED_INVITE_TERMS,
   forwardEntryHash,
@@ -493,4 +495,94 @@ test("2.2.0 journal: accept_invitation by reference is journaled with the expand
   assert.deepEqual(line.forwardedArgs, { invitation: genuine, acceptanceIdempotencyKey: "k1" });
   assert.deepEqual(line.filled, ["invitation"]);
   assert.deepEqual(line.dropped, ["invitationRef"]);
+});
+
+// --- per-run invite budget (plan: at most 3 handshake invites per run) -------------------
+
+const PINNED_TERMS = { reference: "R-1", statement: "Alpha and Beta authorize these agents for 90 seconds.", validForSeconds: "90", identityPolicy: { erc8004: "not_required", chainId: null, registryAddress: null } };
+const inviteCalls = (calls) => toolCalls(calls).filter((c) => c.params.name === "agent_handshake_invite");
+
+test("invite budget: the default is 3 per run; the 4th invite is refused INVITE_BUDGET_EXHAUSTED and never forwarded", async (t) => {
+  assert.equal(DEFAULT_INVITE_BUDGET, 3);
+  const previous = process.env[INVITE_BUDGET_ENV];
+  t.after(() => { if (previous === undefined) delete process.env[INVITE_BUDGET_ENV]; else process.env[INVITE_BUDGET_ENV] = previous; });
+  delete process.env[INVITE_BUDGET_ENV];
+  const { server, calls } = await context(t, { serverOptions: { inviteTerms: PINNED_TERMS } });
+  for (let i = 1; i <= 3; i += 1) assert.equal((await call(server, i, "agent_handshake_invite", {})).result.isError, undefined, `invite ${i}`);
+  const text = errorText(await call(server, 4, "agent_handshake_invite", {}));
+  assert.match(text, /^INVITE_BUDGET_EXHAUSTED: this run already sent 3 of its 3 allowed handshake invitations/);
+  assert.match(text, /Nothing was sent to the coordinator/);
+  assert.deepEqual(JSON.parse(text.slice(text.indexOf("{"))), { refusal: "INVITE_BUDGET_EXHAUSTED", tool: "agent_handshake_invite", sent: 3, budget: 3 });
+  assert.equal(inviteCalls(calls).length, 3);
+  // and it stays refused; other tools still pass
+  assert.match(errorText(await call(server, 5, "agent_handshake_invite", {})), /^INVITE_BUDGET_EXHAUSTED: /);
+  assert.equal((await call(server, 6, "agent_handshake_status", { access: "csha_11111111_init_xxxxxxxx" })).result.isError, undefined);
+});
+
+test("invite budget: a coordinator-refused invite counts (it was sent); a locally refused one does not", async (t) => {
+  const { server, calls, refuse } = await context(t, { serverOptions: { inviteTerms: PINNED_TERMS } });
+  refuse.add("agent_handshake_invite");
+  assert.equal((await call(server, 1, "agent_handshake_invite", {})).result.isError, true); // sent, refused upstream
+  assert.match(errorText(await call(server, 2, "agent_handshake_invite", { reference: "R-2" })), /^LOCAL_VALUE_MISMATCH: /); // never sent
+  await call(server, 3, "agent_handshake_invite", {});
+  await call(server, 4, "agent_handshake_invite", {});
+  assert.match(errorText(await call(server, 5, "agent_handshake_invite", {})), /^INVITE_BUDGET_EXHAUSTED: .*3 of its 3/);
+  assert.equal(inviteCalls(calls).length, 3);
+});
+
+test("invite budget: also caps a proxied invite (no pinned terms), and concurrent invites never overshoot", async (t) => {
+  const { server, calls } = await context(t, { serverOptions: { inviteTerms: null } });
+  const results = await Promise.all([1, 2, 3, 4, 5].map((i) => call(server, i, "agent_handshake_invite", { reference: "r", statement: "s", validForSeconds: "90" })));
+  assert.equal(results.filter((r) => r.result?.isError === true).length, 2);
+  assert.equal(inviteCalls(calls).length, 3);
+});
+
+test("invite budget: a restarted adapter (same run epoch) seeds the count from the forwarding journal", async (t) => {
+  const first = await context(t, { serverOptions: { inviteTerms: PINNED_TERMS } });
+  await call(first.server, 1, "agent_handshake_invite", {});
+  await call(first.server, 2, "agent_handshake_invite", {});
+  // a KeepAlive restart: a fresh server on the same TMPDIR
+  const fixtureCalls = [];
+  const second = createLocalAdapterServer({
+    assetDir: (await makeAssetDir(t)).assetDir,
+    endpoint: ENDPOINT,
+    tmpdir: first.tmpRoot,
+    inviteTerms: PINNED_TERMS,
+    fetchImpl: async (url, init) => {
+      const request = JSON.parse(init.body);
+      fixtureCalls.push(request);
+      return fakeResponse({ jsonrpc: "2.0", id: request.id, result: rpcResult({ sessionId: SESSION_2, role: "initiator", roleAccess: "csha_22222222_init_xxxxxxxx", serverNonce: `0x${"9".repeat(32)}` }) });
+    },
+  });
+  assert.equal((await call(second, 3, "agent_handshake_invite", {})).result.isError, undefined);
+  assert.match(errorText(await call(second, 4, "agent_handshake_invite", {})), /^INVITE_BUDGET_EXHAUSTED: .*3 of its 3/);
+  assert.equal(inviteCalls(fixtureCalls).length, 1);
+});
+
+test("invite budget: the option / env override it; null or \"off\" removes the cap; a malformed value fails closed", async (t) => {
+  const one = await context(t, { serverOptions: { inviteTerms: PINNED_TERMS, inviteBudget: 1 } });
+  await call(one.server, 1, "agent_handshake_invite", {});
+  assert.match(errorText(await call(one.server, 2, "agent_handshake_invite", {})), /1 of its 1/);
+
+  const uncapped = await context(t, { serverOptions: { inviteTerms: PINNED_TERMS, inviteBudget: null } });
+  for (let i = 1; i <= 5; i += 1) assert.equal((await call(uncapped.server, i, "agent_handshake_invite", {})).result.isError, undefined);
+
+  const previous = process.env[INVITE_BUDGET_ENV];
+  t.after(() => { if (previous === undefined) delete process.env[INVITE_BUDGET_ENV]; else process.env[INVITE_BUDGET_ENV] = previous; });
+  process.env[INVITE_BUDGET_ENV] = "2";
+  const env = await context(t, { serverOptions: { inviteTerms: PINNED_TERMS } });
+  await call(env.server, 1, "agent_handshake_invite", {});
+  await call(env.server, 2, "agent_handshake_invite", {});
+  assert.match(errorText(await call(env.server, 3, "agent_handshake_invite", {})), /2 of its 2/);
+
+  for (const bad of ["0", "-1", "3.5", "abc", "1000"]) {
+    process.env[INVITE_BUDGET_ENV] = bad;
+    const broken = await context(t, { serverOptions: { inviteTerms: PINNED_TERMS } });
+    assert.match(errorText(await call(broken.server, 1, "agent_handshake_invite", {})), /^INVITE_BUDGET_PIN_INVALID: /, bad);
+    assert.equal(inviteCalls(broken.calls).length, 0, bad);
+  }
+  delete process.env[INVITE_BUDGET_ENV];
+  const zero = await context(t, { serverOptions: { inviteTerms: PINNED_TERMS, inviteBudget: 0 } });
+  assert.match(errorText(await call(zero.server, 1, "agent_handshake_invite", {})), /^INVITE_BUDGET_PIN_INVALID: /);
+  assert.equal(inviteCalls(zero.calls).length, 0);
 });

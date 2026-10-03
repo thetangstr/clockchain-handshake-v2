@@ -51,7 +51,39 @@ export const LOCAL_FILL_REFUSALS = Object.freeze({
   mismatch: "LOCAL_VALUE_MISMATCH",
   ambiguous: "SESSION_AMBIGUOUS",
   termsPin: "INVITE_TERMS_PIN_INVALID",
+  inviteBudget: "INVITE_BUDGET_EXHAUSTED",
+  budgetPin: "INVITE_BUDGET_PIN_INVALID",
 });
+
+// Per-run invite budget (travel_mvp plan: at most 3 handshake invites per run;
+// run p6-l-2026-10-03-1 sent 7). A run is one adapter epoch: the fleet's
+// launchd PathState starts this process for the run and ac-run-config rotates
+// the forwarding journal when a new epoch opens, so the count is this process's
+// forwarded invites, seeded once from the epoch's journal (a KeepAlive restart
+// mid-run keeps counting). Every forwarded invite counts, whatever the
+// coordinator answered: each one is an invitation the run sent.
+export const DEFAULT_INVITE_BUDGET = 3;
+export const INVITE_BUDGET_ENV = "CLOCKCHAIN_LOCAL_ADAPTER_INVITE_BUDGET";
+
+/**
+ * The budget: the option (tests, embedders; null = no cap) or the env (a
+ * positive integer ≤ 100, or "off"), else DEFAULT_INVITE_BUDGET. A malformed
+ * value fails closed ({ invalid: true } — no invite is sent).
+ */
+export function resolveInviteBudget({ option, env }) {
+  const ok = (n) => Number.isSafeInteger(n) && n >= 1 && n <= 100;
+  if (option !== undefined) {
+    if (option === null) return { budget: null };
+    return ok(option) ? { budget: option } : { invalid: true };
+  }
+  const text = env?.[INVITE_BUDGET_ENV];
+  if (typeof text === "string" && text.trim().length > 0) {
+    const t = text.trim();
+    if (t === "off") return { budget: null };
+    return /^[1-9][0-9]{0,2}$/.test(t) && ok(Number(t)) ? { budget: Number(t) } : { invalid: true };
+  }
+  return { budget: DEFAULT_INVITE_BUDGET };
+}
 
 export const INVITE_TOOL = "agent_handshake_invite";
 export const ACCEPT_TOOL = "agent_handshake_accept_invitation";
@@ -199,6 +231,16 @@ export function localFillRefusalText(code, detail = {}) {
     return `${LOCAL_FILL_REFUSALS.ambiguous}: this adapter holds ${detail.count} live handshake sessions, so it cannot ` +
       `choose one for ${detail.tool}. Pass access: the roleAccess from the invite or accept result of the session ` +
       "you mean. Nothing was sent to the coordinator.";
+  }
+  if (code === LOCAL_FILL_REFUSALS.inviteBudget) {
+    return `${LOCAL_FILL_REFUSALS.inviteBudget}: this run already sent ${detail.sent} of its ${detail.budget} allowed ` +
+      "handshake invitations, so this adapter will not create another. Nothing was sent to the coordinator. " +
+      "Continue the handshake you already opened (its roleAccess and the invitation you delivered), or stop and " +
+      `report to your operator. ${JSON.stringify({ refusal: LOCAL_FILL_REFUSALS.inviteBudget, tool: INVITE_TOOL, sent: detail.sent, budget: detail.budget })}`;
+  }
+  if (code === LOCAL_FILL_REFUSALS.budgetPin) {
+    return `${LOCAL_FILL_REFUSALS.budgetPin}: this adapter's invite budget (${INVITE_BUDGET_ENV}) is malformed, ` +
+      "so it will not create an invitation. Report this to your operator.";
   }
   return `${LOCAL_FILL_REFUSALS.termsPin}: this adapter's pinned invite terms (${INVITE_TERMS_ENV}) are malformed, ` +
     "so it will not create an invitation. Report this to your operator; do not type the terms yourself.";
@@ -554,6 +596,20 @@ export function createForwardJournal({ tmpRoot, now }) {
 
   return Object.freeze({
     path,
+    /**
+     * How many entries of this epoch's journal name `tool` (the invite-budget
+     * seed). An absent journal is 0; an unreadable line counts nothing for itself.
+     */
+    async count(tool) {
+      let text = "";
+      try { text = await readFile(path, "utf8"); } catch (error) { if (error?.code !== "ENOENT") throw error; }
+      let n = 0;
+      for (const line of text.split("\n")) {
+        if (line.length === 0) continue;
+        try { if (JSON.parse(line)?.tool === tool) n += 1; } catch { /* not an entry */ }
+      }
+      return n;
+    },
     /** Appends one entry; resolves false (never throws) when it could not be written. */
     append(record) {
       const run = chain.then(() => write(record)).then(() => true, () => { state = null; return false; });

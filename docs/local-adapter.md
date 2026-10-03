@@ -395,6 +395,15 @@ role's own model still makes its own join, propose and accept calls.
   pass through and the invite schema is left as published). A malformed pin
   refuses `INVITE_TERMS_PIN_INVALID` and never forwards. Terms are never
   adopted from a `terms_mismatch` reply.
+- **Invite budget.** At most 3 `agent_handshake_invite` calls are forwarded per
+  run (one adapter epoch: the fleet's PathState starts the process per run and
+  `ac-run-config` rotates the forwarding journal per epoch; a restart mid-run
+  seeds the count from that journal). Every forwarded invite counts, whatever
+  the coordinator answered; a locally refused one does not. The next one is
+  refused `INVITE_BUDGET_EXHAUSTED` (text plus a JSON tail
+  `{refusal, tool, sent, budget}`) and never forwarded.
+  `CLOCKCHAIN_LOCAL_ADAPTER_INVITE_BUDGET` overrides (1–100, or `off`); a
+  malformed value refuses `INVITE_BUDGET_PIN_INVALID`.
 - **Redaction.** `authorize_local_action` returns, for a sign step,
   `{schema, helperVersion, operation, signingOperation, signed: true,
   heldLocally: true, checkpointHeldLocally, next}` — never the signature or

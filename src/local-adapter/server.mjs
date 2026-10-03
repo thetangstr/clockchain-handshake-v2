@@ -67,6 +67,7 @@ import {
   planAccessFill,
   planInviteFill,
   redactHelperResult,
+  resolveInviteBudget,
   resolveInviteTerms,
   roleAccessFromResult,
   serverNonceFromResult,
@@ -683,7 +684,7 @@ async function defaultRunHelper({ args, file, maxBufferBytes, timeoutMs }) {
 export function createLocalAdapterServer(options = {}) {
   const input = exact(options, [
     "assetDir", "assets", "contractBind", "endpoint", "fetchImpl", "helperPath", "input",
-    "invitationRefs", "inviteTerms", "manifestPath", "now", "output", "pin", "pinPath", "runHelper", "tmpdir",
+    "invitationRefs", "inviteBudget", "inviteTerms", "manifestPath", "now", "output", "pin", "pinPath", "runHelper", "tmpdir",
   ], []);
   const assets = input.assets !== undefined
     ? (() => {
@@ -743,6 +744,22 @@ export function createLocalAdapterServer(options = {}) {
     defaultEndpoint: ADAPTER_DEFAULT_ENDPOINT,
   });
   const forwardJournal = createForwardJournal({ tmpRoot, now });
+  // Per-run invite budget (fill-from-local.mjs resolveInviteBudget): checked and
+  // reserved synchronously right before an invite is forwarded, so concurrent
+  // calls can never overshoot; the base is this epoch's journal, read once.
+  const inviteBudget = resolveInviteBudget({ option: input.inviteBudget, env: process.env });
+  let invitesBase = null;
+  let invitesReserved = 0;
+  async function reserveInvite() {
+    if (inviteBudget.invalid === true) return { code: LOCAL_FILL_REFUSALS.budgetPin };
+    if (inviteBudget.budget === null) return null;
+    invitesBase ??= forwardJournal.count(INVITE_TOOL).catch(() => 0);
+    const base = await invitesBase;
+    const sent = base + invitesReserved;
+    if (sent >= inviteBudget.budget) return { code: LOCAL_FILL_REFUSALS.inviteBudget, detail: { sent, budget: inviteBudget.budget } };
+    invitesReserved += 1;
+    return null;
+  }
   let upstreamId = 0;
   let upstreamInit = null;
   let pendingExecution = Promise.resolve();
@@ -1058,14 +1075,18 @@ export function createLocalAdapterServer(options = {}) {
       if (inviteTermsPin.invalid === true) {
         return { jsonrpc: "2.0", id, result: textResult(localFillRefusalText(LOCAL_FILL_REFUSALS.termsPin), true) };
       }
+      let plan = null;
+      const args = isPlain(params.arguments) ? params.arguments : {};
       if (inviteTermsPin.terms !== null) {
-        const args = isPlain(params.arguments) ? params.arguments : {};
-        const plan = planInviteFill({ args, terms: inviteTermsPin.terms });
+        plan = planInviteFill({ args, terms: inviteTermsPin.terms });
         if (plan.refusal !== undefined) {
           return { jsonrpc: "2.0", id, result: textResult(localFillRefusalText(plan.refusal.code, plan.refusal.detail), true) };
         }
-        return forwardFilled(id, params, args, plan);
       }
+      // Only a call that would really be forwarded spends the budget.
+      const over = await reserveInvite();
+      if (over !== null) return { jsonrpc: "2.0", id, result: textResult(localFillRefusalText(over.code, over.detail), true) };
+      return plan !== null ? forwardFilled(id, params, args, plan) : proxyToolCall(id, params);
     }
     if (!ACCESS_TOOLS.has(params.name)) return proxyToolCall(id, params);
     // 2.2.0: resolve the session — the access the model passed, or the one
