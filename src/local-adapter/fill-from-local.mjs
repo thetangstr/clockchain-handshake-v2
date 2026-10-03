@@ -61,8 +61,45 @@ export const LOCAL_FILL_REFUSALS = Object.freeze({
 // the forwarding journal when a new epoch opens, so the count is this process's
 // forwarded invites, seeded once from the epoch's journal (a KeepAlive restart
 // mid-run keeps counting). Every forwarded invite counts, whatever the
-// coordinator answered: each one is an invitation the run sent.
+// coordinator answered — except one it refused as transient (the hosted generic
+// host between sessions: HANDSHAKE_TEMPORARILY_UNAVAILABLE, retryable, with a
+// retryAfterMs hint; live p6-ta-2026-10-03-5). That refusal minted no session
+// and holds no seat, so it is journaled with outcome "transient" and the budget
+// (and the restart recount) leaves it out.
 export const DEFAULT_INVITE_BUDGET = 3;
+export const TRANSIENT_OUTCOME = "transient";
+export const TRANSIENT_INVITE_CODE = "HANDSHAKE_TEMPORARILY_UNAVAILABLE";
+
+/**
+ * Is this tools/call response a coordinator refusal of an invite as transient —
+ * one that minted nothing? The generic host answers it as a NON-error result
+ * ({error: "HANDSHAKE_TEMPORARILY_UNAVAILABLE", retryable: true, retryAfterMs});
+ * the v2 public tools as an isError one of the same body. Either way: the code,
+ * retryable true, and no session, role access or invitation anywhere in it.
+ */
+export function isTransientInviteRefusal(response) {
+  if (!isPlainObject(response) || response.error !== undefined) return false;
+  const result = response.result;
+  if (!isPlainObject(result)) return false;
+  const bodies = [];
+  if (isPlainObject(result.structuredContent)) bodies.push(result.structuredContent);
+  for (const item of Array.isArray(result.content) ? result.content : []) {
+    if (!isPlainObject(item) || item.type !== "text" || typeof item.text !== "string") continue;
+    try {
+      const parsed = JSON.parse(item.text);
+      if (isPlainObject(parsed)) bodies.push(parsed);
+    } catch { /* not a JSON body */ }
+  }
+  if (bodies.length === 0) return false;
+  return bodies.every((body) =>
+    (body.error === TRANSIENT_INVITE_CODE || body.reason === TRANSIENT_INVITE_CODE) && body.retryable === true &&
+    !Object.hasOwn(body, "sessionId") && !Object.hasOwn(body, "roleAccess") && !Object.hasOwn(body, "responderInvitation") &&
+    !Object.hasOwn(body, "responderInvitationRef"));
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
 export const INVITE_BUDGET_ENV = "CLOCKCHAIN_LOCAL_ADAPTER_INVITE_BUDGET";
 
 /**
@@ -598,7 +635,8 @@ export function createForwardJournal({ tmpRoot, now }) {
     path,
     /**
      * How many entries of this epoch's journal name `tool` (the invite-budget
-     * seed). An absent journal is 0; an unreadable line counts nothing for itself.
+     * seed), leaving out the ones journaled as a transient refusal (they minted
+     * nothing). An absent journal is 0; an unreadable line counts nothing for itself.
      */
     async count(tool) {
       let text = "";
@@ -606,7 +644,10 @@ export function createForwardJournal({ tmpRoot, now }) {
       let n = 0;
       for (const line of text.split("\n")) {
         if (line.length === 0) continue;
-        try { if (JSON.parse(line)?.tool === tool) n += 1; } catch { /* not an entry */ }
+        try {
+          const entry = JSON.parse(line);
+          if (entry?.tool === tool && entry?.outcome !== TRANSIENT_OUTCOME) n += 1;
+        } catch { /* not an entry */ }
       }
       return n;
     },

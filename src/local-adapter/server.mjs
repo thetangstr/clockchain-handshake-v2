@@ -63,9 +63,11 @@ import {
   LOCAL_FILL_REFUSALS,
   createForwardJournal,
   createLocalValues,
+  isTransientInviteRefusal,
   localFillRefusalText,
   planAccessFill,
   planInviteFill,
+  TRANSIENT_OUTCOME,
   redactHelperResult,
   resolveInviteBudget,
   resolveInviteTerms,
@@ -1083,10 +1085,14 @@ export function createLocalAdapterServer(options = {}) {
           return { jsonrpc: "2.0", id, result: textResult(localFillRefusalText(plan.refusal.code, plan.refusal.detail), true) };
         }
       }
-      // Only a call that would really be forwarded spends the budget.
+      // Only a call that would really be forwarded spends the budget — and an
+      // invite the coordinator refused as transient gives it back (it minted
+      // nothing; its journal line says "transient", so a restart recounts the same).
       const over = await reserveInvite();
       if (over !== null) return { jsonrpc: "2.0", id, result: textResult(localFillRefusalText(over.code, over.detail), true) };
-      return plan !== null ? forwardFilled(id, params, args, plan) : proxyToolCall(id, params);
+      const response = plan !== null ? await forwardFilled(id, params, args, plan) : await proxyToolCall(id, params);
+      if (inviteBudget.budget !== null && isTransientInviteRefusal(response)) invitesReserved -= 1;
+      return response;
     }
     if (!ACCESS_TOOLS.has(params.name)) return proxyToolCall(id, params);
     // 2.2.0: resolve the session — the access the model passed, or the one
@@ -1173,7 +1179,8 @@ export function createLocalAdapterServer(options = {}) {
       filled,
       ...(dropped.length > 0 ? { dropped } : {}),
       serverNonce: response.error === undefined ? serverNonceFromResult(response.result) : null,
-      outcome: response.error !== undefined ? "error" : response.result?.isError === true ? "refused" : "ok",
+      outcome: tool === INVITE_TOOL && isTransientInviteRefusal(response) ? TRANSIENT_OUTCOME
+        : response.error !== undefined ? "error" : response.result?.isError === true ? "refused" : "ok",
     });
   }
 

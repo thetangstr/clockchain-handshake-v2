@@ -137,6 +137,8 @@ async function context(t, { serverOptions = {}, helperSign = [SIG_1, SIG_2, SIG_
   const md = fixture.pin.manifestDigest;
   const calls = [];
   const refuse = new Set();
+  // the generic host between sessions: its NON-error transient body (live p6-ta-2026-10-03-5)
+  const transient = { next: 0, isError: false };
   let nonce = 0;
   const steps = {
     invite: (sessionId) => [
@@ -160,6 +162,11 @@ async function context(t, { serverOptions = {}, helperSign = [SIG_1, SIG_2, SIG_
       calls.push(request);
       const name = request.params?.name;
       const serverNonce = `0x${String(++nonce).padStart(32, "0")}`;
+      if (name === "agent_handshake_invite" && transient.next > 0) {
+        transient.next -= 1;
+        const body = { error: "HANDSHAKE_TEMPORARILY_UNAVAILABLE", retryable: true, retryAfterMs: 120000 };
+        return fakeResponse({ jsonrpc: "2.0", id: request.id, result: { ...rpcResult(body), ...(transient.isError ? { isError: true } : {}) } });
+      }
       if (refuse.has(name)) {
         refuse.delete(name);
         return fakeResponse({ jsonrpc: "2.0", id: request.id, result: { content: [{ type: "text", text: JSON.stringify({ error: "V2CoordinatorError", retryable: true, serverNonce }) }], isError: true } });
@@ -194,7 +201,7 @@ async function context(t, { serverOptions = {}, helperSign = [SIG_1, SIG_2, SIG_
       helperStep({ manifestDigest: md, operation: "sign", sessionId, role, payload: signPayload(operation, { sessionId, role, nonce: String(index) }) }));
   };
   const setSession = (sessionId) => { nextSession = sessionId; };
-  return { server, calls, refuse, tmpRoot, stageSigns, setSession, md };
+  return { server, calls, refuse, transient, tmpRoot, stageSigns, setSession, md };
 }
 
 const lastForwarded = (calls) => toolCalls(calls).at(-1).params;
@@ -585,4 +592,86 @@ test("invite budget: the option / env override it; null or \"off\" removes the c
   const zero = await context(t, { serverOptions: { inviteTerms: PINNED_TERMS, inviteBudget: 0 } });
   assert.match(errorText(await call(zero.server, 1, "agent_handshake_invite", {})), /^INVITE_BUDGET_PIN_INVALID: /);
   assert.equal(inviteCalls(zero.calls).length, 0);
+});
+
+// --- transient invite refusals do not spend the budget (live p6-ta-2026-10-03-5) ----------
+
+const journalLines = async (tmpRoot) =>
+  (await readFile(join(tmpRoot, ADAPTER_FORWARDS_FILE), "utf8")).split("\n").filter(Boolean).map((l) => JSON.parse(l));
+
+test("invite budget: an invite the coordinator refused as transient (host between sessions) does not count; it is journaled \"transient\"", async (t) => {
+  const { server, calls, transient, tmpRoot } = await context(t, { serverOptions: { inviteTerms: PINNED_TERMS } });
+  transient.next = 5;
+  for (let i = 1; i <= 5; i += 1) {
+    const r = await call(server, i, "agent_handshake_invite", {});
+    assert.equal(r.result.isError, undefined, `transient ${i} is relayed as the host answered it`);
+    assert.equal(r.result.structuredContent.error, "HANDSHAKE_TEMPORARILY_UNAVAILABLE");
+  }
+  // three real invites still fit; the fourth is over budget
+  for (let i = 6; i <= 8; i += 1) assert.equal((await call(server, i, "agent_handshake_invite", {})).result.isError, undefined, `invite ${i}`);
+  assert.match(errorText(await call(server, 9, "agent_handshake_invite", {})), /^INVITE_BUDGET_EXHAUSTED: .*3 of its 3/);
+  assert.equal(inviteCalls(calls).length, 8);
+  const lines = (await journalLines(tmpRoot)).filter((l) => l.tool === "agent_handshake_invite");
+  assert.deepEqual(lines.map((l) => l.outcome), ["transient", "transient", "transient", "transient", "transient", "ok", "ok", "ok"]);
+  for (const l of lines) assert.equal(l.hash, forwardEntryHash(l));
+});
+
+test("invite budget: an isError transient body (v2 public tools) is transient too; any other refusal still counts", async (t) => {
+  const { server, calls, transient, refuse, tmpRoot } = await context(t, { serverOptions: { inviteTerms: PINNED_TERMS } });
+  transient.next = 2;
+  transient.isError = true;
+  await call(server, 1, "agent_handshake_invite", {});
+  await call(server, 2, "agent_handshake_invite", {});
+  refuse.add("agent_handshake_invite"); // isError V2CoordinatorError (retryable): sent, counts
+  await call(server, 3, "agent_handshake_invite", {});
+  await call(server, 4, "agent_handshake_invite", {});
+  await call(server, 5, "agent_handshake_invite", {});
+  assert.match(errorText(await call(server, 6, "agent_handshake_invite", {})), /^INVITE_BUDGET_EXHAUSTED: .*3 of its 3/);
+  assert.equal(inviteCalls(calls).length, 5);
+  assert.deepEqual((await journalLines(tmpRoot)).map((l) => l.outcome), ["transient", "transient", "refused", "ok", "ok"]);
+});
+
+test("invite budget: a body with a session in it is never transient, whatever its error field says", async (t) => {
+  const { isTransientInviteRefusal } = await import("../src/local-adapter/fill-from-local.mjs");
+  const body = { error: "HANDSHAKE_TEMPORARILY_UNAVAILABLE", retryable: true, retryAfterMs: 5000 };
+  assert.equal(isTransientInviteRefusal({ result: rpcResult(body) }), true);
+  assert.equal(isTransientInviteRefusal({ result: rpcResult({ ...body, sessionId: SESSION }) }), false);
+  assert.equal(isTransientInviteRefusal({ result: rpcResult({ ...body, roleAccess: "csha_x" }) }), false);
+  assert.equal(isTransientInviteRefusal({ result: rpcResult({ ...body, retryable: false }) }), false);
+  assert.equal(isTransientInviteRefusal({ result: rpcResult({ error: "HANDSHAKE_UNAVAILABLE", retryable: true }) }), false);
+  assert.equal(isTransientInviteRefusal({ error: { code: -32603, message: "upstream failed" } }), false);
+  assert.equal(isTransientInviteRefusal({ result: { content: [{ type: "text", text: "not json" }] } }), false);
+});
+
+test("invite budget: a restarted adapter recounts from the journal without the transient lines", async (t) => {
+  const first = await context(t, { serverOptions: { inviteTerms: PINNED_TERMS } });
+  first.transient.next = 3;
+  for (let i = 1; i <= 3; i += 1) await call(first.server, i, "agent_handshake_invite", {}); // transient
+  await call(first.server, 4, "agent_handshake_invite", {}); // minted: counts
+  const fixtureCalls = [];
+  const second = createLocalAdapterServer({
+    assetDir: (await makeAssetDir(t)).assetDir,
+    endpoint: ENDPOINT,
+    tmpdir: first.tmpRoot,
+    inviteTerms: PINNED_TERMS,
+    fetchImpl: async (url, init) => {
+      const request = JSON.parse(init.body);
+      fixtureCalls.push(request);
+      return fakeResponse({ jsonrpc: "2.0", id: request.id, result: rpcResult({ sessionId: SESSION_2, role: "initiator", roleAccess: "csha_22222222_init_xxxxxxxx", serverNonce: `0x${"9".repeat(32)}` }) });
+    },
+  });
+  assert.equal((await call(second, 5, "agent_handshake_invite", {})).result.isError, undefined);
+  assert.equal((await call(second, 6, "agent_handshake_invite", {})).result.isError, undefined);
+  assert.match(errorText(await call(second, 7, "agent_handshake_invite", {})), /^INVITE_BUDGET_EXHAUSTED: .*3 of its 3/);
+  assert.equal(inviteCalls(fixtureCalls).length, 2);
+});
+
+test("invite budget: a proxied (unpinned) transient invite gives its reservation back too", async (t) => {
+  const { server, calls, transient } = await context(t, { serverOptions: { inviteTerms: null } });
+  transient.next = 4;
+  const args = { reference: "r", statement: "s", validForSeconds: "90" };
+  for (let i = 1; i <= 4; i += 1) await call(server, i, "agent_handshake_invite", args);
+  for (let i = 5; i <= 7; i += 1) assert.equal((await call(server, i, "agent_handshake_invite", args)).result.isError, undefined);
+  assert.match(errorText(await call(server, 8, "agent_handshake_invite", args)), /^INVITE_BUDGET_EXHAUSTED: /);
+  assert.equal(inviteCalls(calls).length, 7);
 });

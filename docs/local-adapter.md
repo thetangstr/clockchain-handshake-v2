@@ -399,7 +399,11 @@ role's own model still makes its own join, propose and accept calls.
   run (one adapter epoch: the fleet's PathState starts the process per run and
   `ac-run-config` rotates the forwarding journal per epoch; a restart mid-run
   seeds the count from that journal). Every forwarded invite counts, whatever
-  the coordinator answered; a locally refused one does not. The next one is
+  the coordinator answered, except one it refused as transient
+  (`HANDSHAKE_TEMPORARILY_UNAVAILABLE`, `retryable: true` — the hosted host
+  between sessions): that one minted no session, is journaled with outcome
+  `transient`, and neither the live count nor a restart's recount includes it.
+  A locally refused one does not count either. The next one is
   refused `INVITE_BUDGET_EXHAUSTED` (text plus a JSON tail
   `{refusal, tool, sent, budget}`) and never forwarded.
   `CLOCKCHAIN_LOCAL_ADAPTER_INVITE_BUDGET` overrides (1–100, or `off`); a
