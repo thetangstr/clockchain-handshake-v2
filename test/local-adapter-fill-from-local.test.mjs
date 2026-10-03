@@ -138,7 +138,7 @@ async function context(t, { serverOptions = {}, helperSign = [SIG_1, SIG_2, SIG_
   const calls = [];
   const refuse = new Set();
   // the generic host between sessions: its NON-error transient body (live p6-ta-2026-10-03-5)
-  const transient = { next: 0, isError: false };
+  const transient = { next: 0, isError: false, status: null, body: null, throwCode: null };
   let nonce = 0;
   const steps = {
     invite: (sessionId) => [
@@ -164,7 +164,9 @@ async function context(t, { serverOptions = {}, helperSign = [SIG_1, SIG_2, SIG_
       const serverNonce = `0x${String(++nonce).padStart(32, "0")}`;
       if (name === "agent_handshake_invite" && transient.next > 0) {
         transient.next -= 1;
-        const body = { error: "HANDSHAKE_TEMPORARILY_UNAVAILABLE", retryable: true, retryAfterMs: 120000 };
+        if (transient.throwCode !== null) throw Object.assign(new TypeError("fetch failed"), { cause: { code: transient.throwCode } });
+        if (transient.status !== null) return { ok: false, status: transient.status, headers: { get: () => "text/html" }, text: async () => "Bad Gateway" };
+        const body = transient.body ?? { error: "HANDSHAKE_TEMPORARILY_UNAVAILABLE", retryable: true, retryAfterMs: 120000 };
         return fakeResponse({ jsonrpc: "2.0", id: request.id, result: { ...rpcResult(body), ...(transient.isError ? { isError: true } : {}) } });
       }
       if (refuse.has(name)) {
@@ -674,4 +676,42 @@ test("invite budget: a proxied (unpinned) transient invite gives its reservation
   for (let i = 5; i <= 7; i += 1) assert.equal((await call(server, i, "agent_handshake_invite", args)).result.isError, undefined);
   assert.match(errorText(await call(server, 8, "agent_handshake_invite", args)), /^INVITE_BUDGET_EXHAUSTED: /);
   assert.equal(inviteCalls(calls).length, 7);
+});
+
+test("invite budget: an invite that never reached the coordinator (host restarting: 502/503, connection refused) is refused UPSTREAM_UNAVAILABLE and does not count", async (t) => {
+  for (const variant of [{ status: 502 }, { status: 503 }, { throwCode: "ECONNREFUSED" }]) {
+    const { server, transient, tmpRoot } = await context(t, { serverOptions: { inviteTerms: PINNED_TERMS } });
+    transient.next = 4;
+    Object.assign(transient, variant);
+    for (let i = 1; i <= 4; i += 1) {
+      const r = await call(server, i, "agent_handshake_invite", {});
+      assert.match(r.error?.message ?? "", /^UPSTREAM_UNAVAILABLE: the coordinator was not reached/, JSON.stringify(variant));
+    }
+    for (let i = 5; i <= 7; i += 1) assert.equal((await call(server, i, "agent_handshake_invite", {})).result.isError, undefined);
+    assert.match(errorText(await call(server, 8, "agent_handshake_invite", {})), /^INVITE_BUDGET_EXHAUSTED: .*3 of its 3/);
+    assert.deepEqual((await journalLines(tmpRoot)).map((l) => l.outcome), ["transient", "transient", "transient", "transient", "ok", "ok", "ok"]);
+  }
+});
+
+test("invite budget: any other upstream failure (a 500, a timeout) may have applied: generic error, and it counts", async (t) => {
+  const { server, transient, tmpRoot } = await context(t, { serverOptions: { inviteTerms: PINNED_TERMS } });
+  transient.next = 1;
+  transient.status = 500;
+  const r = await call(server, 1, "agent_handshake_invite", {});
+  assert.equal(r.error?.message, "Clockchain local adapter upstream request failed.");
+  await call(server, 2, "agent_handshake_invite", {});
+  await call(server, 3, "agent_handshake_invite", {});
+  assert.match(errorText(await call(server, 4, "agent_handshake_invite", {})), /^INVITE_BUDGET_EXHAUSTED: /);
+  assert.deepEqual((await journalLines(tmpRoot)).map((l) => l.outcome), ["error", "ok", "ok"]);
+});
+
+test("invite budget: the host's window-ended refusal (RENDEZVOUS_UNAVAILABLE, no session) does not count", async (t) => {
+  const { server, transient } = await context(t, { serverOptions: { inviteTerms: PINNED_TERMS } });
+  transient.next = 2;
+  transient.body = { reason: "RENDEZVOUS_UNAVAILABLE", message: "Generic host stopped." };
+  await call(server, 1, "agent_handshake_invite", {});
+  transient.isError = true;
+  await call(server, 2, "agent_handshake_invite", {});
+  for (let i = 3; i <= 5; i += 1) assert.equal((await call(server, i, "agent_handshake_invite", {})).result.isError, undefined);
+  assert.match(errorText(await call(server, 6, "agent_handshake_invite", {})), /^INVITE_BUDGET_EXHAUSTED: /);
 });

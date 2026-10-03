@@ -69,16 +69,26 @@ export const LOCAL_FILL_REFUSALS = Object.freeze({
 export const DEFAULT_INVITE_BUDGET = 3;
 export const TRANSIENT_OUTCOME = "transient";
 export const TRANSIENT_INVITE_CODE = "HANDSHAKE_TEMPORARILY_UNAVAILABLE";
+/** The generic host's "invitation window ended" code (it stops; a fresh session follows): nothing minted. */
+export const WINDOW_ENDED_CODE = "RENDEZVOUS_UNAVAILABLE";
+/** The adapter's own refusal when the coordinator was not reached at all (server.mjs). */
+export const UPSTREAM_UNAVAILABLE_PREFIX = "UPSTREAM_UNAVAILABLE:";
 
 /**
- * Is this tools/call response a coordinator refusal of an invite as transient —
- * one that minted nothing? The generic host answers it as a NON-error result
- * ({error: "HANDSHAKE_TEMPORARILY_UNAVAILABLE", retryable: true, retryAfterMs});
- * the v2 public tools as an isError one of the same body. Either way: the code,
- * retryable true, and no session, role access or invitation anywhere in it.
+ * Is this tools/call response an invite refusal that minted nothing?
+ *  - the host between sessions: the generic host answers a NON-error result
+ *    ({error: "HANDSHAKE_TEMPORARILY_UNAVAILABLE", retryable: true, retryAfterMs}),
+ *    the v2 public tools an isError one of the same body — the code, retryable
+ *    true, and no session, role access or invitation in it;
+ *  - the window ended (RENDEZVOUS_UNAVAILABLE as error or reason, no session in it);
+ *  - the coordinator not reached at all (this adapter's UPSTREAM_UNAVAILABLE error).
  */
 export function isTransientInviteRefusal(response) {
-  if (!isPlainObject(response) || response.error !== undefined) return false;
+  if (!isPlainObject(response)) return false;
+  if (response.error !== undefined) {
+    return isPlainObject(response.error) && typeof response.error.message === "string" &&
+      response.error.message.startsWith(UPSTREAM_UNAVAILABLE_PREFIX);
+  }
   const result = response.result;
   if (!isPlainObject(result)) return false;
   const bodies = [];
@@ -92,7 +102,8 @@ export function isTransientInviteRefusal(response) {
   }
   if (bodies.length === 0) return false;
   return bodies.every((body) =>
-    (body.error === TRANSIENT_INVITE_CODE || body.reason === TRANSIENT_INVITE_CODE) && body.retryable === true &&
+    (((body.error === TRANSIENT_INVITE_CODE || body.reason === TRANSIENT_INVITE_CODE) && body.retryable === true) ||
+      body.error === WINDOW_ENDED_CODE || body.reason === WINDOW_ENDED_CODE) &&
     !Object.hasOwn(body, "sessionId") && !Object.hasOwn(body, "roleAccess") && !Object.hasOwn(body, "responderInvitation") &&
     !Object.hasOwn(body, "responderInvitationRef"));
 }

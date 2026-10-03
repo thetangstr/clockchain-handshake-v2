@@ -401,8 +401,13 @@ role's own model still makes its own join, propose and accept calls.
   seeds the count from that journal). Every forwarded invite counts, whatever
   the coordinator answered, except one it refused as transient
   (`HANDSHAKE_TEMPORARILY_UNAVAILABLE`, `retryable: true` — the hosted host
-  between sessions): that one minted no session, is journaled with outcome
-  `transient`, and neither the live count nor a restart's recount includes it.
+  between sessions), the window-ended `RENDEZVOUS_UNAVAILABLE`, or an invite
+  that never reached the coordinator (its proxy answered 502/503 while the host
+  restarts, or the connection was refused — relayed as a JSON-RPC error
+  `UPSTREAM_UNAVAILABLE: …`): those minted no session, are journaled with
+  outcome `transient`, and neither the live count nor a restart's recount
+  includes them. A timeout or any other upstream status may have applied and
+  still counts.
   A locally refused one does not count either. The next one is
   refused `INVITE_BUDGET_EXHAUSTED` (text plus a JSON tail
   `{refusal, tool, sent, budget}`) and never forwarded.

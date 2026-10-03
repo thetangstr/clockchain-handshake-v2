@@ -68,6 +68,7 @@ import {
   planAccessFill,
   planInviteFill,
   TRANSIENT_OUTCOME,
+  UPSTREAM_UNAVAILABLE_PREFIX,
   redactHelperResult,
   resolveInviteBudget,
   resolveInviteTerms,
@@ -199,6 +200,16 @@ const LOCAL_TOOL_DEFINITIONS = Object.freeze([
 function invalid() {
   throw new Error(GENERIC_REFUSAL);
 }
+
+// The coordinator was NOT reached: the hosted host's reverse proxy answered a
+// bad gateway / unavailable while the host restarts between sessions (~1.3 s of
+// every ~121 s), or the connection was refused. Nothing was sent to the host, so
+// nothing was minted; the relayed refusal is coded (UPSTREAM_UNAVAILABLE) so a
+// client can retry it, and an invite it refuses does not spend the budget.
+// A timeout or any other status stays the generic failure (it may have applied).
+const UPSTREAM_UNREACHED_STATUSES = new Set([502, 503]);
+const UPSTREAM_UNREACHED_CAUSES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"]);
+class UpstreamUnreachedError extends Error {}
 
 // 2.1.11 invitation guard. The responder invitation is a coordinator-minted
 // role-access token: <base64url(JSON payload)>.<base64url(HMAC-SHA256)>. A
@@ -771,16 +782,27 @@ export function createLocalAdapterServer(options = {}) {
     const body = notification
       ? { jsonrpc: "2.0", method, ...(params !== undefined ? { params } : {}) }
       : { jsonrpc: "2.0", id, method, ...(params !== undefined ? { params } : {}) };
-    const response = await fetchImpl(endpoint, {
-      method: "POST",
-      headers: {
-        accept: "application/json, text/event-stream",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(UPSTREAM_RPC_BUDGET_MS),
-    });
-    if (!response?.ok) invalid();
+    let response;
+    try {
+      response = await fetchImpl(endpoint, {
+        method: "POST",
+        headers: {
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(UPSTREAM_RPC_BUDGET_MS),
+      });
+    } catch (error) {
+      if (UPSTREAM_UNREACHED_CAUSES.has(error?.cause?.code) || UPSTREAM_UNREACHED_CAUSES.has(error?.code)) {
+        throw new UpstreamUnreachedError("connection refused");
+      }
+      throw error;
+    }
+    if (!response?.ok) {
+      if (UPSTREAM_UNREACHED_STATUSES.has(response?.status)) throw new UpstreamUnreachedError(`HTTP ${response.status}`);
+      invalid();
+    }
     const text = await response.text();
     if (notification) return null;
     const messages = parseUpstreamBody(text, response.headers?.get?.("content-type") ?? "");
@@ -1275,7 +1297,14 @@ export function createLocalAdapterServer(options = {}) {
     let envelope;
     try {
       envelope = await upstreamRequest("tools/call", params);
-    } catch {
+    } catch (error) {
+      if (error instanceof UpstreamUnreachedError) {
+        return {
+          jsonrpc: "2.0",
+          id,
+          error: { code: -32603, message: `${UPSTREAM_UNAVAILABLE_PREFIX} the coordinator was not reached (${error.message}); nothing was sent. Retry shortly.` },
+        };
+      }
       return {
         jsonrpc: "2.0",
         id,
