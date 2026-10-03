@@ -351,3 +351,70 @@ sweep of expired records is never mistaken for a delivery.
 Limit: if another process deletes an unexpired issued record without sealing
 it, the adapter reads that as delivered. Only the company signer (same uid,
 private TMPDIR) can touch the store.
+
+## Handshake by reference (2.2.0)
+
+Live runs lost about a third of their time to the model re-typing long opaque
+values between handshake tools (the 132-char signatures, the checkpoint object,
+the 64-char policy digest, the 153-char invite statement). The adapter already
+stages every helper step and sees every helper result, so it now fills those
+values itself (`src/local-adapter/fill-from-local.mjs`). The model calls the
+same tools, the same number of times, with no long argument; each model call
+is still exactly one forwarded call with one coordinator receipt, so each
+role's own model still makes its own join, propose and accept calls.
+
+| Tool | The model passes | The adapter fills |
+|---|---|---|
+| `agent_handshake_invite` | `reference?` | `reference`, `statement`, `validForSeconds`, `identityPolicy` from the terms pin |
+| `agent_handshake_accept_invitation` | `invitationRef` | `invitation` (2.1.12, unchanged) |
+| `agent_handshake_join` | nothing | `access`, `helperVersion` (pin), `sessionKeyAddress` and `policyDigest` (latest init/policy/inspect result for the session and role) |
+| `agent_handshake_submit` | nothing | `access`, `policyDigest`, `signatureHex` (oldest unspent sign result) |
+| `agent_handshake_submit_checkpoint` | nothing | `access`, `artifactSignatureHex`, `checkpoint` (oldest sign result whose checkpoint is unsubmitted) |
+| `agent_handshake_next` / `_status` / `_get_certificate` | `waitMs?` | `access` |
+
+- **Access.** Optional. It defaults to the one live role access the adapter
+  saw in an invite (Initiator) or accept (Responder) result in the last 15
+  minutes, excluding sessions abandoned by the deliver-first guard. Two live
+  sessions refuse `SESSION_AMBIGUOUS` (pass `access` explicitly). With none,
+  or with an access the adapter never saw, the call is forwarded as given.
+  The deliver-first guard runs on the resolved access, so omitting `access`
+  never bypasses it.
+- **Equality.** A model-supplied value must equal the local one (byte for
+  byte; `sessionKeyAddress` case-insensitively; objects by sorted-key JSON).
+  Otherwise the call is refused `LOCAL_VALUE_MISMATCH` and never forwarded.
+  An equal value is forwarded as the model wrote it, so old briefs keep
+  working. Where the adapter holds no local value it forwards what the model
+  gave.
+- **Spending.** A signature is spent (and a checkpoint marked submitted) only
+  when the coordinator accepts the call; a refused or failed call is retried
+  with the same value.
+- **Terms pin.** `CLOCKCHAIN_LOCAL_ADAPTER_INVITE_TERMS` (JSON, exactly
+  `{reference, statement, validForSeconds, identityPolicy}`, validated like the
+  upstream schema). Unset: the coordinator's published NS-1847 terms when the
+  endpoint is the default hosted endpoint, otherwise no pin (invite arguments
+  pass through and the invite schema is left as published). A malformed pin
+  refuses `INVITE_TERMS_PIN_INVALID` and never forwards. Terms are never
+  adopted from a `terms_mismatch` reply.
+- **Redaction.** `authorize_local_action` returns, for a sign step,
+  `{schema, helperVersion, operation, signingOperation, signed: true,
+  heldLocally: true, checkpointHeldLocally, next}` — never the signature or
+  the checkpoint. Other results keep their shape with every hex string of 40+
+  characters (addresses, digests, transaction hashes) and every string over 64
+  characters cut to a 10-character prefix plus `…`, and gain
+  `heldLocally: true`.
+- **tools/list.** The filled properties leave the advertised schemas, `access`
+  becomes optional, and each description says what the adapter fills.
+- **Forwarding journal.** Every call whose forwarded arguments differ from the
+  model's (accept by reference included) is appended to
+  `<TMPDIR>/.clockchain/adapter-forwards/forwards.jsonl` (directory 0700, file
+  0600, `O_NOFOLLOW`, fsync'd):
+  `{v: 1, seq, prevHash, ts, tool, modelArgs, forwardedArgs, filled, dropped?,
+  serverNonce, outcome: ok|refused|error, hash}`, where
+  `hash = sha256(sorted-key JSON of the entry without hash)` and `prevHash` is
+  the previous line's hash (null on the first). It is the preimage a verifier
+  needs to reproduce the coordinator receipt's `argsDigest` for a filled call:
+  `forwardedArgs` reproduces the digest, every `modelArgs` field equals the same
+  `forwardedArgs` field, and `filled` is a subset of the documented set above.
+  It holds the signatures, checkpoints and the spent responder invitation, in
+  the company's private TMPDIR. Writing is best-effort: a write failure never
+  fails the call, and leaves that call without a journal line.
