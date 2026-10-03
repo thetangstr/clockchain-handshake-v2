@@ -1,0 +1,366 @@
+{
+  "_provenance": {
+    "source": "upstream coordinator tools/list as proxied by adapter 2.1.13 (travel_mvp agentdash-hermes-pairing fixtures/handshake-adapter-tools-list.json @ bb986ed15), with the adapter-local tools removed and agent_handshake_accept_invitation reverted to its upstream {invitation} shape (invitation length bounds reconstructed, not captured)",
+    "helperVersion": "2.1.8"
+  },
+  "tools": [
+    {
+      "name": "agent_handshake_invite",
+      "title": "Create stakeholder handshake",
+      "description": "Create one handshake, the Initiator role access, and one single-use Responder invitation.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "reference": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "statement": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "validForSeconds": {
+            "type": "string",
+            "pattern": "^(?:[1-9]|[1-8][0-9]|90)$"
+          },
+          "identityPolicy": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "erc8004": {
+                    "type": "string",
+                    "const": "required_fresh"
+                  },
+                  "chainId": {
+                    "type": "string",
+                    "const": "eip155:11155111"
+                  },
+                  "registryAddress": {
+                    "type": "string",
+                    "const": "0x8004a818bfb912233c491871b3d84c89a494bd9e"
+                  }
+                },
+                "required": [
+                  "erc8004",
+                  "chainId",
+                  "registryAddress"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "erc8004": {
+                    "type": "string",
+                    "const": "required_existing_or_fresh"
+                  },
+                  "chainId": {
+                    "type": "string",
+                    "const": "eip155:11155111"
+                  },
+                  "registryAddress": {
+                    "type": "string",
+                    "const": "0x8004a818bfb912233c491871b3d84c89a494bd9e"
+                  }
+                },
+                "required": [
+                  "erc8004",
+                  "chainId",
+                  "registryAddress"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "erc8004": {
+                    "type": "string",
+                    "const": "not_required"
+                  },
+                  "chainId": {
+                    "type": "null"
+                  },
+                  "registryAddress": {
+                    "type": "null"
+                  }
+                },
+                "required": [
+                  "erc8004",
+                  "chainId",
+                  "registryAddress"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "required": [
+          "reference",
+          "statement",
+          "validForSeconds",
+          "identityPolicy"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "agent_handshake_accept_invitation",
+      "title": "Accept stakeholder invitation",
+      "description": "Accept a Responder invitation with an optional acceptanceIdempotencyKey for retry-safe acceptance and receive non-transferable Responder role access.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "invitation": {
+            "type": "string",
+            "minLength": 80,
+            "maxLength": 4096
+          },
+          "acceptanceIdempotencyKey": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "invitation"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "agent_handshake_join",
+      "title": "Join handshake",
+      "description": "Bind this fresh local agent and its exact local policy to the assigned role.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "access": {
+            "type": "string",
+            "minLength": 27,
+            "maxLength": 4096
+          },
+          "helperVersion": {
+            "type": "string",
+            "const": "2.1.8"
+          },
+          "sessionKeyAddress": {
+            "type": "string",
+            "pattern": "^0x[0-9a-fA-F]{40}$"
+          },
+          "policyDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "access",
+          "helperVersion",
+          "sessionKeyAddress",
+          "policyDigest"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "agent_handshake_status",
+      "title": "Read handshake status",
+      "description": "Read public progress for this role and session.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "access": {
+            "type": "string",
+            "minLength": 27,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "access"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "agent_handshake_next",
+      "title": "Get next handshake operation",
+      "description": "Get the next typed local signing or registration operation, or wait safely.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "access": {
+            "type": "string",
+            "minLength": 27,
+            "maxLength": 4096
+          },
+          "waitMs": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 15000
+          }
+        },
+        "required": [
+          "access"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "agent_handshake_submit_checkpoint",
+      "title": "Submit adapter release checkpoint",
+      "description": "Submit the signed private adapter checkpoint and exact artifact signature that authorize release of the pending proposal or acceptance.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "access": {
+            "type": "string",
+            "minLength": 27,
+            "maxLength": 4096
+          },
+          "artifactSignatureHex": {
+            "type": "string",
+            "pattern": "^0x[0-9a-f]{130}$"
+          },
+          "checkpoint": {
+            "type": "object",
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "access",
+          "artifactSignatureHex",
+          "checkpoint"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "agent_handshake_submit",
+      "title": "Submit local signature",
+      "description": "Submit only a signature over the exact bytes returned by the coordinator and the unchanged local-policy digest.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "access": {
+            "type": "string",
+            "minLength": 27,
+            "maxLength": 4096
+          },
+          "policyDigest": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "signatureHex": {
+            "type": "string",
+            "pattern": "^0x[0-9a-f]{130}$"
+          }
+        },
+        "required": [
+          "access",
+          "policyDigest",
+          "signatureHex"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "agent_handshake_get_certificate",
+      "title": "Get closing certificate",
+      "description": "Get the signed closing certificate for local verification.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "access": {
+            "type": "string",
+            "minLength": 27,
+            "maxLength": 4096
+          }
+        },
+        "required": [
+          "access"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    }
+  ]
+}
