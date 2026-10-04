@@ -573,7 +573,6 @@ export function roleAccessFromResult(result, { role }) {
   return null;
 }
 
-/** The coordinator receipt nonce carried by a tool result, or null. */
 export const RECEIPT_META_KEY = "clockchain/receipt";
 
 /** The opt-in receipt echo the coordinator puts in result._meta, or null. */
@@ -588,6 +587,7 @@ export function receiptHashFromResult(result) {
   return typeof value === "string" && /^(0x)?[0-9a-f]{64}$/i.test(value) ? value : null;
 }
 
+/** The coordinator receipt nonce carried by a tool result (the opt-in echo first), or null. */
 export function serverNonceFromResult(result) {
   const candidates = [
     receiptEcho(result)?.serverNonce,
