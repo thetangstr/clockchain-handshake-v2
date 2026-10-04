@@ -74,6 +74,7 @@ import {
   resolveInviteTerms,
   roleAccessFromResult,
   serverNonceFromResult,
+  receiptHashFromResult,
   withLocalFills,
 } from "./fill-from-local.mjs";
 import {
@@ -789,6 +790,9 @@ export function createLocalAdapterServer(options = {}) {
         headers: {
           accept: "application/json, text/event-stream",
           "content-type": "application/json",
+          // Opt-in receipt nonce echo: the coordinator (when its receipts are on)
+          // returns this call's serverNonce in result._meta["clockchain/receipt"].
+          "x-clockchain-receipt": "1",
         },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(UPSTREAM_RPC_BUDGET_MS),
@@ -1201,6 +1205,8 @@ export function createLocalAdapterServer(options = {}) {
       filled,
       ...(dropped.length > 0 ? { dropped } : {}),
       serverNonce: response.error === undefined ? serverNonceFromResult(response.result) : null,
+      ...(response.error === undefined && receiptHashFromResult(response.result) !== null
+        ? { receiptHash: receiptHashFromResult(response.result) } : {}),
       outcome: tool === INVITE_TOOL && isTransientInviteRefusal(response) ? TRANSIENT_OUTCOME
         : response.error !== undefined ? "error" : response.result?.isError === true ? "refused" : "ok",
     });

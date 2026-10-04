@@ -136,6 +136,7 @@ async function context(t, { serverOptions = {}, helperSign = [SIG_1, SIG_2, SIG_
   t.after(() => rm(tmpRoot, { recursive: true, force: true }));
   const md = fixture.pin.manifestDigest;
   const calls = [];
+  const sentHeaders = [];
   const refuse = new Set();
   // the generic host between sessions: its NON-error transient body (live p6-ta-2026-10-03-5)
   const transient = { next: 0, isError: false, status: null, body: null, throwCode: null };
@@ -160,6 +161,7 @@ async function context(t, { serverOptions = {}, helperSign = [SIG_1, SIG_2, SIG_
     fetchImpl: async (url, init) => {
       const request = JSON.parse(init.body);
       calls.push(request);
+      sentHeaders.push(init.headers);
       const name = request.params?.name;
       const serverNonce = `0x${String(++nonce).padStart(32, "0")}`;
       if (name === "agent_handshake_invite" && transient.next > 0) {
@@ -182,7 +184,11 @@ async function context(t, { serverOptions = {}, helperSign = [SIG_1, SIG_2, SIG_
         body = { serverNonce, localAction: { helperSteps: queuedSteps } };
         queuedSteps = [];
       }
-      return fakeResponse({ jsonrpc: "2.0", id: request.id, result: rpcResult(body) });
+      // The opt-in nonce echo (only when the request asked for it), distinct from any body nonce.
+      const echo = init.headers?.["x-clockchain-receipt"] === "1"
+        ? { _meta: { "clockchain/receipt": { serverNonce: `0x${"e".repeat(24)}${String(nonce).padStart(8, "0")}`, receiptHash: `0x${"c".repeat(63)}${nonce % 10}` } } }
+        : {};
+      return fakeResponse({ jsonrpc: "2.0", id: request.id, result: { ...rpcResult(body), ...echo } });
     },
     runHelper: async (input) => {
       const operation = input.args[6];
@@ -203,7 +209,7 @@ async function context(t, { serverOptions = {}, helperSign = [SIG_1, SIG_2, SIG_
       helperStep({ manifestDigest: md, operation: "sign", sessionId, role, payload: signPayload(operation, { sessionId, role, nonce: String(index) }) }));
   };
   const setSession = (sessionId) => { nextSession = sessionId; };
-  return { server, calls, refuse, transient, tmpRoot, stageSigns, setSession, md };
+  return { server, calls, sentHeaders, refuse, transient, tmpRoot, stageSigns, setSession, md };
 }
 
 const lastForwarded = (calls) => toolCalls(calls).at(-1).params;
@@ -714,4 +720,19 @@ test("invite budget: the host's window-ended refusal (RENDEZVOUS_UNAVAILABLE, no
   await call(server, 2, "agent_handshake_invite", {});
   for (let i = 3; i <= 5; i += 1) assert.equal((await call(server, i, "agent_handshake_invite", {})).result.isError, undefined);
   assert.match(errorText(await call(server, 6, "agent_handshake_invite", {})), /^INVITE_BUDGET_EXHAUSTED: /);
+});
+
+test("2.2.0 receipt echo: every upstream call asks for it; the journal line carries the echoed nonce (preferred over any body nonce) and receipt hash", async (t) => {
+  const { server, tmpRoot, sentHeaders } = await context(t);
+  await call(server, 1, "agent_handshake_invite", { reference: "r", statement: "s", validForSeconds: "90" });
+  await call(server, 2, ADAPTER_TOOL);
+  await call(server, 3, "agent_handshake_join", {});
+  assert.ok(sentHeaders.length >= 2);
+  for (const h of sentHeaders) assert.equal(h["x-clockchain-receipt"], "1");
+  const lines = (await readFile(join(tmpRoot, ADAPTER_FORWARDS_FILE), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  assert.ok(lines.length >= 1);
+  for (const line of lines) {
+    assert.match(line.serverNonce, /^0xe{24}\d{8}$/);
+    assert.match(line.receiptHash, /^0x[0-9a-f]{64}$/);
+  }
 });
