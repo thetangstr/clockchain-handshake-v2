@@ -113,9 +113,9 @@ const cliResult = (operation, extra = {}) => `${JSON.stringify({
   operation, ...extra,
 })}\n`;
 
-function fakeResponse(body) {
+function fakeResponse(body, extraHeaders = {}) {
   const text = JSON.stringify(body);
-  return { ok: true, headers: { get: () => "application/json" }, text: async () => text };
+  return { ok: true, headers: { get: (name) => (String(name).toLowerCase() === "content-type" ? "application/json" : (extraHeaders[String(name).toLowerCase()] ?? null)) }, text: async () => text };
 }
 
 const rpcResult = (body) => ({ content: [{ type: "text", text: JSON.stringify(body) }], structuredContent: body });
@@ -736,3 +736,71 @@ test("2.2.0 receipt echo: every upstream call asks for it; the journal line carr
     assert.match(line.receiptHash, /^0x[0-9a-f]{64}$/);
   }
 });
+
+// 2.2.0 receipt session: the adapter keeps the coordinator's mcp-session-id.
+async function sessionContext(t, { issue = true, knownSession = "sess-1" } = {}) {
+  const fixture = await makeAssetDir(t);
+  const tmpRoot = await mkdtemp(join(tmpdir(), "fill-tmp-"));
+  t.after(() => rm(tmpRoot, { recursive: true, force: true }));
+  const seen = [];
+  let counter = 0;
+  const state = { current: knownSession, mode: "ok" };
+  const server = createLocalAdapterServer({
+    assetDir: fixture.assetDir,
+    endpoint: ENDPOINT,
+    tmpdir: tmpRoot,
+    fetchImpl: async (url, init) => {
+      const request = JSON.parse(init.body);
+      const sent = init.headers["mcp-session-id"] ?? null;
+      seen.push({ method: request.method, sent });
+      if (request.method === "initialize") {
+        state.current = `sess-${++counter}`;
+        return fakeResponse({ jsonrpc: "2.0", id: request.id, result: { protocolVersion: "2024-11-05", capabilities: {}, serverInfo: { name: "x", version: "1" } } }, issue ? { "mcp-session-id": state.current } : {});
+      }
+      if (request.method === "notifications/initialized") return fakeResponse({});
+      if (sent !== null && sent !== state.current) {
+        if (state.mode === "404") return { ok: false, status: 404, headers: { get: () => "text/plain" }, text: async () => "unknown session" };
+        return fakeResponse({ jsonrpc: "2.0", id: request.id, error: { code: -32001, message: "Unknown session" } });
+      }
+      return fakeResponse({ jsonrpc: "2.0", id: request.id, result: request.method === "tools/list" ? { tools: [] } : rpcResult({ ok: true, serverNonce: `0x${"1".repeat(32)}` }) });
+    },
+  });
+  return { server, seen, state };
+}
+const rpc = (server, id, method, params = {}) => server.handleMessage({ jsonrpc: "2.0", id, method, params });
+
+test("2.2.0 receipt session: the initialize mcp-session-id is sent on every later upstream request", async (t) => {
+  const { server, seen } = await sessionContext(t);
+  await rpc(server, 1, "initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "c", version: "1" } });
+  await rpc(server, 2, "tools/list");
+  await call(server, 3, "agent_handshake_status", { access: "csha_x" });
+  const initialize = seen.find((s) => s.method === "initialize");
+  assert.equal(initialize.sent, null);
+  for (const s of seen.filter((x) => x.method !== "initialize")) assert.equal(s.sent, "sess-1", s.method);
+});
+
+test("2.2.0 receipt session: a server that issues no session id is never sent one (old servers)", async (t) => {
+  const { server, seen } = await sessionContext(t, { issue: false });
+  await rpc(server, 1, "initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "c", version: "1" } });
+  await rpc(server, 2, "tools/list");
+  assert.ok(seen.length >= 2);
+  for (const s of seen) assert.equal(s.sent, null);
+});
+
+for (const mode of ["404", "rpc-error"]) {
+  test(`2.2.0 receipt session: an unknown stored session (${mode}) re-initializes once and the call succeeds`, async (t) => {
+    const { server, seen, state } = await sessionContext(t);
+    await rpc(server, 1, "initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "c", version: "1" } });
+    state.mode = mode;
+    state.current = "server-restarted"; // the stored sess-1 is no longer known
+    const res = await rpc(server, 2, "tools/list");
+    assert.ok(res.result, JSON.stringify(res));
+    assert.equal(seen.filter((s) => s.method === "initialize").length, 2);
+    const after = seen.filter((s) => s.method === "tools/list");
+    assert.equal(after.length, 2);
+    assert.equal(after[0].sent, "sess-1");
+    assert.equal(after[1].sent, "sess-2");
+    await rpc(server, 3, "tools/list");
+    assert.equal(seen.filter((s) => s.method === "tools/list").at(-1).sent, "sess-2");
+  });
+}

@@ -776,13 +776,20 @@ export function createLocalAdapterServer(options = {}) {
   }
   let upstreamId = 0;
   let upstreamInit = null;
+  // The coordinator's MCP session (initialize response header), sent on every
+  // later upstream request so the call is not served on the stateless path
+  // (which carries no session id into the receipt). null = none issued.
+  let upstreamSessionId = null;
   let pendingExecution = Promise.resolve();
 
-  async function upstreamRequest(method, params, { notification = false } = {}) {
+  const UNKNOWN_SESSION = /unknown[\s_-]*session|session[\s_-]*(not[\s_-]*found|expired|unknown)|invalid[\s_-]*session/i;
+
+  async function upstreamRequest(method, params, { notification = false, retried = false } = {}) {
     const id = ++upstreamId;
     const body = notification
       ? { jsonrpc: "2.0", method, ...(params !== undefined ? { params } : {}) }
       : { jsonrpc: "2.0", id, method, ...(params !== undefined ? { params } : {}) };
+    const sentSession = method === "initialize" ? null : upstreamSessionId;
     let response;
     try {
       response = await fetchImpl(endpoint, {
@@ -793,6 +800,8 @@ export function createLocalAdapterServer(options = {}) {
           // Opt-in receipt nonce echo: the coordinator (when its receipts are on)
           // returns this call's serverNonce in result._meta["clockchain/receipt"].
           "x-clockchain-receipt": "1",
+          // Only when the server issued one: old servers stay compatible.
+          ...(sentSession !== null ? { "mcp-session-id": sentSession } : {}),
         },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(UPSTREAM_RPC_BUDGET_MS),
@@ -803,11 +812,23 @@ export function createLocalAdapterServer(options = {}) {
       }
       throw error;
     }
+    // A stored session the server no longer knows: re-initialize once and replay.
+    const reinitialize = async () => {
+      upstreamSessionId = null;
+      upstreamInit = null;
+      await upstreamInitialize();
+      return upstreamRequest(method, params, { notification, retried: true });
+    };
     if (!response?.ok) {
       if (UPSTREAM_UNREACHED_STATUSES.has(response?.status)) throw new UpstreamUnreachedError(`HTTP ${response.status}`);
+      if (sentSession !== null && !retried && response?.status === 404) return reinitialize();
       invalid();
     }
     const text = await response.text();
+    if (method === "initialize") {
+      const issued = response.headers?.get?.("mcp-session-id");
+      if (typeof issued === "string" && issued.length > 0) upstreamSessionId = issued;
+    }
     if (notification) return null;
     const messages = parseUpstreamBody(text, response.headers?.get?.("content-type") ?? "");
     const envelope = messages.find((message) => isPlain(message) && message.id === id);
@@ -815,6 +836,10 @@ export function createLocalAdapterServer(options = {}) {
       envelope === undefined || envelope.jsonrpc !== "2.0" ||
       (envelope.result === undefined) === (envelope.error === undefined)
     ) invalid();
+    if (
+      sentSession !== null && !retried && envelope.error !== undefined &&
+      UNKNOWN_SESSION.test(String(envelope.error?.message ?? ""))
+    ) return reinitialize();
     return envelope;
   }
 
