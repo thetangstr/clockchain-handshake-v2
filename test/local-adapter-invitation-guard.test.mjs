@@ -32,8 +32,8 @@ function mint(payload = PAYLOAD) {
   return `${segment}.${sig}`;
 }
 
-test("version is 2.2.0 (the 2.1.11 guard ships unchanged in behaviour)", () => {
-  assert.equal(LOCAL_ADAPTER_VERSION, "2.2.0");
+test("version is 2.2.1 (the 2.1.11 guard ships unchanged in behaviour)", () => {
+  assert.equal(LOCAL_ADAPTER_VERSION, "2.2.1");
 });
 
 test("a well-formed invitation passes the shape check", () => {

@@ -11,6 +11,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 
+import { build } from "esbuild";
+
 import { EMBEDDED_HOST_ROOT_KEY_RING } from "../src/agent-cli/trust-roots.mjs";
 import { ed25519PublicKeyFingerprint, rawEd25519PublicKey } from "../src/agent-handshake/v2/host-key-certificate.mjs";
 import {
@@ -23,8 +25,10 @@ import {
   TEST_ONLY_HELPER_MARKER,
   gateNeverShip,
   isLoopbackTestEndpoint,
+  isTestOnlyHelperBytes,
 } from "../src/local-adapter/never-ship-gate.mjs";
 import { ADAPTER_DEFAULT_ENDPOINT, createLocalAdapterServer } from "../src/local-adapter/server.mjs";
+import { LOCAL_ADAPTER_VERSION } from "../src/agent-handshake/v2/constants.mjs";
 import { createTestOnlyLocalAdapterServer } from "../src/test-only/adapter.mjs";
 import {
   assertTestOnlyRootKeyRing,
@@ -171,6 +175,8 @@ test("the build writes a never-ship record, a marked helper under the test ring,
   assert.equal(record.buildTag, "test-only");
   assert.equal(record.neverShip, true);
   assert.equal(record.shipAllowed, false);
+  // Never labelled with the bare version a release ships.
+  assert.equal(record.adapterVersion, `${LOCAL_ADAPTER_VERSION}+test-only`);
   assert.equal(record.endpoint, ENDPOINT);
   assert.ok(!PRODUCTION_MANIFEST_DIGESTS.includes(pin.manifestDigest));
   assert.ok(pin.hostRoots.every((root) => !PRODUCTION_HOST_ROOT_FINGERPRINTS.includes(root.fingerprint)));
@@ -273,4 +279,27 @@ test("release bundles never contain src/test-only/ (helper audit)", () => {
   });
   assert.equal(auditAgentHandshakeBundle(metafile([])).entryPoints, 1);
   assert.throws(() => auditAgentHandshakeBundle(metafile(["src/test-only/helper.mjs"])));
+});
+
+test("the release adapter bundle ships the gate but not the test-only marker", async () => {
+  // Same entry and options as scripts/build-local-adapter-npm.mjs, in memory.
+  const built = await build({
+    absWorkingDir: ROOT,
+    entryPoints: [join(ROOT, "bin/clockchain-local-adapter.mjs")],
+    write: false,
+    metafile: true,
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node24",
+    minify: false,
+    sourcemap: false,
+    legalComments: "none",
+    logLevel: "silent",
+    packages: "bundle",
+  });
+  assert.ok(Object.keys(built.metafile.inputs).includes("src/local-adapter/never-ship-gate.mjs"));
+  const bytes = Buffer.from(built.outputFiles[0].contents);
+  assert.equal(isTestOnlyHelperBytes(bytes), false);
+  assert.equal(TEST_ONLY_HELPER_MARKER, "clockchain-test-only-never-ship-build/v1");
 });

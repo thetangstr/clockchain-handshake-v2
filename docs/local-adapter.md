@@ -352,7 +352,7 @@ Limit: if another process deletes an unexpired issued record without sealing
 it, the adapter reads that as delivered. Only the company signer (same uid,
 private TMPDIR) can touch the store.
 
-## Handshake by reference (2.2.0)
+## Handshake by reference (2.2.0, first published in 2.2.1)
 
 Live runs lost about a third of their time to the model re-typing long opaque
 values between handshake tools (the 132-char signatures, the checkpoint object,
@@ -436,3 +436,34 @@ role's own model still makes its own join, propose and accept calls.
   It holds the signatures, checkpoints and the spent responder invitation, in
   the company's private TMPDIR. Writing is best-effort: a write failure never
   fails the call, and leaves that call without a journal line.
+
+## Release 2.2.1
+
+2.2.1 is the first published release since 2.1.9. It carries everything above
+from 2.1.10 to 2.2.0 (none of those versions reached npm) and vendors helper
+2.1.8 unchanged (`release/agent-handshake/pin.json`, manifest digest
+`956c8d94…`). It adds:
+
+- **Journal kinds (C-ADP-1).** Every journal line has a `kind`. `forward` is
+  written for every forwarded `tools/call`, filled or not (`filled: []` when
+  nothing was filled), with `serverNonce`, `receiptHash` (null when absent) and,
+  when the result carried helper steps, `stagedStepDigests` /
+  `skippedExecuted`. `local` is written for every `authorize_local_action` and
+  `sign_agent_contract_bind` call: `sessionId`, `role`, `operation`,
+  `stagedStepDigest`, `localActionSource`, `outcome` (`ok` | `error` |
+  `refused`) and `resultDigest` (sha256 of the sorted-key JSON of the result
+  the model was shown). `refused-local` `{tool, modelArgs, code}` is written
+  for every adapter-side refusal of a forwardable tool. The invite budget
+  counts `forward` lines only; a line without a `kind` is a `forward` line.
+- **One run per staged step.** Fill, forward and spend for a session run
+  under a per-session lock, and so does a staged helper step. A step is
+  recorded as executed when it is taken off the queue, so it is never staged
+  again by this process. Steps that succeeded are seeded from the journal,
+  so a restarted adapter keeps refusing them.
+- **Never-ship gate.** The adapter refuses a helper carrying the Track B
+  test-only marker unless a valid never-ship build record, a non-production
+  pin and a loopback test endpoint (`https://127.0.0.1:19400-19499`) are all
+  present (`src/local-adapter/never-ship-gate.mjs`). The published bundle
+  contains the gate but not the marker, and the npm build refuses a bundle or
+  a vendored helper that carries it. Test-only builds
+  (`npm run test-only:build`) label themselves `<version>+test-only`.

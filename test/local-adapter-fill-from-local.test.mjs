@@ -228,8 +228,8 @@ function genuineInvitation() {
   return `${payload}.${"A".repeat(43)}`;
 }
 
-test("2.2.0: version is 2.2.0", () => {
-  assert.equal(LOCAL_ADAPTER_VERSION, "2.2.0");
+test("2.2.1: version is 2.2.1", () => {
+  assert.equal(LOCAL_ADAPTER_VERSION, "2.2.1");
 });
 
 test("2.2.0 tools/list: every handshake tool takes no long argument and access is optional", async (t) => {

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // TEST-ONLY, NEVER SHIP (Track B B3-2, TB/LLD.md §17.4).
 //
-// Builds the never-ship test variant of helper 2.1.8 + adapter 2.2.0 into a
-// directory OUTSIDE this repository:
+// Builds the never-ship test variant of helper 2.1.8 + the local adapter into a
+// directory OUTSIDE this repository. Its record labels the adapter
+// `<LOCAL_ADAPTER_VERSION>+test-only`, never the bare version a release ships:
 //
 //   node scripts/test-only/build-test-only.mjs \
 //     --out <abs dir> --root-ring <abs ring.json> --endpoint https://127.0.0.1:<19400-19499>/<path>
@@ -162,7 +163,7 @@ export async function buildTestOnly({ outDir, rootKeyRing, endpoint, now = Date.
     neverShip: true,
     shipAllowed: false,
     component: "adapter",
-    adapterVersion: LOCAL_ADAPTER_VERSION,
+    adapterVersion: `${LOCAL_ADAPTER_VERSION}+${TEST_ONLY_BUILD_TAG}`,
     helperVersion: AGENT_HANDSHAKE_HELPER_VERSION,
     sourceCommit,
     sourceDirty,

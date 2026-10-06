@@ -1,6 +1,6 @@
 // Never-ship gate (Track B B3-2, TB/LLD.md §17.4).
 //
-// A test-only adapter 2.2.0 + helper 2.1.8 variant exists for offline loopback
+// A test-only adapter + helper 2.1.8 variant exists for offline loopback
 // experiments: the helper's root ring is a Track B TEST host root and the
 // adapter's endpoint is a loopback port. It must never run against the
 // production host root or a production endpoint, and a production adapter must
@@ -17,7 +17,13 @@
 // Every test-only helper bundle starts with this banner and carries the
 // constant below, so its digest-verified bytes identify it. A helper without
 // the marker is a release helper.
-export const TEST_ONLY_HELPER_MARKER = "clockchain-test-only-never-ship-build/v1";
+//
+// The value is assembled at load time so the literal never appears in a bundle
+// that merely imports this module: the release adapter (which ships this gate)
+// stays marker-free, and scripts/build-local-adapter-npm.mjs refuses to write a
+// package whose adapter bundle or vendored helper contains it. The test-only
+// helper still carries the literal in its banner (scripts/test-only/).
+export const TEST_ONLY_HELPER_MARKER = ["clockchain-test-only", "never-ship-build/v1"].join("-");
 export const TEST_ONLY_BUILD_TAG = "test-only";
 export const TEST_ONLY_BUILD_SCHEMA = "track-b.test-only-build/v1";
 

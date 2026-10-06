@@ -1,4 +1,4 @@
-// Test-only adapter 2.2.0 variant (Track B B3-2, TB/LLD.md §17.4). NEVER SHIP.
+// Test-only adapter variant (Track B B3-2, TB/LLD.md §17.4). NEVER SHIP.
 //
 // Runs the release adapter code (createLocalAdapterServer) over a test-only
 // build directory written by scripts/test-only/build-test-only.mjs:

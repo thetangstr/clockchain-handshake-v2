@@ -15,6 +15,7 @@ import {
   AGENT_HANDSHAKE_HELPER_NODE_MAJOR,
   LOCAL_ADAPTER_VERSION,
 } from "../src/agent-handshake/v2/constants.mjs";
+import { isTestOnlyHelperBytes } from "../src/local-adapter/never-ship-gate.mjs";
 import { validateAgentHandshakeReleasePin } from "./verify-agent-handshake-release.mjs";
 
 const ROOT = new URL("..", import.meta.url).pathname;
@@ -61,6 +62,9 @@ export async function buildLocalAdapterNpm({ outDir, fetchImpl = defaultFetchAss
     fetchImpl(`${pin.allowedAssetPrefix}${HELPER_FILENAME}`),
   ]);
   validateAgentHandshakeReleasePin(pin, { manifestBytes, helperBytes });
+  // Never ship (Track B B3-2): neither the adapter bundle nor the vendored
+  // helper may carry the test-only marker.
+  if (isTestOnlyHelperBytes(await readFile(join(directory, "index.mjs"))) || isTestOnlyHelperBytes(helperBytes)) invalid();
   const assetsDir = join(directory, "assets");
   await mkdir(assetsDir, { recursive: true });
   await writeFile(join(assetsDir, "manifest.json"), manifestBytes, { mode: 0o644 });
