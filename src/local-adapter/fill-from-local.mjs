@@ -53,6 +53,7 @@ export const LOCAL_FILL_REFUSALS = Object.freeze({
   termsPin: "INVITE_TERMS_PIN_INVALID",
   inviteBudget: "INVITE_BUDGET_EXHAUSTED",
   budgetPin: "INVITE_BUDGET_PIN_INVALID",
+  budgetJournal: "INVITE_BUDGET_UNVERIFIABLE",
 });
 
 // Per-run invite budget (travel_mvp plan: at most 3 handshake invites per run;
@@ -285,6 +286,10 @@ export function localFillRefusalText(code, detail = {}) {
       "handshake invitations, so this adapter will not create another. Nothing was sent to the coordinator. " +
       "Continue the handshake you already opened (its roleAccess and the invitation you delivered), or stop and " +
       `report to your operator. ${JSON.stringify({ refusal: LOCAL_FILL_REFUSALS.inviteBudget, tool: INVITE_TOOL, sent: detail.sent, budget: detail.budget })}`;
+  }
+  if (code === LOCAL_FILL_REFUSALS.budgetJournal) {
+    return `${LOCAL_FILL_REFUSALS.budgetJournal}: this adapter could not read or write its invite journal, so it cannot ` +
+      "count this run's invitations and will not create another. Nothing was sent to the coordinator. Report this to your operator.";
   }
   if (code === LOCAL_FILL_REFUSALS.budgetPin) {
     return `${LOCAL_FILL_REFUSALS.budgetPin}: this adapter's invite budget (${INVITE_BUDGET_ENV}) is malformed, ` +

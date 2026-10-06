@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { AGENT_HANDSHAKE_HELPER_NODE_MAJOR } from "../src/agent-handshake/v2/constants.mjs";
 import {
   isSupportedNodeVersion,
+  tlsVerificationDisabled,
   unsupportedNodeVersionMessage,
 } from "../src/local-adapter/node-support.mjs";
 
@@ -31,6 +32,13 @@ if (String(nodeMajor) !== AGENT_HANDSHAKE_HELPER_NODE_MAJOR) {
   process.stderr.write(
     `${JSON.stringify({ warning: `clockchain-local-adapter requires Node ${AGENT_HANDSHAKE_HELPER_NODE_MAJOR}.x; the pinned helper will refuse under ${process.versions.node}` })}\n`,
   );
+}
+
+// L6 (2.2.1): never run with TLS certificate verification switched off — the
+// coordinator connection is the adapter's only network trust.
+if (tlsVerificationDisabled(process.env)) {
+  process.stderr.write(`${JSON.stringify({ error: "ADAPTER_TLS_VERIFICATION_DISABLED" })}\n`);
+  process.exit(86);
 }
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -63,10 +71,18 @@ function resolveAssetPaths() {
 // dependency chain) stays lazily initialized behind this import, so on an
 // unsupported runtime the gate above has already exited before any of it —
 // or anything it pulls in — can execute.
-import("../src/local-adapter/server.mjs").then(
-  ({ startLocalAdapterStdio }) => {
+// L3 (2.2.1): this is the release entry, so the verified pin must also be the
+// production pin (manifest digest and host roots); tests and the test-only
+// entry build servers over custom pins without passing through here.
+Promise.all([
+  import("../src/local-adapter/server.mjs"),
+  import("../src/local-adapter/never-ship-gate.mjs"),
+]).then(
+  ([{ loadPinnedAssets, startLocalAdapterStdio }, { assertReleasePin }]) => {
     try {
-      startLocalAdapterStdio(resolveAssetPaths());
+      const assets = loadPinnedAssets(resolveAssetPaths());
+      assertReleasePin(assets.pin);
+      startLocalAdapterStdio({ assets });
     } catch {
       process.stderr.write(`${JSON.stringify({ error: "ADAPTER_ASSET_VERIFICATION_FAILED" })}\n`);
       process.exit(86);

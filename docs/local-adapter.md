@@ -467,3 +467,20 @@ from 2.1.10 to 2.2.0 (none of those versions reached npm) and vendors helper
   contains the gate but not the marker, and the npm build refuses a bundle or
   a vendored helper that carries it. Test-only builds
   (`npm run test-only:build`) label themselves `<version>+test-only`.
+- **Security hardening.**
+  - An `INVITATION_CORRUPTED` refusal names at most three payload fields, and
+    only short identifier-shaped names; other keys are counted ("N other").
+    An invitation read from a ref is the counterparty's: its refusal is a
+    fixed text that echoes nothing from it.
+  - The stdio entry runs only the production pin (production manifest digest
+    and production host roots) and exits 86 otherwise. It also exits 86
+    (`ADAPTER_TLS_VERIFICATION_DISABLED`) when TLS certificate verification is
+    switched off in Node's environment. Upstream requests never follow a
+    redirect.
+  - With a budget set, the invite budget fails closed: if the journal cannot
+    be read for the seed, or an invite's journal line cannot be written, the
+    adapter refuses further invites with `INVITE_BUDGET_UNVERIFIABLE`.
+  - An upstream tool that reuses a local tool name is dropped from
+    `tools/list`.
+  - `sign_agent_contract_bind` also refuses when `.clockchain` or
+    `.clockchain/handshakes` is group- or world-writable.

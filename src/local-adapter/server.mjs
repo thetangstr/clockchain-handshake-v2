@@ -92,6 +92,7 @@ import {
   putInvitationRef,
 } from "./invitation-refs.mjs";
 import { gateNeverShip } from "./never-ship-gate.mjs";
+import { tlsVerificationDisabled } from "./node-support.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -201,6 +202,9 @@ const LOCAL_TOOL_DEFINITIONS = Object.freeze([
   ADAPTER_TOOL_DEFINITION,
   CONTRACT_BIND_TOOL_DEFINITION,
 ]);
+// L5 (2.2.1): an upstream tool that reuses a local tool's name is dropped, so
+// the model never sees a second (upstream-authored) definition of it.
+const LOCAL_TOOL_NAMES = Object.freeze(new Set(LOCAL_TOOL_DEFINITIONS.map((tool) => tool.name)));
 
 function invalid() {
   throw new Error(GENERIC_REFUSAL);
@@ -753,6 +757,8 @@ export function createLocalAdapterServer(options = {}) {
     process.env.CLOCKCHAIN_LOCAL_ADAPTER_ENDPOINT ??
     ADAPTER_DEFAULT_ENDPOINT;
   if (typeof endpoint !== "string" || !/^https:\/\//.test(endpoint)) invalid();
+  // L6 (2.2.1): never start with TLS certificate verification switched off.
+  if (tlsVerificationDisabled(process.env)) invalid();
   // Never-ship gate (B3-2): a test-only helper runs only under its own build
   // record, a pinned non-production root and a loopback test endpoint; a
   // release configuration never runs a test-only helper. Throws on any mix.
@@ -797,11 +803,21 @@ export function createLocalAdapterServer(options = {}) {
   const inviteBudget = resolveInviteBudget({ option: input.inviteBudget, env: process.env });
   let invitesBase = null;
   let invitesReserved = 0;
+  // L4 (2.2.1): the budget fails closed. A journal seed that cannot be read
+  // refuses the invite (the next call reads again); once an invite's journal
+  // line could not be written, a restart could no longer count it, so this
+  // process creates no further invites.
+  let inviteJournalFailed = false;
   async function reserveInvite() {
     if (inviteBudget.invalid === true) return { code: LOCAL_FILL_REFUSALS.budgetPin };
     if (inviteBudget.budget === null) return null;
-    invitesBase ??= forwardJournal.count(INVITE_TOOL).catch(() => 0);
+    if (inviteJournalFailed) return { code: LOCAL_FILL_REFUSALS.budgetJournal };
+    invitesBase ??= forwardJournal.count(INVITE_TOOL).catch(() => null);
     const base = await invitesBase;
+    if (base === null) {
+      invitesBase = null;
+      return { code: LOCAL_FILL_REFUSALS.budgetJournal };
+    }
     const sent = base + invitesReserved;
     if (sent >= inviteBudget.budget) return { code: LOCAL_FILL_REFUSALS.inviteBudget, detail: { sent, budget: inviteBudget.budget } };
     invitesReserved += 1;
@@ -863,6 +879,8 @@ export function createLocalAdapterServer(options = {}) {
           ...(sentSession !== null ? { "mcp-session-id": sentSession } : {}),
         },
         body: JSON.stringify(body),
+        // L6 (2.2.1): the endpoint is pinned; a redirect is never followed.
+        redirect: "error",
         signal: AbortSignal.timeout(UPSTREAM_RPC_BUDGET_MS),
       });
     } catch (error) {
@@ -1216,7 +1234,8 @@ export function createLocalAdapterServer(options = {}) {
       const envelope = await upstreamRequest("tools/list", params);
       if (envelope.error !== undefined) return { jsonrpc: "2.0", id, error: envelope.error };
       const result = isPlain(envelope.result) ? envelope.result : {};
-      const tools = Array.isArray(result.tools) ? result.tools : [];
+      const tools = (Array.isArray(result.tools) ? result.tools : [])
+        .filter((tool) => !(isPlain(tool) && LOCAL_TOOL_NAMES.has(tool.name)));
       return {
         jsonrpc: "2.0",
         id,
@@ -1277,8 +1296,10 @@ export function createLocalAdapterServer(options = {}) {
       // nothing; its journal line says "transient", so a restart recounts the same).
       const over = await reserveInvite();
       if (over !== null) return refuseLocal(id, params.name, modelArgs, localFillRefusalText(over.code, over.detail));
-      const response = await forwardFilled(id, params, modelArgs, plan ?? NOTHING_FILLED);
+      const journal = {};
+      const response = await forwardFilled(id, params, modelArgs, plan ?? NOTHING_FILLED, journal);
       if (inviteBudget.budget !== null && isTransientInviteRefusal(response)) invitesReserved -= 1;
+      if (inviteBudget.budget !== null && journal.written !== true) inviteJournalFailed = true;
       return response;
     }
     if (!ACCESS_TOOLS.has(params.name)) return forwardFilled(id, params, modelArgs, NOTHING_FILLED);
@@ -1357,12 +1378,13 @@ export function createLocalAdapterServer(options = {}) {
 
   // 2.2.0 + C-ADP-1: forward the (filled) args; on an accepted call spend the
   // local value it used; journal every forwarded call, filled or not.
-  async function forwardFilled(id, params, modelArgs, { forwarded, filled, onSuccess = () => {} }) {
+  // `journal.written` reports whether the forward line reached the journal.
+  async function forwardFilled(id, params, modelArgs, { forwarded, filled, onSuccess = () => {} }, journal = {}) {
     const meta = {};
     const sent = filled.length === 0 ? params : { ...params, arguments: forwarded };
     const response = await proxyToolCall(id, sent, meta);
     if (filled.length > 0 && response.error === undefined && response.result?.isError !== true) onSuccess();
-    await journalForward({ tool: params.name, modelArgs, forwardedArgs: modelArgsOf(sent), filled, response, meta });
+    journal.written = await journalForward({ tool: params.name, modelArgs, forwardedArgs: modelArgsOf(sent), filled, response, meta });
     return response;
   }
 

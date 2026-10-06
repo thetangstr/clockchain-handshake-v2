@@ -53,6 +53,7 @@ export const NEVER_SHIP_REFUSALS = Object.freeze({
   helper: "TEST_ONLY_HELPER_MISMATCH",
   ring: "TEST_ONLY_RING_INVALID",
   output: "TEST_ONLY_OUTPUT_REFUSED",
+  releasePin: "RELEASE_PIN_NOT_PRODUCTION",
 });
 
 export class NeverShipRefusal extends Error {
@@ -98,6 +99,26 @@ export function assertTestOnlyPin(pin) {
   }
   if (pin.hostRoots.some(isProductionHostRoot)) refuse(NEVER_SHIP_REFUSALS.productionRoot);
   if (PRODUCTION_MANIFEST_DIGESTS.includes(pin.manifestDigest)) refuse(NEVER_SHIP_REFUSALS.productionPin);
+  return pin;
+}
+
+/**
+ * L3 (2.2.1): the release entry (bin/clockchain-local-adapter.mjs) runs only
+ * the production pin: its manifestDigest is a production manifest and every
+ * host root is a production root (kid and fingerprint of the same root).
+ * Enforced in the entry, not in createLocalAdapterServer, because tests and
+ * the test-only entry construct servers over custom pins.
+ */
+export function assertReleasePin(pin) {
+  if (
+    pin === null || typeof pin !== "object" ||
+    !PRODUCTION_MANIFEST_DIGESTS.includes(pin.manifestDigest) ||
+    !Array.isArray(pin.hostRoots) || pin.hostRoots.length < 1 ||
+    !pin.hostRoots.every((root) => {
+      const index = PRODUCTION_HOST_ROOT_KIDS.indexOf(root?.kid);
+      return index >= 0 && PRODUCTION_HOST_ROOT_FINGERPRINTS[index] === root.fingerprint;
+    })
+  ) refuse(NEVER_SHIP_REFUSALS.releasePin);
   return pin;
 }
 

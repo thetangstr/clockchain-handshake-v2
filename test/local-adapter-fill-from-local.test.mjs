@@ -5,7 +5,7 @@
 // adapter-side refusal on one hash chain (C-ADP-1, TB/LLD.md §8.4).
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -1193,4 +1193,36 @@ test("C-ADP-1 executed-digest set: a step re-issued while its run waits for the 
   assert.equal(server.pendingCount(), 0, "the step taken for execution is not staged again by the poll that re-issued it");
   assert.equal(errorText(await call(server, 7, ADAPTER_TOOL)), "Clockchain local adapter has no staged action to execute.");
   assert.deepEqual(helperRuns, ["init", "inspect", "sign"]);
+});
+
+// --- L4 (2.2.1): the invite budget fails closed on journal failure ----------------
+
+test("L4: an unreadable journal seed refuses the invite INVITE_BUDGET_UNVERIFIABLE and forwards nothing", async (t) => {
+  const { server, calls, tmpRoot } = await context(t, { serverOptions: { inviteTerms: PINNED_TERMS } });
+  // The journal path is a directory: it exists but cannot be read.
+  await mkdir(join(tmpRoot, ADAPTER_FORWARDS_FILE), { recursive: true, mode: 0o700 });
+  assert.match(errorText(await call(server, 1, "agent_handshake_invite", {})), /^INVITE_BUDGET_UNVERIFIABLE: /);
+  assert.equal(inviteCalls(calls).length, 0);
+  // Read again on the next call: still unreadable, still refused.
+  assert.match(errorText(await call(server, 2, "agent_handshake_invite", {})), /^INVITE_BUDGET_UNVERIFIABLE: /);
+  assert.equal(inviteCalls(calls).length, 0);
+});
+
+test("L4: once an invite's journal line could not be written, no further invite is created", async (t) => {
+  const { server, calls, tmpRoot } = await context(t, { serverOptions: { inviteTerms: PINNED_TERMS } });
+  assert.equal((await call(server, 1, "agent_handshake_invite", {})).result.isError, undefined);
+  // The journal directory stops being private, so every append now fails.
+  const clockchain = join(tmpRoot, ".clockchain");
+  await chmod(clockchain, 0o777);
+  t.after(() => chmod(clockchain, 0o700).catch(() => {}));
+  assert.equal((await call(server, 2, "agent_handshake_invite", {})).result.isError, undefined, "already forwarded");
+  assert.match(errorText(await call(server, 3, "agent_handshake_invite", {})), /^INVITE_BUDGET_UNVERIFIABLE: /);
+  assert.equal(inviteCalls(calls).length, 2);
+});
+
+test("L4: without a budget the journal state does not gate invites", async (t) => {
+  const { server, calls, tmpRoot } = await context(t, { serverOptions: { inviteTerms: PINNED_TERMS, inviteBudget: null } });
+  await mkdir(join(tmpRoot, ADAPTER_FORWARDS_FILE), { recursive: true, mode: 0o700 });
+  await call(server, 1, "agent_handshake_invite", {});
+  assert.equal(inviteCalls(calls).length, 1, "forwarded: no budget, no budget refusal");
 });

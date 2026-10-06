@@ -591,3 +591,18 @@ test("L2: refuses a session tree owned by another uid", async (t) => {
     { code: "BIND_SESSION_NOT_HELD" },
   );
 });
+
+test("L7: refuses when .clockchain or handshakes is group- or world-writable", async (t) => {
+  for (const dir of [".clockchain", join(".clockchain", "handshakes")]) {
+    for (const mode of [0o770, 0o757]) {
+      const { server, tmpRoot } = await makeBindContext(t);
+      await holdSession(tmpRoot);
+      assert.equal((await callBind(server, statement())).result.isError, undefined);
+      await chmod(join(tmpRoot, dir), mode);
+      assertRefused(await callBind(server, statement()), "BIND_SESSION_NOT_HELD", `${dir} ${mode.toString(8)}`);
+      // Readable but not writable by others stays accepted, as for the other stores.
+      await chmod(join(tmpRoot, dir), 0o755);
+      assert.equal((await callBind(server, statement())).result.isError, undefined, `${dir} 0755`);
+    }
+  }
+});
