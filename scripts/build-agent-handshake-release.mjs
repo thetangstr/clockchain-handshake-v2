@@ -56,6 +56,8 @@ export function auditAgentHandshakeBundle(metafile) {
     .sort();
   const inputs = Object.keys(metafile.inputs ?? {});
   if (entryPoints !== 1 || dynamicImports !== 0 || externalImports.length !== 0 || !inputs.some((input) => input.includes("node_modules/viem/"))) invalid();
+  // Never ship (Track B B3-2): a release helper never contains the test-only variant.
+  if (inputs.some((input) => input.startsWith("src/test-only/") || input.includes("/src/test-only/"))) invalid();
   return Object.freeze({ entryPoints, dynamicImports, externalImports: Object.freeze(externalImports), inputs: Object.freeze(inputs) });
 }
 

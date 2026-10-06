@@ -37,10 +37,11 @@ export async function buildLocalAdapterNpm({ outDir, fetchImpl = defaultFetchAss
   if (typeof fetchImpl !== "function") invalid();
   const pin = JSON.parse(await readFile(PIN_PATH, "utf8"));
   await mkdir(directory, { recursive: true });
-  await build({
+  const built = await build({
     absWorkingDir: ROOT,
     entryPoints: [ENTRY],
     outfile: join(directory, "index.mjs"),
+    metafile: true,
     bundle: true,
     platform: "node",
     format: "esm",
@@ -53,6 +54,8 @@ export async function buildLocalAdapterNpm({ outDir, fetchImpl = defaultFetchAss
     logLevel: "silent",
     packages: "bundle",
   });
+  // Never ship (Track B B3-2): the published adapter never contains the test-only variant.
+  if (Object.keys(built.metafile?.inputs ?? {}).some((input) => input.startsWith("src/test-only/") || input.includes("/src/test-only/"))) invalid();
   const [manifestBytes, helperBytes] = await Promise.all([
     fetchImpl(`${pin.allowedAssetPrefix}manifest.json`),
     fetchImpl(`${pin.allowedAssetPrefix}${HELPER_FILENAME}`),

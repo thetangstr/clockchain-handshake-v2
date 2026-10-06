@@ -88,6 +88,7 @@ import {
   issuedInvitationRefState,
   putInvitationRef,
 } from "./invitation-refs.mjs";
+import { gateNeverShip } from "./never-ship-gate.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -698,7 +699,8 @@ async function defaultRunHelper({ args, file, maxBufferBytes, timeoutMs }) {
 export function createLocalAdapterServer(options = {}) {
   const input = exact(options, [
     "assetDir", "assets", "contractBind", "endpoint", "fetchImpl", "helperPath", "input",
-    "invitationRefs", "inviteBudget", "inviteTerms", "manifestPath", "now", "output", "pin", "pinPath", "runHelper", "tmpdir",
+    "invitationRefs", "inviteBudget", "inviteTerms", "manifestPath", "now", "output", "pin", "pinPath", "runHelper",
+    "testOnlyBuild", "tmpdir",
   ], []);
   const assets = input.assets !== undefined
     ? (() => {
@@ -724,6 +726,10 @@ export function createLocalAdapterServer(options = {}) {
     process.env.CLOCKCHAIN_LOCAL_ADAPTER_ENDPOINT ??
     ADAPTER_DEFAULT_ENDPOINT;
   if (typeof endpoint !== "string" || !/^https:\/\//.test(endpoint)) invalid();
+  // Never-ship gate (B3-2): a test-only helper runs only under its own build
+  // record, a pinned non-production root and a loopback test endpoint; a
+  // release configuration never runs a test-only helper. Throws on any mix.
+  gateNeverShip({ helperBytes: assets.helperBytes, pin, endpoint, testOnlyBuild: input.testOnlyBuild });
   const fetchImpl = input.fetchImpl ?? globalThis.fetch;
   if (typeof fetchImpl !== "function") invalid();
   const runHelper = input.runHelper ?? defaultRunHelper;
