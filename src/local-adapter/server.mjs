@@ -238,6 +238,19 @@ const ROLE_ACCESS_KEYS = Object.freeze([
   "sessionId", "statementDigest", "typ", "v",
 ]);
 const B64URL = /^[A-Za-z0-9_-]+$/;
+// M1 (2.2.1): a refusal may name a payload field only when the name is short
+// and identifier-shaped, and names at most FIELD_NAME_LIMIT of them; any other
+// key is only counted, so no free text from the payload reaches the model.
+const SAFE_FIELD_NAME = /^[A-Za-z][A-Za-z0-9]{0,15}$/;
+const FIELD_NAME_LIMIT = 3;
+function fieldNameList(keys) {
+  const named = keys.filter((key) => SAFE_FIELD_NAME.test(key)).slice(0, FIELD_NAME_LIMIT);
+  const others = keys.length - named.length;
+  return [
+    ...named.map((key) => JSON.stringify(key)),
+    ...(others > 0 ? [`${others} other`] : []),
+  ].join(", ");
+}
 
 // 2.1.12 pass-by-reference (see invitation-refs.mjs).
 const INVITE_TOOL = "agent_handshake_invite";
@@ -340,16 +353,18 @@ export function checkInvitationShape(invitation, { origin = "copy" } = {}) {
             Array.isArray(payload.allowedTools) && payload.allowedTools.length === 1 &&
             payload.allowedTools[0] === INVITATION_TOOL &&
             parts[1].length === 43;
-          if (!ok) {
+          if (!ok && origin !== "ref") {
             // 2.1.12 (live p6-l-2026-10-02-1): at identical length the bare
             // "expected 628.43; got 628.43" read as a simulated fault to the
             // model. Name what changed — field NAMES only (public schema), no
-            // values, never the token.
+            // values, never the token. 2.2.1: only short identifier-shaped
+            // names, at most FIELD_NAME_LIMIT of them; the rest are counted.
+            // Bytes behind a ref are the counterparty's: never named at all.
             const unexpected = keys.filter((key) => !ROLE_ACCESS_KEYS.includes(key));
             const missing = ROLE_ACCESS_KEYS.filter((key) => !keys.includes(key));
             const parts2 = [];
-            if (unexpected.length > 0) parts2.push(`unexpected field ${unexpected.map((k) => JSON.stringify(k.slice(0, 32))).join(", ")}`);
-            if (missing.length > 0) parts2.push(`missing field ${missing.map((k) => JSON.stringify(k)).join(", ")}`);
+            if (unexpected.length > 0) parts2.push(`unexpected field ${fieldNameList(unexpected)}`);
+            if (missing.length > 0) parts2.push(`missing field ${fieldNameList(missing)}`);
             if (parts2.length === 0) parts2.push("a field value or the signature differs from a coordinator-issued invitation");
             detail = ` — same length, but ${parts2.join("; ")}: a character was changed`;
           }
@@ -359,7 +374,8 @@ export function checkInvitationShape(invitation, { origin = "copy" } = {}) {
   }
   if (ok) return null;
   if (origin === "ref") {
-    return `INVITATION_CORRUPTED: the invitation the counterparty sealed is not a valid responder invitation (expected ${expected}.43 base64url; got ${got})${detail}. ` +
+    // M1 (2.2.1): nothing derived from the counterparty's bytes is echoed.
+    return "INVITATION_CORRUPTED: the invitation the counterparty sealed is not a valid responder invitation. " +
       "It cannot be accepted; the ref is spent. Wait for the counterparty to seal and send a fresh invitation, then open that one.";
   }
   if (detail !== "") {

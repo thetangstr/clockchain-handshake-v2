@@ -963,6 +963,8 @@ test("2.1.12: a malformed invitation behind a ref is refused locally as the coun
   assert.equal(refused.result.isError, true);
   assert.match(refused.result.content[0].text, /^INVITATION_CORRUPTED: /);
   assert.match(refused.result.content[0].text, /sealed/);
+  // M1 (2.2.1): no field name or length from the counterparty's bytes.
+  assert.equal(/expms|expMs|\d+\.43/.test(refused.result.content[0].text), false);
   assert.equal(toolCalls(calls).length, 0);
   const again = await call(server, 2, "agent_handshake_accept_invitation", { invitationRef: ref });
   assert.match(again.result.content[0].text, /^INVITATION_REF_UNKNOWN: /);
