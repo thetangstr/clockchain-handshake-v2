@@ -11,7 +11,8 @@
 // keys — only the production pins it refuses and the marker that every
 // test-only helper bundle carries. The builder and the test-only entry points
 // live in src/test-only/ and are never part of a release bundle
-// (scripts/check-invariants.sh §8, auditAgentHandshakeBundle).
+// (auditAgentHandshakeBundle in scripts/build-agent-handshake-release.mjs and
+// the metafile check in scripts/build-local-adapter-npm.mjs refuse them).
 
 // Every test-only helper bundle starts with this banner and carries the
 // constant below, so its digest-verified bytes identify it. A helper without
