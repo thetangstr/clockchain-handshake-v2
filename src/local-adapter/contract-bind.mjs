@@ -428,9 +428,14 @@ async function heldStateDir({ tmpRoot, runId, side, platform, uid }) {
     // L2: the ancestry inside TMPDIR must be real directories owned by this
     // uid (no symlink can redirect the tree), and the session and role dirs
     // must also be private. TMPDIR itself must be private to the <U>-svc uid
-    // (macOS per-user TMPDIR is) — see docs/local-adapter.md.
+    // (macOS per-user TMPDIR is) — see docs/local-adapter.md. L7 (2.2.1): like
+    // the journal and the invitation-ref store, the ancestry must not be group-
+    // or world-writable.
     for (const dir of [clockchain, handshakes]) {
-      if (!ownedDirectory(await lstat(dir), platform, uid)) refuse(CONTRACT_BIND_REFUSALS.session);
+      const stats = await lstat(dir);
+      if (!ownedDirectory(stats, platform, uid) || (platform !== "win32" && (stats.mode & 0o022) !== 0)) {
+        refuse(CONTRACT_BIND_REFUSALS.session);
+      }
     }
     for (const dir of [sessionDir, stateDir]) {
       if (!privateDirectory(await lstat(dir), platform, uid)) refuse(CONTRACT_BIND_REFUSALS.session);

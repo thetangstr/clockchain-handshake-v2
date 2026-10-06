@@ -265,3 +265,222 @@ The `shellCommand` text remains in responses for compatibility clients, but
 with the adapter installed the model should never transcribe it: the staged
 step it executes is the same digest-bound command, validated locally, with the
 payload bytes taken from the validated envelope — not from model output.
+
+## Invitation guard (2.1.11)
+
+`agent_handshake_accept_invitation` is still proxied, but the adapter first
+checks the invitation's structure locally: two base64url segments, a payload
+that decodes to exactly the role-access key set (responder role, accept-only
+tools) and re-encodes byte-identically, and a 43-character HMAC signature. A
+mismatch returns `INVITATION_CORRUPTED: ... (expected <n>.43 base64url; got
+<lengths>)` without calling the coordinator, so a mis-copied token never burns
+a non-retryable `role_access_invalid`. Live origin: p6-l-2026-10-01-7, where
+the model re-typed `expMs` as `expms` at identical length. The token is never
+echoed in the refusal.
+
+## Invitation by reference (2.1.12)
+
+The 2.1.11 guard caught the alteration but could not prevent it: in live
+p6-l-2026-10-02-1 the provider model re-typed the opened invitation with the
+same one-character change as p6-l-2026-10-01-7 (`expMs` → `expms`, base64url
+position 143, identical 628.43 length) four times and the run timed out. The
+durable fix is that the model never carries the invitation.
+
+- **Store.** `<TMPDIR>/.clockchain/invitation-refs/` (0700, this uid; the
+  `.clockchain` ancestor must be owned by this uid and not group/world
+  writable). One `invref_<32 hex>.json` record per invitation (0600, created
+  `O_EXCL|O_NOFOLLOW`): `{"v":1,"kind":"received"|"issued","invitation":…,
+  "createdMs":…,"expMs":…}`, 15-minute TTL. The company signer (travel_mvp
+  `src/lib/agent-signer/invitation-refs.ts`) implements the same format; both
+  services run as the company's `<U>-svc` uid with the same private TMPDIR, so
+  another company's ref never resolves.
+- **Accept.** `agent_handshake_accept_invitation` takes `{ invitationRef,
+  acceptanceIdempotencyKey? }`. The adapter claims the `received` record by an
+  atomic rename (one caller wins), runs the 2.1.11 guard on the exact bytes,
+  forwards them upstream as `invitation`, deletes the record when the
+  coordinator accepted, and puts it back when the call failed without spending
+  it. A malformed invitation behind a ref is the counterparty's — it is refused
+  locally and the ref is spent. tools/list advertises `invitationRef`.
+- **Refs mode** (`CLOCKCHAIN_LOCAL_ADAPTER_INVITATION_REFS=1`, set by the fleet
+  plist): a raw `invitation` argument is refused with
+  `INVITATION_BY_REFERENCE_REQUIRED`, the raw argument disappears from the
+  advertised schema, and `agent_handshake_invite` moves `responderInvitation`
+  into the store (kind `issued`), returning `responderInvitationRef` in its
+  place (text and structuredContent). The signer's `seal_to { plaintextRef }`
+  seals it. Off by default so a human-relayed invite keeps working.
+- **Refusals.** `INVITATION_REF_UNKNOWN` (unknown, used, in flight, foreign, or
+  wrong kind — a wrong-kind ref is left in place), `INVITATION_REF_EXPIRED`,
+  `INVITATION_REF_INVALID` (extra arguments, or both forms),
+  `INVITATION_REF_STORE_UNAVAILABLE`. No refusal ever echoes the invitation.
+- **Guard text.** When the length is unchanged, `INVITATION_CORRUPTED` now names
+  the unexpected/missing payload field names (public schema only) instead of
+  printing two identical lengths.
+
+## Deliver-first guard (2.1.13)
+
+Live p6-l-2026-10-02-2: the buyer created the invite in refs mode, then ran its
+staged local init/policy/inspect steps and never sealed or delivered the
+invitation; the provider waited out the ten-minute window for nothing.
+
+In refs mode the adapter tracks every `responderInvitationRef` it issued, with
+the Initiator session's `sessionId` and `roleAccess`. While that ref is
+unconsumed (`<TMPDIR>/.clockchain/invitation-refs/<ref>.json` still exists),
+the adapter refuses, for that session:
+
+- `authorize_local_action` when the next staged step is that session's
+  Initiator step (the step stays queued), and
+- `agent_handshake_join`, `agent_handshake_next`, `agent_handshake_submit` and
+  `agent_handshake_submit_checkpoint` called with that session's access (never
+  forwarded). `agent_handshake_status` and `agent_handshake_get_certificate`
+  are read-only and are not guarded.
+
+The refusal is `DELIVER_INVITATION_FIRST: … invitation reference <ref> is still
+unconsumed. deliver this invitation reference to the provider through your
+company signer before continuing. …` — the text names no tool. The company
+signer (`deliver_invitation { listingId, plaintextRef, … }`, or `seal_to
+{ plaintextRef }`) claims and consumes the record; its absence is the delivery
+signal (a claim that is released again puts the guard back).
+
+Once the ref has expired (15 minutes) undelivered, the guard returns the
+distinct `DELIVER_INVITATION_EXPIRED: … Create a fresh invitation with
+agent_handshake_invite …`, deletes the expired record and drops that session's
+staged Initiator steps, so a fresh invitation's steps are never stuck behind
+them. Issuing a new invite settles every tracked ref first, so the store's
+sweep of expired records is never mistaken for a delivery.
+
+Limit: if another process deletes an unexpired issued record without sealing
+it, the adapter reads that as delivered. Only the company signer (same uid,
+private TMPDIR) can touch the store.
+
+## Handshake by reference (2.2.0, first published in 2.2.1)
+
+Live runs lost about a third of their time to the model re-typing long opaque
+values between handshake tools (the 132-char signatures, the checkpoint object,
+the 64-char policy digest, the 153-char invite statement). The adapter already
+stages every helper step and sees every helper result, so it now fills those
+values itself (`src/local-adapter/fill-from-local.mjs`). The model calls the
+same tools, the same number of times, with no long argument; each model call
+is still exactly one forwarded call with one coordinator receipt, so each
+role's own model still makes its own join, propose and accept calls.
+
+| Tool | The model passes | The adapter fills |
+|---|---|---|
+| `agent_handshake_invite` | `reference?` | `reference`, `statement`, `validForSeconds`, `identityPolicy` from the terms pin |
+| `agent_handshake_accept_invitation` | `invitationRef` | `invitation` (2.1.12, unchanged) |
+| `agent_handshake_join` | nothing | `access`, `helperVersion` (pin), `sessionKeyAddress` and `policyDigest` (latest init/policy/inspect result for the session and role) |
+| `agent_handshake_submit` | nothing | `access`, `policyDigest`, `signatureHex` (oldest unspent sign result) |
+| `agent_handshake_submit_checkpoint` | nothing | `access`, `artifactSignatureHex`, `checkpoint` (oldest sign result whose checkpoint is unsubmitted) |
+| `agent_handshake_next` / `_status` / `_get_certificate` | `waitMs?` | `access` |
+
+- **Access.** Optional. It defaults to the one live role access the adapter
+  saw in an invite (Initiator) or accept (Responder) result in the last 15
+  minutes, excluding sessions abandoned by the deliver-first guard. Two live
+  sessions refuse `SESSION_AMBIGUOUS` (pass `access` explicitly). With none,
+  or with an access the adapter never saw, the call is forwarded as given.
+  The deliver-first guard runs on the resolved access, so omitting `access`
+  never bypasses it.
+- **Equality.** A model-supplied value must equal the local one (byte for
+  byte; `sessionKeyAddress` case-insensitively; objects by sorted-key JSON).
+  Otherwise the call is refused `LOCAL_VALUE_MISMATCH` and never forwarded.
+  An equal value is forwarded as the model wrote it, so old briefs keep
+  working. Where the adapter holds no local value it forwards what the model
+  gave.
+- **Spending.** A signature is spent (and a checkpoint marked submitted) only
+  when the coordinator accepts the call; a refused or failed call is retried
+  with the same value.
+- **Terms pin.** `CLOCKCHAIN_LOCAL_ADAPTER_INVITE_TERMS` (JSON, exactly
+  `{reference, statement, validForSeconds, identityPolicy}`, validated like the
+  upstream schema). Unset: the coordinator's published NS-1847 terms when the
+  endpoint is the default hosted endpoint, otherwise no pin (invite arguments
+  pass through and the invite schema is left as published). A malformed pin
+  refuses `INVITE_TERMS_PIN_INVALID` and never forwards. Terms are never
+  adopted from a `terms_mismatch` reply.
+- **Invite budget.** At most 3 `agent_handshake_invite` calls are forwarded per
+  run (one adapter epoch: the fleet's PathState starts the process per run and
+  `ac-run-config` rotates the forwarding journal per epoch; a restart mid-run
+  seeds the count from that journal). Every forwarded invite counts, whatever
+  the coordinator answered, except one it refused as transient
+  (`HANDSHAKE_TEMPORARILY_UNAVAILABLE`, `retryable: true` — the hosted host
+  between sessions), the window-ended `RENDEZVOUS_UNAVAILABLE`, or an invite
+  that never reached the coordinator (its proxy answered 502/503 while the host
+  restarts, or the connection was refused — relayed as a JSON-RPC error
+  `UPSTREAM_UNAVAILABLE: …`): those minted no session, are journaled with
+  outcome `transient`, and neither the live count nor a restart's recount
+  includes them. A timeout or any other upstream status may have applied and
+  still counts.
+  A locally refused one does not count either. The next one is
+  refused `INVITE_BUDGET_EXHAUSTED` (text plus a JSON tail
+  `{refusal, tool, sent, budget}`) and never forwarded.
+  `CLOCKCHAIN_LOCAL_ADAPTER_INVITE_BUDGET` overrides (1–100, or `off`); a
+  malformed value refuses `INVITE_BUDGET_PIN_INVALID`.
+- **Redaction.** `authorize_local_action` returns, for a sign step,
+  `{schema, helperVersion, operation, signingOperation, signed: true,
+  heldLocally: true, checkpointHeldLocally, next}` — never the signature or
+  the checkpoint. Other results keep their shape with every hex string of 40+
+  characters (addresses, digests, transaction hashes) and every string over 64
+  characters cut to a 10-character prefix plus `…`, and gain
+  `heldLocally: true`.
+- **tools/list.** The filled properties leave the advertised schemas, `access`
+  becomes optional, and each description says what the adapter fills.
+- **Forwarding journal.** Every call whose forwarded arguments differ from the
+  model's (accept by reference included) is appended to
+  `<TMPDIR>/.clockchain/adapter-forwards/forwards.jsonl` (directory 0700, file
+  0600, `O_NOFOLLOW`, fsync'd):
+  `{v: 1, seq, prevHash, ts, tool, modelArgs, forwardedArgs, filled, dropped?,
+  serverNonce, outcome: ok|refused|error, hash}`, where
+  `hash = sha256(sorted-key JSON of the entry without hash)` and `prevHash` is
+  the previous line's hash (null on the first). It is the preimage a verifier
+  needs to reproduce the coordinator receipt's `argsDigest` for a filled call:
+  `forwardedArgs` reproduces the digest, every `modelArgs` field equals the same
+  `forwardedArgs` field, and `filled` is a subset of the documented set above.
+  It holds the signatures, checkpoints and the spent responder invitation, in
+  the company's private TMPDIR. Writing is best-effort: a write failure never
+  fails the call, and leaves that call without a journal line.
+
+## Release 2.2.1
+
+2.2.1 is the first published release since 2.1.9. It carries everything above
+from 2.1.10 to 2.2.0 (none of those versions reached npm) and vendors helper
+2.1.8 unchanged (`release/agent-handshake/pin.json`, manifest digest
+`956c8d94…`). It adds:
+
+- **Journal kinds (C-ADP-1).** Every journal line has a `kind`. `forward` is
+  written for every forwarded `tools/call`, filled or not (`filled: []` when
+  nothing was filled), with `serverNonce`, `receiptHash` (null when absent) and,
+  when the result carried helper steps, `stagedStepDigests` /
+  `skippedExecuted`. `local` is written for every `authorize_local_action` and
+  `sign_agent_contract_bind` call: `sessionId`, `role`, `operation`,
+  `stagedStepDigest`, `localActionSource`, `outcome` (`ok` | `error` |
+  `refused`) and `resultDigest` (sha256 of the sorted-key JSON of the result
+  the model was shown). `refused-local` `{tool, modelArgs, code}` is written
+  for every adapter-side refusal of a forwardable tool. The invite budget
+  counts `forward` lines only; a line without a `kind` is a `forward` line.
+- **One run per staged step.** Fill, forward and spend for a session run
+  under a per-session lock, and so does a staged helper step. A step is
+  recorded as executed when it is taken off the queue, so it is never staged
+  again by this process. Steps that succeeded are seeded from the journal,
+  so a restarted adapter keeps refusing them.
+- **Never-ship gate.** The adapter refuses a helper carrying the Track B
+  test-only marker unless a valid never-ship build record, a non-production
+  pin and a loopback test endpoint (`https://127.0.0.1:19400-19499`) are all
+  present (`src/local-adapter/never-ship-gate.mjs`). The published bundle
+  contains the gate but not the marker, and the npm build refuses a bundle or
+  a vendored helper that carries it. Test-only builds
+  (`npm run test-only:build`) label themselves `<version>+test-only`.
+- **Security hardening.**
+  - An `INVITATION_CORRUPTED` refusal names at most three payload fields, and
+    only short identifier-shaped names; other keys are counted ("N other").
+    An invitation read from a ref is the counterparty's: its refusal is a
+    fixed text that echoes nothing from it.
+  - The stdio entry runs only the production pin (production manifest digest
+    and production host roots) and exits 86 otherwise. It also exits 86
+    (`ADAPTER_TLS_VERIFICATION_DISABLED`) when TLS certificate verification is
+    switched off in Node's environment. Upstream requests never follow a
+    redirect.
+  - With a budget set, the invite budget fails closed: if the journal cannot
+    be read for the seed, or an invite's journal line cannot be written, the
+    adapter refuses further invites with `INVITE_BUDGET_UNVERIFIABLE`.
+  - An upstream tool that reuses a local tool name is dropped from
+    `tools/list`.
+  - `sign_agent_contract_bind` also refuses when `.clockchain` or
+    `.clockchain/handshakes` is group- or world-writable.

@@ -15,6 +15,7 @@ import {
   AGENT_HANDSHAKE_HELPER_NODE_MAJOR,
   LOCAL_ADAPTER_VERSION,
 } from "../src/agent-handshake/v2/constants.mjs";
+import { isTestOnlyHelperBytes } from "../src/local-adapter/never-ship-gate.mjs";
 import { validateAgentHandshakeReleasePin } from "./verify-agent-handshake-release.mjs";
 
 const ROOT = new URL("..", import.meta.url).pathname;
@@ -37,10 +38,11 @@ export async function buildLocalAdapterNpm({ outDir, fetchImpl = defaultFetchAss
   if (typeof fetchImpl !== "function") invalid();
   const pin = JSON.parse(await readFile(PIN_PATH, "utf8"));
   await mkdir(directory, { recursive: true });
-  await build({
+  const built = await build({
     absWorkingDir: ROOT,
     entryPoints: [ENTRY],
     outfile: join(directory, "index.mjs"),
+    metafile: true,
     bundle: true,
     platform: "node",
     format: "esm",
@@ -53,11 +55,16 @@ export async function buildLocalAdapterNpm({ outDir, fetchImpl = defaultFetchAss
     logLevel: "silent",
     packages: "bundle",
   });
+  // Never ship (Track B B3-2): the published adapter never contains the test-only variant.
+  if (Object.keys(built.metafile?.inputs ?? {}).some((input) => input.startsWith("src/test-only/") || input.includes("/src/test-only/"))) invalid();
   const [manifestBytes, helperBytes] = await Promise.all([
     fetchImpl(`${pin.allowedAssetPrefix}manifest.json`),
     fetchImpl(`${pin.allowedAssetPrefix}${HELPER_FILENAME}`),
   ]);
   validateAgentHandshakeReleasePin(pin, { manifestBytes, helperBytes });
+  // Never ship (Track B B3-2): neither the adapter bundle nor the vendored
+  // helper may carry the test-only marker.
+  if (isTestOnlyHelperBytes(await readFile(join(directory, "index.mjs"))) || isTestOnlyHelperBytes(helperBytes)) invalid();
   const assetsDir = join(directory, "assets");
   await mkdir(assetsDir, { recursive: true });
   await writeFile(join(assetsDir, "manifest.json"), manifestBytes, { mode: 0o644 });

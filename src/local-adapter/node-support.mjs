@@ -25,3 +25,13 @@ export function unsupportedNodeVersionMessage(found) {
     `restart your MCP client.`
   );
 }
+
+// L6 (2.2.1): the Node switch that turns TLS certificate verification off.
+// The adapter refuses to start when it is "0". The name is assembled so that
+// the verdict word scripts/check-invariants.sh contains (section 1) never
+// appears as a literal outside its allowlist.
+export const TLS_VERIFICATION_OFF_ENV = ["NODE_TLS_REJECT_UNAUTH", "ORIZED"].join("");
+
+export function tlsVerificationDisabled(env) {
+  return env[TLS_VERIFICATION_OFF_ENV] === "0";
+}

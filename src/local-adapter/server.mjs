@@ -12,6 +12,12 @@
 // staged digest-bound step per call through the pinned local helper. No
 // runtime download, no eval of remote bytes, no model transcription.
 //
+// 2.2.0 (fill-from-local.mjs): the adapter fills every long handshake argument
+// — role access, session key address, policy digest, signatures, checkpoint,
+// invite terms — from its own staged results and withholds the signatures from
+// authorize_local_action results, so the model never carries them. The number
+// of model calls, and so of coordinator receipts, is unchanged.
+//
 // One other local tool exists: sign_agent_contract_bind (contract-bind.mjs),
 // which signs exactly one agent-contract.bind/v1 statement with the session
 // key of a handshake session this adapter already holds — never anything
@@ -52,6 +58,41 @@ import {
   signContractBindStatement,
 } from "./contract-bind.mjs";
 import { VERIFIED_HELPER_BOOTSTRAP } from "../harness/verified-release-action-recorder.mjs";
+import {
+  ACCESS_TOOLS,
+  LOCAL_FILL_REFUSALS,
+  createForwardJournal,
+  createLocalValues,
+  isTransientInviteRefusal,
+  JOURNAL_KINDS,
+  LOCAL_OUTCOMES,
+  localFillRefusalText,
+  planAccessFill,
+  planInviteFill,
+  TRANSIENT_OUTCOME,
+  UPSTREAM_UNAVAILABLE_PREFIX,
+  redactHelperResult,
+  resolveInviteBudget,
+  resolveInviteTerms,
+  roleAccessFromResult,
+  serverNonceFromResult,
+  receiptHashFromResult,
+  resultDigest,
+  withLocalFills,
+} from "./fill-from-local.mjs";
+import {
+  INVITATION_REF_REFUSALS,
+  INVITATION_REF_RE,
+  INVITATION_REF_TTL_MS,
+  InvitationRefError,
+  claimInvitationRef,
+  discardIssuedInvitationRef,
+  invitationShape,
+  issuedInvitationRefState,
+  putInvitationRef,
+} from "./invitation-refs.mjs";
+import { gateNeverShip } from "./never-ship-gate.mjs";
+import { tlsVerificationDisabled } from "./node-support.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -161,9 +202,192 @@ const LOCAL_TOOL_DEFINITIONS = Object.freeze([
   ADAPTER_TOOL_DEFINITION,
   CONTRACT_BIND_TOOL_DEFINITION,
 ]);
+// L5 (2.2.1): an upstream tool that reuses a local tool's name is dropped, so
+// the model never sees a second (upstream-authored) definition of it.
+const LOCAL_TOOL_NAMES = Object.freeze(new Set(LOCAL_TOOL_DEFINITIONS.map((tool) => tool.name)));
 
 function invalid() {
   throw new Error(GENERIC_REFUSAL);
+}
+
+// C-ADP-1 journal helpers: what the model passed (never undefined, so the
+// line hashes the same before and after JSON), and the plan of a call the
+// adapter forwards as given.
+function modelArgsOf(params) {
+  return params.arguments === undefined ? null : params.arguments;
+}
+const NOTHING_FILLED = Object.freeze({ forwarded: null, filled: Object.freeze([]) });
+
+// The coordinator was NOT reached: the hosted host's reverse proxy answered a
+// bad gateway / unavailable while the host restarts between sessions (~1.3 s of
+// every ~121 s), or the connection was refused. Nothing was sent to the host, so
+// nothing was minted; the relayed refusal is coded (UPSTREAM_UNAVAILABLE) so a
+// client can retry it, and an invite it refuses does not spend the budget.
+// A timeout or any other status stays the generic failure (it may have applied).
+const UPSTREAM_UNREACHED_STATUSES = new Set([502, 503]);
+const UPSTREAM_UNREACHED_CAUSES = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN"]);
+class UpstreamUnreachedError extends Error {}
+
+// 2.1.11 invitation guard. The responder invitation is a coordinator-minted
+// role-access token: <base64url(JSON payload)>.<base64url(HMAC-SHA256)>. A
+// model copying it from the opened rendezvous box can silently alter it (live
+// p6-l-2026-10-01-7: "expMs" came back as "expms", identical length), and the
+// coordinator then answers a non-retryable role_access_invalid. Check the
+// structure locally — exact key set, responder role, accept-only tools, a
+// 43-char signature — and refuse with an actionable code before forwarding.
+// The token itself is never echoed.
+const INVITATION_TOOL = "agent_handshake_accept_invitation";
+const ROLE_ACCESS_KEYS = Object.freeze([
+  "alg", "allowedTools", "aud", "expMs", "iss", "jti", "kid", "nbfMs", "role",
+  "sessionId", "statementDigest", "typ", "v",
+]);
+const B64URL = /^[A-Za-z0-9_-]+$/;
+// M1 (2.2.1): a refusal may name a payload field only when the name is short
+// and identifier-shaped, and names at most FIELD_NAME_LIMIT of them; any other
+// key is only counted, so no free text from the payload reaches the model.
+const SAFE_FIELD_NAME = /^[A-Za-z][A-Za-z0-9]{0,15}$/;
+const FIELD_NAME_LIMIT = 3;
+function fieldNameList(keys) {
+  const named = keys.filter((key) => SAFE_FIELD_NAME.test(key)).slice(0, FIELD_NAME_LIMIT);
+  const others = keys.length - named.length;
+  return [
+    ...named.map((key) => JSON.stringify(key)),
+    ...(others > 0 ? [`${others} other`] : []),
+  ].join(", ");
+}
+
+// 2.1.12 pass-by-reference (see invitation-refs.mjs).
+const INVITE_TOOL = "agent_handshake_invite";
+export const INVITATION_REFS_ENV = "CLOCKCHAIN_LOCAL_ADAPTER_INVITATION_REFS";
+const INVITATION_REF_TEXT = Object.freeze({
+  INVITATION_REF_UNKNOWN:
+    "this invitationRef is unknown, already used, or belongs to another tool. Open the sealed rendezvous box again (open_sealed returns a fresh invitationRef) and pass that ref.",
+  INVITATION_REF_EXPIRED:
+    "this invitationRef expired. Open the sealed rendezvous box again for a fresh invitationRef, or wait for a fresh invitation.",
+  INVITATION_REF_STORE_UNAVAILABLE:
+    "the company's private invitation store is unavailable on this host. Report this to your operator; do not retype the invitation.",
+  INVITATION_REF_INVALID:
+    "pass exactly { invitationRef } (optionally with acceptanceIdempotencyKey) — never the invitation text itself.",
+});
+function invitationRefRefusalText(code) {
+  return `${code}: ${INVITATION_REF_TEXT[code] ?? INVITATION_REF_TEXT.INVITATION_REF_STORE_UNAVAILABLE}`;
+}
+const INVITATION_BY_REFERENCE_REQUIRED =
+  "INVITATION_BY_REFERENCE_REQUIRED: this adapter accepts the responder invitation only by reference. " +
+  "Pass { invitationRef } — the ref your signer's open_sealed returned — and never the invitation text; nothing was consumed.";
+const INVITATION_REF_PROPERTY = Object.freeze({
+  type: "string",
+  pattern: INVITATION_REF_RE.source,
+  description:
+    "The single-use ref your company signer's open_sealed returned for the opened invitation. The adapter reads the exact invitation bytes locally; never pass the invitation text.",
+});
+
+// Rewrites the upstream agent_handshake_accept_invitation definition so the
+// model sees the invitationRef argument (always), and — in refs mode — no
+// longer sees the raw invitation argument at all.
+function withInvitationRef(tool, refsOnly) {
+  if (!isPlain(tool) || tool.name !== INVITATION_TOOL || !isPlain(tool.inputSchema)) return tool;
+  const schema = tool.inputSchema;
+  const properties = isPlain(schema.properties) ? { ...schema.properties } : {};
+  if (refsOnly) delete properties.invitation;
+  properties.invitationRef = INVITATION_REF_PROPERTY;
+  const required = Array.isArray(schema.required) ? schema.required.filter((key) => key !== "invitation") : [];
+  return {
+    ...tool,
+    description: `${typeof tool.description === "string" ? `${tool.description} ` : ""}` +
+      (refsOnly
+        ? "Pass invitationRef (from your signer's open_sealed); the adapter supplies the exact invitation bytes locally."
+        : "Prefer invitationRef (from your signer's open_sealed) over the invitation text: the adapter supplies the exact bytes locally."),
+    inputSchema: { ...schema, properties, required: refsOnly ? ["invitationRef"] : required },
+  };
+}
+
+// 2.1.13 deliver-first guard (live p6-l-2026-10-02-2): the buyer created the
+// invite in refs mode, then ran the staged local init/policy/inspect steps and
+// never sealed or delivered the invitation; the provider waited ten minutes for
+// nothing. In refs mode, while the ref this adapter issued for an Initiator
+// session is unconsumed (<TMPDIR>/.clockchain/invitation-refs/<ref>.json still
+// exists — the company signer consumes it when it seals or delivers), the adapter refuses that
+// session's staged Initiator steps and its join/next/submit progression. An
+// expired ref gets a distinct refusal and the session's staged steps are
+// dropped, so the queue never deadlocks behind a session that cannot proceed.
+export const DELIVER_INVITATION_FIRST = "DELIVER_INVITATION_FIRST";
+export const DELIVER_INVITATION_EXPIRED = "DELIVER_INVITATION_EXPIRED";
+const DELIVERY_GUARDED_TOOLS = Object.freeze(new Set([
+  "agent_handshake_join",
+  "agent_handshake_next",
+  "agent_handshake_submit",
+  "agent_handshake_submit_checkpoint",
+]));
+function deliverFirstText(entry, { staged }) {
+  return `${DELIVER_INVITATION_FIRST}: the responder invitation for session ${entry.sessionId ?? "(this session)"} ` +
+    `has not been delivered — invitation reference ${entry.ref} is still unconsumed. ` +
+    "deliver this invitation reference to the provider through your company signer before continuing. " +
+    (staged
+      ? "Nothing was executed; the staged step stays queued."
+      : "Nothing was sent to the coordinator.");
+}
+function deliverExpiredText(entry) {
+  return `${DELIVER_INVITATION_EXPIRED}: invitation reference ${entry.ref} for session ${entry.sessionId ?? "(this session)"} ` +
+    "expired before it was delivered, so this session can never be joined. " +
+    "Create a fresh invitation with agent_handshake_invite, seal its new responderInvitationRef to the provider, " +
+    "and deliver it; this session's staged steps were discarded.";
+}
+
+export function checkInvitationShape(invitation, { origin = "copy" } = {}) {
+  const got = invitationShape(invitation);
+  let expected = "<payload>";
+  let ok = false;
+  let detail = "";
+  if (typeof invitation === "string" && invitation.length >= 80 && invitation.length <= 4096) {
+    const parts = invitation.split(".");
+    if (parts.length === 2 && B64URL.test(parts[0]) && B64URL.test(parts[1])) {
+      try {
+        const payload = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8"));
+        if (isPlain(payload)) {
+          const reencoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
+          expected = String(reencoded.length);
+          const keys = Object.keys(payload).sort();
+          const keysOk = keys.length === ROLE_ACCESS_KEYS.length &&
+            keys.every((key, index) => key === ROLE_ACCESS_KEYS[index]);
+          ok = keysOk &&
+            reencoded === parts[0] &&
+            payload.typ === "clockchain-agent-handshake-role-access" &&
+            payload.role === "responder" &&
+            Array.isArray(payload.allowedTools) && payload.allowedTools.length === 1 &&
+            payload.allowedTools[0] === INVITATION_TOOL &&
+            parts[1].length === 43;
+          if (!ok && origin !== "ref") {
+            // 2.1.12 (live p6-l-2026-10-02-1): at identical length the bare
+            // "expected 628.43; got 628.43" read as a simulated fault to the
+            // model. Name what changed — field NAMES only (public schema), no
+            // values, never the token. 2.2.1: only short identifier-shaped
+            // names, at most FIELD_NAME_LIMIT of them; the rest are counted.
+            // Bytes behind a ref are the counterparty's: never named at all.
+            const unexpected = keys.filter((key) => !ROLE_ACCESS_KEYS.includes(key));
+            const missing = ROLE_ACCESS_KEYS.filter((key) => !keys.includes(key));
+            const parts2 = [];
+            if (unexpected.length > 0) parts2.push(`unexpected field ${fieldNameList(unexpected)}`);
+            if (missing.length > 0) parts2.push(`missing field ${fieldNameList(missing)}`);
+            if (parts2.length === 0) parts2.push("a field value or the signature differs from a coordinator-issued invitation");
+            detail = ` — same length, but ${parts2.join("; ")}: a character was changed`;
+          }
+        }
+      } catch { ok = false; }
+    }
+  }
+  if (ok) return null;
+  if (origin === "ref") {
+    // M1 (2.2.1): nothing derived from the counterparty's bytes is echoed.
+    return "INVITATION_CORRUPTED: the invitation the counterparty sealed is not a valid responder invitation. " +
+      "It cannot be accepted; the ref is spent. Wait for the counterparty to seal and send a fresh invitation, then open that one.";
+  }
+  if (detail !== "") {
+    return `INVITATION_CORRUPTED: the invitation was altered while copying (expected ${expected}.43 base64url; got ${got}${detail}). ` +
+      "Do not retype the invitation: open the sealed rendezvous box again and pass the invitationRef it returns; the invitation was not consumed.";
+  }
+  return `INVITATION_CORRUPTED: the invitation was altered while copying (expected ${expected}.43 base64url; got ${got}). ` +
+    "Re-open the sealed rendezvous box and pass its invitation value byte-for-byte (do not retype, decode, or reconstruct it); the invitation was not consumed.";
 }
 
 function releaseMismatch() {
@@ -506,7 +730,8 @@ async function defaultRunHelper({ args, file, maxBufferBytes, timeoutMs }) {
 export function createLocalAdapterServer(options = {}) {
   const input = exact(options, [
     "assetDir", "assets", "contractBind", "endpoint", "fetchImpl", "helperPath", "input",
-    "manifestPath", "now", "output", "pin", "pinPath", "runHelper", "tmpdir",
+    "invitationRefs", "inviteBudget", "inviteTerms", "manifestPath", "now", "output", "pin", "pinPath", "runHelper",
+    "testOnlyBuild", "tmpdir",
   ], []);
   const assets = input.assets !== undefined
     ? (() => {
@@ -532,6 +757,12 @@ export function createLocalAdapterServer(options = {}) {
     process.env.CLOCKCHAIN_LOCAL_ADAPTER_ENDPOINT ??
     ADAPTER_DEFAULT_ENDPOINT;
   if (typeof endpoint !== "string" || !/^https:\/\//.test(endpoint)) invalid();
+  // L6 (2.2.1): never start with TLS certificate verification switched off.
+  if (tlsVerificationDisabled(process.env)) invalid();
+  // Never-ship gate (B3-2): a test-only helper runs only under its own build
+  // record, a pinned non-production root and a loopback test endpoint; a
+  // release configuration never runs a test-only helper. Throws on any mix.
+  gateNeverShip({ helperBytes: assets.helperBytes, pin, endpoint, testOnlyBuild: input.testOnlyBuild });
   const fetchImpl = input.fetchImpl ?? globalThis.fetch;
   if (typeof fetchImpl !== "function") invalid();
   const runHelper = input.runHelper ?? defaultRunHelper;
@@ -545,27 +776,136 @@ export function createLocalAdapterServer(options = {}) {
     ? contractBindPinsOption(input.contractBind)
     : contractBindPinsFromEnv(process.env);
   const tmpRoot = resolve(input.tmpdir ?? process.env.TMPDIR ?? osTmpdir());
+  // 2.1.12 refs mode: the invitation never reaches the model. Off by default
+  // for the published adapter (a human-relayed invite still needs the raw
+  // value); the fleet's launchd plist sets INVITATION_REFS_ENV=1.
+  if (input.invitationRefs !== undefined && typeof input.invitationRefs !== "boolean") invalid();
+  const invitationRefs = input.invitationRefs ?? process.env[INVITATION_REFS_ENV] === "1";
   const queue = [];
+  // 2.1.13: issued refs not yet consumed by the signer's seal_to, and the
+  // sessions abandoned because their ref expired undelivered. Entries are
+  // { ref, sessionId, roleAccess, expMs }.
+  const undelivered = new Map();
+  const abandoned = new Map();
+  // 2.2.0: role accesses and helper results this adapter holds, the invite
+  // terms pin, and the forwarding journal (fill-from-local.mjs).
+  const localValues = createLocalValues({ now });
+  const inviteTermsPin = resolveInviteTerms({
+    option: input.inviteTerms,
+    env: process.env,
+    endpoint,
+    defaultEndpoint: ADAPTER_DEFAULT_ENDPOINT,
+  });
+  const forwardJournal = createForwardJournal({ tmpRoot, now });
+  // Per-run invite budget (fill-from-local.mjs resolveInviteBudget): checked and
+  // reserved synchronously right before an invite is forwarded, so concurrent
+  // calls can never overshoot; the base is this epoch's journal, read once.
+  const inviteBudget = resolveInviteBudget({ option: input.inviteBudget, env: process.env });
+  let invitesBase = null;
+  let invitesReserved = 0;
+  // L4 (2.2.1): the budget fails closed. A journal seed that cannot be read
+  // refuses the invite (the next call reads again); once an invite's journal
+  // line could not be written, a restart could no longer count it, so this
+  // process creates no further invites.
+  let inviteJournalFailed = false;
+  async function reserveInvite() {
+    if (inviteBudget.invalid === true) return { code: LOCAL_FILL_REFUSALS.budgetPin };
+    if (inviteBudget.budget === null) return null;
+    if (inviteJournalFailed) return { code: LOCAL_FILL_REFUSALS.budgetJournal };
+    invitesBase ??= forwardJournal.count(INVITE_TOOL).catch(() => null);
+    const base = await invitesBase;
+    if (base === null) {
+      invitesBase = null;
+      return { code: LOCAL_FILL_REFUSALS.budgetJournal };
+    }
+    const sent = base + invitesReserved;
+    if (sent >= inviteBudget.budget) return { code: LOCAL_FILL_REFUSALS.inviteBudget, detail: { sent, budget: inviteBudget.budget } };
+    invitesReserved += 1;
+    return null;
+  }
   let upstreamId = 0;
   let upstreamInit = null;
+  // The coordinator's MCP session (initialize response header), sent on every
+  // later upstream request so the call is not served on the stateless path
+  // (which carries no session id into the receipt). null = none issued.
+  let upstreamSessionId = null;
   let pendingExecution = Promise.resolve();
+  // C-ADP-1 (TB/LLD.md §8.4): fill and submit are serialized per session, and
+  // a staged step whose digest was already handed to the helper is never
+  // staged again by this process. Steps that executed successfully are seeded
+  // once from this epoch's journal, so a restart keeps refusing those too.
+  const sessionLocks = new Map();
+  const executedDigests = new Set();
+  let executedSeed = null;
 
-  async function upstreamRequest(method, params, { notification = false } = {}) {
+  function withSessionLock(key, fn) {
+    const previous = sessionLocks.get(key) ?? Promise.resolve();
+    const run = previous.then(() => fn());
+    const tail = run.then(() => {}, () => {});
+    sessionLocks.set(key, tail);
+    void tail.then(() => { if (sessionLocks.get(key) === tail) sessionLocks.delete(key); });
+    return run;
+  }
+
+  // Resolves true once the journal's executed digests are loaded; false when
+  // the journal exists but cannot be read (staging then fails closed).
+  function seedExecutedDigests() {
+    executedSeed ??= forwardJournal.executedStepDigests().then((digests) => {
+      for (const digest of digests) executedDigests.add(digest);
+      return true;
+    }, () => false);
+    return executedSeed;
+  }
+
+  const UNKNOWN_SESSION = /unknown[\s_-]*session|session[\s_-]*(not[\s_-]*found|expired|unknown)|invalid[\s_-]*session/i;
+
+  async function upstreamRequest(method, params, { notification = false, retried = false } = {}) {
     const id = ++upstreamId;
     const body = notification
       ? { jsonrpc: "2.0", method, ...(params !== undefined ? { params } : {}) }
       : { jsonrpc: "2.0", id, method, ...(params !== undefined ? { params } : {}) };
-    const response = await fetchImpl(endpoint, {
-      method: "POST",
-      headers: {
-        accept: "application/json, text/event-stream",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(UPSTREAM_RPC_BUDGET_MS),
-    });
-    if (!response?.ok) invalid();
+    const sentSession = method === "initialize" ? null : upstreamSessionId;
+    let response;
+    try {
+      response = await fetchImpl(endpoint, {
+        method: "POST",
+        headers: {
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          // Opt-in receipt nonce echo: the coordinator (when its receipts are on)
+          // returns this call's serverNonce in result._meta["clockchain/receipt"].
+          "x-clockchain-receipt": "1",
+          // Only when the server issued one: old servers stay compatible.
+          ...(sentSession !== null ? { "mcp-session-id": sentSession } : {}),
+        },
+        body: JSON.stringify(body),
+        // L6 (2.2.1): the endpoint is pinned; a redirect is never followed.
+        redirect: "error",
+        signal: AbortSignal.timeout(UPSTREAM_RPC_BUDGET_MS),
+      });
+    } catch (error) {
+      if (UPSTREAM_UNREACHED_CAUSES.has(error?.cause?.code) || UPSTREAM_UNREACHED_CAUSES.has(error?.code)) {
+        throw new UpstreamUnreachedError("connection refused");
+      }
+      throw error;
+    }
+    // A stored session the server no longer knows: re-initialize once and replay.
+    const reinitialize = async () => {
+      upstreamSessionId = null;
+      upstreamInit = null;
+      await upstreamInitialize();
+      return upstreamRequest(method, params, { notification, retried: true });
+    };
+    if (!response?.ok) {
+      if (UPSTREAM_UNREACHED_STATUSES.has(response?.status)) throw new UpstreamUnreachedError(`HTTP ${response.status}`);
+      if (sentSession !== null && !retried && response?.status === 404) return reinitialize();
+      invalid();
+    }
     const text = await response.text();
+    if (method === "initialize") {
+      const issued = response.headers?.get?.("mcp-session-id");
+      if (typeof issued === "string" && issued.length > 0) upstreamSessionId = issued;
+    }
     if (notification) return null;
     const messages = parseUpstreamBody(text, response.headers?.get?.("content-type") ?? "");
     const envelope = messages.find((message) => isPlain(message) && message.id === id);
@@ -573,6 +913,10 @@ export function createLocalAdapterServer(options = {}) {
       envelope === undefined || envelope.jsonrpc !== "2.0" ||
       (envelope.result === undefined) === (envelope.error === undefined)
     ) invalid();
+    if (
+      sentSession !== null && !retried && envelope.error !== undefined &&
+      UNKNOWN_SESSION.test(String(envelope.error?.message ?? ""))
+    ) return reinitialize();
     return envelope;
   }
 
@@ -593,7 +937,9 @@ export function createLocalAdapterServer(options = {}) {
     return upstreamInit;
   }
 
-  function stageToolResult(result) {
+  // `meta` collects the digests this result staged and the ones it carried
+  // that were already executed (C-ADP-1), for the forward line.
+  function stageToolResult(result, { meta = {}, seeded = true } = {}) {
     if (!isPlain(result) || !Array.isArray(result.content)) return;
     const parsedItems = [];
     const candidates = [];
@@ -608,14 +954,27 @@ export function createLocalAdapterServer(options = {}) {
     // refuses the whole response, so the withheld copy is never reached.
     const staged = candidates.map((candidate) =>
       validateHelperStep(candidate, { manifestDigest: pin.manifestDigest }));
+    if (staged.length > 0 && !seeded) invalid();
+    // Where the steps came from: the receipt of the call that carried them.
+    const receiptHash = receiptHashFromResult(result);
+    const nonce = serverNonceFromResult(result);
     for (const step of staged) {
+      // C-ADP-1: an executed step is never staged again, whatever re-issues it.
+      if (executedDigests.has(step.commandSha256)) {
+        (meta.skippedExecuted ??= []).push(step.commandSha256);
+        continue;
+      }
       // The coordinator re-issues an unchanged localAction on each poll while a
       // step stays pending — the same byte-identical command is the same
       // digest-bound action, so an already-staged duplicate must not shift the
       // queue head away from the step the caller just read.
       if (queue.some((pending) => pending.commandSha256 === step.commandSha256)) continue;
       if (queue.length >= MAX_STAGED_STEPS) invalid();
-      queue.push(Object.freeze({ ...step, stagedAtMs: now() }));
+      const localActionSource = Object.freeze(receiptHash !== null
+        ? { sessionId: step.sessionId, receiptHash }
+        : { sessionId: step.sessionId, nonce });
+      queue.push(Object.freeze({ ...step, stagedAtMs: now(), localActionSource }));
+      (meta.staged ??= []).push(step.commandSha256);
     }
     for (const { item, parsed } of parsedItems) {
       if (scrubExecutableFields(parsed)) item.text = JSON.stringify(parsed);
@@ -656,12 +1015,81 @@ export function createLocalAdapterServer(options = {}) {
     ) invalid();
   }
 
-  async function executeStagedAction() {
+  function dropStagedSteps(sessionId) {
+    if (sessionId === null) return;
+    for (let index = queue.length - 1; index >= 0; index -= 1) {
+      if (queue[index].sessionId === sessionId && queue[index].role === "initiator") queue.splice(index, 1);
+    }
+  }
+
+  async function abandonSession(entry) {
+    undelivered.delete(entry.ref);
+    abandoned.set(entry.ref, entry);
+    // Bounded: only the most recent abandoned sessions keep their refusal.
+    while (abandoned.size > MAX_STAGED_STEPS) abandoned.delete(abandoned.keys().next().value);
+    dropStagedSteps(entry.sessionId);
+    await discardIssuedInvitationRef({ tmpRoot, ref: entry.ref });
+  }
+
+  // Resolve the delivery state of the issued ref for a session (by sessionId
+  // or by its Initiator roleAccess). null = nothing to guard.
+  async function deliveryGuard({ sessionId = null, access = null }) {
+    if (!invitationRefs) return null;
+    const matches = (entry) =>
+      (sessionId !== null && entry.sessionId === sessionId) ||
+      (access !== null && entry.roleAccess === access);
+    for (const entry of abandoned.values()) if (matches(entry)) return { kind: "expired", entry };
+    for (const entry of [...undelivered.values()]) {
+      if (!matches(entry)) continue;
+      const state = await issuedInvitationRefState({ tmpRoot, ref: entry.ref, expMs: entry.expMs, nowMs: now() });
+      if (state === "consumed") { undelivered.delete(entry.ref); continue; }
+      if (state === "pending") return { kind: "pending", entry };
+      await abandonSession(entry);
+      return { kind: "expired", entry };
+    }
+    return null;
+  }
+
+  // Before issuing a new ref: settle every tracked one, so the store sweep in
+  // putInvitationRef (which deletes expired records) is never mistaken for a
+  // delivery of a session that expired unnoticed.
+  async function settleIssuedRefs() {
+    for (const entry of [...undelivered.values()]) {
+      const state = await issuedInvitationRefState({ tmpRoot, ref: entry.ref, expMs: entry.expMs, nowMs: now() });
+      if (state === "consumed") undelivered.delete(entry.ref);
+      else if (state === "expired") await abandonSession(entry);
+    }
+  }
+
+  // `ctx` tells the caller which step this call took and whether the helper
+  // was spawned for it, also when this function throws (C-ADP-1 local line).
+  async function executeStagedAction(ctx = {}) {
     while (queue.length > 0 && now() - queue[0].stagedAtMs > STAGED_STEP_TTL_MS) queue.shift();
+    const head = queue[0];
+    if (head !== undefined && head.role === "initiator") {
+      const guard = await deliveryGuard({ sessionId: head.sessionId });
+      if (guard?.kind === "pending") return textResult(deliverFirstText(guard.entry, { staged: true }), true);
+      if (guard?.kind === "expired") {
+        dropStagedSteps(head.sessionId);
+        return textResult(deliverExpiredText(guard.entry), true);
+      }
+    }
     const step = queue.shift();
     if (step === undefined) {
       return textResult("Clockchain local adapter has no staged action to execute.", true);
     }
+    ctx.step = step;
+    // C-ADP-1: from the moment it is taken off the queue the step counts as
+    // executed, so a poll that re-issues it while this run waits for the
+    // session lock cannot stage it again; it is never staged again even when
+    // the helper fails (a retry needs a fresh step from the coordinator).
+    executedDigests.add(step.commandSha256);
+    // The helper run and the values it leaves behind are serialized with that
+    // session's fill-and-submit calls.
+    return withSessionLock(step.sessionId, () => runStagedStep(step, ctx));
+  }
+
+  async function runStagedStep(step, ctx) {
     verifyAssetsNow();
     const stateDir = resolveStateDir(step);
     const args = [
@@ -670,6 +1098,7 @@ export function createLocalAdapterServer(options = {}) {
       step.operation, "--state-dir", stateDir,
     ];
     if (step.payloadBase64url !== null) args.push("--payload-base64url", step.payloadBase64url);
+    ctx.spawned = true;
     const outcome = await runHelper({
       args: Object.freeze(args),
       // The helper must run under real Node >=24. process.execPath is that
@@ -680,6 +1109,7 @@ export function createLocalAdapterServer(options = {}) {
       timeoutMs: HELPER_RUN_BUDGET_MS,
     });
     if (!isPlain(outcome) || outcome.code !== 0) {
+      ctx.failed = true;
       return textResult(helperErrorCode(outcome?.stderr), true);
     }
     const text = typeof outcome.stdout === "string" ? outcome.stdout.trim() : "";
@@ -702,7 +1132,31 @@ export function createLocalAdapterServer(options = {}) {
         expiresAtMs: Number(verifiedSession.expiresAtMs),
       });
     }
-    return textResult(text);
+    // 2.2.0: keep the values the handshake tools need, and show the model a
+    // copy without the signatures, the checkpoint or any long hex.
+    let signRequest = null;
+    if (step.operation === "sign" && step.payloadBase64url !== null) {
+      try { signRequest = JSON.parse(Buffer.from(step.payloadBase64url, "base64url").toString("utf8")); } catch { signRequest = null; }
+    }
+    localValues.recordHelperResult({ step, record, signRequest });
+    return textResult(JSON.stringify(redactHelperResult(record, {
+      signingOperation: typeof signRequest?.operation === "string" ? signRequest.operation : null,
+    })));
+  }
+
+  // C-ADP-1: one local line per local tool call, on the forward journal's chain.
+  function journalLocal({ tool, sessionId = null, role = null, operation = null, step = null, outcome, response }) {
+    return forwardJournal.append({
+      kind: JOURNAL_KINDS.local,
+      tool,
+      sessionId: step?.sessionId ?? sessionId,
+      role: step?.role ?? role,
+      operation: step?.operation ?? operation,
+      stagedStepDigest: step?.commandSha256 ?? null,
+      localActionSource: step?.localActionSource ?? null,
+      outcome,
+      resultDigest: resultDigest(response.error !== undefined ? response.error : response.result),
+    });
   }
 
   async function callAdapterTool(params) {
@@ -711,13 +1165,32 @@ export function createLocalAdapterServer(options = {}) {
     if (
       args !== undefined &&
       (!isPlain(args) || Reflect.ownKeys(args).length !== 0)
-    ) return { error: { code: -32602, message: "tool takes no arguments" } };
+    ) {
+      const response = { error: { code: -32602, message: "tool takes no arguments" } };
+      await journalLocal({ tool: ADAPTER_TOOL, outcome: LOCAL_OUTCOMES.refused, response });
+      return response;
+    }
     // Serialize executions: a second call while one is in flight must see the
-    // queue state the first execution left behind, never a shared head.
-    const run = pendingExecution.then(() => executeStagedAction());
+    // queue state the first execution left behind, never a shared head. The
+    // local line is written inside the same chain, so the journal keeps the
+    // execution order.
+    const run = pendingExecution.then(async () => {
+      const ctx = {};
+      let response;
+      try {
+        response = { result: await executeStagedAction(ctx) };
+      } catch {
+        response = { result: textResult(GENERIC_REFUSAL, true) };
+        ctx.failed = true;
+      }
+      const outcome = ctx.spawned !== true ? LOCAL_OUTCOMES.refused
+        : ctx.failed === true ? LOCAL_OUTCOMES.error : LOCAL_OUTCOMES.ok;
+      await journalLocal({ tool: ADAPTER_TOOL, step: ctx.step ?? null, outcome, response });
+      return response;
+    });
     pendingExecution = run.catch(() => {});
     try {
-      return { result: await run };
+      return await run;
     } catch {
       return { result: textResult(GENERIC_REFUSAL, true) };
     }
@@ -727,6 +1200,15 @@ export function createLocalAdapterServer(options = {}) {
   // Every refusal is one of the fixed contract-bind codes; arbitrary error
   // text never crosses this boundary.
   async function callContractBindTool(params) {
+    const args = isPlain(params.arguments) ? params.arguments : {};
+    const line = {
+      tool: CONTRACT_BIND_TOOL,
+      sessionId: typeof args.runId === "string" && UUID.test(args.runId) ? args.runId : null,
+      role: ROLES.includes(args.side) ? args.side : null,
+      operation: "contract-bind",
+    };
+    let response;
+    let outcome;
     try {
       const output = await signContractBindStatement(params.arguments, {
         nowMs: now(),
@@ -734,13 +1216,17 @@ export function createLocalAdapterServer(options = {}) {
         tmpRoot,
         tokenKeyIds: contractBindPins.tokenKeyIds,
       });
-      return { result: textResult(JSON.stringify(output)) };
+      response = { result: textResult(JSON.stringify(output)) };
+      outcome = LOCAL_OUTCOMES.ok;
     } catch (error) {
       const code = error instanceof ContractBindRefusal
         ? error.code
         : CONTRACT_BIND_REFUSALS.signing;
-      return { result: textResult(contractBindRefusalText(code), true) };
+      response = { result: textResult(contractBindRefusalText(code), true) };
+      outcome = LOCAL_OUTCOMES.refused;
     }
+    await journalLocal({ ...line, outcome, response });
+    return response;
   }
 
   async function handleToolsList(id, params) {
@@ -748,11 +1234,20 @@ export function createLocalAdapterServer(options = {}) {
       const envelope = await upstreamRequest("tools/list", params);
       if (envelope.error !== undefined) return { jsonrpc: "2.0", id, error: envelope.error };
       const result = isPlain(envelope.result) ? envelope.result : {};
-      const tools = Array.isArray(result.tools) ? result.tools : [];
+      const tools = (Array.isArray(result.tools) ? result.tools : [])
+        .filter((tool) => !(isPlain(tool) && LOCAL_TOOL_NAMES.has(tool.name)));
       return {
         jsonrpc: "2.0",
         id,
-        result: { ...result, tools: [...tools, ...LOCAL_TOOL_DEFINITIONS] },
+        result: {
+          ...result,
+          tools: [
+            ...tools.map((tool) => withLocalFills(withInvitationRef(tool, invitationRefs), {
+              inviteTerms: inviteTermsPin.terms ?? null,
+            })),
+            ...LOCAL_TOOL_DEFINITIONS,
+          ],
+        },
       };
     } catch {
       // An unreachable coordinator must not hide the one tool that is local.
@@ -776,10 +1271,241 @@ export function createLocalAdapterServer(options = {}) {
       const outcome = await callContractBindTool(params);
       return { jsonrpc: "2.0", id, ...outcome };
     }
+    const modelArgs = modelArgsOf(params);
+    if (params.name === INVITATION_TOOL) {
+      const args = isPlain(params.arguments) ? params.arguments : {};
+      if (Object.hasOwn(args, "invitationRef")) return acceptByRef(id, params, args);
+      if (invitationRefs) return refuseLocal(id, params.name, modelArgs, INVITATION_BY_REFERENCE_REQUIRED);
+      const refusal = checkInvitationShape(args.invitation);
+      if (refusal !== null) return refuseLocal(id, params.name, modelArgs, refusal);
+    }
+    if (params.name === INVITE_TOOL) {
+      if (inviteTermsPin.invalid === true) {
+        return refuseLocal(id, params.name, modelArgs, localFillRefusalText(LOCAL_FILL_REFUSALS.termsPin));
+      }
+      let plan = null;
+      const args = isPlain(params.arguments) ? params.arguments : {};
+      if (inviteTermsPin.terms !== null) {
+        plan = planInviteFill({ args, terms: inviteTermsPin.terms });
+        if (plan.refusal !== undefined) {
+          return refuseLocal(id, params.name, modelArgs, localFillRefusalText(plan.refusal.code, plan.refusal.detail));
+        }
+      }
+      // Only a call that would really be forwarded spends the budget — and an
+      // invite the coordinator refused as transient gives it back (it minted
+      // nothing; its journal line says "transient", so a restart recounts the same).
+      const over = await reserveInvite();
+      if (over !== null) return refuseLocal(id, params.name, modelArgs, localFillRefusalText(over.code, over.detail));
+      const journal = {};
+      const response = await forwardFilled(id, params, modelArgs, plan ?? NOTHING_FILLED, journal);
+      if (inviteBudget.budget !== null && isTransientInviteRefusal(response)) invitesReserved -= 1;
+      if (inviteBudget.budget !== null && journal.written !== true) inviteJournalFailed = true;
+      return response;
+    }
+    if (!ACCESS_TOOLS.has(params.name)) return forwardFilled(id, params, modelArgs, NOTHING_FILLED);
+    // 2.2.0: resolve the session — the access the model passed, or the one
+    // live access this adapter holds — before the deliver-first guard, so an
+    // omitted access is guarded exactly like an explicit one.
+    const args = isPlain(params.arguments) ? params.arguments : {};
+    let entry;
+    let accessFilled = false;
+    if (typeof args.access === "string") {
+      entry = localValues.sessionFor(args.access);
+    } else if (!Object.hasOwn(args, "access")) {
+      const live = localValues.liveSessions(isAbandonedSession);
+      if (live.length > 1) {
+        return refuseLocal(id, params.name, modelArgs,
+          localFillRefusalText(LOCAL_FILL_REFUSALS.ambiguous, { tool: params.name, count: live.length }));
+      }
+      // No live session held: nothing to fill, forwarded as given (below).
+      if (live.length === 1) {
+        entry = live[0];
+        accessFilled = true;
+      }
+    }
+    const guarded = await deliveryGuardRefusal(params.name, accessFilled ? { ...args, access: entry.access } : args);
+    if (guarded !== null) return refuseLocal(id, params.name, modelArgs, guarded);
+    // An access this adapter never saw is forwarded untouched: the coordinator
+    // is its authority, and the adapter holds no values for it.
+    if (entry === undefined) return forwardFilled(id, params, modelArgs, NOTHING_FILLED);
+    // C-ADP-1: plan, forward and spend under the session's lock, so two calls
+    // of one session never fill the same held value, and a fill never reads
+    // the values while that session's helper step is still running.
+    return withSessionLock(entry.sessionId ?? `access:${entry.access}`, async () => {
+      const plan = planAccessFill({
+        tool: params.name,
+        args,
+        entry,
+        accessFilled,
+        localValues,
+        helperVersion: pin.version,
+      });
+      if (plan.refusal !== undefined) {
+        return refuseLocal(id, params.name, modelArgs, localFillRefusalText(plan.refusal.code, plan.refusal.detail));
+      }
+      return forwardFilled(id, params, modelArgs, plan);
+    });
+  }
+
+  function isAbandonedSession(entry) {
+    for (const gone of abandoned.values()) {
+      if (gone.roleAccess === entry.access || (entry.sessionId !== null && gone.sessionId === entry.sessionId)) return true;
+    }
+    return false;
+  }
+
+  // 2.1.13 deliver-first guard for join/next/submit/submit_checkpoint: the
+  // refusal text, or null.
+  async function deliveryGuardRefusal(name, args) {
+    if (!invitationRefs || !DELIVERY_GUARDED_TOOLS.has(name)) return null;
+    const access = typeof args.access === "string" ? args.access
+      : typeof args.roleAccess === "string" ? args.roleAccess : null;
+    const sessionId = typeof args.sessionId === "string" ? args.sessionId : null;
+    if (access === null && sessionId === null) return null;
+    const guard = await deliveryGuard({ sessionId, access });
+    if (guard?.kind === "pending") return deliverFirstText(guard.entry, { staged: false });
+    if (guard?.kind === "expired") return deliverExpiredText(guard.entry);
+    return null;
+  }
+
+  // C-ADP-1: an adapter-side refusal of a forwardable tool. Nothing was sent
+  // upstream; the line records the model's args and the refusal code.
+  async function refuseLocal(id, tool, modelArgs, text) {
+    const code = /^([A-Z][A-Z0-9_]{0,63}):/.exec(text)?.[1] ?? "ADAPTER_REFUSED";
+    await forwardJournal.append({ kind: JOURNAL_KINDS.refusedLocal, tool, modelArgs, code });
+    return { jsonrpc: "2.0", id, result: textResult(text, true) };
+  }
+
+  // 2.2.0 + C-ADP-1: forward the (filled) args; on an accepted call spend the
+  // local value it used; journal every forwarded call, filled or not.
+  // `journal.written` reports whether the forward line reached the journal.
+  async function forwardFilled(id, params, modelArgs, { forwarded, filled, onSuccess = () => {} }, journal = {}) {
+    const meta = {};
+    const sent = filled.length === 0 ? params : { ...params, arguments: forwarded };
+    const response = await proxyToolCall(id, sent, meta);
+    if (filled.length > 0 && response.error === undefined && response.result?.isError !== true) onSuccess();
+    journal.written = await journalForward({ tool: params.name, modelArgs, forwardedArgs: modelArgsOf(sent), filled, response, meta });
+    return response;
+  }
+
+  function journalForward({ tool, modelArgs, forwardedArgs, filled, dropped = [], response, meta = {} }) {
+    return forwardJournal.append({
+      kind: JOURNAL_KINDS.forward,
+      tool,
+      modelArgs,
+      forwardedArgs,
+      filled,
+      ...(dropped.length > 0 ? { dropped } : {}),
+      serverNonce: response.error === undefined ? serverNonceFromResult(response.result) : null,
+      receiptHash: response.error === undefined ? receiptHashFromResult(response.result) : null,
+      ...(meta.staged?.length > 0 ? { stagedStepDigests: meta.staged } : {}),
+      ...(meta.skippedExecuted?.length > 0 ? { skippedExecuted: meta.skippedExecuted } : {}),
+      outcome: tool === INVITE_TOOL && isTransientInviteRefusal(response) ? TRANSIENT_OUTCOME
+        : response.error !== undefined ? "error" : response.result?.isError === true ? "refused" : "ok",
+    });
+  }
+
+  // 2.1.12: agent_handshake_accept_invitation with { invitationRef } — the
+  // signer's open_sealed stored the counterparty's invitation in this
+  // company's private ref store; read the exact bytes locally, run the 2.1.11
+  // guard on them, forward them as `invitation`, and spend the ref only when
+  // the coordinator accepted. A failure that leaves the invitation unspent
+  // (transport, coordinator refusal) releases the ref for a retry.
+  async function acceptByRef(id, params, args) {
+    const keys = Object.keys(args);
+    if (keys.some((key) => key !== "invitationRef" && key !== "acceptanceIdempotencyKey")) {
+      return refuseLocal(id, INVITATION_TOOL, args, invitationRefRefusalText(INVITATION_REF_REFUSALS.invalid));
+    }
+    let claim;
+    try {
+      claim = await claimInvitationRef({ tmpRoot, ref: args.invitationRef, kind: "received", nowMs: now() });
+    } catch (error) {
+      const code = error instanceof InvitationRefError ? error.code : INVITATION_REF_REFUSALS.store;
+      return refuseLocal(id, INVITATION_TOOL, args, invitationRefRefusalText(code));
+    }
+    const refusal = checkInvitationShape(claim.invitation, { origin: "ref" });
+    if (refusal !== null) {
+      // The bytes are exactly what the counterparty sealed — a retry cannot
+      // fix them, so the ref is spent.
+      await claim.consume();
+      return refuseLocal(id, INVITATION_TOOL, args, refusal);
+    }
+    const forwarded = {
+      ...params,
+      arguments: {
+        invitation: claim.invitation,
+        ...(Object.hasOwn(args, "acceptanceIdempotencyKey") ? { acceptanceIdempotencyKey: args.acceptanceIdempotencyKey } : {}),
+      },
+    };
+    const meta = {};
+    const response = await proxyToolCall(id, forwarded, meta);
+    if (response.error === undefined && response.result?.isError !== true) await claim.consume();
+    else await claim.release();
+    // 2.2.0: the forwarded args carry the invitation, the model's the ref.
+    await journalForward({
+      tool: INVITATION_TOOL,
+      modelArgs: args,
+      forwardedArgs: forwarded.arguments,
+      filled: ["invitation"],
+      dropped: ["invitationRef"],
+      response,
+      meta,
+    });
+    return response;
+  }
+
+  // 2.1.12 refs mode: agent_handshake_invite's responderInvitation is moved
+  // into the ref store (kind "issued") and replaced by responderInvitationRef
+  // in every place the model could read it. The signer's seal_to takes that
+  // ref, so the Initiator model never carries the invitation either.
+  async function withIssuedInvitationRef(result) {
+    if (!isPlain(result) || !Array.isArray(result.content)) return result;
+    let ref = null;
+    let invitation = null;
+    let sessionId = null;
+    let roleAccess = null;
+    let issuedAtMs = null;
+    const content = [];
+    for (const item of result.content) {
+      if (!isPlain(item) || item.type !== "text" || typeof item.text !== "string") { content.push(item); continue; }
+      let parsed;
+      try { parsed = JSON.parse(item.text); } catch { content.push(item); continue; }
+      if (!isPlain(parsed) || typeof parsed.responderInvitation !== "string") { content.push(item); continue; }
+      if (invitation !== null && parsed.responderInvitation !== invitation) invalid();
+      invitation = parsed.responderInvitation;
+      if (typeof parsed.sessionId === "string" && UUID.test(parsed.sessionId)) sessionId ??= parsed.sessionId;
+      if (typeof parsed.roleAccess === "string" && parsed.roleAccess.length > 0) roleAccess ??= parsed.roleAccess;
+      if (ref === null) {
+        await settleIssuedRefs();
+        issuedAtMs = now();
+        ref = await putInvitationRef({ tmpRoot, kind: "issued", invitation, nowMs: issuedAtMs });
+      }
+      const { responderInvitation: _withheld, ...rest } = parsed;
+      content.push({ ...item, text: JSON.stringify({ ...rest, responderInvitationRef: ref }) });
+    }
+    if (ref === null) return result;
+    // 2.1.13: track the ref until the signer's seal_to consumes it.
+    undelivered.set(ref, Object.freeze({ ref, sessionId, roleAccess, expMs: issuedAtMs + INVITATION_REF_TTL_MS }));
+    const next = { ...result, content };
+    if (isPlain(result.structuredContent)) {
+      const { responderInvitation: _withheld, ...rest } = result.structuredContent;
+      next.structuredContent = { ...rest, responderInvitationRef: ref };
+    }
+    return next;
+  }
+
+  async function proxyToolCall(id, params, meta = {}) {
     let envelope;
     try {
       envelope = await upstreamRequest("tools/call", params);
-    } catch {
+    } catch (error) {
+      if (error instanceof UpstreamUnreachedError) {
+        return {
+          jsonrpc: "2.0",
+          id,
+          error: { code: -32603, message: `${UPSTREAM_UNAVAILABLE_PREFIX} the coordinator was not reached (${error.message}); nothing was sent. Retry shortly.` },
+        };
+      }
       return {
         jsonrpc: "2.0",
         id,
@@ -787,8 +1513,9 @@ export function createLocalAdapterServer(options = {}) {
       };
     }
     if (envelope.error !== undefined) return { jsonrpc: "2.0", id, error: envelope.error };
+    const seeded = await seedExecutedDigests();
     try {
-      stageToolResult(envelope.result);
+      stageToolResult(envelope.result, { meta, seeded });
     } catch (error) {
       // The only refusal text allowed past this boundary besides the generic
       // one is the release-mismatch upgrade hint — arbitrary error messages
@@ -802,6 +1529,21 @@ export function createLocalAdapterServer(options = {}) {
         id,
         result: textResult(text, true),
       };
+    }
+    // 2.2.0: remember the role access each invite/accept result hands out.
+    if ((params.name === INVITE_TOOL || params.name === INVITATION_TOOL) && envelope.result?.isError !== true) {
+      const seen = roleAccessFromResult(envelope.result, {
+        role: params.name === INVITE_TOOL ? "initiator" : "responder",
+      });
+      if (seen !== null) localValues.recordRoleAccess(seen);
+    }
+    if (invitationRefs && params.name === INVITE_TOOL) {
+      try {
+        return { jsonrpc: "2.0", id, result: await withIssuedInvitationRef(envelope.result) };
+      } catch (error) {
+        const code = error instanceof InvitationRefError ? error.code : INVITATION_REF_REFUSALS.store;
+        return { jsonrpc: "2.0", id, result: textResult(invitationRefRefusalText(code), true) };
+      }
     }
     return { jsonrpc: "2.0", id, result: envelope.result };
   }
