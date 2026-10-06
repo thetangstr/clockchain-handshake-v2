@@ -5,14 +5,24 @@ name: local-adapter-npm-publish
 # package version (LOCAL_ADAPTER_VERSION in src/agent-handshake/v2/constants.mjs).
 # The adapter's semver floats independently of the vendored helper release
 # (release/agent-handshake/pin.json), which stays pinned at
-# AGENT_HANDSHAKE_HELPER_VERSION. Manual dispatch is available for dry-run
-# verification only; real publishes come from tags.
+# AGENT_HANDSHAKE_HELPER_VERSION.
 #
-# Auth: npm Trusted Publishing (OIDC) — no long-lived npm token in CI. The
-# package must have github.com/thetangstr/clockchain-handshake-v2 registered as
-# a trusted publisher for THIS workflow file. If trusted publishing is not yet
-# configured, set the NODE_AUTH_TOKEN repository secret as the fallback — the
-# publish step reads secrets.NODE_AUTH_TOKEN.
+# Real publishes happen ONLY on a push of a `local-adapter-v*` tag (and never
+# when dry_run is true). Every other run — any workflow_dispatch, from any ref,
+# whatever its inputs — ends in `npm publish --dry-run` inside pack-and-verify,
+# with no OIDC token and no publish environment.
+#
+# The publish job publishes the exact .tgz that pack-and-verify built, tested
+# and smoke-tested (downloaded as an artifact, sha256 bound through a job
+# output), after re-checking the vendored helper sha256 and manifest digest
+# inside it. It runs in the `npm-publish` GitHub environment, which must exist
+# with protection rules (required reviewer; deployment tags limited to
+# `local-adapter-v*`), and npm's trusted-publisher config for this package must
+# name this workflow file and that environment.
+#
+# Auth: npm Trusted Publishing (OIDC) — no long-lived npm token in CI. If
+# trusted publishing is not yet configured, set NODE_AUTH_TOKEN as an
+# `npm-publish` environment secret as the fallback.
 
 on:
   push:
@@ -20,37 +30,58 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Run npm publish --dry-run instead of publishing"
+        description: "Dispatched runs always dry-run; real publishes come only from tag pushes"
         type: boolean
         default: true
 
 permissions:
   contents: read
-  id-token: write # required for npm --provenance / trusted publishing
 
 env:
   NODE_VERSION: 24.18.0
   PKG_DIR: dist/npm-local-adapter
+  # Vendored helper 2.1.8 (release/agent-handshake/pin.json).
+  HELPER_SHA256: 7af676c41285b0bf0deeb600f9ae88f77768955303c3da7f2c3cc25406588f70
+  MANIFEST_DIGEST: 956c8d94d4e7dbbaad5247e8de3f958ad75ec81831193c31c995e3787bf33bf7
 
 jobs:
   pack-and-verify:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      tgz_name: ${{ steps.pack.outputs.tgz_name }}
+      tgz_sha256: ${{ steps.pack.outputs.tgz_sha256 }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          registry-url: https://registry.npmjs.org
-      - run: npm ci
+      # No dependency install scripts run. esbuild's JS API resolves its native
+      # binary from the @esbuild/linux-x64 optional dependency, so it does not
+      # need esbuild's postinstall.
+      - run: npm ci --ignore-scripts
 
-      - name: Run adapter unit tests
-        run: node --test test/local-adapter.test.mjs
+      - name: Run adapter tests
+        run: >-
+          node --test --test-concurrency=4
+          test/local-adapter.test.mjs
+          test/local-adapter-contract-bind.test.mjs
+          test/local-adapter-contract-bind-server.test.mjs
+          test/local-adapter-fill-from-local.test.mjs
+          test/local-adapter-invitation-guard.test.mjs
+          test/local-adapter-invitation-refs.test.mjs
+          test/test-only-never-ship.test.mjs
 
       - name: Build the adapter package (downloads + verifies pinned release assets)
         run: node scripts/build-local-adapter-npm.mjs
 
       - name: Assert versions (tag == adapter package; vendored pin == helper release)
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           PKG_VERSION=$(node -p "require('./$PKG_DIR/package.json').version")
           PIN_VERSION=$(node -p "require('./$PKG_DIR/assets/pin.json').version")
@@ -62,7 +93,7 @@ jobs:
           if [ "$PIN_VERSION" != "$HELPER_VERSION" ]; then
             echo "vendored pin $PIN_VERSION != helper release $HELPER_VERSION"; exit 1
           fi
-          if [ "${{ github.event_name }}" = "push" ]; then
+          if [ "$EVENT_NAME" = "push" ]; then
             TAG_VERSION="${GITHUB_REF_NAME#local-adapter-v}"
             if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
               echo "tag $GITHUB_REF_NAME does not match package version $PKG_VERSION"; exit 1
@@ -71,49 +102,95 @@ jobs:
           echo "versions OK: adapter $PKG_VERSION carrying helper $PIN_VERSION"
 
       - name: npm pack
-        working-directory: ${{ env.PKG_DIR }}
-        run: npm pack
-
-      - name: Clean-directory install smoke test
+        id: pack
         shell: bash
         run: |
-          SMOKE="$RUNNER_TEMP/adapter-install-smoke"
-          mkdir -p "$SMOKE"
-          cd "$SMOKE"
-          npm init -y >/dev/null
-          npm install "$GITHUB_WORKSPACE/$PKG_DIR"/*.tgz
-          printf '%s\n%s\n' \
-            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"ci-smoke","version":"0"}}}' \
-            '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
-            | node node_modules/@d4d.group/local-adapter/index.mjs \
-            | node -e 'let b="";process.stdin.on("data",d=>b+=d).on("end",()=>{const msgs=b.split("\n").filter(Boolean).map(JSON.parse);const init=msgs.find(m=>m.id===1);const tools=msgs.find(m=>m.id===2);if(init?.result?.serverInfo?.name!=="clockchain-local-adapter")process.exit(1);if(!tools?.result?.tools?.some(t=>t.name==="authorize_local_action"))process.exit(1);console.log("smoke OK:",init.result.serverInfo.version)})'
+          set -euo pipefail
+          OUT="$RUNNER_TEMP/pkg"
+          mkdir -p "$OUT"
+          (cd "$PKG_DIR" && npm pack --ignore-scripts --pack-destination "$OUT")
+          shopt -s nullglob
+          TGZS=("$OUT"/*.tgz)
+          if [ "${#TGZS[@]}" -ne 1 ]; then echo "expected exactly one tarball"; exit 1; fi
+          TGZ="${TGZS[0]}"
+          echo "tgz_name=$(basename "$TGZ")" >> "$GITHUB_OUTPUT"
+          echo "tgz_sha256=$(sha256sum "$TGZ" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "TGZ=$TGZ" >> "$GITHUB_ENV"
+
+      - name: Verify the helper and manifest inside the tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          X="$RUNNER_TEMP/tgz-check"
+          rm -rf "$X"; mkdir -p "$X"
+          tar -xzf "$TGZ" -C "$X"
+          echo "$HELPER_SHA256  $X/package/assets/clockchain-agent-handshake.cjs" | sha256sum -c -
+          echo "$MANIFEST_DIGEST  $X/package/assets/manifest.json" | sha256sum -c -
+          test "$(node -p "require('$X/package/assets/pin.json').manifestDigest")" = "$MANIFEST_DIGEST"
+          node scripts/verify-agent-handshake-release.mjs --pin release/agent-handshake/pin.json \
+            --manifest "$X/package/assets/manifest.json" --helper "$X/package/assets/clockchain-agent-handshake.cjs"
+
+      # Clean-directory install of the packed tarball, served over stdio
+      # against a loopback fake HTTPS coordinator — no production contact.
+      - name: Clean-directory install smoke test (loopback fake coordinator)
+        run: node scripts/smoke-local-adapter-package.mjs "$TGZ" --port 19431
 
       - uses: actions/upload-artifact@v4
         with:
-          name: clockchain-local-adapter-${{ env.PKG_DIR && 'pkg' }}
-          path: ${{ env.PKG_DIR }}/*.tgz
+          name: local-adapter-tgz
+          path: ${{ runner.temp }}/pkg/*.tgz
+          if-no-files-found: error
           retention-days: 14
 
+      - name: Dry-run publish (every run that is not a tag push)
+        if: ${{ !(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/local-adapter-v')) || inputs.dry_run == true }}
+        run: npm publish "$TGZ" --access public --dry-run --ignore-scripts
+
   publish:
+    # Real publish: a tag push only, never a dispatch, never with dry_run.
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/local-adapter-v') && inputs.dry_run != true }}
     runs-on: ubuntu-24.04
     needs: pack-and-verify
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write # npm --provenance / trusted publishing; this job only
     steps:
-      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: https://registry.npmjs.org
-      - run: npm ci
-      - run: node scripts/build-local-adapter-npm.mjs
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: local-adapter-tgz
+          path: ${{ runner.temp }}/pkg
+
+      - name: Re-verify the tested tarball before publishing
+        shell: bash
+        env:
+          TGZ_NAME: ${{ needs.pack-and-verify.outputs.tgz_name }}
+          TGZ_SHA256: ${{ needs.pack-and-verify.outputs.tgz_sha256 }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          TGZS=("$RUNNER_TEMP"/pkg/*.tgz)
+          if [ "${#TGZS[@]}" -ne 1 ]; then echo "expected exactly one tarball"; exit 1; fi
+          TGZ="${TGZS[0]}"
+          test "$(basename "$TGZ")" = "$TGZ_NAME"
+          echo "$TGZ_SHA256  $TGZ" | sha256sum -c -
+          X="$RUNNER_TEMP/tgz-check"
+          rm -rf "$X"; mkdir -p "$X"
+          tar -xzf "$TGZ" -C "$X"
+          echo "$HELPER_SHA256  $X/package/assets/clockchain-agent-handshake.cjs" | sha256sum -c -
+          echo "$MANIFEST_DIGEST  $X/package/assets/manifest.json" | sha256sum -c -
+          test "$(node -p "require('$X/package/assets/pin.json').manifestDigest")" = "$MANIFEST_DIGEST"
+          test "$(node -p "require('$X/package/package.json').name")" = "@d4d.group/local-adapter"
+          test "$(node -p "require('$X/package/package.json').version")" = "${GITHUB_REF_NAME#local-adapter-v}"
+          echo "TGZ=$TGZ" >> "$GITHUB_ENV"
 
       # npm >= 11.5.1 for OIDC trusted publishing; setup-node ships a recent npm.
-      - name: Publish with provenance (dry-run when dispatched with dry_run=true)
-        working-directory: ${{ env.PKG_DIR }}
+      - name: Publish the tested tarball with provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }} # fallback only; unused under trusted publishing
-        run: |
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            npm publish --provenance --access public --dry-run
-          else
-            npm publish --provenance --access public
-          fi
+        run: npm publish "$TGZ" --provenance --access public --ignore-scripts
