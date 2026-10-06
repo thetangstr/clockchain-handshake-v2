@@ -1136,3 +1136,61 @@ test("C-ADP-1 invite budget: only forward lines count; refused-local and local l
   assert.match(errorText(await call(second, 5, "agent_handshake_invite", {})), /^INVITE_BUDGET_EXHAUSTED: .*2 of its 2/);
   assert.equal(inviteCalls(fixtureCalls).length, 1);
 });
+
+test("C-ADP-1 executed-digest set: a step re-issued while its run waits for the session lock is not staged again", async (t) => {
+  const { assetDir, pin } = await makeAssetDir(t);
+  const md = pin.manifestDigest;
+  const tmpRoot = await mkdtemp(join(tmpdir(), "fill-tmp-"));
+  t.after(() => rm(tmpRoot, { recursive: true, force: true }));
+  const signStep = helperStep({ manifestDigest: md, operation: "sign", payload: signPayload("identity_claim", { nonce: "0" }) });
+  let nonce = 0;
+  let hold = null;
+  const helperRuns = [];
+  const server = createLocalAdapterServer({
+    assetDir,
+    endpoint: ENDPOINT,
+    tmpdir: tmpRoot,
+    fetchImpl: async (url, init) => {
+      const request = JSON.parse(init.body);
+      const name = request.params?.name;
+      const serverNonce = `0x${String(++nonce).padStart(32, "0")}`;
+      let body = { ok: true, serverNonce };
+      if (name === "agent_handshake_invite") {
+        body = { sessionId: SESSION, role: "initiator", roleAccess: "csha_11111111_init_xxxxxxxx", responderInvitation: "x".repeat(100), serverNonce,
+          localAction: { helperSteps: [helperStep({ manifestDigest: md, operation: "init" }), helperStep({ manifestDigest: md, operation: "inspect" })] } };
+      } else if (name === "agent_handshake_next") {
+        // The coordinator re-issues the unchanged pending step on every poll.
+        if (hold !== null) await hold.gate;
+        body = { serverNonce, localAction: { helperSteps: [signStep] } };
+      }
+      return fakeResponse({ jsonrpc: "2.0", id: request.id, result: rpcResult(body) });
+    },
+    runHelper: async (input) => {
+      const operation = input.args[6];
+      helperRuns.push(operation);
+      if (operation === "init") return { code: 0, stderr: "", stdout: cliResult("init", { address: CHECKSUM_ADDRESS }) };
+      if (operation === "inspect") return { code: 0, stderr: "", stdout: cliResult("inspect", { address: ADDRESS, policyDigest: POLICY_DIGEST, registration: null }) };
+      return { code: 0, stderr: "", stdout: cliResult("sign", { address: ADDRESS, bytesSha256: "d".repeat(64), signatureHex: SIG_1, checkpoint: null }) };
+    },
+  });
+  await call(server, 1, "agent_handshake_invite", { reference: "r", statement: "s", validForSeconds: "90" });
+  await call(server, 2, ADAPTER_TOOL);
+  await call(server, 3, ADAPTER_TOOL);
+  await call(server, 4, "agent_handshake_next", { waitMs: 0 });
+  assert.equal(server.pendingCount(), 1);
+  // A poll of the session is in flight (it holds the session lock) when the
+  // sign step is taken; the poll's answer re-issues that same step.
+  let release;
+  hold = { gate: new Promise((resolve) => { release = resolve; }) };
+  const polling = call(server, 5, "agent_handshake_next", { waitMs: 0 });
+  for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  const signing = call(server, 6, ADAPTER_TOOL);
+  for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  release();
+  hold = null;
+  await polling;
+  assert.equal((await signing).result.isError, undefined);
+  assert.equal(server.pendingCount(), 0, "the step taken for execution is not staged again by the poll that re-issued it");
+  assert.equal(errorText(await call(server, 7, ADAPTER_TOOL)), "Clockchain local adapter has no staged action to execute.");
+  assert.deepEqual(helperRuns, ["init", "inspect", "sign"]);
+});

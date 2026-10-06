@@ -1045,8 +1045,13 @@ export function createLocalAdapterServer(options = {}) {
       return textResult("Clockchain local adapter has no staged action to execute.", true);
     }
     ctx.step = step;
-    // C-ADP-1: the helper run and the values it leaves behind are serialized
-    // with that session's fill-and-submit calls.
+    // C-ADP-1: from the moment it is taken off the queue the step counts as
+    // executed, so a poll that re-issues it while this run waits for the
+    // session lock cannot stage it again; it is never staged again even when
+    // the helper fails (a retry needs a fresh step from the coordinator).
+    executedDigests.add(step.commandSha256);
+    // The helper run and the values it leaves behind are serialized with that
+    // session's fill-and-submit calls.
     return withSessionLock(step.sessionId, () => runStagedStep(step, ctx));
   }
 
@@ -1059,9 +1064,6 @@ export function createLocalAdapterServer(options = {}) {
       step.operation, "--state-dir", stateDir,
     ];
     if (step.payloadBase64url !== null) args.push("--payload-base64url", step.payloadBase64url);
-    // From here the step counts as executed: it is never staged again, even
-    // when the helper fails (a retry needs a fresh step from the coordinator).
-    executedDigests.add(step.commandSha256);
     ctx.spawned = true;
     const outcome = await runHelper({
       args: Object.freeze(args),
