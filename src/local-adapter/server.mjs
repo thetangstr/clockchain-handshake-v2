@@ -64,6 +64,8 @@ import {
   createForwardJournal,
   createLocalValues,
   isTransientInviteRefusal,
+  JOURNAL_KINDS,
+  LOCAL_OUTCOMES,
   localFillRefusalText,
   planAccessFill,
   planInviteFill,
@@ -75,6 +77,7 @@ import {
   roleAccessFromResult,
   serverNonceFromResult,
   receiptHashFromResult,
+  resultDigest,
   withLocalFills,
 } from "./fill-from-local.mjs";
 import {
@@ -202,6 +205,14 @@ const LOCAL_TOOL_DEFINITIONS = Object.freeze([
 function invalid() {
   throw new Error(GENERIC_REFUSAL);
 }
+
+// C-ADP-1 journal helpers: what the model passed (never undefined, so the
+// line hashes the same before and after JSON), and the plan of a call the
+// adapter forwards as given.
+function modelArgsOf(params) {
+  return params.arguments === undefined ? null : params.arguments;
+}
+const NOTHING_FILLED = Object.freeze({ forwarded: null, filled: Object.freeze([]) });
 
 // The coordinator was NOT reached: the hosted host's reverse proxy answered a
 // bad gateway / unavailable while the host restarts between sessions (~1.3 s of
@@ -787,6 +798,32 @@ export function createLocalAdapterServer(options = {}) {
   // (which carries no session id into the receipt). null = none issued.
   let upstreamSessionId = null;
   let pendingExecution = Promise.resolve();
+  // C-ADP-1 (TB/LLD.md §8.4): fill and submit are serialized per session, and
+  // a staged step whose digest was already handed to the helper is never
+  // staged again by this process. Steps that executed successfully are seeded
+  // once from this epoch's journal, so a restart keeps refusing those too.
+  const sessionLocks = new Map();
+  const executedDigests = new Set();
+  let executedSeed = null;
+
+  function withSessionLock(key, fn) {
+    const previous = sessionLocks.get(key) ?? Promise.resolve();
+    const run = previous.then(() => fn());
+    const tail = run.then(() => {}, () => {});
+    sessionLocks.set(key, tail);
+    void tail.then(() => { if (sessionLocks.get(key) === tail) sessionLocks.delete(key); });
+    return run;
+  }
+
+  // Resolves true once the journal's executed digests are loaded; false when
+  // the journal exists but cannot be read (staging then fails closed).
+  function seedExecutedDigests() {
+    executedSeed ??= forwardJournal.executedStepDigests().then((digests) => {
+      for (const digest of digests) executedDigests.add(digest);
+      return true;
+    }, () => false);
+    return executedSeed;
+  }
 
   const UNKNOWN_SESSION = /unknown[\s_-]*session|session[\s_-]*(not[\s_-]*found|expired|unknown)|invalid[\s_-]*session/i;
 
@@ -866,7 +903,9 @@ export function createLocalAdapterServer(options = {}) {
     return upstreamInit;
   }
 
-  function stageToolResult(result) {
+  // `meta` collects the digests this result staged and the ones it carried
+  // that were already executed (C-ADP-1), for the forward line.
+  function stageToolResult(result, { meta = {}, seeded = true } = {}) {
     if (!isPlain(result) || !Array.isArray(result.content)) return;
     const parsedItems = [];
     const candidates = [];
@@ -881,14 +920,27 @@ export function createLocalAdapterServer(options = {}) {
     // refuses the whole response, so the withheld copy is never reached.
     const staged = candidates.map((candidate) =>
       validateHelperStep(candidate, { manifestDigest: pin.manifestDigest }));
+    if (staged.length > 0 && !seeded) invalid();
+    // Where the steps came from: the receipt of the call that carried them.
+    const receiptHash = receiptHashFromResult(result);
+    const nonce = serverNonceFromResult(result);
     for (const step of staged) {
+      // C-ADP-1: an executed step is never staged again, whatever re-issues it.
+      if (executedDigests.has(step.commandSha256)) {
+        (meta.skippedExecuted ??= []).push(step.commandSha256);
+        continue;
+      }
       // The coordinator re-issues an unchanged localAction on each poll while a
       // step stays pending — the same byte-identical command is the same
       // digest-bound action, so an already-staged duplicate must not shift the
       // queue head away from the step the caller just read.
       if (queue.some((pending) => pending.commandSha256 === step.commandSha256)) continue;
       if (queue.length >= MAX_STAGED_STEPS) invalid();
-      queue.push(Object.freeze({ ...step, stagedAtMs: now() }));
+      const localActionSource = Object.freeze(receiptHash !== null
+        ? { sessionId: step.sessionId, receiptHash }
+        : { sessionId: step.sessionId, nonce });
+      queue.push(Object.freeze({ ...step, stagedAtMs: now(), localActionSource }));
+      (meta.staged ??= []).push(step.commandSha256);
     }
     for (const { item, parsed } of parsedItems) {
       if (scrubExecutableFields(parsed)) item.text = JSON.stringify(parsed);
@@ -975,7 +1027,9 @@ export function createLocalAdapterServer(options = {}) {
     }
   }
 
-  async function executeStagedAction() {
+  // `ctx` tells the caller which step this call took and whether the helper
+  // was spawned for it, also when this function throws (C-ADP-1 local line).
+  async function executeStagedAction(ctx = {}) {
     while (queue.length > 0 && now() - queue[0].stagedAtMs > STAGED_STEP_TTL_MS) queue.shift();
     const head = queue[0];
     if (head !== undefined && head.role === "initiator") {
@@ -990,6 +1044,13 @@ export function createLocalAdapterServer(options = {}) {
     if (step === undefined) {
       return textResult("Clockchain local adapter has no staged action to execute.", true);
     }
+    ctx.step = step;
+    // C-ADP-1: the helper run and the values it leaves behind are serialized
+    // with that session's fill-and-submit calls.
+    return withSessionLock(step.sessionId, () => runStagedStep(step, ctx));
+  }
+
+  async function runStagedStep(step, ctx) {
     verifyAssetsNow();
     const stateDir = resolveStateDir(step);
     const args = [
@@ -998,6 +1059,10 @@ export function createLocalAdapterServer(options = {}) {
       step.operation, "--state-dir", stateDir,
     ];
     if (step.payloadBase64url !== null) args.push("--payload-base64url", step.payloadBase64url);
+    // From here the step counts as executed: it is never staged again, even
+    // when the helper fails (a retry needs a fresh step from the coordinator).
+    executedDigests.add(step.commandSha256);
+    ctx.spawned = true;
     const outcome = await runHelper({
       args: Object.freeze(args),
       // The helper must run under real Node >=24. process.execPath is that
@@ -1008,6 +1073,7 @@ export function createLocalAdapterServer(options = {}) {
       timeoutMs: HELPER_RUN_BUDGET_MS,
     });
     if (!isPlain(outcome) || outcome.code !== 0) {
+      ctx.failed = true;
       return textResult(helperErrorCode(outcome?.stderr), true);
     }
     const text = typeof outcome.stdout === "string" ? outcome.stdout.trim() : "";
@@ -1042,19 +1108,53 @@ export function createLocalAdapterServer(options = {}) {
     })));
   }
 
+  // C-ADP-1: one local line per local tool call, on the forward journal's chain.
+  function journalLocal({ tool, sessionId = null, role = null, operation = null, step = null, outcome, response }) {
+    return forwardJournal.append({
+      kind: JOURNAL_KINDS.local,
+      tool,
+      sessionId: step?.sessionId ?? sessionId,
+      role: step?.role ?? role,
+      operation: step?.operation ?? operation,
+      stagedStepDigest: step?.commandSha256 ?? null,
+      localActionSource: step?.localActionSource ?? null,
+      outcome,
+      resultDigest: resultDigest(response.error !== undefined ? response.error : response.result),
+    });
+  }
+
   async function callAdapterTool(params) {
     if (!isPlain(params)) return { error: { code: -32602, message: "invalid params" } };
     const args = params.arguments;
     if (
       args !== undefined &&
       (!isPlain(args) || Reflect.ownKeys(args).length !== 0)
-    ) return { error: { code: -32602, message: "tool takes no arguments" } };
+    ) {
+      const response = { error: { code: -32602, message: "tool takes no arguments" } };
+      await journalLocal({ tool: ADAPTER_TOOL, outcome: LOCAL_OUTCOMES.refused, response });
+      return response;
+    }
     // Serialize executions: a second call while one is in flight must see the
-    // queue state the first execution left behind, never a shared head.
-    const run = pendingExecution.then(() => executeStagedAction());
+    // queue state the first execution left behind, never a shared head. The
+    // local line is written inside the same chain, so the journal keeps the
+    // execution order.
+    const run = pendingExecution.then(async () => {
+      const ctx = {};
+      let response;
+      try {
+        response = { result: await executeStagedAction(ctx) };
+      } catch {
+        response = { result: textResult(GENERIC_REFUSAL, true) };
+        ctx.failed = true;
+      }
+      const outcome = ctx.spawned !== true ? LOCAL_OUTCOMES.refused
+        : ctx.failed === true ? LOCAL_OUTCOMES.error : LOCAL_OUTCOMES.ok;
+      await journalLocal({ tool: ADAPTER_TOOL, step: ctx.step ?? null, outcome, response });
+      return response;
+    });
     pendingExecution = run.catch(() => {});
     try {
-      return { result: await run };
+      return await run;
     } catch {
       return { result: textResult(GENERIC_REFUSAL, true) };
     }
@@ -1064,6 +1164,15 @@ export function createLocalAdapterServer(options = {}) {
   // Every refusal is one of the fixed contract-bind codes; arbitrary error
   // text never crosses this boundary.
   async function callContractBindTool(params) {
+    const args = isPlain(params.arguments) ? params.arguments : {};
+    const line = {
+      tool: CONTRACT_BIND_TOOL,
+      sessionId: typeof args.runId === "string" && UUID.test(args.runId) ? args.runId : null,
+      role: ROLES.includes(args.side) ? args.side : null,
+      operation: "contract-bind",
+    };
+    let response;
+    let outcome;
     try {
       const output = await signContractBindStatement(params.arguments, {
         nowMs: now(),
@@ -1071,13 +1180,17 @@ export function createLocalAdapterServer(options = {}) {
         tmpRoot,
         tokenKeyIds: contractBindPins.tokenKeyIds,
       });
-      return { result: textResult(JSON.stringify(output)) };
+      response = { result: textResult(JSON.stringify(output)) };
+      outcome = LOCAL_OUTCOMES.ok;
     } catch (error) {
       const code = error instanceof ContractBindRefusal
         ? error.code
         : CONTRACT_BIND_REFUSALS.signing;
-      return { result: textResult(contractBindRefusalText(code), true) };
+      response = { result: textResult(contractBindRefusalText(code), true) };
+      outcome = LOCAL_OUTCOMES.refused;
     }
+    await journalLocal({ ...line, outcome, response });
+    return response;
   }
 
   async function handleToolsList(id, params) {
@@ -1121,37 +1234,36 @@ export function createLocalAdapterServer(options = {}) {
       const outcome = await callContractBindTool(params);
       return { jsonrpc: "2.0", id, ...outcome };
     }
+    const modelArgs = modelArgsOf(params);
     if (params.name === INVITATION_TOOL) {
       const args = isPlain(params.arguments) ? params.arguments : {};
       if (Object.hasOwn(args, "invitationRef")) return acceptByRef(id, params, args);
-      if (invitationRefs) {
-        return { jsonrpc: "2.0", id, result: textResult(INVITATION_BY_REFERENCE_REQUIRED, true) };
-      }
+      if (invitationRefs) return refuseLocal(id, params.name, modelArgs, INVITATION_BY_REFERENCE_REQUIRED);
       const refusal = checkInvitationShape(args.invitation);
-      if (refusal !== null) return { jsonrpc: "2.0", id, result: textResult(refusal, true) };
+      if (refusal !== null) return refuseLocal(id, params.name, modelArgs, refusal);
     }
     if (params.name === INVITE_TOOL) {
       if (inviteTermsPin.invalid === true) {
-        return { jsonrpc: "2.0", id, result: textResult(localFillRefusalText(LOCAL_FILL_REFUSALS.termsPin), true) };
+        return refuseLocal(id, params.name, modelArgs, localFillRefusalText(LOCAL_FILL_REFUSALS.termsPin));
       }
       let plan = null;
       const args = isPlain(params.arguments) ? params.arguments : {};
       if (inviteTermsPin.terms !== null) {
         plan = planInviteFill({ args, terms: inviteTermsPin.terms });
         if (plan.refusal !== undefined) {
-          return { jsonrpc: "2.0", id, result: textResult(localFillRefusalText(plan.refusal.code, plan.refusal.detail), true) };
+          return refuseLocal(id, params.name, modelArgs, localFillRefusalText(plan.refusal.code, plan.refusal.detail));
         }
       }
       // Only a call that would really be forwarded spends the budget — and an
       // invite the coordinator refused as transient gives it back (it minted
       // nothing; its journal line says "transient", so a restart recounts the same).
       const over = await reserveInvite();
-      if (over !== null) return { jsonrpc: "2.0", id, result: textResult(localFillRefusalText(over.code, over.detail), true) };
-      const response = plan !== null ? await forwardFilled(id, params, args, plan) : await proxyToolCall(id, params);
+      if (over !== null) return refuseLocal(id, params.name, modelArgs, localFillRefusalText(over.code, over.detail));
+      const response = await forwardFilled(id, params, modelArgs, plan ?? NOTHING_FILLED);
       if (inviteBudget.budget !== null && isTransientInviteRefusal(response)) invitesReserved -= 1;
       return response;
     }
-    if (!ACCESS_TOOLS.has(params.name)) return proxyToolCall(id, params);
+    if (!ACCESS_TOOLS.has(params.name)) return forwardFilled(id, params, modelArgs, NOTHING_FILLED);
     // 2.2.0: resolve the session — the access the model passed, or the one
     // live access this adapter holds — before the deliver-first guard, so an
     // omitted access is guarded exactly like an explicit one.
@@ -1163,11 +1275,8 @@ export function createLocalAdapterServer(options = {}) {
     } else if (!Object.hasOwn(args, "access")) {
       const live = localValues.liveSessions(isAbandonedSession);
       if (live.length > 1) {
-        return {
-          jsonrpc: "2.0",
-          id,
-          result: textResult(localFillRefusalText(LOCAL_FILL_REFUSALS.ambiguous, { tool: params.name, count: live.length }), true),
-        };
+        return refuseLocal(id, params.name, modelArgs,
+          localFillRefusalText(LOCAL_FILL_REFUSALS.ambiguous, { tool: params.name, count: live.length }));
       }
       // No live session held: nothing to fill, forwarded as given (below).
       if (live.length === 1) {
@@ -1175,23 +1284,28 @@ export function createLocalAdapterServer(options = {}) {
         accessFilled = true;
       }
     }
-    const guarded = await deliveryGuardRefusal(id, params.name, accessFilled ? { ...args, access: entry.access } : args);
-    if (guarded !== null) return guarded;
+    const guarded = await deliveryGuardRefusal(params.name, accessFilled ? { ...args, access: entry.access } : args);
+    if (guarded !== null) return refuseLocal(id, params.name, modelArgs, guarded);
     // An access this adapter never saw is forwarded untouched: the coordinator
     // is its authority, and the adapter holds no values for it.
-    if (entry === undefined) return proxyToolCall(id, params);
-    const plan = planAccessFill({
-      tool: params.name,
-      args,
-      entry,
-      accessFilled,
-      localValues,
-      helperVersion: pin.version,
+    if (entry === undefined) return forwardFilled(id, params, modelArgs, NOTHING_FILLED);
+    // C-ADP-1: plan, forward and spend under the session's lock, so two calls
+    // of one session never fill the same held value, and a fill never reads
+    // the values while that session's helper step is still running.
+    return withSessionLock(entry.sessionId ?? `access:${entry.access}`, async () => {
+      const plan = planAccessFill({
+        tool: params.name,
+        args,
+        entry,
+        accessFilled,
+        localValues,
+        helperVersion: pin.version,
+      });
+      if (plan.refusal !== undefined) {
+        return refuseLocal(id, params.name, modelArgs, localFillRefusalText(plan.refusal.code, plan.refusal.detail));
+      }
+      return forwardFilled(id, params, modelArgs, plan);
     });
-    if (plan.refusal !== undefined) {
-      return { jsonrpc: "2.0", id, result: textResult(localFillRefusalText(plan.refusal.code, plan.refusal.detail), true) };
-    }
-    return forwardFilled(id, params, args, plan);
   }
 
   function isAbandonedSession(entry) {
@@ -1201,43 +1315,51 @@ export function createLocalAdapterServer(options = {}) {
     return false;
   }
 
-  // 2.1.13 deliver-first guard for join/next/submit/submit_checkpoint.
-  async function deliveryGuardRefusal(id, name, args) {
+  // 2.1.13 deliver-first guard for join/next/submit/submit_checkpoint: the
+  // refusal text, or null.
+  async function deliveryGuardRefusal(name, args) {
     if (!invitationRefs || !DELIVERY_GUARDED_TOOLS.has(name)) return null;
     const access = typeof args.access === "string" ? args.access
       : typeof args.roleAccess === "string" ? args.roleAccess : null;
     const sessionId = typeof args.sessionId === "string" ? args.sessionId : null;
     if (access === null && sessionId === null) return null;
     const guard = await deliveryGuard({ sessionId, access });
-    if (guard?.kind === "pending") {
-      return { jsonrpc: "2.0", id, result: textResult(deliverFirstText(guard.entry, { staged: false }), true) };
-    }
-    if (guard?.kind === "expired") {
-      return { jsonrpc: "2.0", id, result: textResult(deliverExpiredText(guard.entry), true) };
-    }
+    if (guard?.kind === "pending") return deliverFirstText(guard.entry, { staged: false });
+    if (guard?.kind === "expired") return deliverExpiredText(guard.entry);
     return null;
   }
 
-  // 2.2.0: forward the filled args; on an accepted call spend the local value
-  // it used; journal every call whose forwarded args differ from the model's.
+  // C-ADP-1: an adapter-side refusal of a forwardable tool. Nothing was sent
+  // upstream; the line records the model's args and the refusal code.
+  async function refuseLocal(id, tool, modelArgs, text) {
+    const code = /^([A-Z][A-Z0-9_]{0,63}):/.exec(text)?.[1] ?? "ADAPTER_REFUSED";
+    await forwardJournal.append({ kind: JOURNAL_KINDS.refusedLocal, tool, modelArgs, code });
+    return { jsonrpc: "2.0", id, result: textResult(text, true) };
+  }
+
+  // 2.2.0 + C-ADP-1: forward the (filled) args; on an accepted call spend the
+  // local value it used; journal every forwarded call, filled or not.
   async function forwardFilled(id, params, modelArgs, { forwarded, filled, onSuccess = () => {} }) {
-    if (filled.length === 0) return proxyToolCall(id, params);
-    const response = await proxyToolCall(id, { ...params, arguments: forwarded });
-    if (response.error === undefined && response.result?.isError !== true) onSuccess();
-    await journalForward({ tool: params.name, modelArgs, forwardedArgs: forwarded, filled, response });
+    const meta = {};
+    const sent = filled.length === 0 ? params : { ...params, arguments: forwarded };
+    const response = await proxyToolCall(id, sent, meta);
+    if (filled.length > 0 && response.error === undefined && response.result?.isError !== true) onSuccess();
+    await journalForward({ tool: params.name, modelArgs, forwardedArgs: modelArgsOf(sent), filled, response, meta });
     return response;
   }
 
-  function journalForward({ tool, modelArgs, forwardedArgs, filled, dropped = [], response }) {
+  function journalForward({ tool, modelArgs, forwardedArgs, filled, dropped = [], response, meta = {} }) {
     return forwardJournal.append({
+      kind: JOURNAL_KINDS.forward,
       tool,
       modelArgs,
       forwardedArgs,
       filled,
       ...(dropped.length > 0 ? { dropped } : {}),
       serverNonce: response.error === undefined ? serverNonceFromResult(response.result) : null,
-      ...(response.error === undefined && receiptHashFromResult(response.result) !== null
-        ? { receiptHash: receiptHashFromResult(response.result) } : {}),
+      receiptHash: response.error === undefined ? receiptHashFromResult(response.result) : null,
+      ...(meta.staged?.length > 0 ? { stagedStepDigests: meta.staged } : {}),
+      ...(meta.skippedExecuted?.length > 0 ? { skippedExecuted: meta.skippedExecuted } : {}),
       outcome: tool === INVITE_TOOL && isTransientInviteRefusal(response) ? TRANSIENT_OUTCOME
         : response.error !== undefined ? "error" : response.result?.isError === true ? "refused" : "ok",
     });
@@ -1252,21 +1374,21 @@ export function createLocalAdapterServer(options = {}) {
   async function acceptByRef(id, params, args) {
     const keys = Object.keys(args);
     if (keys.some((key) => key !== "invitationRef" && key !== "acceptanceIdempotencyKey")) {
-      return { jsonrpc: "2.0", id, result: textResult(invitationRefRefusalText(INVITATION_REF_REFUSALS.invalid), true) };
+      return refuseLocal(id, INVITATION_TOOL, args, invitationRefRefusalText(INVITATION_REF_REFUSALS.invalid));
     }
     let claim;
     try {
       claim = await claimInvitationRef({ tmpRoot, ref: args.invitationRef, kind: "received", nowMs: now() });
     } catch (error) {
       const code = error instanceof InvitationRefError ? error.code : INVITATION_REF_REFUSALS.store;
-      return { jsonrpc: "2.0", id, result: textResult(invitationRefRefusalText(code), true) };
+      return refuseLocal(id, INVITATION_TOOL, args, invitationRefRefusalText(code));
     }
     const refusal = checkInvitationShape(claim.invitation, { origin: "ref" });
     if (refusal !== null) {
       // The bytes are exactly what the counterparty sealed — a retry cannot
       // fix them, so the ref is spent.
       await claim.consume();
-      return { jsonrpc: "2.0", id, result: textResult(refusal, true) };
+      return refuseLocal(id, INVITATION_TOOL, args, refusal);
     }
     const forwarded = {
       ...params,
@@ -1275,7 +1397,8 @@ export function createLocalAdapterServer(options = {}) {
         ...(Object.hasOwn(args, "acceptanceIdempotencyKey") ? { acceptanceIdempotencyKey: args.acceptanceIdempotencyKey } : {}),
       },
     };
-    const response = await proxyToolCall(id, forwarded);
+    const meta = {};
+    const response = await proxyToolCall(id, forwarded, meta);
     if (response.error === undefined && response.result?.isError !== true) await claim.consume();
     else await claim.release();
     // 2.2.0: the forwarded args carry the invitation, the model's the ref.
@@ -1286,6 +1409,7 @@ export function createLocalAdapterServer(options = {}) {
       filled: ["invitation"],
       dropped: ["invitationRef"],
       response,
+      meta,
     });
     return response;
   }
@@ -1330,7 +1454,7 @@ export function createLocalAdapterServer(options = {}) {
     return next;
   }
 
-  async function proxyToolCall(id, params) {
+  async function proxyToolCall(id, params, meta = {}) {
     let envelope;
     try {
       envelope = await upstreamRequest("tools/call", params);
@@ -1349,8 +1473,9 @@ export function createLocalAdapterServer(options = {}) {
       };
     }
     if (envelope.error !== undefined) return { jsonrpc: "2.0", id, error: envelope.error };
+    const seeded = await seedExecutedDigests();
     try {
-      stageToolResult(envelope.result);
+      stageToolResult(envelope.result, { meta, seeded });
     } catch (error) {
       // The only refusal text allowed past this boundary besides the generic
       // one is the release-mismatch upgrade hint — arbitrary error messages

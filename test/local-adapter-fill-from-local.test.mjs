@@ -1,7 +1,8 @@
 // 2.2.0 handshake by reference: the adapter fills every long handshake value
 // (role access, session key address, policy digest, signatures, checkpoint,
 // invite terms) from its own staged results, hides the signatures from the
-// model, and journals every call whose forwarded args differ from the model's.
+// model, and journals every forwarded call, every local tool call and every
+// adapter-side refusal on one hash chain (C-ADP-1, TB/LLD.md §8.4).
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
@@ -29,8 +30,11 @@ import {
   INVITE_BUDGET_ENV,
   INVITE_TERMS_ENV,
   PUBLISHED_INVITE_TERMS,
+  createForwardJournal,
   forwardEntryHash,
+  resultDigest,
 } from "../src/local-adapter/fill-from-local.mjs";
+import { CONTRACT_BIND_TOOL } from "../src/local-adapter/contract-bind.mjs";
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 const SESSION = "11111111-2222-4333-8444-555555555555";
@@ -460,12 +464,12 @@ test("2.2.0 refs mode: the deliver-first guard still applies when access is omit
   assert.equal(toolCalls(calls).length, count);
 });
 
-test("2.2.0 journal: every call whose forwarded args differ from the model's is journaled, hash-chained, 0600", async (t) => {
+test("2.2.0 journal (C-ADP-1): every forwarded call, filled or not, and every local call is journaled, hash-chained, 0600", async (t) => {
   const { server, tmpRoot, stageSigns } = await context(t);
   await call(server, 1, "agent_handshake_invite", { reference: "r", statement: "s", validForSeconds: "90" });
   await call(server, 2, ADAPTER_TOOL);
   await call(server, 3, ADAPTER_TOOL);
-  await call(server, 4, "agent_handshake_status", { access: "csha_11111111_init_xxxxxxxx" }); // nothing filled: not journaled
+  await call(server, 4, "agent_handshake_status", { access: "csha_11111111_init_xxxxxxxx" }); // nothing filled: a forward line all the same
   await call(server, 5, "agent_handshake_join", {});
   stageSigns(["identity_claim"]);
   await call(server, 6, "agent_handshake_next", { waitMs: 0 });
@@ -474,18 +478,46 @@ test("2.2.0 journal: every call whose forwarded args differ from the model's is 
   const path = join(tmpRoot, ADAPTER_FORWARDS_FILE);
   assert.equal((await stat(path)).mode & 0o777, 0o600);
   assert.equal((await stat(join(path, ".."))).mode & 0o777, 0o700);
-  const lines = (await readFile(path, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-  assert.deepEqual(lines.map((line) => line.tool), ["agent_handshake_join", "agent_handshake_next", "agent_handshake_submit"]);
+  const all = (await readFile(path, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(all.map((line) => [line.kind, line.tool]), [
+    ["forward", "agent_handshake_invite"],
+    ["local", ADAPTER_TOOL],
+    ["local", ADAPTER_TOOL],
+    ["forward", "agent_handshake_status"],
+    ["forward", "agent_handshake_join"],
+    ["forward", "agent_handshake_next"],
+    ["local", ADAPTER_TOOL],
+    ["forward", "agent_handshake_submit"],
+  ]);
   let prev = null;
-  lines.forEach((line, index) => {
+  all.forEach((line, index) => {
     assert.equal(line.v, 1);
     assert.equal(line.seq, index);
     assert.equal(line.prevHash, prev);
     assert.equal(line.hash, forwardEntryHash(line));
-    assert.match(line.serverNonce, /^0x[0-9a-f]{32}$/);
     assert.equal(line.outcome, "ok");
     prev = line.hash;
   });
+  for (const line of all.filter((l) => l.kind === "forward")) assert.match(line.serverNonce, /^0x[0-9a-f]{32}$/);
+  // Unfilled forwards: the forwarded args are the model's, nothing filled.
+  for (const line of [all[0], all[3]]) {
+    assert.deepEqual(line.filled, []);
+    assert.deepEqual(line.forwardedArgs, line.modelArgs);
+  }
+  // Local lines: the staged step, the receipt that carried it, the result digest.
+  const locals = all.filter((l) => l.kind === "local");
+  assert.deepEqual(locals.map((l) => l.operation), ["init", "inspect", "sign"]);
+  assert.deepEqual(all[0].stagedStepDigests, [locals[0].stagedStepDigest, locals[1].stagedStepDigest]);
+  assert.deepEqual(all[5].stagedStepDigests, [locals[2].stagedStepDigest]);
+  for (const [local, source] of [[locals[0], all[0]], [locals[1], all[0]], [locals[2], all[5]]]) {
+    assert.equal(local.sessionId, SESSION);
+    assert.equal(local.role, "initiator");
+    assert.match(local.stagedStepDigest, /^[0-9a-f]{64}$/);
+    assert.deepEqual(local.localActionSource, { sessionId: SESSION, receiptHash: source.receiptHash });
+    assert.match(local.resultDigest, /^[0-9a-f]{64}$/);
+  }
+  const lines = all.filter((l) => l.kind === "forward" && l.filled.length > 0);
+  assert.deepEqual(lines.map((line) => line.tool), ["agent_handshake_join", "agent_handshake_next", "agent_handshake_submit"]);
   assert.deepEqual(lines[0].modelArgs, {});
   assert.deepEqual(lines[0].filled, ["access", "helperVersion", "sessionKeyAddress", "policyDigest"]);
   assert.deepEqual(lines[0].forwardedArgs, { access: "csha_11111111_init_xxxxxxxx", helperVersion: AGENT_HANDSHAKE_HELPER_VERSION, sessionKeyAddress: ADDRESS, policyDigest: POLICY_DIGEST });
@@ -494,7 +526,7 @@ test("2.2.0 journal: every call whose forwarded args differ from the model's is 
   assert.deepEqual(lines[2].modelArgs, { policyDigest: POLICY_DIGEST });
   assert.deepEqual(lines[2].filled, ["access", "signatureHex"]);
   // Every model field equals the same forwarded field (R8 condition 2).
-  for (const line of lines) {
+  for (const line of all.filter((l) => l.kind === "forward")) {
     for (const [key, value] of Object.entries(line.modelArgs)) assert.deepEqual(line.forwardedArgs[key], value);
   }
 });
@@ -606,6 +638,8 @@ test("invite budget: the option / env override it; null or \"off\" removes the c
 
 const journalLines = async (tmpRoot) =>
   (await readFile(join(tmpRoot, ADAPTER_FORWARDS_FILE), "utf8")).split("\n").filter(Boolean).map((l) => JSON.parse(l));
+// C-ADP-1: a forward line's outcome, or a refused-local line's refusal code.
+const outcomeOrCode = (l) => (l.kind === "refused-local" ? l.code : l.outcome);
 
 test("invite budget: an invite the coordinator refused as transient (host between sessions) does not count; it is journaled \"transient\"", async (t) => {
   const { server, calls, transient, tmpRoot } = await context(t, { serverOptions: { inviteTerms: PINNED_TERMS } });
@@ -620,7 +654,9 @@ test("invite budget: an invite the coordinator refused as transient (host betwee
   assert.match(errorText(await call(server, 9, "agent_handshake_invite", {})), /^INVITE_BUDGET_EXHAUSTED: .*3 of its 3/);
   assert.equal(inviteCalls(calls).length, 8);
   const lines = (await journalLines(tmpRoot)).filter((l) => l.tool === "agent_handshake_invite");
-  assert.deepEqual(lines.map((l) => l.outcome), ["transient", "transient", "transient", "transient", "transient", "ok", "ok", "ok"]);
+  // C-ADP-1: the locally refused 9th invite is a refused-local line with its code.
+  assert.deepEqual(lines.map(outcomeOrCode), ["transient", "transient", "transient", "transient", "transient", "ok", "ok", "ok", "INVITE_BUDGET_EXHAUSTED"]);
+  assert.deepEqual(lines.map((l) => l.kind), [...Array(8).fill("forward"), "refused-local"]);
   for (const l of lines) assert.equal(l.hash, forwardEntryHash(l));
 });
 
@@ -636,7 +672,7 @@ test("invite budget: an isError transient body (v2 public tools) is transient to
   await call(server, 5, "agent_handshake_invite", {});
   assert.match(errorText(await call(server, 6, "agent_handshake_invite", {})), /^INVITE_BUDGET_EXHAUSTED: .*3 of its 3/);
   assert.equal(inviteCalls(calls).length, 5);
-  assert.deepEqual((await journalLines(tmpRoot)).map((l) => l.outcome), ["transient", "transient", "refused", "ok", "ok"]);
+  assert.deepEqual((await journalLines(tmpRoot)).map(outcomeOrCode), ["transient", "transient", "refused", "ok", "ok", "INVITE_BUDGET_EXHAUSTED"]);
 });
 
 test("invite budget: a body with a session in it is never transient, whatever its error field says", async (t) => {
@@ -695,7 +731,7 @@ test("invite budget: an invite that never reached the coordinator (host restarti
     }
     for (let i = 5; i <= 7; i += 1) assert.equal((await call(server, i, "agent_handshake_invite", {})).result.isError, undefined);
     assert.match(errorText(await call(server, 8, "agent_handshake_invite", {})), /^INVITE_BUDGET_EXHAUSTED: .*3 of its 3/);
-    assert.deepEqual((await journalLines(tmpRoot)).map((l) => l.outcome), ["transient", "transient", "transient", "transient", "ok", "ok", "ok"]);
+    assert.deepEqual((await journalLines(tmpRoot)).map(outcomeOrCode), ["transient", "transient", "transient", "transient", "ok", "ok", "ok", "INVITE_BUDGET_EXHAUSTED"]);
   }
 });
 
@@ -708,7 +744,7 @@ test("invite budget: any other upstream failure (a 500, a timeout) may have appl
   await call(server, 2, "agent_handshake_invite", {});
   await call(server, 3, "agent_handshake_invite", {});
   assert.match(errorText(await call(server, 4, "agent_handshake_invite", {})), /^INVITE_BUDGET_EXHAUSTED: /);
-  assert.deepEqual((await journalLines(tmpRoot)).map((l) => l.outcome), ["error", "ok", "ok"]);
+  assert.deepEqual((await journalLines(tmpRoot)).map(outcomeOrCode), ["error", "ok", "ok", "INVITE_BUDGET_EXHAUSTED"]);
 });
 
 test("invite budget: the host's window-ended refusal (RENDEZVOUS_UNAVAILABLE, no session) does not count", async (t) => {
@@ -729,12 +765,16 @@ test("2.2.0 receipt echo: every upstream call asks for it; the journal line carr
   await call(server, 3, "agent_handshake_join", {});
   assert.ok(sentHeaders.length >= 2);
   for (const h of sentHeaders) assert.equal(h["x-clockchain-receipt"], "1");
-  const lines = (await readFile(join(tmpRoot, ADAPTER_FORWARDS_FILE), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-  assert.ok(lines.length >= 1);
+  const all = (await readFile(join(tmpRoot, ADAPTER_FORWARDS_FILE), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  // C-ADP-1: forward, local (authorize), forward. Every forward line carries
+  // the echo; the local line names the receipt that carried its step.
+  assert.deepEqual(all.map((line) => line.kind), ["forward", "local", "forward"]);
+  const lines = all.filter((line) => line.kind === "forward");
   for (const line of lines) {
     assert.match(line.serverNonce, /^0xe{24}\d{8}$/);
     assert.match(line.receiptHash, /^0x[0-9a-f]{64}$/);
   }
+  assert.equal(all[1].localActionSource.receiptHash, all[0].receiptHash);
 });
 
 // 2.2.0 receipt session: the adapter keeps the coordinator's mcp-session-id.
@@ -804,3 +844,295 @@ for (const mode of ["404", "rpc-error"]) {
     assert.equal(seen.filter((s) => s.method === "tools/list").at(-1).sent, "sess-2");
   });
 }
+
+// --- C-ADP-1 (TB/LLD.md §8.4): local and refused-local lines, per-session
+// serialization of fill and submit, the executed-digest set -------------------------------
+
+const ENTRY_KEYS = ["v", "seq", "prevHash", "ts", "hash"];
+const keysOf = (line) => Object.keys(line).filter((key) => !ENTRY_KEYS.includes(key)).sort();
+const assertChain = (lines) => {
+  let prev = null;
+  lines.forEach((line, index) => {
+    assert.equal(line.seq, index);
+    assert.equal(line.prevHash, prev);
+    assert.equal(line.hash, forwardEntryHash(line));
+    prev = line.hash;
+  });
+};
+
+test("C-ADP-1 refused-local: every adapter-side refusal of a forwardable tool is one line {kind, tool, modelArgs, code}; nothing is sent", async (t) => {
+  const previous = process.env[INVITE_TERMS_ENV];
+  t.after(() => { if (previous === undefined) delete process.env[INVITE_TERMS_ENV]; else process.env[INVITE_TERMS_ENV] = previous; });
+  delete process.env[INVITE_TERMS_ENV];
+
+  // LOCAL_VALUE_MISMATCH and SESSION_AMBIGUOUS
+  const a = await context(t);
+  await call(a.server, 1, "agent_handshake_invite", { reference: "r", statement: "s", validForSeconds: "90" });
+  await call(a.server, 2, ADAPTER_TOOL);
+  await call(a.server, 3, ADAPTER_TOOL);
+  const sent = toolCalls(a.calls).length;
+  const wrong = { sessionKeyAddress: `0x${"9".repeat(40)}` };
+  assert.match(errorText(await call(a.server, 4, "agent_handshake_join", wrong)), /^LOCAL_VALUE_MISMATCH: /);
+  a.setSession(SESSION_2);
+  await call(a.server, 5, "agent_handshake_invite", { reference: "r", statement: "s", validForSeconds: "90" });
+  const afterInvite = toolCalls(a.calls).length;
+  assert.equal(afterInvite, sent + 1);
+  assert.match(errorText(await call(a.server, 6, "agent_handshake_next", { waitMs: 0 })), /^SESSION_AMBIGUOUS: /);
+  assert.equal(toolCalls(a.calls).length, afterInvite);
+  const aLines = await journalLines(a.tmpRoot);
+  assertChain(aLines);
+  const aRefused = aLines.filter((l) => l.kind === "refused-local");
+  assert.deepEqual(aRefused.map((l) => [l.tool, l.code]), [
+    ["agent_handshake_join", "LOCAL_VALUE_MISMATCH"],
+    ["agent_handshake_next", "SESSION_AMBIGUOUS"],
+  ]);
+  assert.deepEqual(aRefused[0].modelArgs, wrong);
+  assert.deepEqual(aRefused[1].modelArgs, { waitMs: 0 });
+  for (const line of aRefused) assert.deepEqual(keysOf(line), ["code", "kind", "modelArgs", "tool"]);
+
+  // INVITE_TERMS_PIN_INVALID (the terms pin) and INVITE_BUDGET_EXHAUSTED
+  process.env[INVITE_TERMS_ENV] = "{not json";
+  const b = await context(t);
+  assert.match(errorText(await call(b.server, 1, "agent_handshake_invite", {})), /^INVITE_TERMS_PIN_INVALID: /);
+  delete process.env[INVITE_TERMS_ENV];
+  const c = await context(t, { serverOptions: { inviteTerms: PINNED_TERMS, inviteBudget: 1 } });
+  await call(c.server, 1, "agent_handshake_invite", {});
+  assert.match(errorText(await call(c.server, 2, "agent_handshake_invite", { reference: "R-1" })), /^INVITE_BUDGET_EXHAUSTED: /);
+  assert.equal(toolCalls(b.calls).length, 0);
+  assert.deepEqual((await journalLines(b.tmpRoot)).map((l) => [l.kind, l.code]), [["refused-local", "INVITE_TERMS_PIN_INVALID"]]);
+  const cLines = await journalLines(c.tmpRoot);
+  assert.deepEqual(cLines.map((l) => [l.kind, outcomeOrCode(l)]), [["forward", "ok"], ["refused-local", "INVITE_BUDGET_EXHAUSTED"]]);
+  assert.deepEqual(cLines[1].modelArgs, { reference: "R-1" });
+
+  // DELIVER_INVITATION_FIRST, INVITATION_BY_REFERENCE_REQUIRED, INVITATION_REF_UNKNOWN (refs mode)
+  const d = await context(t, { serverOptions: { invitationRefs: true } });
+  await call(d.server, 1, "agent_handshake_invite", { reference: "r", statement: "s", validForSeconds: "90" });
+  const dSent = toolCalls(d.calls).length;
+  assert.match(errorText(await call(d.server, 2, "agent_handshake_submit", {})), /^DELIVER_INVITATION_FIRST: /);
+  assert.match(errorText(await call(d.server, 3, "agent_handshake_accept_invitation", { invitation: genuineInvitation() })), /^INVITATION_BY_REFERENCE_REQUIRED: /);
+  assert.match(errorText(await call(d.server, 4, "agent_handshake_accept_invitation", { invitationRef: "ir_unknown_00000000000000000000" })), /^INVITATION_REF_(UNKNOWN|INVALID): /);
+  assert.equal(toolCalls(d.calls).length, dSent);
+  const dLines = await journalLines(d.tmpRoot);
+  assertChain(dLines);
+  assert.deepEqual(dLines.slice(1).map((l) => [l.kind, l.tool]), [
+    ["refused-local", "agent_handshake_submit"],
+    ["refused-local", "agent_handshake_accept_invitation"],
+    ["refused-local", "agent_handshake_accept_invitation"],
+  ]);
+  assert.deepEqual(dLines.slice(1, 3).map((l) => l.code), ["DELIVER_INVITATION_FIRST", "INVITATION_BY_REFERENCE_REQUIRED"]);
+  assert.match(dLines[3].code, /^INVITATION_REF_(UNKNOWN|INVALID)$/);
+
+  // INVITATION_CORRUPTED (the 2.1.11 shape guard, copy mode)
+  const e = await context(t);
+  assert.match(errorText(await call(e.server, 1, "agent_handshake_accept_invitation", { invitation: "x".repeat(100) })), /^INVITATION_CORRUPTED: /);
+  assert.equal(toolCalls(e.calls).length, 0);
+  assert.deepEqual((await journalLines(e.tmpRoot)).map((l) => [l.kind, l.code]), [["refused-local", "INVITATION_CORRUPTED"]]);
+  // A refused-local line never carries a server nonce: nothing reached the coordinator.
+  for (const line of [...aRefused, ...cLines.slice(1), ...dLines.slice(1)]) assert.equal(Object.hasOwn(line, "serverNonce"), false);
+});
+
+test("C-ADP-1 local: every authorize_local_action and sign_agent_contract_bind call is one local line with outcome and result digest", async (t) => {
+  const { server, tmpRoot, md } = await context(t);
+  // nothing staged yet: refused, no step
+  const none = await call(server, 1, ADAPTER_TOOL);
+  // arguments to the zero-input tool: refused
+  const withArgs = await call(server, 2, ADAPTER_TOOL, { command: "rm -rf /" });
+  assert.equal(withArgs.error.code, -32602);
+  await call(server, 3, "agent_handshake_invite", { reference: "r", statement: "s", validForSeconds: "90" });
+  const init = await call(server, 4, ADAPTER_TOOL);
+  // a contract bind with no held session: refused locally, never forwarded
+  const bind = await call(server, 5, CONTRACT_BIND_TOOL, { runId: SESSION, side: "initiator" });
+  assert.equal(bind.result.isError, true);
+  const lines = await journalLines(tmpRoot);
+  assertChain(lines);
+  const locals = lines.filter((l) => l.kind === "local");
+  assert.deepEqual(locals.map((l) => [l.tool, l.operation, l.outcome]), [
+    [ADAPTER_TOOL, null, "refused"],
+    [ADAPTER_TOOL, null, "refused"],
+    [ADAPTER_TOOL, "init", "ok"],
+    [CONTRACT_BIND_TOOL, "contract-bind", "refused"],
+  ]);
+  for (const line of locals) {
+    assert.deepEqual(keysOf(line), ["kind", "localActionSource", "operation", "outcome", "resultDigest", "role", "sessionId", "stagedStepDigest", "tool"]);
+  }
+  assert.equal(locals[0].resultDigest, resultDigest(none.result));
+  assert.equal(locals[1].resultDigest, resultDigest(withArgs.error));
+  assert.equal(locals[2].resultDigest, resultDigest(init.result));
+  assert.equal(locals[3].resultDigest, resultDigest(bind.result));
+  assert.equal(locals[0].stagedStepDigest, null);
+  assert.equal(locals[2].stagedStepDigest, helperStep({ manifestDigest: md, operation: "init" }).commandSha256);
+  assert.equal(locals[2].sessionId, SESSION);
+  assert.equal(locals[2].role, "initiator");
+  assert.deepEqual(locals[3].sessionId, SESSION);
+  assert.equal(locals[3].role, "initiator");
+  assert.equal(locals[3].stagedStepDigest, null);
+  assert.equal(locals[3].localActionSource, null);
+});
+
+test("C-ADP-1 local: a helper that fails is an \"error\" local line, and its step is not staged again in this process", async (t) => {
+  let failNext = true;
+  const fixture = await context(t, {
+    serverOptions: {
+      runHelper: async (input) => {
+        if (failNext) { failNext = false; return { code: 1, stderr: '{"error":{"code":"AGENT_HANDSHAKE_FAILED","message":"x"}}\n', stdout: "" }; }
+        return { code: 0, stderr: "", stdout: cliResult(input.args[6], { address: CHECKSUM_ADDRESS }) };
+      },
+    },
+  });
+  const { server, tmpRoot, md } = fixture;
+  await call(server, 1, "agent_handshake_invite", { reference: "r", statement: "s", validForSeconds: "90" });
+  assert.equal(errorText(await call(server, 2, ADAPTER_TOOL)), "AGENT_HANDSHAKE_FAILED");
+  // The coordinator re-issues the same init step on a later poll: it is not staged again.
+  const initStep = helperStep({ manifestDigest: md, operation: "init" });
+  const before = server.pendingCount();
+  // re-issued by a second invite of the same session (the double's steps are deterministic)
+  await call(server, 3, "agent_handshake_invite", { reference: "r", statement: "s", validForSeconds: "90" });
+  assert.equal(server.pendingCount(), before, "the failed init is not re-staged; the still-queued inspect is not duplicated");
+  const lines = await journalLines(tmpRoot);
+  const local = lines.find((l) => l.kind === "local");
+  assert.equal(local.outcome, "error");
+  assert.equal(local.stagedStepDigest, initStep.commandSha256);
+  assert.deepEqual(lines.at(-1).skippedExecuted, [initStep.commandSha256]);
+});
+
+test("C-ADP-1 executed-digest set: a step executed once is never staged again, in this process or after a restart", async (t) => {
+  const first = await context(t);
+  await call(first.server, 1, "agent_handshake_invite", { reference: "r", statement: "s", validForSeconds: "90" });
+  await call(first.server, 2, ADAPTER_TOOL); // init
+  await call(first.server, 3, ADAPTER_TOOL); // inspect
+  await call(first.server, 4, "agent_handshake_join", {});
+  first.stageSigns(["identity_claim"]);
+  await call(first.server, 5, "agent_handshake_next", { waitMs: 0 });
+  assert.equal(first.server.pendingCount(), 1);
+  await call(first.server, 6, ADAPTER_TOOL); // sign
+  assert.equal(first.server.pendingCount(), 0);
+  // The coordinator re-issues the same localAction on the next poll.
+  first.stageSigns(["identity_claim"]);
+  await call(first.server, 7, "agent_handshake_next", { waitMs: 0 });
+  assert.equal(first.server.pendingCount(), 0, "an executed step is not staged again");
+  assert.equal(errorText(await call(first.server, 8, ADAPTER_TOOL)), "Clockchain local adapter has no staged action to execute.");
+  const lines = await journalLines(first.tmpRoot);
+  const signLine = lines.filter((l) => l.kind === "local" && l.operation === "sign");
+  assert.equal(signLine.length, 1, "the sign step ran exactly once");
+  const reissue = lines.filter((l) => l.tool === "agent_handshake_next").at(-1);
+  assert.deepEqual(reissue.skippedExecuted, [signLine[0].stagedStepDigest]);
+  assert.equal(Object.hasOwn(reissue, "stagedStepDigests"), false);
+
+  // A restart on the same TMPDIR (same epoch): the journal seeds the set.
+  const helperRuns = [];
+  const second = createLocalAdapterServer({
+    assetDir: (await makeAssetDir(t)).assetDir,
+    endpoint: ENDPOINT,
+    tmpdir: first.tmpRoot,
+    fetchImpl: async (url, init) => {
+      const request = JSON.parse(init.body);
+      const steps = [
+        helperStep({ manifestDigest: first.md, operation: "init" }),
+        helperStep({ manifestDigest: first.md, operation: "sign", payload: signPayload("identity_claim", { nonce: "0" }) }),
+        helperStep({ manifestDigest: first.md, operation: "sign", payload: signPayload("proposal", { nonce: "1" }) }),
+      ];
+      return fakeResponse({ jsonrpc: "2.0", id: request.id, result: rpcResult({ serverNonce: `0x${"7".repeat(32)}`, localAction: { helperSteps: steps } }) });
+    },
+    runHelper: async (input) => { helperRuns.push(input.args[6]); return { code: 0, stderr: "", stdout: cliResult(input.args[6], { address: ADDRESS, signatureHex: SIG_3, bytesSha256: "d".repeat(64), checkpoint: null }) }; },
+  });
+  await call(second, 9, "agent_handshake_next", { access: "csha_11111111_init_xxxxxxxx" });
+  assert.equal(second.pendingCount(), 1, "only the never-executed proposal step is staged");
+  await call(second, 10, ADAPTER_TOOL);
+  assert.deepEqual(helperRuns, ["sign"]);
+  const after = await journalLines(first.tmpRoot);
+  assertChain(after);
+  assert.equal(after.filter((l) => l.kind === "local" && l.operation === "sign" && l.outcome === "ok").length, 2);
+});
+
+test("C-ADP-1 serialization: two concurrent submits of one session never forward the same held signature", async (t) => {
+  const { server, calls, stageSigns } = await context(t);
+  await call(server, 1, "agent_handshake_invite", { reference: "r", statement: "s", validForSeconds: "90" });
+  await call(server, 2, ADAPTER_TOOL);
+  await call(server, 3, ADAPTER_TOOL);
+  await call(server, 4, "agent_handshake_join", {});
+  stageSigns(["identity_claim"]);
+  await call(server, 5, "agent_handshake_next", { waitMs: 0 });
+  await call(server, 6, ADAPTER_TOOL); // holds SIG_1
+  const [one, two] = await Promise.all([
+    call(server, 7, "agent_handshake_submit", {}),
+    call(server, 8, "agent_handshake_submit", {}),
+  ]);
+  assert.equal(one.result.isError, undefined);
+  assert.equal(two.result.isError, undefined);
+  const submits = toolCalls(calls).filter((c) => c.params.name === "agent_handshake_submit");
+  assert.equal(submits.length, 2);
+  assert.equal(submits.filter((c) => c.params.arguments.signatureHex === SIG_1).length, 1, "the signature is forwarded once");
+  assert.equal(Object.hasOwn(submits[1].params.arguments, "signatureHex"), false);
+});
+
+test("C-ADP-1 serialization: a submit made while the session's sign step is running waits for it and carries its signature", async (t) => {
+  let release;
+  let running;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const started = new Promise((resolve) => { running = resolve; });
+  const { server, calls, stageSigns } = await context(t, {
+    serverOptions: {
+      runHelper: async (input) => {
+        const operation = input.args[6];
+        if (operation === "init") return { code: 0, stderr: "", stdout: cliResult("init", { address: CHECKSUM_ADDRESS }) };
+        if (operation === "inspect") return { code: 0, stderr: "", stdout: cliResult("inspect", { address: ADDRESS, policyDigest: POLICY_DIGEST, registration: null }) };
+        running();
+        await gate;
+        return { code: 0, stderr: "", stdout: cliResult("sign", { address: ADDRESS, bytesSha256: "d".repeat(64), signatureHex: SIG_1, checkpoint: null }) };
+      },
+    },
+  });
+  await call(server, 1, "agent_handshake_invite", { reference: "r", statement: "s", validForSeconds: "90" });
+  await call(server, 2, ADAPTER_TOOL);
+  await call(server, 3, ADAPTER_TOOL);
+  await call(server, 4, "agent_handshake_join", {});
+  stageSigns(["identity_claim"]);
+  await call(server, 5, "agent_handshake_next", { waitMs: 0 });
+  const signing = call(server, 6, ADAPTER_TOOL);
+  await started; // the helper is running the sign step
+  const submitting = call(server, 7, "agent_handshake_submit", {});
+  for (let i = 0; i < 20; i += 1) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(toolCalls(calls).filter((c) => c.params.name === "agent_handshake_submit").length, 0, "the submit waits for the running sign");
+  release();
+  await signing;
+  const submitted = await submitting;
+  assert.equal(submitted.result.isError, undefined);
+  assert.equal(lastForwarded(calls).arguments.signatureHex, SIG_1);
+});
+
+test("C-ADP-1 invite budget: only forward lines count; refused-local and local lines (and a legacy line without kind) are read correctly", async (t) => {
+  const tmpRoot = await mkdtemp(join(tmpdir(), "fill-journal-"));
+  t.after(() => rm(tmpRoot, { recursive: true, force: true }));
+  const journal = createForwardJournal({ tmpRoot, now: Date.now });
+  assert.equal(await journal.append({ tool: "agent_handshake_invite", outcome: "ok" }), true); // legacy (pre-C-ADP-1) forward line
+  await journal.append({ kind: "forward", tool: "agent_handshake_invite", outcome: "ok" });
+  await journal.append({ kind: "forward", tool: "agent_handshake_invite", outcome: "transient" });
+  await journal.append({ kind: "refused-local", tool: "agent_handshake_invite", modelArgs: {}, code: "INVITE_BUDGET_EXHAUSTED" });
+  await journal.append({ kind: "local", tool: "agent_handshake_invite", outcome: "ok", stagedStepDigest: "a".repeat(64) });
+  await journal.append({ kind: "local", tool: ADAPTER_TOOL, outcome: "error", stagedStepDigest: "b".repeat(64) });
+  await journal.append({ kind: "local", tool: ADAPTER_TOOL, outcome: "refused", stagedStepDigest: null });
+  assert.equal(await journal.count("agent_handshake_invite"), 2);
+  assert.deepEqual([...await journal.executedStepDigests()], ["a".repeat(64)]);
+
+  // End to end: two locally refused invites do not spend a restarted adapter's budget.
+  const first = await context(t, { serverOptions: { inviteTerms: PINNED_TERMS, inviteBudget: 2 } });
+  await call(first.server, 1, "agent_handshake_invite", {});
+  await call(first.server, 2, "agent_handshake_invite", { reference: "R-x" });
+  await call(first.server, 3, "agent_handshake_invite", { statement: "other" });
+  const fixtureCalls = [];
+  const second = createLocalAdapterServer({
+    assetDir: (await makeAssetDir(t)).assetDir,
+    endpoint: ENDPOINT,
+    tmpdir: first.tmpRoot,
+    inviteTerms: PINNED_TERMS,
+    inviteBudget: 2,
+    fetchImpl: async (url, init) => {
+      const request = JSON.parse(init.body);
+      fixtureCalls.push(request);
+      return fakeResponse({ jsonrpc: "2.0", id: request.id, result: rpcResult({ sessionId: SESSION_2, role: "initiator", roleAccess: "csha_22222222_init_xxxxxxxx", serverNonce: `0x${"9".repeat(32)}` }) });
+    },
+  });
+  assert.equal((await call(second, 4, "agent_handshake_invite", {})).result.isError, undefined);
+  assert.match(errorText(await call(second, 5, "agent_handshake_invite", {})), /^INVITE_BUDGET_EXHAUSTED: .*2 of its 2/);
+  assert.equal(inviteCalls(fixtureCalls).length, 1);
+});

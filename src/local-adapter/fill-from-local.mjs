@@ -602,13 +602,37 @@ export function serverNonceFromResult(result) {
 
 // --- forwarding journal -------------------------------------------------------------------
 
+// C-ADP-1 (TB/LLD.md §8.4): every line of the journal has a kind. A line
+// written before kinds existed is a forward line.
+export const JOURNAL_KINDS = Object.freeze({
+  forward: "forward",
+  local: "local",
+  refusedLocal: "refused-local",
+});
+// Local-line outcomes: the helper ran ("ok" / "error"), or it was not run ("refused").
+export const LOCAL_OUTCOMES = Object.freeze({ ok: "ok", error: "error", refused: "refused" });
+
+export function isForwardEntry(entry) {
+  return isPlain(entry) && (entry.kind === undefined || entry.kind === JOURNAL_KINDS.forward);
+}
+
+/**
+ * The digest a local or refused-local line records for the result the model
+ * was shown: sha256 over the sorted-key JSON of the MCP result object
+ * ({content, isError?}) or, for a JSON-RPC error, of the error object.
+ */
+export function resultDigest(value) {
+  return createHash("sha256").update(sortedJson(value)).digest("hex");
+}
+
 export function forwardEntryHash(entry) {
   const { hash: _hash, ...rest } = entry;
   return createHash("sha256").update(sortedJson(rest)).digest("hex");
 }
 
 /**
- * Append-only, hash-chained journal of forwarded-args rewrites:
+ * Append-only, hash-chained journal of every forwarded call (C-ADP-1: filled
+ * or not), every local tool call and every adapter-side refusal (JOURNAL_KINDS):
  * <TMPDIR>/.clockchain/adapter-forwards/forwards.jsonl (dir 0700, file 0600,
  * O_NOFOLLOW, fsync'd). The harness exports it with the signer's delegation
  * journal. It holds the signatures, checkpoints and (for accept by reference)
@@ -657,25 +681,50 @@ export function createForwardJournal({ tmpRoot, now }) {
     state = { seq: entry.seq + 1, prevHash: entry.hash };
   }
 
+  async function entries() {
+    let text = "";
+    try { text = await readFile(path, "utf8"); } catch (error) { if (error?.code !== "ENOENT") throw error; }
+    const out = [];
+    for (const line of text.split("\n")) {
+      if (line.length === 0) continue;
+      try { out.push(JSON.parse(line)); } catch { /* not an entry */ }
+    }
+    return out;
+  }
+
   return Object.freeze({
     path,
     /**
-     * How many entries of this epoch's journal name `tool` (the invite-budget
-     * seed), leaving out the ones journaled as a transient refusal (they minted
-     * nothing). An absent journal is 0; an unreadable line counts nothing for itself.
+     * How many forward entries of this epoch's journal name `tool` (the
+     * invite-budget seed), leaving out the ones journaled as a transient
+     * refusal (they minted nothing). Local and refused-local lines (C-ADP-1)
+     * sent nothing upstream and never count. An absent journal is 0; an
+     * unreadable line counts nothing for itself.
      */
     async count(tool) {
-      let text = "";
-      try { text = await readFile(path, "utf8"); } catch (error) { if (error?.code !== "ENOENT") throw error; }
       let n = 0;
-      for (const line of text.split("\n")) {
-        if (line.length === 0) continue;
-        try {
-          const entry = JSON.parse(line);
-          if (entry?.tool === tool && entry?.outcome !== TRANSIENT_OUTCOME) n += 1;
-        } catch { /* not an entry */ }
+      for (const entry of await entries()) {
+        if (!isForwardEntry(entry)) continue;
+        if (entry?.tool === tool && entry?.outcome !== TRANSIENT_OUTCOME) n += 1;
       }
       return n;
+    },
+    /**
+     * C-ADP-1: the staged-step digests this epoch's adapter already executed
+     * successfully (local lines with outcome "ok"), so a restarted adapter
+     * never stages them again. A step whose helper run failed is blocked only
+     * for the rest of that process (server.mjs); a restart may take it once
+     * more. Throws when the journal exists but cannot be read.
+     */
+    async executedStepDigests() {
+      const out = new Set();
+      for (const entry of await entries()) {
+        if (entry?.kind === JOURNAL_KINDS.local && entry.outcome === LOCAL_OUTCOMES.ok &&
+          typeof entry.stagedStepDigest === "string" && DIGEST.test(entry.stagedStepDigest)) {
+          out.add(entry.stagedStepDigest);
+        }
+      }
+      return out;
     },
     /** Appends one entry; resolves false (never throws) when it could not be written. */
     append(record) {
