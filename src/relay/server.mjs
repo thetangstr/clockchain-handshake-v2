@@ -272,10 +272,11 @@ function validateEnvelopeShape(body, expectedSessionId) {
   return { sessionId, seq, role, kind, body: payload, senderKey, sig };
 }
 
-function createSessionState(sessionId, journalPath) {
+function createSessionState(sessionId, journalPath, appendJournal) {
   return {
     sessionId,
     journalPath,
+    appendJournal,
     messages: [],
     lastSeq: 0,
     evidence: {},
@@ -284,7 +285,8 @@ function createSessionState(sessionId, journalPath) {
     monitorSnapshot: null,
     resultEnvelope: null,
     waiters: new Set(),
-    writeLock: Promise.resolve(),
+    // Tail of this session's mutation queue; see withSessionLock.
+    lock: Promise.resolve(),
   };
 }
 
@@ -361,7 +363,7 @@ async function replayJournal(session) {
   }
 }
 
-async function loadExistingSessions(stateDir, sessions) {
+async function loadExistingSessions(stateDir, sessions, appendJournal) {
   let entries;
   try {
     entries = await readdir(stateDir, { withFileTypes: true });
@@ -382,17 +384,48 @@ async function loadExistingSessions(stateDir, sessions) {
     const session = createSessionState(
       sessionId,
       join(stateDir, entry.name),
+      appendJournal,
     );
     await replayJournal(session);
     sessions.set(sessionId, session);
   }
 }
 
+// The one place a journal line reaches disk. Injectable through
+// createRelayServer({ appendJournal }) so tests can hold a write open (to pin
+// down an interleaving) or make it fail (to prove state does not advance).
+function defaultAppendJournal(journalPath, line) {
+  return appendFile(journalPath, line, "utf8");
+}
+
+// Callers must hold the session's lock (withSessionLock), or own a session
+// that is not yet in the sessions map, so appends for one journal never
+// overlap and land in the order their state changes are applied.
 function appendJournalLine(session, record) {
-  session.writeLock = session.writeLock.then(() =>
-    appendFile(session.journalPath, `${JSON.stringify(record)}\n`, "utf8"),
+  return session.appendJournal(
+    session.journalPath,
+    `${JSON.stringify(record)}\n`,
   );
-  return session.writeLock;
+}
+
+// Every mutation of a session's state runs through this per-session queue:
+// check, journal, then apply, with no other mutation of the same session able
+// to slip in between. Without it, two requests could both pass a check before
+// either had written (two concurrent POSTs with the same seq were both
+// accepted, leaving a duplicate seq in the journal and in memory that every
+// later client read rejected as MESSAGE_SEQ_ORDER_INVALID). A failed step
+// rejects only its own caller; the queue itself never stays rejected, so one
+// failed append cannot wedge the session.
+//
+// Request bodies are read and validated before entering the queue, so a slow
+// client cannot hold the session hostage while it trickles bytes in.
+function withSessionLock(session, fn) {
+  const run = session.lock.then(fn);
+  session.lock = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
 }
 
 function messagesAfter(session, afterSeq) {
@@ -458,7 +491,13 @@ function requireRole(role) {
   return role;
 }
 
-async function handleCreateSession(req, sessions, stateDir) {
+async function handleCreateSession(
+  req,
+  sessions,
+  pendingSessionIds,
+  stateDir,
+  appendJournal,
+) {
   const bodyBuf = await readBoundedBody(
     req,
     MAX_SESSION_CREATE_BYTES,
@@ -482,7 +521,7 @@ async function handleCreateSession(req, sessions, stateDir) {
       status: 400,
     });
   }
-  if (sessions.has(sessionId)) {
+  if (sessions.has(sessionId) || pendingSessionIds.has(sessionId)) {
     throw new RelayError("Session already exists.", "SESSION_EXISTS", {
       status: 409,
     });
@@ -503,22 +542,31 @@ async function handleCreateSession(req, sessions, stateDir) {
   const session = createSessionState(
     sessionId,
     join(stateDir, `${sessionId}${JOURNAL_SUFFIX}`),
+    appendJournal,
   );
   session.discovery = discovery;
   session.publishedAtMs = Date.now();
   // Reserve the id before the first await so two concurrent registrations
-  // for the same id cannot both observe an empty map.
-  sessions.set(sessionId, session);
-  await appendJournalLine(session, {
-    type: "session-created",
-    sessionId,
-    discovery: discovery ?? null,
-    // Journalled because the restore path reads it back, and without it every
-    // session recovered after a restart carried publishedAtMs 0 -- which is
-    // what "current" and the run list both order by. The alias survived only
-    // because a live run always outranks a zero.
-    publishedAtMs: session.publishedAtMs,
-  });
+  // for the same id cannot both pass the check above, but publish the session
+  // only once its creation is journalled: until then nobody else can read or
+  // write it, and if the append fails the id is released with nothing left
+  // behind in memory.
+  pendingSessionIds.add(sessionId);
+  try {
+    await appendJournalLine(session, {
+      type: "session-created",
+      sessionId,
+      discovery: discovery ?? null,
+      // Journalled because the restore path reads it back, and without it
+      // every session recovered after a restart carried publishedAtMs 0 --
+      // which is what "current" and the run list both order by. The alias
+      // survived only because a live run always outranks a zero.
+      publishedAtMs: session.publishedAtMs,
+    });
+    sessions.set(sessionId, session);
+  } finally {
+    pendingSessionIds.delete(sessionId);
+  }
 
   return { sessionId, paymentMoved: false };
 }
@@ -534,21 +582,29 @@ async function handlePostMessage(req, sessions, sessionId) {
   const envelope = validateEnvelopeShape(body, sessionId);
 
   const seqNum = Number(envelope.seq);
-  const expectedSeq = session.lastSeq + 1;
-  if (seqNum !== expectedSeq) {
-    throw new RelayError(
-      "Message sequence number is out of order.",
-      "SEQ_CONFLICT",
-      { status: 409, detail: { expectedSeq: String(expectedSeq) } },
-    );
-  }
+  // The seq check, the journal append and the in-memory commit are one step
+  // under the session lock: a second POST with the same seq waits here and
+  // then sees the first one's lastSeq, so it gets SEQ_CONFLICT instead of
+  // being stored as a duplicate.
+  return withSessionLock(session, async () => {
+    const expectedSeq = session.lastSeq + 1;
+    if (seqNum !== expectedSeq) {
+      throw new RelayError(
+        "Message sequence number is out of order.",
+        "SEQ_CONFLICT",
+        { status: 409, detail: { expectedSeq: String(expectedSeq) } },
+      );
+    }
 
-  await appendJournalLine(session, { type: "message", envelope });
-  session.messages.push(envelope);
-  session.lastSeq = seqNum;
-  notifyWaiters(session, seqNum);
+    // Journal before memory: if the append fails nothing below runs, so the
+    // session neither serves nor counts a message the journal does not hold.
+    await appendJournalLine(session, { type: "message", envelope });
+    session.messages.push(envelope);
+    session.lastSeq = seqNum;
+    notifyWaiters(session, seqNum);
 
-  return { seq: envelope.seq };
+    return { seq: envelope.seq };
+  });
 }
 
 async function handleGetMessages(req, sessions, sessionId, url) {
@@ -618,15 +674,21 @@ async function handlePutEvidence(req, sessions, sessionId, role) {
     }
   }
 
-  session.evidence[role] = parts;
-  await appendJournalLine(session, {
-    type: "evidence",
-    role,
-    triple: {
-      json: parts.json.toString("base64"),
-      markdown: parts.markdown.toString("base64"),
-      marker: parts.marker.toString("base64"),
-    },
+  // Journal before memory, under the session lock: evidence is never served
+  // before it is durable, a failed append leaves the previous upload (or
+  // none) in place, and concurrent uploads apply in journal order, so memory
+  // always equals what a restart would replay.
+  await withSessionLock(session, async () => {
+    await appendJournalLine(session, {
+      type: "evidence",
+      role,
+      triple: {
+        json: parts.json.toString("base64"),
+        markdown: parts.markdown.toString("base64"),
+        marker: parts.marker.toString("base64"),
+      },
+    });
+    session.evidence[role] = parts;
   });
 
   return { role };
@@ -1048,8 +1110,11 @@ async function handlePutSnapshot(req, sessions, sessionId) {
     );
   }
 
-  session.monitorSnapshot = body;
-  await appendJournalLine(session, { type: "monitor-snapshot", snapshot: body });
+  // Journal before memory, under the session lock (same rule as evidence).
+  await withSessionLock(session, async () => {
+    await appendJournalLine(session, { type: "monitor-snapshot", snapshot: body });
+    session.monitorSnapshot = body;
+  });
 
   return { sessionId };
 }
@@ -1109,8 +1174,11 @@ async function handlePutResult(req, sessions, sessionId) {
     }
     throw error;
   }
-  session.resultEnvelope = envelope;
-  await appendJournalLine(session, { type: "result", envelope });
+  // Journal before memory, under the session lock (same rule as evidence).
+  await withSessionLock(session, async () => {
+    await appendJournalLine(session, { type: "result", envelope });
+    session.resultEnvelope = envelope;
+  });
   return { paymentMoved: false };
 }
 
@@ -1126,7 +1194,11 @@ function handleGetResult(sessions, sessionId) {
   return session.resultEnvelope;
 }
 
-async function dispatch(req, res, sessions, stateDir, ledgerClient) {
+async function dispatch(
+  req,
+  res,
+  { sessions, pendingSessionIds, stateDir, ledgerClient, appendJournal },
+) {
   const url = new URL(req.url, "http://relay.local");
   const segments = url.pathname.split("/").filter(Boolean);
   const method = req.method;
@@ -1163,7 +1235,13 @@ async function dispatch(req, res, sessions, stateDir, ledgerClient) {
   }
 
   if (method === "POST" && segments.length === 2 && segments[1] === "sessions") {
-    const result = await handleCreateSession(req, sessions, stateDir);
+    const result = await handleCreateSession(
+      req,
+      sessions,
+      pendingSessionIds,
+      stateDir,
+      appendJournal,
+    );
     writeJson(res, 201, { ok: true, ...result });
     return;
   }
@@ -1262,8 +1340,16 @@ async function dispatch(req, res, sessions, stateDir, ledgerClient) {
  * an existing state directory resumes exactly where a killed instance left
  * off. Does not call `.listen()` -- the caller decides host/port (bin/relay.mjs
  * for real use, ephemeral port 0 in tests).
+ *
+ * `appendJournal(journalPath, line)` is the journal writer; it defaults to
+ * fs.appendFile and exists as an option only so tests can hold a write open
+ * or make it fail.
  */
-export async function createRelayServer({ stateDir, ledgerClient }) {
+export async function createRelayServer({
+  stateDir,
+  ledgerClient,
+  appendJournal = defaultAppendJournal,
+}) {
   if (typeof stateDir !== "string" || stateDir.length === 0) {
     throw new RelayError(
       "A relay requires a state directory.",
@@ -1274,10 +1360,24 @@ export async function createRelayServer({ stateDir, ledgerClient }) {
   await mkdir(stateDir, { recursive: true });
 
   const sessions = new Map();
-  await loadExistingSessions(stateDir, sessions);
+  if (typeof appendJournal !== "function") {
+    throw new RelayError("appendJournal must be a function.", "CONFIG", {
+      status: 500,
+    });
+  }
+  await loadExistingSessions(stateDir, sessions, appendJournal);
+  // Ids whose session-created line is being written but is not on disk yet.
+  const pendingSessionIds = new Set();
+  const relay = {
+    sessions,
+    pendingSessionIds,
+    stateDir,
+    ledgerClient,
+    appendJournal,
+  };
 
   const server = createServer((req, res) => {
-    dispatch(req, res, sessions, stateDir, ledgerClient).catch((error) => {
+    dispatch(req, res, relay).catch((error) => {
       if (res.headersSent) {
         res.destroy();
         return;
