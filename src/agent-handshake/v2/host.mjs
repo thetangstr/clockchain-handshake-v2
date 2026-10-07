@@ -172,11 +172,28 @@ function requireSessionPorts(ports) {
   }
 }
 
+// Tell both parties on the relay log that this session has ended. Optional
+// port (older adapters lack it) and best effort: the snapshot carries the same
+// failure.
+async function notifySessionFailed(ports, code) {
+  if (typeof ports.notifySessionFailed !== "function") return;
+  try {
+    await ports.notifySessionFailed(code);
+  } catch {}
+}
+
 async function publishPreparationFailure(ports, code) {
   try {
     await ports.failed(code);
   } catch {}
+  await notifySessionFailed(ports, code);
 }
+
+// Claim-stage failures that end the session with an explicit terminal state.
+// A snapshot rejection has already been published and notified by the port.
+const CLAIM_TERMINAL_CODES = new Set([
+  "AGENT_HANDSHAKE_V2_INVITATION_EXPIRED",
+]);
 
 export async function runAgentHandshakeV2HostSession({
   now = Date.now,
@@ -195,7 +212,14 @@ export async function runAgentHandshakeV2HostSession({
     now() >= session.sessionDeadlineMs
   ) invalid();
   await ports.publishInitial();
-  await ports.awaitInvitationClaimed();
+  try {
+    await ports.awaitInvitationClaimed();
+  } catch (error) {
+    if (CLAIM_TERMINAL_CODES.has(error?.code)) {
+      await publishPreparationFailure(ports, error.code);
+    }
+    throw error;
+  }
   let fundingPreparationError = undefined;
   let sawFundingPreparationError = false;
   const preparationPorts = { ...ports };
@@ -304,7 +328,9 @@ export async function runAgentHandshakeV2HostSession({
       transitions: anchorReport.transitions,
     });
   } catch (error) {
-    await ports.failed(error?.code ?? "AGENT_HANDSHAKE_V2_VERDICT_INVALID");
+    const code = error?.code ?? "AGENT_HANDSHAKE_V2_VERDICT_INVALID";
+    await ports.failed(code);
+    await notifySessionFailed(ports, code);
     throw error;
   }
   const certificate = buildAgentHandshakeV2Result({

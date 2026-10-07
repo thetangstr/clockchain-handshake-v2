@@ -263,7 +263,7 @@ test("a mint without claimExpiresAtMs extends the wait by the legacy window", as
   assert.equal(await ports.awaitInvitationClaimed(), opened + 600);
 });
 
-test("a claim stamped past the minted expiry is rejected even when observed", async () => {
+test("a claim stamped past the minted expiry is an explicit invitation expiry even when observed", async () => {
   const opened = Date.now();
   const ports = await rotationPorts(
     {
@@ -299,7 +299,8 @@ test("a claim stamped past the minted expiry is rejected even when observed", as
   );
   await assert.rejects(
     () => ports.awaitInvitationClaimed(),
-    /AGENT_HANDSHAKE_V2_INVITATION_CLAIM_INVALID/,
+    (error) => error?.name === "AgentHandshakeV2SessionFailure" &&
+      error.code === "AGENT_HANDSHAKE_V2_INVITATION_EXPIRED",
   );
 });
 

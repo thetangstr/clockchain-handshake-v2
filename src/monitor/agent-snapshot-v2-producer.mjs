@@ -61,10 +61,29 @@ export function createAgentHandshakeV2Monitor({ now = Date.now, publish, session
     externalBusinessActionPerformed: false,
   };
 
+  // The last state the relay accepted. A snapshot the relay refuses (a 4xx)
+  // must not leave the session silently abandoned, but re-sending the refused
+  // fields would be refused again, so a failure after a rejection is published
+  // on top of the last accepted state instead.
+  const initialState = structuredClone(state);
+  let lastAccepted = null;
+
   async function flush() {
     const atMs = now();
     state.freshness.host = { lastSeenMs: atMs };
     await publish(buildAgentHandshakeV2Snapshot(structuredClone(state)));
+    lastAccepted = structuredClone(state);
+  }
+
+  async function failed(reasonCode) {
+    if (typeof reasonCode !== "string" || !/^[A-Z][A-Z0-9_]{0,63}$/.test(reasonCode)) {
+      throw new Error("AGENT_HANDSHAKE_V2_MONITOR_INVALID");
+    }
+    const atMs = now();
+    state.failure = { reasonCode };
+    state.checker = { stage: "FAILED", lastSeenMs: atMs };
+    state.freshness.checker = { lastSeenMs: atMs };
+    await flush();
   }
 
   return Object.freeze({
@@ -133,15 +152,14 @@ export function createAgentHandshakeV2Monitor({ now = Date.now, publish, session
       state.freshness.checker = { lastSeenMs: atMs };
       await flush();
     },
-    async failed(reasonCode) {
-      if (typeof reasonCode !== "string" || !/^[A-Z][A-Z0-9_]{0,63}$/.test(reasonCode)) {
-        throw new Error("AGENT_HANDSHAKE_V2_MONITOR_INVALID");
-      }
-      const atMs = now();
-      state.failure = { reasonCode };
-      state.checker = { stage: "FAILED", lastSeenMs: atMs };
-      state.freshness.checker = { lastSeenMs: atMs };
-      await flush();
+    failed,
+    // Terminal failure after the relay refused a snapshot: roll back to the
+    // last accepted state (or the initial one) and publish the failure there.
+    async failedAfterRejection(reasonCode) {
+      const restored = structuredClone(lastAccepted ?? initialState);
+      for (const key of Object.keys(state)) delete state[key];
+      Object.assign(state, restored);
+      await failed(reasonCode);
     },
     async certificateIssued(envelope) {
       const atMs = Number(envelope.result.issuedAtMs);

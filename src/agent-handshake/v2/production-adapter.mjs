@@ -66,6 +66,31 @@ const DEFAULT_TERMS = Object.freeze({
   }),
 });
 
+// A host-side terminal failure the parties must hear about. `code` is the
+// public reason the host publishes on the snapshot (failure.reasonCode) and on
+// the relay log (agent_v2_session_failed), so both stakeholders get a prompt,
+// explicit terminal state instead of polling an abandoned session until its
+// deadline.
+export class AgentHandshakeV2SessionFailure extends Error {
+  constructor(code, { cause } = {}) {
+    super("Agent handshake v2 session failed.", cause === undefined ? undefined : { cause });
+    this.name = "AgentHandshakeV2SessionFailure";
+    this.code = code;
+  }
+}
+
+export const AGENT_HANDSHAKE_V2_SESSION_FAILED_KIND = "agent_v2_session_failed";
+
+// A relay 4xx (other than 429 rate limiting) is a refusal, not a transient
+// fault: retrying the same snapshot can never succeed.
+export function isRelayRejection(error) {
+  return error?.name === "RelayError" &&
+    Number.isSafeInteger(error.status) &&
+    error.status >= 400 &&
+    error.status < 500 &&
+    error.status !== 429;
+}
+
 function termsFromEnvironment(env) {
   if (!env.AGENT_HANDSHAKE_V2_TERMS) return DEFAULT_TERMS;
   let parsed;
@@ -246,7 +271,29 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
       role: "host",
       sessionId: session.sessionId,
     }));
-  const monitor = overrides.monitor ?? createAgentHandshakeV2Monitor({
+  const log = overrides.log ?? ((event) => console.warn(JSON.stringify(event)));
+  // Tell both parties, on the session's relay log, that the host has ended
+  // this session and why. Best effort and at most once: the failure is also on
+  // the snapshot, and a relay that refuses this post cannot be helped here.
+  let sessionFailureNotified = false;
+  const notifySessionFailed = async (reasonCode) => {
+    if (sessionFailureNotified) return;
+    sessionFailureNotified = true;
+    try {
+      await postHostMessage(AGENT_HANDSHAKE_V2_SESSION_FAILED_KIND, {
+        externalBusinessActionPerformed: false,
+        reasonCode,
+      });
+    } catch (error) {
+      log({
+        event: "agent_handshake_v2_session_failed_notice_unpublished",
+        reasonCode,
+        relayCode: typeof error?.code === "string" ? error.code : null,
+        sessionId: session.sessionId,
+      });
+    }
+  };
+  const rawMonitor = overrides.monitor ?? createAgentHandshakeV2Monitor({
     now: overrides.now ?? Date.now,
     publish: (snapshot) => relayClient.putSnapshot({
       relayUrl: session.relayUrl,
@@ -256,6 +303,50 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
     }),
     session,
   });
+  // Any relay 4xx on a snapshot PUT ends the session visibly: log it, publish
+  // the failure on top of the last snapshot the relay accepted, notify both
+  // parties, and stop with an explicit error. Without this the host process
+  // died on the rejection and both parties long-polled an abandoned session
+  // until its 10-minute deadline (production P8, 2026-10-07).
+  let snapshotRejected = false;
+  const handleSnapshotRejection = async (error) => {
+    const reasonCode = "AGENT_HANDSHAKE_V2_SNAPSHOT_REJECTED";
+    if (!snapshotRejected) {
+      snapshotRejected = true;
+      log({
+        event: "agent_handshake_v2_snapshot_rejected",
+        relayCode: typeof error?.code === "string" ? error.code : null,
+        relayStatus: error?.status ?? null,
+        sessionId: session.sessionId,
+      });
+      if (typeof rawMonitor.failedAfterRejection === "function") {
+        try {
+          await rawMonitor.failedAfterRejection(reasonCode);
+        } catch (failure) {
+          log({
+            event: "agent_handshake_v2_failure_snapshot_unpublished",
+            relayCode: typeof failure?.code === "string" ? failure.code : null,
+            sessionId: session.sessionId,
+          });
+        }
+      }
+      await notifySessionFailed(reasonCode);
+    }
+    throw new AgentHandshakeV2SessionFailure(reasonCode, { cause: error });
+  };
+  const monitor = Object.freeze(Object.fromEntries(
+    Object.entries(rawMonitor).map(([name, method]) => [
+      name,
+      typeof method !== "function" ? method : async (...args) => {
+        try {
+          return await method(...args);
+        } catch (error) {
+          if (isRelayRejection(error)) return handleSnapshotRejection(error);
+          throw error;
+        }
+      },
+    ]),
+  ));
 
   const store = overrides.fundingStore ?? createFileFundingBudgetStore({
     path: process.env.AGENT_HANDSHAKE_V2_FUNDING_LEDGER ??
@@ -415,7 +506,21 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
     awaitEvidence: async (role) =>
       (await waitForMessage("agent_v2_evidence", role)).body.evidenceEnvelope,
     awaitInvitationClaimed: async () => {
-      const message = await waitForMessage("agent_v2_invitation_claimed", "responder");
+      let message;
+      try {
+        message = await waitForMessage("agent_v2_invitation_claimed", "responder");
+      } catch (error) {
+        // An invitation was minted on this session but nobody claimed it in
+        // its window: that is an explicit invitation expiry the initiator must
+        // hear about. With no mint the session simply rotates, as before.
+        if (mintedClaimExpMs !== null && error?.name === "SessionEnded") {
+          throw new AgentHandshakeV2SessionFailure(
+            "AGENT_HANDSHAKE_V2_INVITATION_EXPIRED",
+            { cause: error },
+          );
+        }
+        throw error;
+      }
       const body = message.body;
       if (
         body === null || typeof body !== "object" || Array.isArray(body) ||
@@ -432,9 +537,14 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
       const claimDeadlineMs = mintedClaimExpMs ?? session.invitationExpiresAtMs;
       if (
         !Number.isSafeInteger(claimedAtMs) ||
-        claimedAtMs < session.sessionOpenedAtMs ||
-        claimedAtMs >= claimDeadlineMs
+        claimedAtMs < session.sessionOpenedAtMs
       ) throw new Error("AGENT_HANDSHAKE_V2_INVITATION_CLAIM_INVALID");
+      // A claim after the invitation's window is a clean, explicit expiry:
+      // the host publishes it as a terminal state (never the late claim
+      // itself) and both parties are told, instead of a stalled session.
+      if (claimedAtMs >= claimDeadlineMs) {
+        throw new AgentHandshakeV2SessionFailure("AGENT_HANDSHAKE_V2_INVITATION_EXPIRED");
+      }
       await monitor.invitationClaimed(claimedAtMs);
       return claimedAtMs;
     },
@@ -484,6 +594,7 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
     evidenceReceived: (role, envelope) => monitor.evidenceReceived(role, envelope),
     checkerStage: (stage) => monitor.checkerStage(stage),
     failed: (reasonCode) => monitor.failed(reasonCode),
+    notifySessionFailed,
     certificateIssued: (envelope) => monitor.certificateIssued(envelope),
     reserveFunding: (input) => fundingBudget.reserve(input),
     resolveRegistration:
