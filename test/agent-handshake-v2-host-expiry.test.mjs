@@ -9,10 +9,12 @@
 // the cutoff answered 400 MALFORMED_SNAPSHOT, the host process died, and both
 // parties long-polled the abandoned session to its 10-minute deadline.
 import assert from "node:assert/strict";
+import { createPublicKey, verify as verifyBytes } from "node:crypto";
 import test from "node:test";
 
 import {
   AGENT_HANDSHAKE_V2_SESSION_FAILED_KIND,
+  agentHandshakeV2SessionFailedSigningBytes,
   createAgentHandshakeV2HostPorts,
   isRelayRejection,
 } from "../src/agent-handshake/v2/production-adapter.mjs";
@@ -39,6 +41,7 @@ function relaySession(fixture, openedAtMs) {
   return {
     hostSessionKeyCertificate: fixture.hostSessionKeyCertificate,
     invitationExpiresAtMs: openedAtMs + 120_000,
+    privateKeyPem: fixture.host.privateKeyPem,
     protocol: "clockchain.agent-handshake/v2",
     relayUrl: "https://relay.test",
     repositorySha: REPOSITORY_SHA,
@@ -48,6 +51,25 @@ function relaySession(fixture, openedAtMs) {
     sessionOpenedBlock: SESSION_OPENED_BLOCK,
     terms: TERMS,
   };
+}
+
+// The notice must verify under the certified session key, over exactly the
+// session id and reason code.
+function assertSignedNotice(posted, session, reasonCode) {
+  assert.equal(posted.length, 1);
+  const [kind, body] = posted[0];
+  assert.equal(kind, AGENT_HANDSHAKE_V2_SESSION_FAILED_KIND);
+  assert.deepEqual(Object.keys(body).sort(), ["externalBusinessActionPerformed", "reasonCode", "sessionSignature"]);
+  assert.equal(body.externalBusinessActionPerformed, false);
+  assert.equal(body.reasonCode, reasonCode);
+  const raw = Buffer.from(session.hostSessionKeyCertificate.certificate.sessionPublicKey, "base64");
+  const key = createPublicKey({ key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), raw]), format: "der", type: "spki" });
+  const bytes = agentHandshakeV2SessionFailedSigningBytes(session.sessionId, reasonCode);
+  assert.equal(verifyBytes(null, bytes, key, Buffer.from(body.sessionSignature, "base64")), true);
+  assert.equal(
+    verifyBytes(null, agentHandshakeV2SessionFailedSigningBytes(session.sessionId, "OTHER"), key, Buffer.from(body.sessionSignature, "base64")),
+    false,
+  );
 }
 
 function message(seq, role, kind, body) {
@@ -142,7 +164,7 @@ test("P8 replay: a claim inside the mint-relative window succeeds and the relay 
 
 test("P8 replay against the pre-fix relay: the rejection ends the session visibly and notifies both parties", async () => {
   const openedAtMs = Date.now() - P8.mintAtMs - 100;
-  const { logs, ports, posted, snapshots } = await p8Ports({ accepts: preFixRelayValidator, openedAtMs });
+  const { logs, ports, posted, session, snapshots } = await p8Ports({ accepts: preFixRelayValidator, openedAtMs });
   await ports.publishInitial();
   await assert.rejects(
     () => ports.awaitInvitationClaimed(),
@@ -158,10 +180,7 @@ test("P8 replay against the pre-fix relay: the rejection ends the session visibl
   assert.equal(last.invitation.responderClaimedAtMs, null);
   assert.deepEqual(last.failure, { reasonCode: "AGENT_HANDSHAKE_V2_SNAPSHOT_REJECTED" });
   assert.equal(last.checker.stage, "FAILED");
-  assert.deepEqual(posted, [[AGENT_HANDSHAKE_V2_SESSION_FAILED_KIND, {
-    externalBusinessActionPerformed: false,
-    reasonCode: "AGENT_HANDSHAKE_V2_SNAPSHOT_REJECTED",
-  }]]);
+  assertSignedNotice(posted, session, "AGENT_HANDSHAKE_V2_SNAPSHOT_REJECTED");
   assert.deepEqual(logs.map((entry) => entry.event), ["agent_handshake_v2_snapshot_rejected"]);
   assert.equal(logs[0].relayStatus, 400);
 });
@@ -216,10 +235,7 @@ test("a claim after the minted window is an explicit expiry, never a snapshot ca
   assert.deepEqual(last.failure, { reasonCode: "AGENT_HANDSHAKE_V2_INVITATION_EXPIRED" });
   assert.equal(last.checker.stage, "FAILED");
   for (const snapshot of snapshots) assert.equal(relayValidator(snapshot), true);
-  assert.deepEqual(posted, [[AGENT_HANDSHAKE_V2_SESSION_FAILED_KIND, {
-    externalBusinessActionPerformed: false,
-    reasonCode: "AGENT_HANDSHAKE_V2_INVITATION_EXPIRED",
-  }]]);
+  assertSignedNotice(posted, session, "AGENT_HANDSHAKE_V2_INVITATION_EXPIRED");
 });
 
 test("a minted invitation nobody claims in its window expires explicitly", async () => {
@@ -340,7 +356,9 @@ test("a failing notification never masks the session's own error", async () => {
 test("the notice to the parties is posted at most once and a refused post is only logged", async () => {
   const logs = [];
   let posts = 0;
+  const fixture = await buildV2Fixture();
   const ports = await createAgentHandshakeV2HostPorts({
+    privateKeyPem: fixture.host.privateKeyPem,
     relayUrl: "https://relay.test",
     repositorySha: REPOSITORY_SHA,
     sessionId: SESSION_ID,
@@ -424,3 +442,63 @@ function hostPorts(overrides) {
     ...overrides,
   };
 }
+
+test("a rejection during identity preparation keeps its own code and is not re-published", async () => {
+  const fixture = await buildV2Fixture();
+  const failed = [];
+  const notified = [];
+  const rejection = Object.assign(new Error("rejected"), {
+    name: "AgentHandshakeV2SessionFailure",
+    code: "AGENT_HANDSHAKE_V2_SNAPSHOT_REJECTED",
+    published: true,
+  });
+  await assert.rejects(
+    () => runAgentHandshakeV2HostSession({
+      now: () => 1786337000001,
+      ports: hostPorts({
+        awaitIdentityClaim: async () => { throw rejection; },
+        failed: async (code) => failed.push(code),
+        notifySessionFailed: async (code) => notified.push(code),
+      }),
+      session: relaySession(fixture, 1786337000000),
+    }),
+    (thrown) => thrown === rejection,
+  );
+  assert.deepEqual(failed, []);
+  assert.deepEqual(notified, []);
+});
+
+test("a refused first snapshot sends no failure snapshot, only the signed notice", async () => {
+  const fixture = await buildV2Fixture();
+  const openedAtMs = Date.now();
+  const session = relaySession(fixture, openedAtMs);
+  const snapshots = [];
+  const posted = [];
+  const attempts = [];
+  const relayClient = {
+    generateEnvelopeKeyPair: () => ({}),
+    putSnapshot: async ({ snapshot }) => {
+      attempts.push(snapshot);
+      throw new RelayError("Relay request failed: UNKNOWN_SESSION.", "UNKNOWN_SESSION", { status: 404 });
+    },
+  };
+  const ports = await createAgentHandshakeV2HostPorts(session, {
+    fundingBudget: { reserve: async () => {} },
+    log: () => {},
+    monitor: createAgentHandshakeV2Monitor({
+      now: () => openedAtMs + 1,
+      publish: (snapshot) => relayClient.putSnapshot({ snapshot }),
+      session,
+    }),
+    postHostMessage: async (kind, body) => posted.push([kind, body]),
+    publicClient: {},
+    relayClient,
+  });
+  await assert.rejects(
+    () => ports.publishInitial(),
+    (error) => error?.code === "AGENT_HANDSHAKE_V2_SNAPSHOT_REJECTED" && error.published === true,
+  );
+  assert.equal(attempts.length, 1);
+  assert.deepEqual(snapshots, []);
+  assertSignedNotice(posted, session, "AGENT_HANDSHAKE_V2_SNAPSHOT_REJECTED");
+});

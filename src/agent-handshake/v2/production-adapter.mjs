@@ -1,4 +1,4 @@
-import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID, sign as signBytes } from "node:crypto";
 
 import {
   createPublicClient,
@@ -71,15 +71,31 @@ const DEFAULT_TERMS = Object.freeze({
 // the relay log (agent_v2_session_failed), so both stakeholders get a prompt,
 // explicit terminal state instead of polling an abandoned session until its
 // deadline.
+// `published` marks a failure whose terminal snapshot and notice the port
+// already sent; the host runner must not re-publish it under another code.
 export class AgentHandshakeV2SessionFailure extends Error {
-  constructor(code, { cause } = {}) {
+  constructor(code, { cause, published = false } = {}) {
     super("Agent handshake v2 session failed.", cause === undefined ? undefined : { cause });
     this.name = "AgentHandshakeV2SessionFailure";
     this.code = code;
+    this.published = published;
   }
 }
 
 export const AGENT_HANDSHAKE_V2_SESSION_FAILED_KIND = "agent_v2_session_failed";
+// The relay is an unauthenticated mailbox, so the notice is signed with the
+// host's per-session Ed25519 key (the key the root-signed host session-key
+// certificate binds as sessionPublicKey). A reader must ignore an unsigned or
+// mis-signed notice: otherwise anyone who knows a session id could end it.
+export const AGENT_HANDSHAKE_V2_SESSION_FAILED_DOMAIN =
+  "clockchain.agent-handshake-session-failed/v1";
+
+export function agentHandshakeV2SessionFailedSigningBytes(sessionId, reasonCode) {
+  return Buffer.from(
+    `${AGENT_HANDSHAKE_V2_SESSION_FAILED_DOMAIN}\n${sessionId}\n${reasonCode}`,
+    "utf8",
+  );
+}
 
 // A relay 4xx (other than 429 rate limiting) is a refusal, not a transient
 // fault: retrying the same snapshot can never succeed.
@@ -280,9 +296,15 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
     if (sessionFailureNotified) return;
     sessionFailureNotified = true;
     try {
+      const sessionSignature = signBytes(
+        null,
+        agentHandshakeV2SessionFailedSigningBytes(session.sessionId, reasonCode),
+        session.privateKeyPem,
+      ).toString("base64");
       await postHostMessage(AGENT_HANDSHAKE_V2_SESSION_FAILED_KIND, {
         externalBusinessActionPerformed: false,
         reasonCode,
+        sessionSignature,
       });
     } catch (error) {
       log({
@@ -332,7 +354,7 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
       }
       await notifySessionFailed(reasonCode);
     }
-    throw new AgentHandshakeV2SessionFailure(reasonCode, { cause: error });
+    throw new AgentHandshakeV2SessionFailure(reasonCode, { cause: error, published: true });
   };
   const monitor = Object.freeze(Object.fromEntries(
     Object.entries(rawMonitor).map(([name, method]) => [

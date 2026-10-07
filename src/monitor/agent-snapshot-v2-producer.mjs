@@ -65,7 +65,6 @@ export function createAgentHandshakeV2Monitor({ now = Date.now, publish, session
   // must not leave the session silently abandoned, but re-sending the refused
   // fields would be refused again, so a failure after a rejection is published
   // on top of the last accepted state instead.
-  const initialState = structuredClone(state);
   let lastAccepted = null;
 
   async function flush() {
@@ -154,12 +153,16 @@ export function createAgentHandshakeV2Monitor({ now = Date.now, publish, session
     },
     failed,
     // Terminal failure after the relay refused a snapshot: roll back to the
-    // last accepted state (or the initial one) and publish the failure there.
+    // last accepted state and publish the failure there. If the relay never
+    // accepted one (the initial snapshot was refused), there is no shape known
+    // to be acceptable, so nothing is re-sent; the relay-log notice remains.
     async failedAfterRejection(reasonCode) {
-      const restored = structuredClone(lastAccepted ?? initialState);
+      if (lastAccepted === null) return false;
+      const restored = structuredClone(lastAccepted);
       for (const key of Object.keys(state)) delete state[key];
       Object.assign(state, restored);
       await failed(reasonCode);
+      return true;
     },
     async certificateIssued(envelope) {
       const atMs = Number(envelope.result.issuedAtMs);

@@ -190,10 +190,15 @@ async function publishPreparationFailure(ports, code) {
 }
 
 // Claim-stage failures that end the session with an explicit terminal state.
-// A snapshot rejection has already been published and notified by the port.
 const CLAIM_TERMINAL_CODES = new Set([
   "AGENT_HANDSHAKE_V2_INVITATION_EXPIRED",
 ]);
+
+// A snapshot rejection is published and notified by the port itself; the
+// runner must not overwrite that terminal state under a different code.
+function alreadyPublished(error) {
+  return error?.name === "AgentHandshakeV2SessionFailure" && error.published === true;
+}
 
 export async function runAgentHandshakeV2HostSession({
   now = Date.now,
@@ -215,7 +220,7 @@ export async function runAgentHandshakeV2HostSession({
   try {
     await ports.awaitInvitationClaimed();
   } catch (error) {
-    if (CLAIM_TERMINAL_CODES.has(error?.code)) {
+    if (!alreadyPublished(error) && CLAIM_TERMINAL_CODES.has(error?.code)) {
       await publishPreparationFailure(ports, error.code);
     }
     throw error;
@@ -254,6 +259,7 @@ export async function runAgentHandshakeV2HostSession({
       sessionOpenedBlock: session.sessionOpenedBlock,
     });
   } catch (error) {
+    if (alreadyPublished(error)) throw error;
     await publishPreparationFailure(
       ports,
       sawFundingPreparationError && Object.is(error, fundingPreparationError)
@@ -328,6 +334,7 @@ export async function runAgentHandshakeV2HostSession({
       transitions: anchorReport.transitions,
     });
   } catch (error) {
+    if (alreadyPublished(error)) throw error;
     const code = error?.code ?? "AGENT_HANDSHAKE_V2_VERDICT_INVALID";
     await ports.failed(code);
     await notifySessionFailed(ports, code);
