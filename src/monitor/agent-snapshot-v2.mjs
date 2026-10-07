@@ -123,6 +123,14 @@ function timing(value) {
 
 function invitation(value, timingFacts) {
   const item = exact(value, ["createdAtMs", "responderClaimedAtMs"]);
+  // A session may publish before any invitation exists (stakeholder start
+  // visible before the claim). The production relay has accepted this shape
+  // since 2026-08-12, so it stays valid here: the relay validates every
+  // producer's snapshot, and narrowing it would 400 a host that relies on it.
+  if (item.createdAtMs === null) {
+    if (item.responderClaimedAtMs !== null) invalid();
+    return Object.freeze(item);
+  }
   safeMs(item.createdAtMs);
   if (item.createdAtMs < timingFacts.createdAtMs ||
     item.createdAtMs >= timingFacts.invitationExpiresAtMs) invalid();

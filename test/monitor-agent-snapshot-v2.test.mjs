@@ -145,3 +145,72 @@ test("not-required identity has null registration and required modes require com
   value.parties.initiator.erc8004 = registration("9452", value.parties.initiator.sessionKeyAddress, "e", "7000");
   assert.throws(() => validateAgentHandshakeV2Snapshot(value));
 });
+
+// Production P8 (2026-10-07, relay session 130fd2a5): invitation minted 82 s
+// into the 120 s mint window, claimed 158 s after session open (38 s past
+// invitationExpiresAtMs, inside the mint-relative claim window). The host
+// accepted the claim, but a relay validator that bounded the claim by
+// invitationExpiresAtMs answered its snapshot PUT with 400 MALFORMED_SNAPSHOT.
+test("a claim past the mint cutoff but inside the session deadline is a valid snapshot (P8 timeline)", () => {
+  const value = completeV2Snapshot();
+  const opened = value.timing.createdAtMs;
+  value.invitation = { createdAtMs: opened + 82_106, responderClaimedAtMs: opened + 158_124 };
+  value.policies = { initiator: null, responder: null };
+  value.parties = { initiator: null, responder: null };
+  value.statements = { proposalDigest: null, acceptanceDigest: null };
+  value.receipts = { proposal: null, acceptance: null, acknowledgment: null };
+  value.evidence = { initiator: null, responder: null };
+  value.certificate = null;
+  value.checker = { stage: "WAITING", lastSeenMs: opened + 158_200 };
+  value.freshness = {
+    initiator: null,
+    responder: null,
+    host: { lastSeenMs: opened + 158_200 },
+    checker: { lastSeenMs: opened + 158_200 },
+  };
+  assert.equal(validateAgentHandshakeV2Snapshot(value), true);
+  value.invitation.responderClaimedAtMs = value.timing.sessionDeadlineMs;
+  assert.throws(() => validateAgentHandshakeV2Snapshot(value));
+});
+
+test("an explicit expired/failed terminal state with no claim is a valid snapshot", () => {
+  const value = completeV2Snapshot();
+  const opened = value.timing.createdAtMs;
+  value.invitation = { createdAtMs: opened, responderClaimedAtMs: null };
+  value.policies = { initiator: null, responder: null };
+  value.parties = { initiator: null, responder: null };
+  value.statements = { proposalDigest: null, acceptanceDigest: null };
+  value.receipts = { proposal: null, acceptance: null, acknowledgment: null };
+  value.evidence = { initiator: null, responder: null };
+  value.certificate = null;
+  value.checker = { stage: "FAILED", lastSeenMs: opened + 300_000 };
+  value.freshness = {
+    initiator: null,
+    responder: null,
+    host: { lastSeenMs: opened + 300_000 },
+    checker: { lastSeenMs: opened + 300_000 },
+  };
+  value.failure = { reasonCode: "AGENT_HANDSHAKE_V2_INVITATION_EXPIRED" };
+  assert.equal(validateAgentHandshakeV2Snapshot(value), true);
+});
+
+test("a snapshot published before any invitation exists stays valid (relay-accepted since 2026-08-12)", () => {
+  const value = completeV2Snapshot();
+  value.invitation = { createdAtMs: null, responderClaimedAtMs: null };
+  value.policies = { initiator: null, responder: null };
+  value.parties = { initiator: null, responder: null };
+  value.statements = { proposalDigest: null, acceptanceDigest: null };
+  value.receipts = { proposal: null, acceptance: null, acknowledgment: null };
+  value.evidence = { initiator: null, responder: null };
+  value.certificate = null;
+  value.checker = { stage: "WAITING", lastSeenMs: value.timing.createdAtMs };
+  value.freshness = {
+    initiator: null,
+    responder: null,
+    host: { lastSeenMs: value.timing.createdAtMs },
+    checker: { lastSeenMs: value.timing.createdAtMs },
+  };
+  assert.equal(validateAgentHandshakeV2Snapshot(value), true);
+  value.invitation.responderClaimedAtMs = value.timing.createdAtMs + 1;
+  assert.throws(() => validateAgentHandshakeV2Snapshot(value));
+});
