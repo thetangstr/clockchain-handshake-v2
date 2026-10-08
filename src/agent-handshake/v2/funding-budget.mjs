@@ -4,7 +4,7 @@ const HOUR_MS = 60 * 60 * 1000;
 const SEAT_CENTS = 1;
 const SESSION_CENTS = 2;
 const HOUR_CENTS = 20;
-const DAY_CENTS = 100;
+const DAY_CENTS = 300; // 3.00 ETH per UTC day (founder 2026-10-08; was 1.00)
 // Bounded one-shot migration read: lets the store read and compact a legacy
 // oversized ledger, then fail closed. Steady-state writes compact to the
 // current day window, so the file stays far below this bound.

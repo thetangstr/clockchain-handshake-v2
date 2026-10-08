@@ -350,3 +350,30 @@ test("file store is restart-safe and remains mode 0600", async () => {
     sessionId: "22222222-3333-4444-8555-666666666666",
   }));
 });
+
+test("UTC-day ceiling is 3.00 ETH (300 seats)", async () => {
+  const now = Date.UTC(2026, 7, 10, 12, 0, 0);
+  // Earlier today but outside the rolling hour, so only the day ceiling applies.
+  const earlier = now - 2 * 60 * 60 * 1000;
+  const seed = (count) => Array.from({ length: count }, (_, index) => ({
+    address: "0x" + (index + 10).toString(16).padStart(40, "0"),
+    amountEth: "0.01",
+    atMs: earlier,
+    sessionId: "00000000-0000-4000-8000-" + String(index).padStart(12, "0"),
+  }));
+  const reserveWith = (initial) => {
+    let records = initial;
+    const budget = createFundingBudget({
+      load: async () => records,
+      save: async (next) => { records = structuredClone(next); },
+      now: () => now,
+    });
+    return budget.reserve({
+      addresses: [A, B],
+      identityMode: "required_fresh",
+      sessionId: "22222222-3333-4444-8555-666666666666",
+    });
+  };
+  await reserveWith(seed(298));
+  await assert.rejects(() => reserveWith(seed(299)));
+});
