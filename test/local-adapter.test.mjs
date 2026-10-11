@@ -579,9 +579,9 @@ test("upstream proxy parses SSE and plain JSON, and tools/list appends the adapt
   });
   const listed = await sse.handleMessage({ jsonrpc: "2.0", id: 7, method: "tools/list", params: {} });
   assert.deepEqual(listed.result.tools.map((tool) => tool.name), [
-    "agent_handshake_join", ADAPTER_TOOL,
+    "agent_handshake_join", ADAPTER_TOOL, "sign_agent_contract_bind",
   ]);
-  assert.deepEqual(listed.result.tools.at(-1).inputSchema, {
+  assert.deepEqual(listed.result.tools.find((tool) => tool.name === ADAPTER_TOOL).inputSchema, {
     type: "object", properties: {}, additionalProperties: false,
   });
 
@@ -594,7 +594,9 @@ test("upstream proxy parses SSE and plain JSON, and tools/list appends the adapt
     },
   });
   const listedPlain = await plain.handleMessage({ jsonrpc: "2.0", id: 8, method: "tools/list" });
-  assert.equal(listedPlain.result.tools.length, 1);
+  assert.deepEqual(listedPlain.result.tools.map((tool) => tool.name), [
+    ADAPTER_TOOL, "sign_agent_contract_bind",
+  ]);
 });
 
 test("tools/call forwards params verbatim and returns upstream errors verbatim", async (t) => {
@@ -733,4 +735,60 @@ test("unknown methods, notifications, and adapter argument discipline", async (t
   }
   const withArgs = await call(server, 7, ADAPTER_TOOL, { digest: "x" });
   assert.equal(withArgs.error.code, -32602);
+});
+
+test("a verified verify-certificate step records the session for sign_agent_contract_bind (L3)", async (t) => {
+  const { layDownSession, testSessionKey } = await import("./helpers/contract-bind-session.mjs");
+  const key = testSessionKey("integration");
+  const sessionDeadlineMs = 1_790_000_600_000;
+  const validUntilMs = sessionDeadlineMs - 30_000;
+  let nowMs = sessionDeadlineMs - 120_000;
+  const { fixture, make, tmpRoot } = await makeContext(t);
+  await layDownSession(tmpRoot, { sessionId: SESSION, role: "initiator", privateKey: key.privateKey, verified: false });
+  const verifyStep = (deadline) => helperStep({
+    manifestDigest: fixture.pin.manifestDigest,
+    operation: "verify-certificate",
+    payload: b64u({
+      schema: "clockchain.agent-handshake-certificate-verification/v1",
+      helperVersion: AGENT_HANDSHAKE_HELPER_VERSION,
+      role: "initiator",
+      sessionId: SESSION,
+      repositorySha: SOURCE_COMMIT,
+      sessionDeadlineMs: String(deadline),
+      certificate: { hostSessionKeyCertificate: { certificate: { validUntilMs: String(validUntilMs) } } },
+      externalBusinessActionPerformed: false,
+    }),
+  });
+  let helperOutput = { certificateVerified: false, outcome: "VERIFIED", role: "initiator", sessionId: SESSION, identity: { sessionKeyAddress: key.address } };
+  let deadline = sessionDeadlineMs;
+  const server = make({
+    contractBind: { tokenKeyIds: ["klb1"], serverKeyIds: ["contract-server"] },
+    fetchImpl: upstreamResult(() => rpcResult({ localAction: { helperStep: verifyStep(deadline) } })),
+    now: () => nowMs,
+    runHelper: async () => ({ code: 0, stderr: "", stdout: cliResult("verify-certificate", helperOutput) }),
+  });
+  const bind = () => call(server, 99, "sign_agent_contract_bind", {
+    domain: "agent-contract.bind/v1", runId: SESSION, side: "initiator",
+    tokenKeyId: "klb1", serverKeyId: "contract-server",
+    challenge: "ab".repeat(32), issuedAt: new Date(nowMs).toISOString(),
+  });
+  const refusedText = (code) => `Clockchain local adapter refused the bind statement (${code}).`;
+
+  // An unverified certificate leaves no record: bind refuses.
+  await call(server, 1, "agent_handshake_next", {});
+  await call(server, 2, ADAPTER_TOOL);
+  assert.equal((await bind()).result.content[0].text, refusedText("BIND_SESSION_NOT_VERIFIED"));
+
+  // A verified certificate (re-issued step with a new digest) records the
+  // session; expiry = min(sessionDeadlineMs, certificate validUntilMs).
+  helperOutput = { ...helperOutput, certificateVerified: true };
+  deadline = sessionDeadlineMs + 1;
+  await call(server, 3, "agent_handshake_next", {});
+  const executed = await call(server, 4, ADAPTER_TOOL);
+  assert.equal(executed.result.isError, undefined);
+  const signed = await bind();
+  assert.equal(signed.result.isError, undefined, signed.result.content[0].text);
+  assert.equal(JSON.parse(signed.result.content[0].text).sessionKeyAddress, key.address);
+  nowMs = validUntilMs;
+  assert.equal((await bind()).result.content[0].text, refusedText("BIND_SESSION_EXPIRED"));
 });
