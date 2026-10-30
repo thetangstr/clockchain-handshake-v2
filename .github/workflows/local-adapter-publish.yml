@@ -5,14 +5,25 @@ name: local-adapter-npm-publish
 # package version (LOCAL_ADAPTER_VERSION in src/agent-handshake/v2/constants.mjs).
 # The adapter's semver floats independently of the vendored helper release
 # (release/agent-handshake/pin.json), which stays pinned at
-# AGENT_HANDSHAKE_HELPER_VERSION. Manual dispatch is available for dry-run
-# verification only; real publishes come from tags.
+# AGENT_HANDSHAKE_HELPER_VERSION. Manual dispatch defaults to a dry run.
+#
+# Dist-tags: no publish here ever moves `latest`.
+#   - A tag push publishes under `next`.
+#   - A manual dispatch publishes under its `dist_tag` input (default `next`);
+#     `latest` is refused there.
+#   - `latest` moves only through a separate dispatch with the
+#     `set_latest_version` input (an exact X.Y.Z that npm already serves). That
+#     dispatch publishes nothing; it runs
+#       npm dist-tag add @d4d.group/local-adapter@<version> latest
+#     To promote a release, dispatch with its version. To roll back, dispatch
+#     with the previous version. The same command run by hand is equivalent.
 #
 # Auth: npm Trusted Publishing (OIDC) — no long-lived npm token in CI. The
 # package must have github.com/thetangstr/clockchain-handshake-v2 registered as
 # a trusted publisher for THIS workflow file. If trusted publishing is not yet
 # configured, set the NODE_AUTH_TOKEN repository secret as the fallback — the
-# publish step reads secrets.NODE_AUTH_TOKEN.
+# publish step reads secrets.NODE_AUTH_TOKEN. Trusted publishing covers
+# `npm publish` only, so moving `latest` always uses NODE_AUTH_TOKEN.
 
 on:
   push:
@@ -20,9 +31,17 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Run npm publish --dry-run instead of publishing"
+        description: "Dry run: publish with --dry-run, or only report when moving latest"
         type: boolean
         default: true
+      dist_tag:
+        description: "npm dist-tag to publish under (never latest; use set_latest_version)"
+        type: string
+        default: next
+      set_latest_version:
+        description: "Only move the latest dist-tag to this published X.Y.Z; publishes nothing"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -34,6 +53,7 @@ env:
 
 jobs:
   pack-and-verify:
+    if: github.event_name == 'push' || inputs.set_latest_version == ''
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -107,13 +127,68 @@ jobs:
       - run: node scripts/build-local-adapter-npm.mjs
 
       # npm >= 11.5.1 for OIDC trusted publishing; setup-node ships a recent npm.
-      - name: Publish with provenance (dry-run when dispatched with dry_run=true)
+      # Dry run when dispatched with dry_run=true.
+      - name: Publish with provenance under an explicit dist-tag
         working-directory: ${{ env.PKG_DIR }}
+        shell: bash
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }} # fallback only; unused under trusted publishing
+          DIST_TAG_INPUT: ${{ inputs.dist_tag }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            npm publish --provenance --access public --dry-run
+          # npm publish without --tag moves latest, so every publish names its
+          # tag: next for a tag push, the dist_tag input for a dispatch.
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            DIST_TAG=next
           else
-            npm publish --provenance --access public
+            DIST_TAG="$DIST_TAG_INPUT"
           fi
+          if [ "$DIST_TAG" = "latest" ]; then
+            echo "latest is moved only by the set_latest_version input"
+            exit 1
+          fi
+          if ! [[ "$DIST_TAG" =~ ^[a-z][a-z0-9-]{0,31}$ ]]; then
+            echo "dist_tag must be a lowercase npm dist-tag name"
+            exit 1
+          fi
+          if [ "$DRY_RUN" = "true" ]; then
+            npm publish --provenance --access public --tag "$DIST_TAG" --dry-run
+          else
+            npm publish --provenance --access public --tag "$DIST_TAG"
+          fi
+
+  set-latest:
+    if: github.event_name == 'workflow_dispatch' && inputs.set_latest_version != ''
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: https://registry.npmjs.org
+
+      - name: Move the latest dist-tag to the named version
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+          LATEST_VERSION: ${{ inputs.set_latest_version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          # The only step that sets latest, and only to an exact version that
+          # npm already serves.
+          if ! [[ "$LATEST_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "set_latest_version must be an exact X.Y.Z version"
+            exit 1
+          fi
+          PACKAGE="@d4d.group/local-adapter"
+          PUBLISHED=$(npm view "$PACKAGE@$LATEST_VERSION" version)
+          if [ "$PUBLISHED" != "$LATEST_VERSION" ]; then
+            echo "$PACKAGE@$LATEST_VERSION is not published"
+            exit 1
+          fi
+          npm dist-tag ls "$PACKAGE"
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "dry run: latest would move to $LATEST_VERSION"
+            exit 0
+          fi
+          npm dist-tag add "$PACKAGE@$LATEST_VERSION" latest
+          npm dist-tag ls "$PACKAGE"

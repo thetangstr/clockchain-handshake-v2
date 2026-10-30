@@ -7,8 +7,9 @@ import {
   verifyAgentHandshakeV2Acceptance,
   verifyAgentHandshakeV2Proposal,
 } from "../src/agent-handshake/v2/protocol.mjs";
+import { canonicalBytes } from "../src/core/canonical.mjs";
 import {
-  NOW_MS, REPOSITORY_SHA, SESSION_ID, TERMS, buildV2Fixture,
+  INITIATOR, NOW_MS, REPOSITORY_SHA, SESSION_ID, TERMS, buildV2Fixture,
 } from "./support/agent-handshake-v2-fixture.mjs";
 
 test("initiator proposal, responder acceptance, and unsigned acknowledgment form one exact chain", async () => {
@@ -36,11 +37,21 @@ test("initiator proposal, responder acceptance, and unsigned acknowledgment form
 
 test("valid signatures fail on wrong session, role party, statement, policy, or external-action mutation", async () => {
   const fixture = await buildV2Fixture();
+  // Each mutant is re-signed by the initiator over its own bytes, so the
+  // signature is valid and the rejection isolates the mutated binding.
+  const resigned = async (payload) => ({
+    ...fixture.proposalEnvelope,
+    payload,
+    signature: {
+      ...fixture.proposalEnvelope.signature,
+      value: await INITIATOR.signMessage({ message: { raw: canonicalBytes(payload) } }),
+    },
+  });
   const mutations = [
-    { ...fixture.proposalEnvelope, proposal: { ...fixture.proposalEnvelope.proposal, sessionId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" } },
-    { ...fixture.proposalEnvelope, proposal: { ...fixture.proposalEnvelope.proposal, statementDigest: "f".repeat(64) } },
-    { ...fixture.proposalEnvelope, proposal: { ...fixture.proposalEnvelope.proposal, externalBusinessActionPerformed: true } },
-    { ...fixture.proposalEnvelope, proposal: { ...fixture.proposalEnvelope.proposal, initiator: fixture.parties.responder } },
+    await resigned({ ...fixture.proposalEnvelope.payload, sessionId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee" }),
+    await resigned({ ...fixture.proposalEnvelope.payload, statementDigest: "f".repeat(64) }),
+    await resigned({ ...fixture.proposalEnvelope.payload, externalBusinessActionPerformed: true }),
+    await resigned({ ...fixture.proposalEnvelope.payload, initiator: fixture.parties.responder }),
   ];
   for (const envelope of mutations) {
     await assert.rejects(() => verifyAgentHandshakeV2Proposal({

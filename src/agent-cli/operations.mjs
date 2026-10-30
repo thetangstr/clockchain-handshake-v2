@@ -133,7 +133,7 @@ export function createAgentCliOperations({
         const signed = await executeAgentSigningRequest({
           address: wallet.address.toLowerCase(),
           localPolicy: committed.policy,
-          nowMs: now(),
+          now,
           request: payload,
           rootKeyRing,
           sign: (input) => bridge.signExactBytes({ ...input, statePath: pathFor(stateDir), platform, runIcacls }),

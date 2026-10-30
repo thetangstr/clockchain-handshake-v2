@@ -10,6 +10,7 @@ import {
 import { hostSessionKeyCertificateDigest } from "./host-key-certificate.mjs";
 import { verifyAgentHandshakeV2Authorization } from "./verdict.mjs";
 import { buildAgentHandshakeV2Result } from "./result.mjs";
+import { monotonicClock } from "./clock.mjs";
 
 export const AGENT_HANDSHAKE_V2_HOST_ROLES = Object.freeze([
   "initiator",
@@ -27,6 +28,37 @@ export class AgentHandshakeV2HostError extends Error {
 
 function invalid() {
   throw new AgentHandshakeV2HostError();
+}
+
+// H-REQ-07: the agreement, the host session key or the session itself lapsed
+// while the host was verifying. Reported through the session's failure path.
+export class AgentHandshakeV2SigningWindowExpired extends Error {
+  constructor() {
+    super("Agent handshake v2 signing window expired.");
+    this.name = "AgentHandshakeV2SigningWindowExpired";
+    this.category = "verification";
+    this.code = "AGENT_HANDSHAKE_V2_SIGNING_WINDOW_EXPIRED";
+  }
+}
+
+// Publish the lapse on the snapshot and to both parties, as the verdict
+// failure path does, then stop.
+async function signingWindowExpired(ports) {
+  const error = new AgentHandshakeV2SigningWindowExpired();
+  await ports.failed(error.code);
+  await notifySessionFailed(ports, error.code);
+  throw error;
+}
+
+function certificateWindow(hostSessionKeyCertificate) {
+  const validFromMs = Number(hostSessionKeyCertificate?.certificate?.validFromMs);
+  const validUntilMs = Number(hostSessionKeyCertificate?.certificate?.validUntilMs);
+  if (
+    !Number.isSafeInteger(validFromMs) ||
+    !Number.isSafeInteger(validUntilMs) ||
+    validFromMs >= validUntilMs
+  ) invalid();
+  return Object.freeze({ validFromMs, validUntilMs });
 }
 
 function requirePorts(ports) {
@@ -192,6 +224,9 @@ async function publishPreparationFailure(ports, code) {
 // Claim-stage failures that end the session with an explicit terminal state.
 const CLAIM_TERMINAL_CODES = new Set([
   "AGENT_HANDSHAKE_V2_INVITATION_EXPIRED",
+  // H-REQ-01: the coordinator's sender enrollments disagree with each other or
+  // with the invitation messages.
+  "AGENT_HANDSHAKE_V2_RELAY_BINDING_INVALID",
 ]);
 
 // A snapshot rejection is published and notified by the port itself; the
@@ -207,6 +242,13 @@ export async function runAgentHandshakeV2HostSession({
 }) {
   requirePorts(ports);
   requireSessionPorts(ports);
+  // Every freshness decision reads this clock again; a read that goes
+  // backwards or is not a safe integer fails closed.
+  let clock;
+  try { clock = monotonicClock(now); } catch { invalid(); }
+  const read = () => {
+    try { return clock.read(); } catch { return invalid(); }
+  };
   if (
     session?.protocol !== "clockchain.agent-handshake/v2" ||
     !Number.isSafeInteger(session.sessionOpenedAtMs) ||
@@ -214,8 +256,24 @@ export async function runAgentHandshakeV2HostSession({
     !Number.isSafeInteger(session.sessionDeadlineMs) ||
     session.invitationExpiresAtMs !== session.sessionOpenedAtMs + 120_000 ||
     session.sessionDeadlineMs !== session.sessionOpenedAtMs + 10 * 60_000 ||
-    now() >= session.sessionDeadlineMs
+    read() >= session.sessionDeadlineMs
   ) invalid();
+  // H-REQ-07: every signing, publishing or admission step that follows an
+  // await reads the clock again first. The session deadline and the end of the
+  // host key's validity bound every step; once the proposal is verified, its
+  // agreement expiry bounds them too. A lapse ends the session through its
+  // failure path.
+  const { validFromMs, validUntilMs } = certificateWindow(session.hostSessionKeyCertificate);
+  let agreementExpiresAtMs = null;
+  const lapsed = (atMs) =>
+    atMs >= session.sessionDeadlineMs ||
+    atMs >= validUntilMs ||
+    (agreementExpiresAtMs !== null && atMs >= agreementExpiresAtMs);
+  const fresh = async () => {
+    const atMs = read();
+    if (lapsed(atMs)) await signingWindowExpired(ports);
+    return atMs;
+  };
   await ports.publishInitial();
   try {
     await ports.awaitInvitationClaimed();
@@ -230,6 +288,7 @@ export async function runAgentHandshakeV2HostSession({
   const preparationPorts = { ...ports };
   if (typeof ports.fundIdentity === "function") {
     preparationPorts.fundIdentity = async (...args) => {
+      await fresh();
       try {
         return await ports.fundIdentity(...args);
       } catch (error) {
@@ -241,6 +300,7 @@ export async function runAgentHandshakeV2HostSession({
   }
   if (typeof ports.reserveFunding === "function") {
     preparationPorts.reserveFunding = async (...args) => {
+      await fresh();
       try {
         return await ports.reserveFunding(...args);
       } catch (error) {
@@ -259,7 +319,7 @@ export async function runAgentHandshakeV2HostSession({
       sessionOpenedBlock: session.sessionOpenedBlock,
     });
   } catch (error) {
-    if (alreadyPublished(error)) throw error;
+    if (alreadyPublished(error) || error instanceof AgentHandshakeV2SigningWindowExpired) throw error;
     await publishPreparationFailure(
       ports,
       sawFundingPreparationError && Object.is(error, fundingPreparationError)
@@ -268,6 +328,7 @@ export async function runAgentHandshakeV2HostSession({
     );
     throw error;
   }
+  await fresh();
   await ports.partiesReady(parties);
   const proposalEnvelope = await ports.awaitProposal();
   const proposal = await verifyAgentHandshakeV2Proposal({
@@ -275,8 +336,10 @@ export async function runAgentHandshakeV2HostSession({
     expectedRepositorySha: session.repositorySha,
     expectedSessionId: session.sessionId,
     expectedTerms: session.terms,
-    nowMs: now(),
+    nowMs: read(),
   });
+  agreementExpiresAtMs = Number(proposal.payload.expiresAtMs);
+  await fresh();
   await ports.proposalSigned(proposalEnvelope);
   const acceptanceEnvelope = await ports.awaitAcceptance();
   await verifyAgentHandshakeV2Acceptance({
@@ -284,10 +347,12 @@ export async function runAgentHandshakeV2HostSession({
     expectedRepositorySha: session.repositorySha,
     expectedSessionId: session.sessionId,
     expectedTerms: session.terms,
-    nowMs: now(),
+    nowMs: read(),
     proposalEnvelope,
   });
+  await fresh();
   await ports.acceptanceSigned(acceptanceEnvelope);
+  await fresh();
   const descriptorEnvelope = createAgentHandshakeV2DescriptorEnvelope({
     agreementExpiresAtMs: proposal.payload.expiresAtMs,
     externalBusinessActionPerformed: false,
@@ -306,15 +371,20 @@ export async function runAgentHandshakeV2HostSession({
     sessionOpenedBlock: session.sessionOpenedBlock,
     statementDigest: proposal.payload.statementDigest,
   }, { keyId: session.keyId, privateKeyPem: session.privateKeyPem });
+  await fresh();
   await ports.publishDescriptor(descriptorEnvelope);
   const anchorReport = await ports.awaitAnchors(descriptorEnvelope);
+  await fresh();
   await ports.anchorsRecorded(anchorReport);
   const evidence = {};
-  evidence.initiator = await ports.awaitEvidence("initiator");
-  await ports.evidenceReceived("initiator", evidence.initiator);
-  evidence.responder = await ports.awaitEvidence("responder");
-  await ports.evidenceReceived("responder", evidence.responder);
+  for (const role of AGENT_HANDSHAKE_V2_HOST_ROLES) {
+    evidence[role] = await ports.awaitEvidence(role);
+    await fresh();
+    await ports.evidenceReceived(role, evidence[role]);
+  }
+  await fresh();
   await ports.checkerStage("VERIFYING");
+  const verdictNowMs = await fresh();
   let verdict;
   try {
     verdict = await verifyAgentHandshakeV2Authorization({
@@ -327,7 +397,7 @@ export async function runAgentHandshakeV2HostSession({
       expectedRepositorySha: session.repositorySha,
       expectedSessionId: session.sessionId,
       expectedTerms: session.terms,
-      nowMs: now(),
+      nowMs: verdictNowMs,
       proposalEnvelope,
       receipts: anchorReport.receipts,
       resolveRegistration: ports.resolveRegistration,
@@ -340,15 +410,27 @@ export async function runAgentHandshakeV2HostSession({
     await notifySessionFailed(ports, code);
     throw error;
   }
+  // The verdict awaited registration lookups and evidence checks: the clock is
+  // read when it returns, and the certificate is issued at a read no earlier
+  // than that, inside the agreement, the host key's validity and the session.
+  const verificationCompletedAtMs = read();
+  const issuedAtMs = read();
+  if (issuedAtMs < validFromMs) invalid();
+  if (lapsed(issuedAtMs)) await signingWindowExpired(ports);
   const certificate = buildAgentHandshakeV2Result({
     hostSessionKeyCertificate: session.hostSessionKeyCertificate,
-    issuedAtMs: String(now()),
+    issuedAtMs: String(issuedAtMs),
     keyId: session.keyId,
     parties,
     privateKeyPem: session.privateKeyPem,
     sessionId: session.sessionId,
     verdict,
+    verificationCompletedAtMs: String(verificationCompletedAtMs),
   });
+  await fresh();
+  // The publication port stops at the session deadline or the end of the host
+  // key's validity, whichever comes first; once it returns, the result was
+  // published inside that bound and is recorded as issued.
   await ports.publishResult(certificate);
   await ports.certificateIssued(certificate);
   return Object.freeze({

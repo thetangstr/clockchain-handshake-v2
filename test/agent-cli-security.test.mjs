@@ -6,6 +6,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
 
+import { AGENT_HANDSHAKE_HELPER_VERSION } from "../src/agent-handshake/v2/constants.mjs";
+
 const execFileAsync = promisify(execFile);
 const cli = new URL("../bin/clockchain-agent-handshake.mjs", import.meta.url).pathname;
 
@@ -46,6 +48,6 @@ test("real CLI exposes an exact public version check without creating local stat
   assert.equal(result.stderr, "");
   assert.deepEqual(JSON.parse(result.stdout), {
     schema: "clockchain.agent-handshake-cli-version/v1",
-    version: "2.1.8",
+    version: AGENT_HANDSHAKE_HELPER_VERSION,
   });
 });

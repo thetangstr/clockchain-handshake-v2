@@ -35,6 +35,13 @@ import {
 import { localPolicyDigest, validateLocalPolicy } from "../agent-handshake/v2/policy.mjs";
 import { canonicalBytes } from "../core/canonical.mjs";
 import { VERIFIED_HELPER_BOOTSTRAP } from "../harness/verified-release-action-recorder.mjs";
+import {
+  collectHelperStepCandidates,
+  exposeToolResult,
+  normalizeUpstreamToolResult,
+  sanitizeUpstreamError,
+  UPSTREAM_ERROR_MESSAGE,
+} from "./tool-result.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -50,7 +57,7 @@ export const ADAPTER_DEFAULT_ENDPOINT = "https://mcp.clockchain.network/next/han
 export const ADAPTER_ASSET_ERROR = "ADAPTER_ASSET_VERIFICATION_FAILED";
 
 const CLI_RESULT_SCHEMA = "clockchain.agent-handshake-cli-result/v1";
-const SIGNING_REQUEST_SCHEMA = "clockchain.agent-handshake-signing-request/v1";
+const SIGNING_REQUEST_SCHEMA = "clockchain.agent-handshake-signing-request/v2";
 const CERTIFICATE_VERIFICATION_SCHEMA = "clockchain.agent-handshake-certificate-verification/v1";
 const HELPER_FILENAME = "clockchain-agent-handshake.cjs";
 const MANIFEST_FILENAME = "manifest.json";
@@ -118,7 +125,6 @@ const HELPER_RUN_BUDGET_MS = 120_000;
 const HELPER_MAX_OUTPUT_BYTES = 256 * 1024;
 const MAX_LINE_BYTES = 1024 * 1024;
 const MAX_PAYLOAD_BYTES = 512 * 1024;
-const MAX_WALK_DEPTH = 32;
 const FALLBACK_INSTRUCTIONS =
   "Clockchain local adapter: proxies the agent_handshake_* tools to the hosted " +
   "Clockchain coordinator and executes each staged, digest-bound local action " +
@@ -368,56 +374,6 @@ export function validateHelperStep(step, { manifestDigest } = {}) {
   return staged;
 }
 
-function collectHelperSteps(value, depth, out) {
-  if (depth > MAX_WALK_DEPTH || value === null || typeof value !== "object") return;
-  if (Array.isArray(value)) {
-    for (const entry of value) collectHelperSteps(entry, depth + 1, out);
-    return;
-  }
-  if (Object.hasOwn(value, "helperStep")) out.push(value.helperStep);
-  if (Object.hasOwn(value, "helperSteps")) {
-    if (!Array.isArray(value.helperSteps)) invalid();
-    for (const entry of value.helperSteps) out.push(entry);
-  }
-  for (const key of Reflect.ownKeys(value)) {
-    if (typeof key === "string") collectHelperSteps(value[key], depth + 1, out);
-  }
-}
-
-// Coordinator responses embed runnable shell (shellCommand, the digest-bound
-// shellCommandFetch download-and-exec chain, stateDirectoryCommand) for
-// adapter-less clients. Under the adapter those bytes are staged privately and
-// executed through authorize_local_action, so the agent-visible copy must not
-// carry them: a ready-to-run shell chain inside a tool result is a
-// social-engineering-shaped surface that could induce a less careful agent to
-// bypass the adapter's verification boundary. commandSha256/commandLength stay
-// — they attest to the staged step without being executable.
-const WITHHELD_COMMAND =
-  "[withheld by clockchain-local-adapter: this digest-bound step is staged " +
-  "privately; execute it by calling authorize_local_action]";
-const EXECUTABLE_KEYS = Object.freeze(new Set([
-  "shellCommand", "shellCommandFetch", "stateDirectoryCommand",
-]));
-
-function scrubExecutableFields(value, depth = 0) {
-  if (depth > MAX_WALK_DEPTH || value === null || typeof value !== "object") return false;
-  if (Array.isArray(value)) {
-    let changed = false;
-    for (const entry of value) changed = scrubExecutableFields(entry, depth + 1) || changed;
-    return changed;
-  }
-  let changed = false;
-  for (const key of Object.keys(value)) {
-    if (EXECUTABLE_KEYS.has(key) && typeof value[key] === "string") {
-      value[key] = WITHHELD_COMMAND;
-      changed = true;
-    } else {
-      changed = scrubExecutableFields(value[key], depth + 1) || changed;
-    }
-  }
-  return changed;
-}
-
 // --- upstream proxy -----------------------------------------------------------
 
 function parseUpstreamBody(text, contentType) {
@@ -565,33 +521,30 @@ export function createLocalAdapterServer(options = {}) {
     return upstreamInit;
   }
 
+  // H-REQ-06: the upstream result is normalized (content must be text items
+  // holding JSON objects, or the coordinator's single plain-text error, which
+  // is exposed only as its code and a fixed local text;
+  // structuredContent must be a plain object equal to every JSON text view;
+  // executable fields must be strings; the walk is depth-bounded), every
+  // candidate step in every view is validated, and the exposed result is
+  // rebuilt from the checked values with executable fields withheld — all
+  // before anything is enqueued, so a refusal stages nothing.
   function stageToolResult(result) {
-    if (!isPlain(result) || !Array.isArray(result.content)) return;
-    const parsedItems = [];
-    const candidates = [];
-    for (const item of result.content) {
-      if (!isPlain(item) || item.type !== "text" || typeof item.text !== "string") continue;
-      let parsed;
-      try { parsed = JSON.parse(item.text); } catch { continue; }
-      parsedItems.push({ item, parsed });
-      collectHelperSteps(parsed, 0, candidates);
-    }
-    // Validate every candidate before any scrub or enqueue: an invalid step
-    // refuses the whole response, so the withheld copy is never reached.
-    const staged = candidates.map((candidate) =>
+    const normalized = normalizeUpstreamToolResult(result);
+    const staged = collectHelperStepCandidates(normalized).map((candidate) =>
       validateHelperStep(candidate, { manifestDigest: pin.manifestDigest }));
+    const exposed = exposeToolResult(normalized);
     for (const step of staged) {
       // The coordinator re-issues an unchanged localAction on each poll while a
-      // step stays pending — the same byte-identical command is the same
-      // digest-bound action, so an already-staged duplicate must not shift the
-      // queue head away from the step the caller just read.
+      // step stays pending, and may mirror it in structuredContent — the same
+      // byte-identical command is the same digest-bound action, so an
+      // already-staged duplicate must not shift the queue head away from the
+      // step the caller just read.
       if (queue.some((pending) => pending.commandSha256 === step.commandSha256)) continue;
       if (queue.length >= MAX_STAGED_STEPS) invalid();
       queue.push(Object.freeze({ ...step, stagedAtMs: now() }));
     }
-    for (const { item, parsed } of parsedItems) {
-      if (scrubExecutableFields(parsed)) item.text = JSON.stringify(parsed);
-    }
+    return exposed;
   }
 
   function textResult(text, isError = false) {
@@ -686,7 +639,9 @@ export function createLocalAdapterServer(options = {}) {
   async function handleToolsList(id, params) {
     try {
       const envelope = await upstreamRequest("tools/list", params);
-      if (envelope.error !== undefined) return { jsonrpc: "2.0", id, error: envelope.error };
+      if (envelope.error !== undefined) {
+        return { jsonrpc: "2.0", id, error: sanitizeUpstreamError(envelope.error) };
+      }
       const result = isPlain(envelope.result) ? envelope.result : {};
       const tools = Array.isArray(result.tools) ? result.tools : [];
       return {
@@ -719,12 +674,17 @@ export function createLocalAdapterServer(options = {}) {
       return {
         jsonrpc: "2.0",
         id,
-        error: { code: -32603, message: "Clockchain local adapter upstream request failed." },
+        error: { code: -32603, message: UPSTREAM_ERROR_MESSAGE },
       };
     }
-    if (envelope.error !== undefined) return { jsonrpc: "2.0", id, error: envelope.error };
+    // H-REQ-06: an upstream JSON-RPC error reaches the client as its numeric
+    // code and a generic message; its data and its own text are dropped.
+    if (envelope.error !== undefined) {
+      return { jsonrpc: "2.0", id, error: sanitizeUpstreamError(envelope.error) };
+    }
+    let exposed;
     try {
-      stageToolResult(envelope.result);
+      exposed = stageToolResult(envelope.result);
     } catch (error) {
       // The only refusal text allowed past this boundary besides the generic
       // one is the release-mismatch upgrade hint — arbitrary error messages
@@ -739,7 +699,8 @@ export function createLocalAdapterServer(options = {}) {
         result: textResult(text, true),
       };
     }
-    return { jsonrpc: "2.0", id, result: envelope.result };
+    // Only the rebuilt result reaches the client, never the upstream object.
+    return { jsonrpc: "2.0", id, result: exposed };
   }
 
   async function handleInitialize(id, params) {

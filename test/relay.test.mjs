@@ -263,7 +263,7 @@ test("a maximal VALID evidence triple is accepted", async (t) => {
   );
 });
 
-test("the relay does not reject a message with a garbage signature; the client's verify function does", async (t) => {
+test("a legacy session (created without a relay authorization) stores a message whose signature does not verify; the client's verify function refuses it", async (t) => {
   const { baseUrl } = await startServer(t);
   const created = await postJson(`${baseUrl}/v1/sessions`, {});
   const sessionId = created.body.sessionId;

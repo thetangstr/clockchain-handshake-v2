@@ -242,6 +242,7 @@ export async function buildV2Fixture() {
     privateKeyPem: host.privateKeyPem,
     sessionId: SESSION_ID,
     verdict,
+    verificationCompletedAtMs: "1786337180000",
   });
   return Object.freeze({
     acceptanceEnvelope,

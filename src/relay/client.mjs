@@ -11,8 +11,12 @@
 //     hasn't come up yet) must never be treated as a hard failure.
 //  2. Signing and verifying envelopes lives here so no role forgets it.
 //     `signEnvelope` produces the envelope; `verifyEnvelope` checks a
-//     received one so a role can assert sender identity. The relay itself
-//     never checks a signature -- these are the only functions that do.
+//     received one so a role can assert sender identity. A legacy relay
+//     session never checks a signature. A session opted in to sender binding
+//     (H-REQ-01: createSession with a relayAuthorization) is filtered by the
+//     relay too, but a reader still checks for itself: given the key enrolled
+//     for a role, `verifyEnvelope(envelope, { expectedSenderKey })` refuses
+//     an envelope signed by any other key, whatever key it names.
 import {
   createPrivateKey,
   createPublicKey,
@@ -136,10 +140,12 @@ export function signEnvelope({
 
 /**
  * Verify a RECEIVED envelope's shape and Ed25519 signature. Throws a
- * RelayError on any failure; returns true on success. The relay never does
- * this -- every role that reads envelopes off the wire must call it.
+ * RelayError on any failure; returns true on success. Every role that reads
+ * envelopes off the wire must call it. With `expectedSenderKey` (the key
+ * enrolled for the envelope's role, H-REQ-01) an envelope naming any other
+ * sender key is refused as BINDING_MISMATCH before its signature is checked.
  */
-export function verifyEnvelope(envelope) {
+export function verifyEnvelope(envelope, { expectedSenderKey } = {}) {
   if (!isPlainObject(envelope)) {
     throw new RelayError("Envelope is not a plain object.", "ENVELOPE_SHAPE", {
       status: 400,
@@ -169,6 +175,13 @@ export function verifyEnvelope(envelope) {
     throw new RelayError(
       "Envelope fields have the wrong type.",
       "ENVELOPE_SHAPE",
+      { status: 400 },
+    );
+  }
+  if (expectedSenderKey !== undefined && senderKey !== expectedSenderKey) {
+    throw new RelayError(
+      "Envelope sender is not the key bound to its role.",
+      "BINDING_MISMATCH",
       { status: 400 },
     );
   }
@@ -300,10 +313,68 @@ async function withRetry(
   }
 }
 
+/**
+ * Retry a relay operation until a stop time instead of for a wait budget
+ * (H-REQ-07). `clock.read()` is read again before every attempt; no attempt
+ * starts at or after `stopAtMs`. `attempt(timeLeft)` makes its relay calls
+ * with `retryBudgetMs: 0` and `timeoutMs: timeLeft()`, so each call is one
+ * request that is abandoned at the stop time; `timeLeft()` itself refuses at
+ * or after it. An attempt that fails as RENDEZVOUS_UNAVAILABLE is retried
+ * after the usual backoff, cut short at the stop time; any other failure is
+ * thrown at once.
+ */
+export async function retryBeforeStop({ clock, sleep = defaultSleeper, stopAtMs }, attempt) {
+  if (
+    !Number.isSafeInteger(stopAtMs) ||
+    typeof clock?.read !== "function" ||
+    typeof sleep !== "function" ||
+    typeof attempt !== "function"
+  ) {
+    throw new RelayError("Invalid stop time.", "MALFORMED", { status: 400 });
+  }
+  let lastError = null;
+  const timeLeft = () => {
+    const remainingMs = stopAtMs - clock.read();
+    if (remainingMs <= 0) {
+      throw new RelayError(
+        "The relay could not be reached within the wait budget.",
+        "RENDEZVOUS_UNAVAILABLE",
+        { status: 0, detail: { lastError } },
+      );
+    }
+    return remainingMs;
+  };
+  for (let failures = 0; ; failures += 1) {
+    timeLeft();
+    try {
+      return await attempt(timeLeft);
+    } catch (error) {
+      if (error?.code !== "RENDEZVOUS_UNAVAILABLE") throw error;
+      lastError = error.detail?.lastError ?? error.code;
+    }
+    const leftMs = timeLeft();
+    await sleep(Math.min(
+      DEFAULT_RETRY_BACKOFF_MS[Math.min(failures, DEFAULT_RETRY_BACKOFF_MS.length - 1)],
+      leftMs,
+    ));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Low-level HTTP
 // ---------------------------------------------------------------------------
 
+function networkError(cause) {
+  return new RelayError(
+    "The relay could not be reached.",
+    "NETWORK_ERROR",
+    { status: 0, detail: { cause: cause?.cause?.code ?? cause?.message } },
+  );
+}
+
+// The timeout bounds the whole request, the response body included (H-REQ-07):
+// a body that stalls after prompt headers is aborted at the timeout like a
+// request that never answers, and either is a retryable network error.
 async function requestJson(method, url, { body, timeoutMs } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(
@@ -313,6 +384,14 @@ async function requestJson(method, url, { body, timeoutMs } = {}) {
   if (typeof timer.unref === "function") {
     timer.unref();
   }
+  try {
+    return await exchangeJson(method, url, body, controller.signal);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function exchangeJson(method, url, body, signal) {
   let response;
   try {
     response = await fetch(url, {
@@ -320,19 +399,18 @@ async function requestJson(method, url, { body, timeoutMs } = {}) {
       headers:
         body === undefined ? {} : { "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: controller.signal,
+      signal,
     });
   } catch (cause) {
-    throw new RelayError(
-      "The relay could not be reached.",
-      "NETWORK_ERROR",
-      { status: 0, detail: { cause: cause?.cause?.code ?? cause?.message } },
-    );
-  } finally {
-    clearTimeout(timer);
+    throw networkError(cause);
   }
 
-  const text = await response.text();
+  let text;
+  try {
+    text = await response.text();
+  } catch (cause) {
+    throw networkError(cause);
+  }
   let parsed;
   try {
     parsed = text.length > 0 ? JSON.parse(text) : undefined;
@@ -382,10 +460,13 @@ function retryOptionsFrom(options) {
 // Public client surface
 // ---------------------------------------------------------------------------
 
+// `relayAuthorization` (H-REQ-01) opts the session in to sender binding; see
+// the header of src/relay/server.mjs. Omit it for a legacy session.
 export async function createSession({
   relayUrl,
   sessionId,
   discovery,
+  relayAuthorization,
   timeoutMs,
   ...retryOpts
 } = {}) {
@@ -395,6 +476,7 @@ export async function createSession({
         body: {
           ...(sessionId !== undefined ? { sessionId } : {}),
           ...(discovery !== undefined ? { discovery } : {}),
+          ...(relayAuthorization !== undefined ? { relayAuthorization } : {}),
         },
         timeoutMs,
       }),
@@ -611,8 +693,9 @@ export async function health({ relayUrl, timeoutMs, ...retryOpts } = {}) {
  * whether the role is already bound, and if not, sign and post a role_claim
  * for it. A role already bound by a (possibly earlier) claim maps to the
  * named reason ROLE_ALREADY_BOUND, per the shared contract. This is
- * advisory on the client's part -- the relay itself does not adjudicate
- * role ownership -- but it is exactly the check every role needs before
+ * advisory on the client's part -- a legacy relay session does not adjudicate
+ * role ownership (an opted-in one binds roles by sender enrollment instead,
+ * H-REQ-01) -- but it is exactly the check every role needs before
  * claiming, so it lives here rather than being reimplemented per role.
  */
 export async function claimRole({

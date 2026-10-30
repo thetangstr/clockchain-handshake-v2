@@ -142,6 +142,7 @@ async function p8Ports({ accepts, openedAtMs, logs = [] }) {
     log: (event) => logs.push(event),
     monitor,
     postHostMessage: async (kind, body) => posted.push([kind, body]),
+    relayBinding: { mode: "off" },
     publicClient: {},
     relayClient,
   });
@@ -216,6 +217,7 @@ test("a claim after the minted window is an explicit expiry, never a snapshot ca
       session,
     }),
     postHostMessage: async (kind, body) => posted.push([kind, body]),
+    relayBinding: { mode: "off" },
     publicClient: {},
     relayClient,
   });
@@ -254,6 +256,7 @@ test("a minted invitation nobody claims in its window expires explicitly", async
     log: () => {},
     monitor: { invitationClaimed: async () => {} },
     postHostMessage: async (kind, body) => posted.push([kind, body]),
+    relayBinding: { mode: "off" },
     publicClient: {},
     relayClient: {
       generateEnvelopeKeyPair: () => ({}),
@@ -374,6 +377,7 @@ test("the notice to the parties is posted at most once and a refused post is onl
       posts += 1;
       throw new RelayError("Relay request failed: UNKNOWN_SESSION.", "UNKNOWN_SESSION", { status: 404 });
     },
+    relayBinding: { mode: "off" },
     publicClient: {},
     relayClient: { generateEnvelopeKeyPair: () => ({}) },
   });
@@ -411,6 +415,7 @@ test("a transient snapshot failure is not turned into a terminal session failure
     log: () => {},
     monitor: { start: async () => { throw transient; } },
     postHostMessage: async (kind, body) => posted.push([kind, body]),
+    relayBinding: { mode: "off" },
     publicClient: {},
     relayClient: { generateEnvelopeKeyPair: () => ({}) },
   });
@@ -491,6 +496,7 @@ test("a refused first snapshot sends no failure snapshot, only the signed notice
       session,
     }),
     postHostMessage: async (kind, body) => posted.push([kind, body]),
+    relayBinding: { mode: "off" },
     publicClient: {},
     relayClient,
   });

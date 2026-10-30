@@ -14,6 +14,7 @@ import { readFileSync } from "node:fs";
 import { payerMandateDigest, signPayerMandate } from "../core/payer-mandate.mjs";
 import { paymentRequestDigest, signPaymentRequest } from "../core/payment-request.mjs";
 import { CHAIN_ID, REGISTRY_ADDRESS } from "../core/constants.mjs";
+import { retryBeforeStop } from "../relay/client.mjs";
 
 export const DISCOVERY_SCHEMA = "handshake-discovery/v2";
 
@@ -420,35 +421,45 @@ export const BUSINESS_STAGE = Object.freeze({
  * enforces that so the message order is unambiguous. Two parties therefore share
  * one counter and cannot pick their own numbers independently: read the current
  * high-water mark, take the next one, and retry if the peer beat us to it.
+ *
+ * With `stopAtMs` (H-REQ-07) nothing is sent at or after that instant: every
+ * read and write is one request (retryBudgetMs 0) whose timeout is the time
+ * left, `clock.read()` is read again before each one, and an unreachable relay
+ * is retried only until the stop time. Without it, each call keeps the relay
+ * client's default retry budget.
  */
-export async function postNext(relay, { relayUrl, sessionId, role, kind, body, keyPair }) {
-  for (let attempt = 0; attempt < 8; attempt += 1) {
-    const seen = await relay.pollMessages({ relayUrl, sessionId, after: "0", waitMs: 0 });
-    const highest = (seen.messages ?? []).reduce(
-      (max, message) => Math.max(max, Number(message.seq)),
-      0,
-    );
-    try {
-      return await relay.postMessage({
-        relayUrl,
+export async function postNext(relay, {
+  relayUrl, sessionId, role, kind, body, keyPair, stopAtMs, clock, sleep,
+}) {
+  const bounded = stopAtMs !== undefined;
+  const attempt = async (timeLeft) => {
+    const bound = () => (bounded ? { retryBudgetMs: 0, timeoutMs: timeLeft() } : {});
+    for (let conflicts = 0; conflicts < 8; conflicts += 1) {
+      const seen = await relay.pollMessages({ relayUrl, sessionId, after: "0", waitMs: 0, ...bound() });
+      const highest = (seen.messages ?? []).reduce(
+        (max, message) => Math.max(max, Number(message.seq)),
+        0,
+      );
+      const envelope = relay.signEnvelope({
         sessionId,
-        envelope: relay.signEnvelope({
-          sessionId,
-          seq: String(highest + 1),
-          role,
-          kind,
-          body,
-          senderKey: keyPair.senderKey,
-          privateKeyPem: keyPair.privateKeyPem,
-        }),
+        seq: String(highest + 1),
+        role,
+        kind,
+        body,
+        senderKey: keyPair.senderKey,
+        privateKeyPem: keyPair.privateKeyPem,
       });
-    } catch (error) {
-      // The peer claimed that number between our read and our write. Re-read and
-      // take the next one; this is ordinary contention, not a failure.
-      if (error?.code !== "SEQ_CONFLICT") throw error;
+      try {
+        return await relay.postMessage({ relayUrl, sessionId, envelope, ...bound() });
+      } catch (error) {
+        // The peer claimed that number between our read and our write. Re-read and
+        // take the next one; this is ordinary contention, not a failure.
+        if (error?.code !== "SEQ_CONFLICT") throw error;
+      }
     }
-  }
-  stop("FAILED", "Could not find a free position in the session log.");
+    stop("FAILED", "Could not find a free position in the session log.");
+  };
+  return bounded ? retryBeforeStop({ clock, sleep, stopAtMs }, attempt) : attempt();
 }
 
 /**
