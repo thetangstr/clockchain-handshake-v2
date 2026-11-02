@@ -2,19 +2,33 @@
 //
 // This is deliberately the dumbest component in the system: both parties
 // connect OUTBOUND to it (no participant machine ever accepts an inbound
-// connection -- see the P2 binding rule), it moves bytes, and it holds zero
-// authority. It validates exactly four things and nothing else: the session
+// connection -- see the P2 binding rule) and it moves bytes. For a session
+// created WITHOUT a relay authorization (a legacy session) it holds zero
+// authority: it validates exactly four things and nothing else -- the session
 // exists, the request body is within its size bound, the envelope has the
-// right shape, and per-session message sequence numbers are monotonic. It
-// never inspects, verifies, or trusts a signature -- that is the parties'
-// job (src/relay/client.mjs), and pretending otherwise here would make the
-// relay an authority it is not allowed to be.
+// right shape, and per-session message sequence numbers are monotonic -- and
+// never inspects, verifies, or trusts a signature.
+//
+// H-REQ-01: a session created WITH a relay authorization (POST /v1/sessions
+// body field relayAuthorization: {schema, coordinatorKeys, hostSenderKey})
+// opts in to one more check, sender binding, so the relay accepts a role label
+// only from the key enrolled for that role. Role "host" messages must be
+// signed by the declared host sender key. For initiator and responder, the
+// first message must be a sender enrollment signed by a key in the coordinator
+// key ring for that session, role and sender key (BINDING_MISMATCH otherwise);
+// every later message for that role must be signed by the enrolled key
+// (BINDING_MISMATCH); a second enrollment for a role is refused
+// (ROLE_ALREADY_BOUND); any other role is refused (BINDING_MISMATCH). This is
+// a filter, not the authority: the relay still decides nothing about a
+// handshake, and every reader checks the same bindings itself
+// (src/agent-handshake/v2/relay-enrollment.mjs). The relay serves only the
+// messages it admitted.
 //
 // Storage is one append-only JSONL journal file per session. On restart the
 // constructor re-reads every journal in the state directory and rebuilds the
 // in-memory index from it; that is the whole persistence story, including
-// evidence uploads and the discovery document (both are just journal record
-// types).
+// evidence uploads, the discovery document, the relay authorization and the
+// sender bindings (all rebuilt from journal records).
 import { createServer } from "node:http";
 import {
   appendFile,
@@ -46,6 +60,14 @@ import {
   AGENT_HANDSHAKE_V2_RESULT_SCHEMA,
   validateAgentHandshakeV2ResultEnvelope,
 } from "../agent-handshake/v2/result.mjs";
+import {
+  AGENT_HANDSHAKE_V2_SENDER_ENROLLMENT_KIND,
+  isSenderEnrollmentCurrent,
+  validateRelayAuthorization,
+  verifySenderEnrollmentBinding,
+} from "../agent-handshake/v2/relay-enrollment.mjs";
+import { nonDecreasingClock } from "../agent-handshake/v2/clock.mjs";
+import { verifyEnvelope } from "./client.mjs";
 import { RelayError } from "./errors.mjs";
 
 export const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
@@ -284,10 +306,125 @@ function createSessionState(sessionId, journalPath, appendJournal) {
     publishedAtMs: 0,
     monitorSnapshot: null,
     resultEnvelope: null,
+    // H-REQ-01: null for a legacy session; otherwise the validated relay
+    // authorization, and the sender key each party role is bound to.
+    authorization: null,
+    bindings: { initiator: null, responder: null },
     waiters: new Set(),
     // Tail of this session's mutation queue; see withSessionLock.
     lock: Promise.resolve(),
   };
+}
+
+// ---------------------------------------------------------------------------
+// H-REQ-01 sender binding (opted-in sessions only)
+// ---------------------------------------------------------------------------
+
+const BOUND_ROLES = Object.freeze(["initiator", "responder"]);
+// A journalled authorization that no longer validates: the session stays
+// opted in and admits nothing.
+const UNUSABLE_AUTHORIZATION = Object.freeze({ unusable: true });
+
+function bindingMismatch() {
+  return new RelayError(
+    "The sender is not bound to this role.",
+    "BINDING_MISMATCH",
+    { status: 403 },
+  );
+}
+
+function roleAlreadyBound() {
+  return new RelayError(
+    "This role is already bound to a sender.",
+    "ROLE_ALREADY_BOUND",
+    { status: 409 },
+  );
+}
+
+function readRelayAuthorization(value) {
+  try {
+    return validateRelayAuthorization(value);
+  } catch {
+    throw new RelayError(
+      "Relay authorization does not match the required shape.",
+      "MALFORMED_REQUEST",
+      { status: 400 },
+    );
+  }
+}
+
+// The stateless half, run before the session lock: the envelope signature,
+// the host key, and for an enrollment the coordinator's signature over this
+// session, role and sender key. Returns whether the envelope is an enrollment.
+function verifyAuthorizedEnvelope(session, envelope, nowMs) {
+  const authorization = session.authorization;
+  if (authorization === UNUSABLE_AUTHORIZATION) throw bindingMismatch();
+  try {
+    verifyEnvelope(envelope);
+  } catch {
+    throw bindingMismatch();
+  }
+  if (envelope.role === "host") {
+    if (envelope.senderKey !== authorization.hostSenderKey) throw bindingMismatch();
+    return false;
+  }
+  if (!BOUND_ROLES.includes(envelope.role)) throw bindingMismatch();
+  if (envelope.kind !== AGENT_HANDSHAKE_V2_SENDER_ENROLLMENT_KIND) return false;
+  try {
+    verifySenderEnrollmentBinding(envelope.body, {
+      coordinatorKeyRing: authorization.coordinatorKeys,
+      expectedRole: envelope.role,
+      expectedSenderKey: envelope.senderKey,
+      expectedSessionId: session.sessionId,
+      nowMs,
+    });
+  } catch {
+    throw bindingMismatch();
+  }
+  return true;
+}
+
+// The stateful half, run under the session lock (or during replay): returns
+// the binding this envelope creates, or null; throws if the session's
+// bindings refuse it. Nothing is applied here -- the caller applies the
+// binding only once the message is journalled.
+function bindingFor(session, envelope, isEnrollment) {
+  if (envelope.role === "host") return null;
+  const current = session.bindings[envelope.role];
+  if (isEnrollment) {
+    if (current !== null) throw roleAlreadyBound();
+    const other = envelope.role === "initiator" ? "responder" : "initiator";
+    if (session.bindings[other] === envelope.senderKey) throw bindingMismatch();
+    return { role: envelope.role, senderKey: envelope.senderKey };
+  }
+  if (current === null || current !== envelope.senderKey) throw bindingMismatch();
+  return null;
+}
+
+// Replay: every journalled message of an opted-in session was admitted when
+// it was written, so the bindings are rebuilt from the journalled enrollments
+// in order. A record that does not conform to them is not served. An
+// enrollment's freshness was judged at admission (H-REQ-07) and is not judged
+// again against the clock at replay; a refused enrollment was never journalled.
+function replayAdmits(session, envelope) {
+  const authorization = session.authorization;
+  if (authorization === UNUSABLE_AUTHORIZATION || typeof envelope.role !== "string") {
+    return false;
+  }
+  if (envelope.role === "host") return envelope.senderKey === authorization.hostSenderKey;
+  if (!BOUND_ROLES.includes(envelope.role)) return false;
+  let binding;
+  try {
+    binding = bindingFor(
+      session,
+      envelope,
+      envelope.kind === AGENT_HANDSHAKE_V2_SENDER_ENROLLMENT_KIND,
+    );
+  } catch {
+    return false;
+  }
+  if (binding !== null) session.bindings[binding.role] = binding.senderKey;
+  return true;
 }
 
 function applyJournalRecord(session, record) {
@@ -299,9 +436,19 @@ function applyJournalRecord(session, record) {
     if (record.discovery !== undefined) {
       session.publishedAtMs = record.publishedAtMs ?? 0;
     }
+    if (record.relayAuthorization !== undefined && record.relayAuthorization !== null) {
+      try {
+        session.authorization = validateRelayAuthorization(record.relayAuthorization);
+      } catch {
+        session.authorization = UNUSABLE_AUTHORIZATION;
+      }
+    }
     return;
   }
   if (record.type === "message" && isPlainObject(record.envelope)) {
+    if (session.authorization !== null && !replayAdmits(session, record.envelope)) {
+      return;
+    }
     session.messages.push(record.envelope);
     const seqNum = Number(record.envelope.seq);
     if (Number.isSafeInteger(seqNum) && seqNum > session.lastSeq) {
@@ -539,12 +686,18 @@ async function handleCreateSession(
     discovery = body.discovery;
   }
 
+  // H-REQ-01: the opt-in to sender binding. Absent means a legacy session.
+  const relayAuthorization = body?.relayAuthorization === undefined
+    ? null
+    : readRelayAuthorization(body.relayAuthorization);
+
   const session = createSessionState(
     sessionId,
     join(stateDir, `${sessionId}${JOURNAL_SUFFIX}`),
     appendJournal,
   );
   session.discovery = discovery;
+  session.authorization = relayAuthorization;
   session.publishedAtMs = Date.now();
   // Reserve the id before the first await so two concurrent registrations
   // for the same id cannot both pass the check above, but publish the session
@@ -562,6 +715,9 @@ async function handleCreateSession(
       // which is what "current" and the run list both order by. The alias
       // survived only because a live run always outranks a zero.
       publishedAtMs: session.publishedAtMs,
+      // Present only for an opted-in session, so legacy records are unchanged;
+      // replay restores the authorization and then the bindings from it.
+      ...(relayAuthorization === null ? {} : { relayAuthorization }),
     });
     sessions.set(sessionId, session);
   } finally {
@@ -571,7 +727,7 @@ async function handleCreateSession(
   return { sessionId, paymentMoved: false };
 }
 
-async function handlePostMessage(req, sessions, sessionId) {
+async function handlePostMessage(req, sessions, sessionId, now) {
   const session = requireSession(sessions, sessionId);
   const bodyBuf = await readBoundedBody(
     req,
@@ -580,13 +736,27 @@ async function handlePostMessage(req, sessions, sessionId) {
   );
   const body = parseJsonBody(bodyBuf);
   const envelope = validateEnvelopeShape(body, sessionId);
+  // H-REQ-01: signatures are checked before the lock; the binding decision,
+  // which depends on what is already bound, is made under it.
+  const isEnrollment = session.authorization === null
+    ? false
+    : verifyAuthorizedEnvelope(session, envelope, now());
 
   const seqNum = Number(envelope.seq);
-  // The seq check, the journal append and the in-memory commit are one step
-  // under the session lock: a second POST with the same seq waits here and
-  // then sees the first one's lastSeq, so it gets SEQ_CONFLICT instead of
-  // being stored as a duplicate.
+  // The binding check, the seq check, the journal append and the in-memory
+  // commit are one step under the session lock: a second POST with the same
+  // seq waits here and then sees the first one's lastSeq, so it gets
+  // SEQ_CONFLICT instead of being stored as a duplicate; a second enrollment
+  // for a role waits here and then sees the first one's binding.
   return withSessionLock(session, async () => {
+    // H-REQ-07: a request can wait here behind another one's journal write,
+    // so an enrollment's freshness is judged again at admission time.
+    if (isEnrollment && !isSenderEnrollmentCurrent(envelope.body.enrollment, now())) {
+      throw bindingMismatch();
+    }
+    const binding = session.authorization === null
+      ? null
+      : bindingFor(session, envelope, isEnrollment);
     const expectedSeq = session.lastSeq + 1;
     if (seqNum !== expectedSeq) {
       throw new RelayError(
@@ -601,6 +771,7 @@ async function handlePostMessage(req, sessions, sessionId) {
     await appendJournalLine(session, { type: "message", envelope });
     session.messages.push(envelope);
     session.lastSeq = seqNum;
+    if (binding !== null) session.bindings[binding.role] = binding.senderKey;
     notifyWaiters(session, seqNum);
 
     return { seq: envelope.seq };
@@ -838,8 +1009,8 @@ function handleDiscovery(sessions, sessionId) {
 // Two limits keep this from becoming something it should not be. It serves only
 // a height that already appears as an anchor in a session this relay holds, so
 // the demo's token cannot be used to scrape the ledger at large; and results are
-// cached, because a block is immutable once written. The relay still checks no
-// signature and still holds no authority over any handshake: this is a read.
+// cached, because a block is immutable once written. The relay still holds no
+// authority over any handshake: this is a read.
 const blockCache = new Map();
 
 // Held for the life of the process. Minting is rate-limited per IP (10/hour) and
@@ -1197,7 +1368,7 @@ function handleGetResult(sessions, sessionId) {
 async function dispatch(
   req,
   res,
-  { sessions, pendingSessionIds, stateDir, ledgerClient, appendJournal },
+  { sessions, pendingSessionIds, stateDir, ledgerClient, appendJournal, now },
 ) {
   const url = new URL(req.url, "http://relay.local");
   const segments = url.pathname.split("/").filter(Boolean);
@@ -1283,7 +1454,7 @@ async function dispatch(
     const sessionId = segments[2];
 
     if (method === "POST" && segments.length === 4 && segments[3] === "messages") {
-      const result = await handlePostMessage(req, sessions, sessionId);
+      const result = await handlePostMessage(req, sessions, sessionId, now);
       writeJson(res, 201, { ok: true, ...result });
       return;
     }
@@ -1343,12 +1514,17 @@ async function dispatch(
  *
  * `appendJournal(journalPath, line)` is the journal writer; it defaults to
  * fs.appendFile and exists as an option only so tests can hold a write open
- * or make it fail.
+ * or make it fail. `now()` is the clock sender enrollments are checked
+ * against (H-REQ-01); it defaults to Date.now. The relay reads it through a
+ * non-decreasing wrapper (H-REQ-07): a read earlier than one already made
+ * counts as the later one, so a clock that goes back cannot make a stale
+ * enrollment current again.
  */
 export async function createRelayServer({
   stateDir,
   ledgerClient,
   appendJournal = defaultAppendJournal,
+  now = Date.now,
 }) {
   if (typeof stateDir !== "string" || stateDir.length === 0) {
     throw new RelayError(
@@ -1365,15 +1541,22 @@ export async function createRelayServer({
       status: 500,
     });
   }
+  if (typeof now !== "function") {
+    throw new RelayError("now must be a function.", "CONFIG", {
+      status: 500,
+    });
+  }
   await loadExistingSessions(stateDir, sessions, appendJournal);
   // Ids whose session-created line is being written but is not on disk yet.
   const pendingSessionIds = new Set();
+  const clock = nonDecreasingClock(now);
   const relay = {
     sessions,
     pendingSessionIds,
     stateDir,
     ledgerClient,
     appendJournal,
+    now: () => clock.read(),
   };
 
   const server = createServer((req, res) => {

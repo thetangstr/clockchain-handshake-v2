@@ -33,7 +33,7 @@ function payloadBytes(payload) {
 function signingRequest({ operation = "proposal", role = "initiator", payload, sessionId = SESSION } = {}) {
   const bytes = payloadBytes(payload ?? { marker: `${operation}-payload` });
   return {
-    schema: "clockchain.agent-handshake-signing-request/v1",
+    schema: "clockchain.agent-handshake-signing-request/v2",
     helperVersion: AGENT_HANDSHAKE_HELPER_VERSION,
     operation,
     role,

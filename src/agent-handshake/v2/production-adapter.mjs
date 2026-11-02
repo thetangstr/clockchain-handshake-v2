@@ -9,10 +9,12 @@ import {
 import { sepolia } from "viem/chains";
 
 import * as relay from "../../relay/client.mjs";
+import { retryBeforeStop } from "../../relay/client.mjs";
+import { RelayError } from "../../relay/errors.mjs";
 import { RPC_URL } from "../../core/constants.mjs";
 import { openFundingWallet } from "../../core/funding/wallet.mjs";
 import { ERC8004_ABI } from "../../core/registration.mjs";
-import { awaitRoleMessages } from "../../roles/host.mjs";
+import { awaitRoleMessages, SessionEnded } from "../../roles/host.mjs";
 import { postNext } from "../../roles/session.mjs";
 import {
   createFileFundingBudgetStore,
@@ -20,8 +22,15 @@ import {
 } from "./funding-budget.mjs";
 import { agentHandshakeV2DescriptorDigest } from "./descriptor.mjs";
 import { createHostSessionKeyCertificate, rawEd25519PublicKey } from "./host-key-certificate.mjs";
+import { monotonicClock } from "./clock.mjs";
 import { loadHostRoot } from "./host-root.mjs";
 import { verifyAgentHandshakeV2IdentityClaimEnvelope } from "./identity-claim.mjs";
+import {
+  AGENT_HANDSHAKE_V2_SENDER_ENROLLMENT_KIND,
+  createRelayAuthorization,
+  createSenderBindings,
+  validateCoordinatorKeyRing,
+} from "./relay-enrollment.mjs";
 import {
   agentHandshakeV2StatementDigest,
   validateAgentHandshakeV2Terms,
@@ -50,6 +59,19 @@ const LEGACY_INVITATION_CLAIM_WINDOW_MS = 120_000;
 // claimedAtMs check inside awaitInvitationClaimed stays the authority on
 // whether the claim was in-window.
 const INVITATION_CLAIM_OBSERVE_GRACE_MS = 5_000;
+// H-REQ-07: everything the host sends to the relay has a stop time, and no
+// relay call starts at or after it or runs past it (retryBeforeStop):
+//   - protocol messages (the descriptor, funding records): the session
+//     deadline, the end of the host key's validity and, once known, the
+//     agreement expiry, whichever comes first;
+//   - the closing certificate, failure notices and snapshots: the session
+//     deadline or the end of the host key's validity, whichever comes first.
+//     They report on a session and move no agreement forward, so a notice
+//     that a lapse ended the session still reaches the relay after the
+//     agreement expiry.
+// The certificate and snapshots also retry for at most their own budget.
+const RESULT_PUBLICATION_RETRY_BUDGET_MS = 30_000;
+const SNAPSHOT_PUBLICATION_RETRY_BUDGET_MS = 30_000;
 const FUND = parseEther("0.01");
 const REGISTRY_ADDRESS = "0x8004a818bfb912233c491871b3d84c89a494bd9e";
 const REGISTERED_EVENT = ERC8004_ABI.find(
@@ -97,6 +119,25 @@ export function agentHandshakeV2SessionFailedSigningBytes(sessionId, reasonCode)
   );
 }
 
+// H-REQ-07: the fetch behind the funding transaction's JSON-RPC calls. No
+// request starts once `timeLeft()` refuses or `stopSignal` has fired, and a
+// request in flight, its response body included, is aborted when
+// `stopSignal` fires. Either way the failure is an abort, which viem does not
+// retry.
+function fetchBeforeStop(timeLeft, stopSignal) {
+  return async (url, init = {}) => {
+    let open = !stopSignal.aborted;
+    if (open) {
+      try { timeLeft(); } catch { open = false; }
+    }
+    if (!open) throw new DOMException("The funding window has closed.", "AbortError");
+    return fetch(url, {
+      ...init,
+      signal: init.signal ? AbortSignal.any([init.signal, stopSignal]) : stopSignal,
+    });
+  };
+}
+
 // A relay 4xx (other than 429 rate limiting) is a refusal, not a transient
 // fault: retrying the same snapshot can never succeed.
 export function isRelayRejection(error) {
@@ -105,6 +146,72 @@ export function isRelayRejection(error) {
     error.status >= 400 &&
     error.status < 500 &&
     error.status !== 429;
+}
+
+// H-REQ-01: how the host treats relay role labels.
+//   off      v1 behaviour: any correctly self-signed envelope speaks for the
+//            role it names. The mode when AGENT_HANDSHAKE_V2_RELAY_BINDING is
+//            unset; the host then logs one startup warning.
+//   observe  the off behaviour with logging. It is not side-effect free: the
+//            host consumes every message that enforce would refuse, exactly
+//            as off does, and logs each message that the coordinator's sender
+//            enrollments would not admit. The relay session is not opted in.
+//   enforce  a role's message is consumed only when it is signed by the key
+//            the coordinator enrolled for that role; the invitation's mint and
+//            claim come from those enrollments; the relay session is opted in
+//            to the same check.
+// observe and enforce come only from an explicit value. An empty or unknown
+// value fails at load, and so does a key ring that is configured but does not
+// validate, whatever the mode.
+export const AGENT_HANDSHAKE_V2_RELAY_BINDING_MODES = Object.freeze(["off", "observe", "enforce"]);
+export const AGENT_HANDSHAKE_V2_RELAY_BINDING_VIOLATION_EVENT =
+  "agent_handshake_v2_relay_binding_violation";
+export const AGENT_HANDSHAKE_V2_RELAY_BINDING_DEFAULT_OFF_EVENT =
+  "agent_handshake_v2_relay_binding_default_off";
+const RELAY_BINDING_FAILURE_CODE = "AGENT_HANDSHAKE_V2_RELAY_BINDING_INVALID";
+const PARTY_ROLES = Object.freeze(["initiator", "responder"]);
+
+function relayBindingInvalid() {
+  throw Object.assign(new Error(RELAY_BINDING_FAILURE_CODE), {
+    code: RELAY_BINDING_FAILURE_CODE,
+  });
+}
+
+// observe and enforce both need the coordinator key ring: without it no
+// enrollment can be checked.
+export function relayBindingConfiguration(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) relayBindingInvalid();
+  if (!AGENT_HANDSHAKE_V2_RELAY_BINDING_MODES.includes(value.mode)) relayBindingInvalid();
+  if (value.mode === "off") return Object.freeze({ mode: "off", coordinatorKeyRing: null });
+  let coordinatorKeyRing;
+  try {
+    coordinatorKeyRing = validateCoordinatorKeyRing(value.coordinatorKeyRing);
+  } catch {
+    relayBindingInvalid();
+  }
+  return Object.freeze({ mode: value.mode, coordinatorKeyRing });
+}
+
+const defaultLog = (event) => console.warn(JSON.stringify(event));
+
+export function relayBindingFromEnvironment(env = process.env, { log = defaultLog } = {}) {
+  const unset = env.AGENT_HANDSHAKE_V2_RELAY_BINDING === undefined;
+  const mode = unset ? "off" : env.AGENT_HANDSHAKE_V2_RELAY_BINDING;
+  let coordinatorKeyRing = null;
+  if (env.AGENT_HANDSHAKE_V2_COORDINATOR_KEYS !== undefined) {
+    try {
+      coordinatorKeyRing = validateCoordinatorKeyRing(
+        JSON.parse(env.AGENT_HANDSHAKE_V2_COORDINATOR_KEYS),
+      );
+    } catch {
+      relayBindingInvalid();
+    }
+  }
+  const relayBinding = relayBindingConfiguration({ mode, coordinatorKeyRing });
+  if (unset) {
+    log({ event: AGENT_HANDSHAKE_V2_RELAY_BINDING_DEFAULT_OFF_EVENT, mode: relayBinding.mode });
+  }
+  return relayBinding;
 }
 
 function termsFromEnvironment(env) {
@@ -134,21 +241,34 @@ function fundingAlertCents(value, fallback) {
 export async function loadAgentHandshakeV2Session({
   env = process.env,
   loadRoot = loadHostRoot,
+  log = defaultLog,
   now = Date.now,
   publicClient: publicClientOverride,
   relayClient = relay,
+  // A referenced timer: a creation retry's backoff keeps the process alive.
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 } = {}) {
   const repositorySha = env.HANDSHAKE_SHA;
   if (typeof repositorySha !== "string" || !/^[0-9a-f]{40}$/.test(repositorySha)) {
     throw new Error("HANDSHAKE_SHA_INVALID");
   }
+  const relayBinding = relayBindingFromEnvironment(env, { log });
   const root = await loadRoot({ env });
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const privateKeyPem = privateKey.export({ format: "pem", type: "pkcs8" });
   const expectedPublicKey = rawEd25519PublicKey(publicKey);
   const sessionId = randomUUID();
-  const sessionOpenedAtMs = now();
-  if (!Number.isSafeInteger(sessionOpenedAtMs)) throw new Error("HANDSHAKE_CLOCK_INVALID");
+  // H-REQ-07: the publication clock is established when the session window
+  // opens. Every later stop-time decision for this session reads it, in the
+  // ports too; a read that goes backwards throws.
+  let publicationClock;
+  let sessionOpenedAtMs;
+  try {
+    publicationClock = monotonicClock(now);
+    sessionOpenedAtMs = publicationClock.read();
+  } catch {
+    throw new Error("HANDSHAKE_CLOCK_INVALID");
+  }
   const sessionDeadlineMs = sessionOpenedAtMs + SESSION_MILLISECONDS;
   const invitationExpiresAtMs = sessionOpenedAtMs + INVITATION_MILLISECONDS;
   const hostSessionKeyCertificate = createHostSessionKeyCertificate({
@@ -170,6 +290,19 @@ export async function loadAgentHandshakeV2Session({
     transport: http(env.SEPOLIA_RPC_URL ?? RPC_URL),
   });
   const sessionOpenedBlock = String(await publicClient.getBlockNumber());
+  // The session is published only while its invitation window is open, which
+  // closes before the session deadline and the end of the host key's
+  // validity. The block-number read can be slow: once the window has closed
+  // the session is not published and ends as an unclaimed one does, so the
+  // supervisor starts a fresh session.
+  const publicationStopMs = Math.min(
+    invitationExpiresAtMs,
+    sessionDeadlineMs,
+    Number(hostSessionKeyCertificate.certificate.validUntilMs),
+  );
+  if (!(publicationClock.read() < publicationStopMs)) {
+    throw new SessionEnded("EXPIRED", "The invitation window closed before the session was published.");
+  }
   const discovery = Object.freeze({
     schema: "clockchain.agent-handshake-discovery/v2",
     protocol: "clockchain.agent-handshake/v2",
@@ -185,7 +318,26 @@ export async function loadAgentHandshakeV2Session({
     externalBusinessActionPerformed: false,
     terms,
   });
-  await relayClient.createSession({ relayUrl, sessionId, discovery });
+  // The key this host signs its relay messages with. In enforce mode the
+  // relay session is opted in to sender binding with it and the coordinator
+  // key ring; the discovery document is unchanged.
+  const relayEnvelopeKey = (relayClient.generateEnvelopeKeyPair ?? relay.generateEnvelopeKeyPair)();
+  const relayAuthorization = relayBinding.mode === "enforce"
+    ? createRelayAuthorization({
+      coordinatorKeyRing: relayBinding.coordinatorKeyRing,
+      hostSenderKey: relayEnvelopeKey.senderKey,
+    })
+    : undefined;
+  // One bounded attempt at a time, none at or after the stop time.
+  await retryBeforeStop({ clock: publicationClock, sleep, stopAtMs: publicationStopMs }, (timeLeft) =>
+    relayClient.createSession({
+      relayUrl,
+      sessionId,
+      discovery,
+      ...(relayAuthorization === undefined ? {} : { relayAuthorization }),
+      retryBudgetMs: 0,
+      timeoutMs: timeLeft(),
+    }));
   return Object.freeze({
     expectedPublicKey,
     hostSessionKeyCertificate,
@@ -193,6 +345,9 @@ export async function loadAgentHandshakeV2Session({
     keyId: env.AGENT_HANDSHAKE_V2_KEY_ID ?? "session-host",
     privateKeyPem,
     protocol: "clockchain.agent-handshake/v2",
+    publicationClock,
+    relayBinding,
+    relayEnvelopeKey,
     relayUrl,
     repositorySha,
     sessionDeadlineMs,
@@ -210,30 +365,141 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
     chain: sepolia,
     transport: http(process.env.SEPOLIA_RPC_URL ?? RPC_URL),
   });
-  const envelopeKey =
+  const log = overrides.log ?? defaultLog;
+  const relayBinding = overrides.relayBinding !== undefined
+    ? relayBindingConfiguration(overrides.relayBinding)
+    : session.relayBinding !== undefined
+      ? relayBindingConfiguration(session.relayBinding)
+      : relayBindingFromEnvironment(process.env, { log });
+  const enforcing = relayBinding.mode === "enforce";
+  const envelopeKey = session.relayEnvelopeKey ??
     relayClient.generateEnvelopeKeyPair?.() ?? relay.generateEnvelopeKeyPair();
+  const sleep = overrides.sleep ??
+    ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  // One clock for every publication stop time: the one the session window was
+  // opened on, unless a clock is supplied. A read that goes backwards or is
+  // not a safe integer throws, so publication fails closed.
+  const publicationClock = overrides.now === undefined && session.publicationClock !== undefined
+    ? session.publicationClock
+    : monotonicClock(overrides.now ?? Date.now);
+  const keyValidUntilMs = Number(session.hostSessionKeyCertificate?.certificate?.validUntilMs);
+  let agreementExpiresAtMs = null;
+  const reportStopMs = () => Math.min(session.sessionDeadlineMs, keyValidUntilMs);
+  const protocolStopMs = () => agreementExpiresAtMs === null
+    ? reportStopMs()
+    : Math.min(reportStopMs(), agreementExpiresAtMs);
+  const publicationUnavailable = (lastError) => new RelayError(
+    "The relay could not be reached within the wait budget.",
+    "RENDEZVOUS_UNAVAILABLE",
+    { status: 0, detail: { lastError } },
+  );
+  let bindings = null;
+  if (relayBinding.mode !== "off") {
+    try {
+      bindings = createSenderBindings({
+        coordinatorKeyRing: relayBinding.coordinatorKeyRing,
+        now: overrides.now ?? Date.now,
+        sessionDeadlineMs: session.sessionDeadlineMs,
+        sessionId: session.sessionId,
+        statementDigest: agentHandshakeV2StatementDigest(session.terms),
+      });
+    } catch {
+      relayBindingInvalid();
+    }
+  }
+  const relayBindingFailure = () =>
+    new AgentHandshakeV2SessionFailure(RELAY_BINDING_FAILURE_CODE);
+  // One log line per relay position and reason, however often the deferred
+  // buffer is reconsidered.
+  const reportedViolations = new Set();
+  const bindingViolation = (message, reason) => {
+    const seq = typeof message?.seq === "string" ? message.seq : null;
+    const key = `${seq}:${reason}`;
+    if (reportedViolations.has(key)) return;
+    reportedViolations.add(key);
+    log({
+      event: AGENT_HANDSHAKE_V2_RELAY_BINDING_VIOLATION_EVENT,
+      action: enforcing ? "refused" : "observed",
+      kind: typeof message?.kind === "string" ? message.kind : null,
+      mode: relayBinding.mode,
+      reason,
+      role: typeof message?.role === "string" ? message.role : null,
+      seq,
+      sessionId: session.sessionId,
+    });
+  };
+  // Every message is shown to the bindings as it is considered, so sender
+  // enrollments are learned in relay order. A second valid enrollment for a
+  // role, or two roles enrolled for different invitations, ends the session
+  // in enforce mode.
+  const observeMessage = bindings === null ? null : (message) => {
+    const outcome = bindings.observe(message);
+    if (outcome?.status === "refused") {
+      bindingViolation(message, outcome.reason);
+      if (outcome.fatal && enforcing) throw relayBindingFailure();
+      return;
+    }
+    if (
+      outcome === null && !enforcing &&
+      PARTY_ROLES.includes(message?.role) && !bindings.admits(message)
+    ) bindingViolation(message, "BINDING_MISMATCH");
+  };
+  const admitMessage = !enforcing ? null : (message) => {
+    if (bindings.admits(message)) return true;
+    if (
+      PARTY_ROLES.includes(message?.role) &&
+      message?.kind !== AGENT_HANDSHAKE_V2_SENDER_ENROLLMENT_KIND
+    ) bindingViolation(message, bindings.failure() ?? "BINDING_MISMATCH");
+    return false;
+  };
+  const isBody = (body) =>
+    body !== null && typeof body === "object" && !Array.isArray(body);
+  // An invitation_created body must agree with the mint enrollment.
+  const mintAgrees = (body, minted) =>
+    (!Object.hasOwn(body, "claimExpiresAtMs") ||
+      String(body.claimExpiresAtMs) === minted.claimExpiresAtMs) &&
+    (!Object.hasOwn(body, "createdAtMs") ||
+      String(body.createdAtMs) === minted.eventAtMs);
+
   let after = "0";
   let buffer = [];
-  // The minted responder claim window, learned from agent_v2_invitation_created
-  // on the session log (or derived from its createdAtMs for coordinators that
-  // predate claimExpiresAtMs). Drives both the extended observation bound below
-  // and the claimedAtMs validity check in awaitInvitationClaimed.
+  // The minted responder claim window. In enforce mode it is the
+  // claimExpiresAtMs of the coordinator's mint enrollment, and the message
+  // bodies are only cross-checked against it. Otherwise it is learned from
+  // agent_v2_invitation_created on the session log (or derived from its
+  // createdAtMs for coordinators that predate claimExpiresAtMs). Drives both
+  // the extended observation bound below and the claimedAtMs validity check in
+  // awaitInvitationClaimed.
   let mintedClaimExpMs = null;
   const extendClaimDeadline = (message) => {
-    if (
-      message?.kind !== "agent_v2_invitation_created" ||
-      message?.role !== "initiator" ||
-      message.body === null ||
-      typeof message.body !== "object" ||
-      Array.isArray(message.body)
-    ) return null;
-    const explicit = Number(message.body.claimExpiresAtMs);
-    const minted = Number(message.body.createdAtMs);
-    const derived = Number.isSafeInteger(explicit)
-      ? explicit
-      : Number.isSafeInteger(minted)
-        ? minted + LEGACY_INVITATION_CLAIM_WINDOW_MS
-        : null;
+    if (message?.role !== "initiator" || !isBody(message.body)) return null;
+    let derived;
+    if (enforcing) {
+      if (
+        message.kind !== "agent_v2_invitation_created" &&
+        message.kind !== AGENT_HANDSHAKE_V2_SENDER_ENROLLMENT_KIND
+      ) return null;
+      const minted = bindings.enrollment("initiator");
+      if (minted === null) return null;
+      if (
+        message.kind === "agent_v2_invitation_created" &&
+        !mintAgrees(message.body, minted)
+      ) throw relayBindingFailure();
+      derived = Number(minted.claimExpiresAtMs);
+    } else {
+      if (message.kind !== "agent_v2_invitation_created") return null;
+      const explicit = Number(message.body.claimExpiresAtMs);
+      const minted = Number(message.body.createdAtMs);
+      derived = Number.isSafeInteger(explicit)
+        ? explicit
+        : Number.isSafeInteger(minted)
+          ? minted + LEGACY_INVITATION_CLAIM_WINDOW_MS
+          : null;
+      const enrolled = bindings?.enrollment("initiator") ?? null;
+      if (bindings !== null && (enrolled === null || !mintAgrees(message.body, enrolled))) {
+        bindingViolation(message, "BINDING_MISMATCH");
+      }
+    }
     const openedMs = Number.isSafeInteger(session.sessionOpenedAtMs)
       ? session.sessionOpenedAtMs
       : 0;
@@ -257,12 +523,14 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
       ? Math.min(session.sessionDeadlineMs, session.invitationExpiresAtMs)
       : session.sessionDeadlineMs;
     const result = await awaitRoleMessages({
+      admit: admitMessage,
       after,
       buffer,
       budgetMs: Math.max(0, boundMs - Date.now()),
       expectedBindings: null,
       extendDeadline: isClaimWait ? extendClaimDeadline : null,
       kind,
+      observe: observeMessage,
       relayClient,
       relayUrl: session.relayUrl,
       roles: [role],
@@ -272,22 +540,31 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
     after = result.after;
     buffer = result.buffer;
     const message = result.messages[role];
-    if (relayClient.verifyEnvelope(message) !== true) {
+    // In enforce mode the envelope is checked against the key enrolled for
+    // its role, not the key it names.
+    const verifyOptions = enforcing
+      ? { expectedSenderKey: bindings.enrollment(role)?.senderKey ?? null }
+      : undefined;
+    if (relayClient.verifyEnvelope(message, verifyOptions) !== true) {
       throw new Error("AGENT_HANDSHAKE_V2_RELAY_ENVELOPE_INVALID");
     }
+    if (enforcing && bindings.admits(message) !== true) throw relayBindingFailure();
     return message;
   };
   const waitForMessage = overrides.waitForMessage ?? defaultWaitForMessage;
-  const postHostMessage = overrides.postHostMessage ?? ((kind, body) =>
+  // Sends a host message only before stopAtMs (H-REQ-07).
+  const postHostMessage = overrides.postHostMessage ?? ((kind, body, stopAtMs) =>
     postNext(relayClient, {
       body,
+      clock: publicationClock,
       keyPair: envelopeKey,
       kind,
       relayUrl: session.relayUrl,
       role: "host",
       sessionId: session.sessionId,
+      sleep,
+      stopAtMs,
     }));
-  const log = overrides.log ?? ((event) => console.warn(JSON.stringify(event)));
   // Tell both parties, on the session's relay log, that the host has ended
   // this session and why. Best effort and at most once: the failure is also on
   // the snapshot, and a relay that refuses this post cannot be helped here.
@@ -305,7 +582,7 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
         externalBusinessActionPerformed: false,
         reasonCode,
         sessionSignature,
-      });
+      }, reportStopMs());
     } catch (error) {
       log({
         event: "agent_handshake_v2_session_failed_notice_unpublished",
@@ -317,12 +594,20 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
   };
   const rawMonitor = overrides.monitor ?? createAgentHandshakeV2Monitor({
     now: overrides.now ?? Date.now,
-    publish: (snapshot) => relayClient.putSnapshot({
+    publish: (snapshot) => retryBeforeStop({
+      clock: publicationClock,
+      sleep,
+      stopAtMs: Math.min(
+        reportStopMs(),
+        publicationClock.read() + SNAPSHOT_PUBLICATION_RETRY_BUDGET_MS,
+      ),
+    }, (timeLeft) => relayClient.putSnapshot({
       relayUrl: session.relayUrl,
-      retryBudgetMs: 30_000,
+      retryBudgetMs: 0,
       sessionId: session.sessionId,
       snapshot,
-    }),
+      timeoutMs: timeLeft(),
+    })),
     session,
   });
   // Any relay 4xx on a snapshot PUT ends the session visibly: log it, publish
@@ -393,23 +678,78 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
       "16",
     ),
   });
+  // H-REQ-07: funding stops at the protocol stop time. The clock is read again
+  // after the funding wallet opens (file reads and key derivation), before the
+  // transaction is signed and before it is broadcast. The transaction's RPC
+  // calls, their retries and the receipt wait all end by the stop time, and
+  // nothing is sent once it has passed.
+  const fundingTimeLeft = () => {
+    const leftMs = protocolStopMs() - publicationClock.read();
+    if (!(leftMs > 0)) throw publicationUnavailable(null);
+    return leftMs;
+  };
+  // One funding step, settled by the stop time. At the stop time the step
+  // fails as unreachable and the RPC requests still in flight are aborted,
+  // response bodies included. A step that fails once the stop time has passed
+  // fails for that reason.
+  const fundingStep = (run) => new Promise((resolve, reject) => {
+    const stop = new AbortController();
+    const timer = setTimeout(() => {
+      reject(publicationUnavailable(null));
+      stop.abort();
+    }, fundingTimeLeft());
+    Promise.resolve()
+      .then(() => run(stop.signal))
+      .then(resolve, reject)
+      .finally(() => clearTimeout(timer));
+  }).catch((error) => {
+    fundingTimeLeft();
+    throw error;
+  });
+  const openWallet = overrides.openFundingWallet ?? (() => openFundingWallet({
+    keystorePath: process.env.CLOCKCHAIN_FUNDING_KEYSTORE ??
+      "/var/lib/clockchain/private/funding-wallet.json",
+  }));
   let walletPromise = null;
-  const defaultFundIdentity = async ({ address, role }) => {
-    walletPromise ??= openFundingWallet({
-      keystorePath: process.env.CLOCKCHAIN_FUNDING_KEYSTORE ??
-        "/var/lib/clockchain/private/funding-wallet.json",
-    });
+  const sendFundingTransaction = overrides.sendFundingTransaction ?? (async ({
+    address,
+    signal,
+    timeLeft,
+    value,
+  }) => {
+    walletPromise ??= openWallet();
     const treasury = await walletPromise;
+    timeLeft();
     const wallet = createWalletClient({
       account: treasury.account,
       chain: sepolia,
-      transport: http(process.env.SEPOLIA_RPC_URL ?? RPC_URL),
+      transport: http(process.env.SEPOLIA_RPC_URL ?? RPC_URL, {
+        fetchFn: fetchBeforeStop(timeLeft, signal),
+      }),
     });
-    const hash = await wallet.sendTransaction({ to: address, value: FUND });
-    const receipt = await publicClient.waitForTransactionReceipt({
+    const request = await wallet.prepareTransactionRequest({ to: address, value });
+    timeLeft();
+    const serializedTransaction = await treasury.account.signTransaction(request, {
+      serializer: sepolia.serializers?.transaction,
+    });
+    timeLeft();
+    return wallet.sendRawTransaction({ serializedTransaction });
+  });
+  const defaultFundIdentity = async ({ address, role }) => {
+    const hash = await fundingStep((signal) => sendFundingTransaction({
+      address,
+      signal,
+      timeLeft: fundingTimeLeft,
+      value: FUND,
+    }));
+    const receipt = await fundingStep(() => publicClient.waitForTransactionReceipt({
       hash,
-      timeout: 180_000,
-    });
+      timeout: Math.min(180_000, fundingTimeLeft()),
+    }));
+    // The receipt wait can take minutes: the clock is read again before the
+    // record is posted, and again before each relay call that posts it.
+    const stopAtMs = protocolStopMs();
+    if (!(publicationClock.read() < stopAtMs)) throw publicationUnavailable(null);
     await postHostMessage("agent_v2_funding_record", {
       address,
       amountEth: "0.01",
@@ -417,7 +757,7 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
       externalBusinessActionPerformed: false,
       role,
       transactionHash: hash,
-    });
+    }, stopAtMs);
   };
 
   const ownerOf = async (tokenId) => String(await publicClient.readContract({
@@ -503,6 +843,26 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
     }
     return Object.freeze({ owner, registrationBlock: block });
   };
+  const defaultPublishResult = async (envelope) => {
+    const resultKeyValidUntilMs = Number(envelope?.hostSessionKeyCertificate?.certificate?.validUntilMs);
+    if (!Number.isSafeInteger(resultKeyValidUntilMs)) {
+      throw new Error("AGENT_HANDSHAKE_V2_RESULT_INVALID");
+    }
+    // A clock that goes backwards stops publication instead of extending it.
+    const stopAtMs = Math.min(
+      session.sessionDeadlineMs,
+      resultKeyValidUntilMs,
+      publicationClock.read() + RESULT_PUBLICATION_RETRY_BUDGET_MS,
+    );
+    return retryBeforeStop({ clock: publicationClock, sleep, stopAtMs }, (timeLeft) =>
+      relayClient.putResult({
+        envelope,
+        relayUrl: session.relayUrl,
+        retryBudgetMs: 0,
+        sessionId: session.sessionId,
+        timeoutMs: timeLeft(),
+      }));
+  };
   const anchorReport = (message) => {
     const entries = message?.body?.transitions;
     if (!Array.isArray(entries) || entries.length !== 3) {
@@ -552,11 +912,29 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
         !/^(?:0|[1-9][0-9]*)$/.test(body.claimedAtMs) ||
         body.externalBusinessActionPerformed !== false
       ) throw new Error("AGENT_HANDSHAKE_V2_INVITATION_CLAIM_INVALID");
-      const claimedAtMs = Number(body.claimedAtMs);
+      let claimedAtMs = Number(body.claimedAtMs);
       // The minted claim window is authoritative: a claim is in-window when it
       // lands before the expiry that mint published on invitation_created, not
       // the session's invitationExpiresAtMs (that is only the mint cutoff).
-      const claimDeadlineMs = mintedClaimExpMs ?? session.invitationExpiresAtMs;
+      let claimDeadlineMs = mintedClaimExpMs ?? session.invitationExpiresAtMs;
+      const redeemed = bindings?.enrollment("responder") ?? null;
+      if (enforcing) {
+        // The claim time and window are the coordinator-signed redemption's;
+        // the claim message body must agree with it.
+        if (redeemed === null || body.claimedAtMs !== redeemed.eventAtMs) {
+          throw relayBindingFailure();
+        }
+        claimedAtMs = Number(redeemed.eventAtMs);
+        claimDeadlineMs = Math.min(
+          Number(redeemed.claimExpiresAtMs),
+          session.sessionDeadlineMs,
+        );
+      } else if (
+        bindings !== null &&
+        (redeemed === null || body.claimedAtMs !== redeemed.eventAtMs)
+      ) {
+        bindingViolation(message, "BINDING_MISMATCH");
+      }
       if (
         !Number.isSafeInteger(claimedAtMs) ||
         claimedAtMs < session.sessionOpenedAtMs
@@ -594,20 +972,21 @@ export async function createAgentHandshakeV2HostPorts(_session, overrides = {}) 
     findExistingIdentity:
       overrides.findExistingIdentity ?? defaultFindExistingIdentity,
     fundIdentity: overrides.fundIdentity ?? defaultFundIdentity,
-    publishDescriptor: async (descriptorEnvelope) =>
-      postHostMessage("agent_v2_handshake_required", {
+    // The descriptor carries the agreement expiry; from here on it bounds
+    // every protocol message, the descriptor included.
+    publishDescriptor: async (descriptorEnvelope) => {
+      const sessionDigest = agentHandshakeV2DescriptorDigest(descriptorEnvelope.descriptor);
+      const expiresAtMs = Number(descriptorEnvelope.descriptor.agreementExpiresAtMs);
+      agreementExpiresAtMs = agreementExpiresAtMs === null
+        ? expiresAtMs
+        : Math.min(agreementExpiresAtMs, expiresAtMs);
+      return postHostMessage("agent_v2_handshake_required", {
         descriptorEnvelope,
         externalBusinessActionPerformed: false,
-        sessionDigest:
-          agentHandshakeV2DescriptorDigest(descriptorEnvelope.descriptor),
-      }),
-    publishResult: overrides.publishResult ?? ((envelope) =>
-      relayClient.putResult({
-        envelope,
-        relayUrl: session.relayUrl,
-        retryBudgetMs: 30_000,
-        sessionId: session.sessionId,
-      })),
+        sessionDigest,
+      }, protocolStopMs());
+    },
+    publishResult: overrides.publishResult ?? defaultPublishResult,
     publishInitial: () => monitor.start(),
     partiesReady: (parties) => monitor.partiesReady(parties),
     proposalSigned: (envelope) => monitor.proposalSigned(envelope),

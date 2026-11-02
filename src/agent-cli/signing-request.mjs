@@ -9,8 +9,10 @@ import {
 import { decodeSigningBytes } from "../core/wallet-bridge.mjs";
 import { validateLocalPolicy, localPolicyDigest } from "../agent-handshake/v2/policy.mjs";
 import {
+  assertAgentHandshakeV2AcceptanceBinding,
   validateAgentHandshakeV2AcceptancePayload,
   validateAgentHandshakeV2ProposalPayload,
+  verifyAgentHandshakeV2Proposal,
 } from "../agent-handshake/v2/protocol.mjs";
 import { validateAgentHandshakeV2EvidenceResult } from "../agent-handshake/v2/evidence.mjs";
 import {
@@ -24,15 +26,17 @@ import {
 } from "../agent-handshake/v2/terms.mjs";
 import { verifyPinnedHostSessionKey } from "./trust-roots.mjs";
 import { AGENT_HANDSHAKE_HELPER_VERSION } from "../agent-handshake/v2/constants.mjs";
+import { monotonicClock } from "../agent-handshake/v2/clock.mjs";
 
 export { AGENT_HANDSHAKE_HELPER_VERSION };
-export const AGENT_SIGNING_REQUEST_SCHEMA = "clockchain.agent-handshake-signing-request/v1";
+// v2 adds proposalEnvelope: the signed proposal an acceptance accepts (H-REQ-02).
+export const AGENT_SIGNING_REQUEST_SCHEMA = "clockchain.agent-handshake-signing-request/v2";
 
 const REQUEST_KEYS = Object.freeze([
   "schema", "helperVersion", "operation", "role", "sessionId", "repositorySha",
   "sessionDeadlineMs", "hostSessionKeyCertificate", "terms", "policyDigest",
-  "previousCheckpointDigest", "descriptorEnvelope", "bytesGzipBase64Url",
-  "bytesSha256", "externalBusinessActionPerformed",
+  "previousCheckpointDigest", "descriptorEnvelope", "proposalEnvelope",
+  "bytesGzipBase64Url", "bytesSha256", "externalBusinessActionPerformed",
 ]);
 const OPERATIONS = Object.freeze(["identity_claim", "proposal", "acceptance", "evidence"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -124,7 +128,7 @@ function assertPayloadBinding(payload, request, address, policy, statementDigest
   }
 }
 
-export function validateAgentSigningRequest({ address, localPolicy, nowMs, request: input, rootKeyRing }) {
+export async function validateAgentSigningRequest({ address, localPolicy, nowMs, request: input, rootKeyRing }) {
   const request = exact(input, REQUEST_KEYS);
   const policy = validateLocalPolicy(localPolicy);
   const terms = validateAgentHandshakeV2Terms(request.terms);
@@ -147,6 +151,8 @@ export function validateAgentSigningRequest({ address, localPolicy, nowMs, reque
     !(request.previousCheckpointDigest === null || DIGEST.test(request.previousCheckpointDigest)) ||
     request.operation === "acceptance" && request.previousCheckpointDigest === null ||
     request.operation !== "acceptance" && request.previousCheckpointDigest !== null ||
+    request.operation === "acceptance" && request.proposalEnvelope === null ||
+    request.operation !== "acceptance" && request.proposalEnvelope !== null ||
     !Number.isSafeInteger(nowMs)
   ) invalid();
   if (nowMs >= Number(request.sessionDeadlineMs)) expired();
@@ -194,23 +200,82 @@ export function validateAgentSigningRequest({ address, localPolicy, nowMs, reque
       !same(descriptor[request.role], payload.party)
     )
   ) invalid();
+  // H-REQ-02: an acceptance is signed only against the proposal it accepts.
+  // The carried proposal must verify (initiator signature, this session,
+  // repository and terms, inside its window), name the local party as
+  // responder and another party as initiator, and agree with the acceptance on
+  // every bound field. Limitation: the helper checks that the proposal is
+  // signed by the key the proposal itself names as initiator; it cannot yet
+  // independently pin which identity that initiator should be (H-REQ-09, out
+  // of scope here).
+  if (request.operation === "acceptance") {
+    let proposal;
+    try {
+      proposal = (await verifyAgentHandshakeV2Proposal({
+        envelope: request.proposalEnvelope,
+        expectedRepositorySha: request.repositorySha,
+        expectedSessionId: request.sessionId,
+        expectedTerms: terms,
+        nowMs,
+      })).payload;
+      assertAgentHandshakeV2AcceptanceBinding({ acceptance: payload, proposal });
+    } catch { invalid(); }
+    if (
+      proposal.responder.sessionKeyAddress !== address ||
+      proposal.responder.policyDigest !== request.policyDigest ||
+      proposal.initiator.sessionKeyAddress === address ||
+      proposal.initiator.policyDigest === request.policyDigest
+    ) invalid();
+  }
   return Object.freeze({
     bytesGzipBase64Url: request.bytesGzipBase64Url,
     bytesSha256: request.bytesSha256,
     payload,
+    // H-REQ-07: no signature made for this request may be released at or
+    // after any of these instants.
+    signingBounds: Object.freeze({
+      hostKeyValidUntilMs: Number(hostSessionKey.certificate.validUntilMs),
+      payloadExpiresAtMs: payload.expiresAtMs === undefined ? null : Number(payload.expiresAtMs),
+      sessionDeadlineMs: Number(request.sessionDeadlineMs),
+    }),
   });
 }
 
-export async function executeAgentSigningRequest(options) {
-  const verified = validateAgentSigningRequest(options);
+// H-REQ-07: `now` is read to validate the request, immediately before each
+// signer call, and once each signature returns. Every read after validation
+// must lie before the payload expiry (proposal and acceptance), the session
+// deadline and the end of the host key's validity; the reads around the
+// checkpoint signature also before the checkpoint's own expiry. A late read
+// before a signer call stops without calling the signer; a late read after one
+// discards every signature made so far. Both use the window-expired error. A
+// read that goes backwards or is not a safe integer is a generic refusal.
+export async function executeAgentSigningRequest({ now, ...options }) {
+  let clock;
+  try { clock = monotonicClock(now); } catch { invalid(); }
+  const read = () => {
+    try { return clock.read(); } catch { return invalid(); }
+  };
+  const verified = await validateAgentSigningRequest({ ...options, nowMs: read() });
+  const bounds = verified.signingBounds;
+  const releasable = (atMs, checkpointExpiresAtMs = null) => {
+    if (
+      atMs >= bounds.sessionDeadlineMs ||
+      atMs >= bounds.hostKeyValidUntilMs ||
+      bounds.payloadExpiresAtMs !== null && atMs >= bounds.payloadExpiresAtMs ||
+      checkpointExpiresAtMs !== null && atMs >= checkpointExpiresAtMs
+    ) expired();
+  };
   if (typeof options.sign !== "function") invalid();
+  releasable(read());
   let result;
   try { result = await options.sign({ bytesGzipBase64Url: verified.bytesGzipBase64Url }); } catch { invalid(); }
+  const signedAtMs = read();
   if (
     result?.address?.toLowerCase() !== options.address ||
     result?.bytesSha256 !== verified.bytesSha256 ||
     !SIGNATURE.test(result?.signatureHex)
   ) invalid();
+  releasable(signedAtMs);
   // Proposal and acceptance submissions require a commitment checkpoint — its
   // own EIP-191 signature over the checkpoint bytes — released before the
   // artifact signature is submitted. Portable clients have no adapter to
@@ -224,7 +289,7 @@ export async function executeAgentSigningRequest(options) {
       schema: `clockchain.agent-handshake-${request.operation}-envelope/v2`,
       signature: { address: options.address, algorithm: "eip191", value: result.signatureHex },
     };
-    const issuedAtMs = options.nowMs;
+    const issuedAtMs = signedAtMs;
     const expiresAtMs = Math.min(
       issuedAtMs + Number(options.localPolicy.maxValidForSeconds) * 1000,
       Number(request.sessionDeadlineMs),
@@ -245,6 +310,7 @@ export async function executeAgentSigningRequest(options) {
     };
     let signingBytes;
     try { signingBytes = commitmentCheckpointSigningBytes({ ...unsigned, signature: { address: options.address, algorithm: "eip191", value: result.signatureHex } }); } catch { invalid(); }
+    releasable(read(), expiresAtMs);
     let checkpointSign;
     try { checkpointSign = await options.sign({ bytesHex: `0x${signingBytes.toString("hex")}` }); } catch { invalid(); }
     if (
@@ -255,6 +321,7 @@ export async function executeAgentSigningRequest(options) {
     try {
       checkpoint = normalizeV2CommitmentCheckpoint({ ...unsigned, signature: { address: options.address, algorithm: "eip191", value: checkpointSign.signatureHex } });
     } catch { invalid(); }
+    releasable(read(), Number(checkpoint.expiresAtMs));
   }
   return Object.freeze({
     address: options.address,

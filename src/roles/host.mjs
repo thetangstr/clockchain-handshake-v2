@@ -74,6 +74,12 @@ export async function awaitRoleMessages({
   onHeartbeat = async () => {},
   heartbeatMs = 20_000,
   extendDeadline = null,
+  // H-REQ-01: `observe` sees every message as it is considered (sender
+  // enrollments are learned there). When `admit` is given, a message it does
+  // not admit is dropped: it is neither accepted, deferred, nor allowed to
+  // extend the deadline. Both default to null, which keeps the v1 behaviour.
+  observe = null,
+  admit = null,
 }) {
   const wanted = new Set(roles);
   const messages = {};
@@ -93,6 +99,8 @@ export async function awaitRoleMessages({
       if (message?.seq !== undefined && Number(message.seq) > Number(cursor)) {
         cursor = message.seq;
       }
+      if (observe !== null) observe(message);
+      if (admit !== null && admit(message) !== true) continue;
       if (extendDeadline !== null) {
         const extended = extendDeadline(message, deadline);
         if (Number.isSafeInteger(extended) && extended > deadline) {

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { gzipSync } from "node:zlib";
 
 import { canonicalBytes } from "../../src/core/canonical.mjs";
+import { AGENT_HANDSHAKE_HELPER_VERSION } from "../../src/agent-handshake/v2/constants.mjs";
 import { ed25519PublicKeyFingerprint } from "../../src/agent-handshake/v2/host-key-certificate.mjs";
 import {
   NOW_MS,
@@ -24,8 +25,8 @@ export async function buildAgentCliFixture(role = "initiator") {
     nowMs: NOW_MS,
     policy,
     request: {
-      schema: "clockchain.agent-handshake-signing-request/v1",
-      helperVersion: "2.1.8",
+      schema: "clockchain.agent-handshake-signing-request/v2",
+      helperVersion: AGENT_HANDSHAKE_HELPER_VERSION,
       operation: role === "initiator" ? "proposal" : "acceptance",
       role,
       sessionId: SESSION_ID,
@@ -36,6 +37,8 @@ export async function buildAgentCliFixture(role = "initiator") {
       policyDigest: fixture.parties[role].policyDigest,
       previousCheckpointDigest: role === "initiator" ? null : "c".repeat(64),
       descriptorEnvelope: null,
+      // An acceptance request carries the signed proposal it accepts.
+      proposalEnvelope: role === "initiator" ? null : fixture.proposalEnvelope,
       bytesGzipBase64Url: gzipSync(bytes).toString("base64url"),
       bytesSha256: createHash("sha256").update(bytes).digest("hex"),
       externalBusinessActionPerformed: false,

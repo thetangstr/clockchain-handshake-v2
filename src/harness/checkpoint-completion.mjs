@@ -74,7 +74,7 @@ function argvPayload(argv) {
 export function extractSigningRequestFromArgv(argv) {
   const request = argvPayload(argv);
   if (
-    request?.schema !== "clockchain.agent-handshake-signing-request/v1" ||
+    request?.schema !== "clockchain.agent-handshake-signing-request/v2" ||
     request?.helperVersion !== AGENT_HANDSHAKE_HELPER_VERSION ||
     !["identity_claim", "proposal", "acceptance", "evidence"].includes(request.operation) ||
     !ROLES.includes(request.role) ||

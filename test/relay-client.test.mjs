@@ -20,6 +20,9 @@ import {
   pollMessages,
   postMessage,
   putEvidence,
+  putResult,
+  putSnapshot,
+  retryBeforeStop,
   signEnvelope,
   verifyEnvelope,
 } from "../src/relay/client.mjs";
@@ -230,4 +233,70 @@ test("claimRole refuses a role that is already bound with ROLE_ALREADY_BOUND", a
       }),
     (error) => error instanceof RelayError && error.code === "ROLE_ALREADY_BOUND",
   );
+});
+
+// --- H-REQ-07: a call's timeout bounds the whole request, the response body
+// included. ---
+
+// A relay that answers the first `failFirst` requests with 503 and every later
+// one with prompt 200 headers and a body that arrives only after bodyDelayMs.
+async function stallingRelay(t, { bodyDelayMs, failFirst = 0 }) {
+  const arrivals = [];
+  const timers = new Set();
+  const server = createServer((req, res) => {
+    arrivals.push(Date.now());
+    req.resume();
+    if (arrivals.length <= failFirst) {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "SERVER_ERROR" }));
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.flushHeaders();
+    const timer = setTimeout(() => res.end("{}"), bodyDelayMs);
+    timers.add(timer);
+    res.on("close", () => clearTimeout(timer));
+  });
+  const port = await listen(server);
+  t.after(() => {
+    for (const timer of timers) clearTimeout(timer);
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
+  return { arrivals, relayUrl: `http://127.0.0.1:${port}` };
+}
+
+test("H-REQ-07 (relay client): a POST or PUT whose response body stalls after prompt headers ends at the call's timeout", async (t) => {
+  const { relayUrl } = await stallingRelay(t, { bodyDelayMs: 2_500 });
+  const calls = [
+    ["postMessage", () => postMessage({ relayUrl, sessionId: "s", envelope: {}, retryBudgetMs: 0, timeoutMs: 200 })],
+    ["putSnapshot", () => putSnapshot({ relayUrl, sessionId: "s", snapshot: {}, retryBudgetMs: 0, timeoutMs: 200 })],
+    ["putResult", () => putResult({ relayUrl, sessionId: "s", envelope: {}, retryBudgetMs: 0, timeoutMs: 200 })],
+  ];
+  for (const [label, call] of calls) {
+    const startedAtMs = Date.now();
+    const outcome = await call().then((value) => ({ value }), (error) => ({ error }));
+    const elapsedMs = Date.now() - startedAtMs;
+    assert.equal(outcome.error?.code, "RENDEZVOUS_UNAVAILABLE", `${label}: the call returned after ${elapsedMs} ms`);
+    assert.equal(outcome.error.detail?.lastError, "NETWORK_ERROR", label);
+    assert.ok(elapsedMs < 1_500, `${label}: ended after ${elapsedMs} ms, timeout 200 ms`);
+  }
+});
+
+test("H-REQ-07 (relay client): retryBeforeStop ends at the stop time while a response body stalls, and starts no attempt at or after it", async (t) => {
+  const { arrivals, relayUrl } = await stallingRelay(t, { bodyDelayMs: 4_000, failFirst: 1 });
+  const clock = { read: () => Date.now() };
+  const stopAtMs = Date.now() + 1_200;
+  const attempts = [];
+  const outcome = await retryBeforeStop({ clock, stopAtMs }, (timeLeft) => {
+    const timeoutMs = timeLeft();
+    attempts.push(stopAtMs - timeoutMs);
+    return putSnapshot({ relayUrl, sessionId: "s", snapshot: {}, retryBudgetMs: 0, timeoutMs });
+  }).then((value) => ({ value }), (error) => ({ error }));
+  const endedAtMs = Date.now();
+  assert.equal(outcome.error?.code, "RENDEZVOUS_UNAVAILABLE", `returned ${endedAtMs - stopAtMs} ms after the stop time`);
+  assert.ok(attempts.length >= 2, "the failed attempt was not retried");
+  assert.equal(arrivals.length, attempts.length);
+  for (const atMs of attempts) assert.ok(atMs < stopAtMs, `an attempt started at ${atMs}, stop ${stopAtMs}`);
+  assert.ok(endedAtMs - stopAtMs < 500, `ended ${endedAtMs - stopAtMs} ms after the stop time`);
 });

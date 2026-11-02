@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { AGENT_HANDSHAKE_HELPER_VERSION } from "../src/agent-handshake/v2/constants.mjs";
 import { createAgentCliOperations } from "../src/agent-cli/operations.mjs";
 import { buildAgentCliFixture } from "./support/agent-cli-fixture.mjs";
 
@@ -56,7 +57,7 @@ test("dispatcher exposes exactly init, policy, inspect, register, sign, and veri
     stateDir,
     payload: {
       schema: "clockchain.agent-handshake-certificate-verification/v1",
-      helperVersion: "2.1.8",
+      helperVersion: AGENT_HANDSHAKE_HELPER_VERSION,
       role: "initiator",
       sessionId: fixture.request.sessionId,
       repositorySha: fixture.request.repositorySha,
@@ -116,4 +117,40 @@ test("inspect reports a null registration before register under a required_fresh
   assert.equal(inspected.address, address);
   assert.equal(inspected.policyDigest, committed.policyDigest);
   assert.equal(inspected.registration, null);
+});
+
+test("sign reads the clock it is given more than once", async (t) => {
+  const stateDir = await mkdtemp(join(tmpdir(), "clockchain-agent-ops-clock-"));
+  await rm(stateDir, { recursive: true });
+  t.after(() => rm(stateDir, { force: true, recursive: true }));
+  const fixture = await buildAgentCliFixture();
+  const address = fixture.parties.initiator.sessionKeyAddress;
+  const signedAtMs = fixture.nowMs + 5_000;
+  let currentMs = fixture.nowMs;
+  let reads = 0;
+  const bridge = {
+    initializeWallet: async () => ({ address }),
+    inspectWallet: async () => ({ address, registration: null }),
+    registerWalletIdentity: async () => { throw new Error("unreachable"); },
+    signExactBytes: async (input) => {
+      // Time passes while the wallet signs the artifact.
+      if (!input.bytesHex) currentMs = signedAtMs;
+      const bytesSha256 = input.bytesHex
+        ? createHash("sha256").update(Buffer.from(input.bytesHex.slice(2), "hex")).digest("hex")
+        : fixture.request.bytesSha256;
+      return { address, bytesSha256, signatureHex: "0x" + "1".repeat(130) };
+    },
+  };
+  const operations = createAgentCliOperations({
+    bridge,
+    now: () => { reads += 1; return currentMs; },
+    rootKeyRing: fixture.rootKeyRing,
+  });
+  await operations.dispatch({ operation: "init", stateDir });
+  await operations.dispatch({ operation: "policy", stateDir, payload: fixture.policy });
+  reads = 0;
+  const signed = await operations.dispatch({ operation: "sign", stateDir, payload: fixture.request });
+  // Validation, after the artifact signature, after the checkpoint signature.
+  assert.ok(reads >= 3, `the clock was read ${reads} time(s)`);
+  assert.equal(signed.checkpoint.issuedAtMs, String(signedAtMs));
 });

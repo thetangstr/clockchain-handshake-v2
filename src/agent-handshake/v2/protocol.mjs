@@ -51,15 +51,25 @@ export async function verifyAgentHandshakeV2Proposal({envelope,expectedTerms,exp
   if(!Number.isSafeInteger(nowMs)||verified.payload.sessionId!==expectedSessionId||verified.payload.repositorySha!==expectedRepositorySha||verified.payload.reference!==terms.reference||verified.payload.statementDigest!==agentHandshakeV2StatementDigest(terms)||!same(verified.payload.identityPolicy,terms.identityPolicy)||BigInt(verified.payload.expiresAtMs)!==BigInt(verified.payload.issuedAtMs)+BigInt(terms.validForSeconds)*1000n||nowMs<Number(verified.payload.issuedAtMs)||nowMs>=Number(verified.payload.expiresAtMs)||verified.signature.address!==verified.payload.initiator.sessionKeyAddress||await recover(verified.payload,verified.signature.value)!==verified.payload.initiator.sessionKeyAddress)invalid();
   return verified;
 }
+// H-REQ-02: the one complete statement of what an acceptance must share with
+// the proposal it accepts. Both arguments are payloads (not envelopes); each is
+// re-validated here. Signatures are checked by the callers.
+export function assertAgentHandshakeV2AcceptanceBinding({acceptance:acceptanceValue,proposal:proposalValue}={}){
+  const accepted=acceptance(acceptanceValue);const proposed=proposal(proposalValue);
+  if(accepted.proposalDigest!==digestHex(proposed)||accepted.sessionId!==proposed.sessionId||accepted.repositorySha!==proposed.repositorySha||accepted.reference!==proposed.reference||accepted.statementDigest!==proposed.statementDigest||accepted.expiresAtMs!==proposed.expiresAtMs||!same(accepted.identityPolicy,proposed.identityPolicy)||!same(accepted.initiator,proposed.initiator)||!same(accepted.responder,proposed.responder)||BigInt(proposed.issuedAtMs)>BigInt(accepted.issuedAtMs)||BigInt(accepted.issuedAtMs)>=BigInt(accepted.expiresAtMs))invalid();
+  return accepted;
+}
 export async function signAgentHandshakeV2Acceptance({acceptance:value,proposalEnvelope,signMessage}){
   const proposed=signedEnvelope(proposalEnvelope,"proposal");const payload=acceptance(value);
-  if(payload.proposalDigest!==agentHandshakeV2ProposalDigest(proposed)||payload.sessionId!==proposed.payload.sessionId||payload.repositorySha!==proposed.payload.repositorySha||payload.reference!==proposed.payload.reference||payload.statementDigest!==proposed.payload.statementDigest||!same(payload.identityPolicy,proposed.payload.identityPolicy)||!same(payload.initiator,proposed.payload.initiator)||!same(payload.responder,proposed.payload.responder)||payload.expiresAtMs!==proposed.payload.expiresAtMs||BigInt(payload.issuedAtMs)<BigInt(proposed.payload.issuedAtMs)||typeof signMessage!=="function")invalid();
+  assertAgentHandshakeV2AcceptanceBinding({acceptance:payload,proposal:proposed.payload});
+  if(typeof signMessage!=="function")invalid();
   let valueSignature;try{valueSignature=await signMessage(canonicalBytes(payload));}catch{invalid();}
   return signedEnvelope({payload,schema:"clockchain.agent-handshake-acceptance-envelope/v2",signature:{address:payload.responder.sessionKeyAddress,algorithm:"eip191",value:valueSignature}},"acceptance");
 }
 export async function verifyAgentHandshakeV2Acceptance({envelope,proposalEnvelope,expectedTerms,expectedSessionId,expectedRepositorySha,nowMs}){
   const proposed=await verifyAgentHandshakeV2Proposal({envelope:proposalEnvelope,expectedTerms,expectedSessionId,expectedRepositorySha,nowMs});const verified=signedEnvelope(envelope,"acceptance");
-  if(verified.payload.proposalDigest!==agentHandshakeV2ProposalDigest(proposed)||verified.payload.sessionId!==proposed.payload.sessionId||verified.payload.expiresAtMs!==proposed.payload.expiresAtMs||!same(verified.payload.initiator,proposed.payload.initiator)||!same(verified.payload.responder,proposed.payload.responder)||nowMs<Number(verified.payload.issuedAtMs)||nowMs>=Number(verified.payload.expiresAtMs)||verified.signature.address!==verified.payload.responder.sessionKeyAddress||await recover(verified.payload,verified.signature.value)!==verified.payload.responder.sessionKeyAddress)invalid();
+  assertAgentHandshakeV2AcceptanceBinding({acceptance:verified.payload,proposal:proposed.payload});
+  if(nowMs<Number(verified.payload.issuedAtMs)||nowMs>=Number(verified.payload.expiresAtMs)||verified.signature.address!==verified.payload.responder.sessionKeyAddress||await recover(verified.payload,verified.signature.value)!==verified.payload.responder.sessionKeyAddress)invalid();
   return verified;
 }
 function transition(value){

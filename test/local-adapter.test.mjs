@@ -144,7 +144,7 @@ function helperStep({
 
 function signingRequestRecord(overrides = {}) {
   return {
-    schema: "clockchain.agent-handshake-signing-request/v1",
+    schema: "clockchain.agent-handshake-signing-request/v2",
     helperVersion: AGENT_HANDSHAKE_HELPER_VERSION,
     operation: "proposal",
     role: "initiator",
@@ -597,7 +597,7 @@ test("upstream proxy parses SSE and plain JSON, and tools/list appends the adapt
   assert.equal(listedPlain.result.tools.length, 1);
 });
 
-test("tools/call forwards params verbatim and returns upstream errors verbatim", async (t) => {
+test("tools/call forwards params verbatim and returns an upstream error as its code and a generic message", async (t) => {
   const calls = [];
   const { make } = await makeContext(t);
   const server = make({
@@ -607,18 +607,18 @@ test("tools/call forwards params verbatim and returns upstream errors verbatim",
       if (request.method === "tools/call" && request.params.name === "fail_me") {
         return fakeResponse({ jsonrpc: "2.0", id: request.id, error: { code: -32000, message: "upstream said no" } });
       }
-      return fakeResponse({ jsonrpc: "2.0", id: request.id, result: { ok: true } });
+      return fakeResponse({ jsonrpc: "2.0", id: request.id, result: rpcResult({ ok: true }) });
     },
   });
   const forwarded = await call(server, 3, "agent_handshake_status", { access: "tok", deep: { n: 1 } });
-  assert.deepEqual(forwarded.result, { ok: true });
+  assert.deepEqual(forwarded.result, rpcResult({ ok: true }));
   const sent = calls.find((entry) => entry.method === "tools/call");
   assert.deepEqual(sent.params, {
     name: "agent_handshake_status",
     arguments: { access: "tok", deep: { n: 1 } },
   });
   const failed = await call(server, 4, "fail_me", {});
-  assert.deepEqual(failed.error, { code: -32000, message: "upstream said no" });
+  assert.deepEqual(failed.error, { code: -32000, message: "Clockchain local adapter upstream request failed." });
 });
 
 test("initialize proxies upstream lazily and falls back when unreachable", async (t) => {
